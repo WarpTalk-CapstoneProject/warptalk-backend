@@ -29,6 +29,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
     private readonly IBillingSubscriptionClient _billingSubscriptionClient;
     private readonly IWorkspaceInvitationAcceptanceProcessor _acceptanceProcessor;
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
 
     public WorkspaceInvitationService(
         IUnitOfWork unitOfWork,
@@ -37,7 +38,11 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         ITranslationRoomClient translationRoomClient,
         IWorkspaceInvitationEmailComposer emailComposer,
         IBillingSubscriptionClient billingSubscriptionClient,
-        IWorkspaceInvitationAcceptanceProcessor acceptanceProcessor)
+        IWorkspaceInvitationAcceptanceProcessor acceptanceProcessor,
+        // Optional, exactly as on WorkspaceMemberService: an unreachable notification mesh must
+        // not fail a leave request that is already committed, and the whole existing test suite
+        // constructs this service without one.
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -46,6 +51,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         _emailComposer = emailComposer;
         _billingSubscriptionClient = billingSubscriptionClient;
         _acceptanceProcessor = acceptanceProcessor;
+        _notificationClient = notificationClient;
     }
 
     public async Task<Result<InviteMemberResponse>> InviteMemberAsync(Guid workspaceId, InviteMemberRequest request, Guid inviterUserId, CancellationToken ct = default)
@@ -1055,6 +1061,12 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             await _unitOfWork.WorkspaceInvitationRepository.AddAsync(leaveRequest, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // WT-521 — after the commit, never before. Until now the request landed in a tab
+            // nobody had a reason to open: the member was told "awaiting approval" and the people
+            // whose approval that is were told nothing at all, so the documented workaround was
+            // for an Owner to go and look.
+            await NotifyLeaveRequestedAsync(workspace, userId, userEmail, ct);
+
             return Result.Success(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, leaveRequest, roleName, ct));
         }
         catch (Exception ex)
@@ -1116,6 +1128,14 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // The other half of the round trip. Approval REMOVES somebody from a workspace, so
+            // going unannounced means they find out by losing access to a page.
+            if (targetUserId is { } leaverId)
+            {
+                await NotifyLeaveReviewedAsync(workspaceId, leaverId, approved: true, ct);
+            }
+
             return Result.Success();
         }
         catch (Exception ex)
@@ -1164,6 +1184,14 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             _unitOfWork.WorkspaceInvitationRepository.Update(leaveRequest);
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // A rejection needs saying even more than an approval does: nothing observable
+            // changes, so silence is indistinguishable from the request never having been read.
+            if ((leaveRequest.RequestedBy ?? leaveRequest.InvitedBy) is { } requesterId)
+            {
+                await NotifyLeaveReviewedAsync(workspaceId, requesterId, approved: false, ct);
+            }
+
             return Result.Success();
         }
         catch (Exception ex)
@@ -1171,6 +1199,132 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             _logger.LogError(ex, "Error occurred while rejecting leave request {LeaveRequestId}.", leaveRequestId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// WT-521 — tell every Owner and Admin that somebody has asked to leave.
+    ///
+    /// Fan-out rather than one recipient: approving a leave request is not one person's job, and
+    /// routing it to the Owner alone would leave an Admin-run workspace with a queue nobody is
+    /// told about. The action_url lands on the Members page, which is where the four request tabs
+    /// live (WT-487).
+    ///
+    /// Best-effort, and after the commit. An unreachable notification mesh must never fail a
+    /// leave request that has already been written; a null client (tests, degraded config) means
+    /// the request simply goes unannounced, which is the behaviour this replaces rather than a
+    /// new failure mode.
+    /// </summary>
+    private async Task NotifyLeaveRequestedAsync(
+        Workspace workspace,
+        Guid memberUserId,
+        string memberEmail,
+        CancellationToken ct)
+    {
+        if (_notificationClient == null) return;
+
+        try
+        {
+            var reviewers = await FindReviewerUserIdsAsync(workspace.Id, ct);
+            if (reviewers.Count == 0) return;
+
+            var actionUrl = workspace.Slug is { Length: > 0 } slug ? $"/{slug}/members" : "/";
+
+            foreach (var reviewerId in reviewers)
+            {
+                // Not to the requester, even when they are an Admin leaving of their own accord.
+                if (reviewerId == memberUserId) continue;
+
+                var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+                {
+                    UserId = reviewerId.ToString(),
+                    Type = WorkspaceNotificationTypes.LeaveRequested,
+                    Title = $"A member asked to leave {workspace.Name}",
+                    Body = $"{memberEmail} has requested to leave {workspace.Name}. Approve or reject it under Members.",
+                    ActionUrl = actionUrl,
+                };
+                request.Metadata.Add("workspace_id", workspace.Id.ToString());
+                request.Metadata.Add("workspace_name", workspace.Name);
+                request.Metadata.Add("member_email", memberEmail);
+
+                await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not notify reviewers of the leave request in workspace {WorkspaceId}; the request itself is committed.",
+                workspace.Id);
+        }
+    }
+
+    /// <summary>
+    /// WT-521 — tell the member what was decided.
+    ///
+    /// Both outcomes are announced, and the rejection matters more: an approval at least produces
+    /// a visible consequence (the workspace disappears), while a rejection changes nothing on
+    /// screen and is otherwise indistinguishable from nobody having looked.
+    /// </summary>
+    private async Task NotifyLeaveReviewedAsync(
+        Guid workspaceId,
+        Guid memberUserId,
+        bool approved,
+        CancellationToken ct)
+    {
+        if (_notificationClient == null) return;
+
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            var workspaceName = workspace?.Name ?? "the workspace";
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = memberUserId.ToString(),
+                Type = approved
+                    ? WorkspaceNotificationTypes.LeaveApproved
+                    : WorkspaceNotificationTypes.LeaveRejected,
+                Title = approved
+                    ? $"You have left {workspaceName}"
+                    : $"Your request to leave {workspaceName} was declined",
+                Body = approved
+                    ? $"Your request to leave {workspaceName} was approved and your membership has ended."
+                    : $"An administrator declined your request to leave {workspaceName}. You are still a member.",
+                // Approved means they are no longer a member, so a link into the workspace would
+                // be a 403. The workspace switcher is the only page that still works for them.
+                ActionUrl = approved
+                    ? "/workspace"
+                    : workspace?.Slug is { Length: > 0 } slug ? $"/{slug}/members" : "/",
+            };
+            request.Metadata.Add("workspace_id", workspaceId.ToString());
+            request.Metadata.Add("workspace_name", workspaceName);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not notify user {UserId} about the decision on their leave request in workspace {WorkspaceId}; the decision itself is committed.",
+                memberUserId, workspaceId);
+        }
+    }
+
+    /// <summary>Every active Owner and Admin of the workspace — the people who may review.</summary>
+    private async Task<IReadOnlyList<Guid>> FindReviewerUserIdsAsync(Guid workspaceId, CancellationToken ct)
+    {
+        var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+        var adminRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Admin.ToRoleName(), ct);
+        if (ownerRoleId == null && adminRoleId == null) return Array.Empty<Guid>();
+
+        var members = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
+            m => m.WorkspaceId == workspaceId
+                && m.RemovedAt == null
+                && ((ownerRoleId != null && m.RoleId == ownerRoleId) || (adminRoleId != null && m.RoleId == adminRoleId)),
+            "",
+            ct);
+
+        return members.Select(m => m.UserId).Distinct().ToList();
     }
 
     /// <summary>

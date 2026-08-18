@@ -35,6 +35,21 @@ public static class NotificationConstants
     public const string TypeMeetingStarted = "MEETING_STARTED";
     public const string TypeMeetingSummaryReady = "MEETING_SUMMARY_READY";
 
+    /// <summary>
+    /// Workspace membership types, emitted by WorkspaceService (WorkspaceNotificationTypes).
+    ///
+    /// WORKSPACE_ROLE_CHANGED is the odd one out: WT-431 shipped its PRODUCER and never added it
+    /// here, so every role-change notification since has been rejected as
+    /// UNSUPPORTED_NOTIFICATION_TYPE and discarded. It is registered with the rest of them because
+    /// it is the same defect WT-521 exists to stop repeating — a producer cannot tell that its
+    /// type is unknown, since nothing reads SendNotification's Success flag.
+    /// </summary>
+    public const string TypeWorkspaceLeaveRequested = "WORKSPACE_LEAVE_REQUESTED";
+    public const string TypeWorkspaceLeaveApproved = "WORKSPACE_LEAVE_APPROVED";
+    public const string TypeWorkspaceLeaveRejected = "WORKSPACE_LEAVE_REJECTED";
+    public const string TypeWorkspaceMemberRemoved = "WORKSPACE_MEMBER_REMOVED";
+    public const string TypeWorkspaceRoleChanged = "WORKSPACE_ROLE_CHANGED";
+
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
     public const string TypeSystem = "SYSTEM";

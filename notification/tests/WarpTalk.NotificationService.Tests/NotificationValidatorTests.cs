@@ -135,4 +135,69 @@ public class NotificationValidatorTests
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }
+
+    // ── Workspace membership, WT-521 ────────────────────────────────────────────────────────
+    //
+    // The FOURTH and FIFTH instances of the same bug class the theories above document. Four of
+    // these five types are new; WORKSPACE_ROLE_CHANGED is not — WT-431 shipped its producer in
+    // WorkspaceMemberService and never registered it here, so every role-change notification
+    // since has been rejected as UNSUPPORTED_NOTIFICATION_TYPE and silently dropped. Nothing
+    // reads SendNotification's Success flag, which is why a producer can never tell.
+    //
+    // Add the InlineData when adding a type. That sentence is now on its third ticket.
+    [Theory]
+    [InlineData(NotificationConstants.TypeWorkspaceLeaveRequested)]
+    [InlineData(NotificationConstants.TypeWorkspaceLeaveApproved)]
+    [InlineData(NotificationConstants.TypeWorkspaceLeaveRejected)]
+    [InlineData(NotificationConstants.TypeWorkspaceMemberRemoved)]
+    [InlineData(NotificationConstants.TypeWorkspaceRoleChanged)]
+    public void Validate_WorkspaceMembershipPayload_IsAccepted(string type)
+    {
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
+            workspace_name = "WarpTalk Demo"
+        });
+
+        var result = NotificationValidator.Validate(type, "Title", "Content", "/warptalk-demo/members", payload);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void Validate_LeaveRequestCarryingTheMemberEmail_IsAccepted()
+    {
+        // member_email is OPTIONAL, and an optional field must not be the thing that drops the
+        // notification — the whole class of bug here is a payload being rejected for a field
+        // nobody thought was load-bearing.
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
+            workspace_name = "WarpTalk Demo",
+            member_email = "member@example.com"
+        });
+
+        var result = NotificationValidator.Validate(
+            NotificationConstants.TypeWorkspaceLeaveRequested, "Title", "Content", null, payload);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void Validate_RoleChangePayload_IsAccepted_WithBothRoles()
+    {
+        // The exact metadata WorkspaceMemberService.NotifyMemberRoleChangedAsync sends. This is
+        // the payload that has been rejected on every role change since WT-431.
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
+            old_role = "Member",
+            new_role = "Admin"
+        });
+
+        var result = NotificationValidator.Validate(
+            NotificationConstants.TypeWorkspaceRoleChanged, "Title", "Content", "/warptalk-demo", payload);
+
+        Assert.True(result.IsSuccess);
+    }
 }
