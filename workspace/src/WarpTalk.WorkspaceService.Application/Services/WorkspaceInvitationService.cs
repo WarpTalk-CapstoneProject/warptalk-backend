@@ -90,6 +90,14 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidEmailFormat, ErrorCodes.ValidationError);
             }
+
+            // WT-523: Self-invite check
+            var inviterUser = await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
+            if (inviterUser != null && string.Equals(emailAddress.Value, inviterUser.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure<InviteMemberResponse>("You cannot invite yourself to the workspace.", ErrorCodes.ValidationError);
+            }
+
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
             // The inviter decides the access class; the domain only decides which choices are
@@ -178,6 +186,16 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<InviteMemberResponse>(capacityCheck.Error!, capacityCheck.ErrorCode);
             }
 
+            var targetUser = await _authIdentity.GetUserByEmailAsync(emailAddress.Value, ct);
+            if (targetUser != null && targetUser.Id != inviterUserId)
+            {
+                var activeMembers = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+                if (activeMembers != null && activeMembers.Any(m => m.UserId == targetUser.Id))
+                {
+                    return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
+                }
+            }
+
             var membershipType = membershipTypeEnum.ToString();
             var invitationToken = WorkspaceInvitationTokenGenerator.Generate();
             var newInvitation = WorkspaceInvitationMapper.CreateInvitation(
@@ -193,7 +211,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             await _unitOfWork.WorkspaceInvitationRepository.AddAsync(newInvitation, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var inviterUser = await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
+            inviterUser ??= await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
             var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
 
             // Attempt transactional email send via Resend

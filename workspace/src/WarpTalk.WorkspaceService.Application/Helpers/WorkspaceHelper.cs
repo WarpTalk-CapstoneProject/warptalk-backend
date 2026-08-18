@@ -70,8 +70,7 @@ public static class WorkspaceHelper
         return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
             && m.Workspace != null
-            && m.Workspace.DeletedAt == null
-            && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
+            && m.Workspace.DeletedAt == null);
     }
 
 

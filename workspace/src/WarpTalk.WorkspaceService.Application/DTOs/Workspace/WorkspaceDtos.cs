@@ -3,11 +3,18 @@ using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 
+public record InitialWorkspaceInvitationDto(
+    string Email,
+    string RoleName,
+    string MembershipType = "Internal"
+);
+
 public record CreateWorkspaceRequest(
     string Name,
     string? LogoUrl,
     List<string>? VerifiedDomains = null,
-    bool? RequireVerifiedDomainForInternal = null
+    bool? RequireVerifiedDomainForInternal = null,
+    List<InitialWorkspaceInvitationDto>? InitialInvitations = null
 );
 
 public record GetWorkspacesQuery
