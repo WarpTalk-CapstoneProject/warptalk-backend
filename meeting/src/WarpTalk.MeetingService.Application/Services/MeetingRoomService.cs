@@ -382,6 +382,100 @@ public class MeetingRoomService : IMeetingRoomService
         }
     }
 
+    /// <summary>
+    /// WT-525. Mints a publish-only LiveKit token for the EXTERNAL_BRIDGE stand-in seat.
+    ///
+    /// This is the only place this service issues a token for an identity that is not the caller.
+    /// Everywhere else `providerIdentity = userIdString`, and that equality is what makes the
+    /// pipeline's speaker attribution mean anything — stt_worker reads speaker_id straight off
+    /// participant_identity. Breaking it here is deliberate and is exactly why it is fenced.
+    ///
+    /// BOTH gates are load-bearing, neither is belt-and-braces:
+    ///   host-only    otherwise anyone who can reach a room could add a ghost participant to
+    ///                someone else's meeting, and everything it "said" would be attributed to
+    ///                the far side of a call they are not on.
+    ///   bridge-only  otherwise the host of an ordinary meeting could mint a second identity
+    ///                into their own room, which no product surface would explain.
+    ///
+    /// canSubscribe is false because the stand-in has nothing to listen to: it exists to carry
+    /// the far side's voice INTO the room. Subscribing it would also send the room's own dubs
+    /// back out to the device Meet is playing into — an echo loop that ends in feedback.
+    /// </summary>
+    public async Task<Result<BridgeTokenResponse>> GenerateBridgeTokenAsync(Guid translationRoomId, Guid callerUserId)
+    {
+        // Read through gRPC, NOT the local cache. `meeting:room:{id}` is written with a 24h TTL
+        // and holds whatever the room looked like when someone first joined; an authorization
+        // decision this sharp must not be made from a projection that may be a day stale.
+        var roomResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+        if (!roomResult.IsSuccess || roomResult.Value == null)
+            return Result.Failure<BridgeTokenResponse>("Translation room not found", ErrorCodes.NotFound);
+
+        var room = roomResult.Value;
+
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+        {
+            // Same message for "not a bridge" as the host check gives for "not the host": a
+            // caller probing this endpoint learns whether they are allowed, not what the room is.
+            return Result.Failure<BridgeTokenResponse>(
+                "This meeting does not bridge an external call.", ErrorCodes.Forbidden);
+        }
+
+        if (!string.Equals(room.HostId, callerUserId.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Failure<BridgeTokenResponse>(
+                "Only the host may connect this meeting to an external call.", ErrorCodes.Forbidden);
+        }
+
+        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED")
+        {
+            return Result.Failure<BridgeTokenResponse>(
+                "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
+        }
+
+        // The LiveKit room name is the translation room id everywhere in this service (see
+        // JoinMeetingAsync's ProviderRoomName when it provisions). Read the row when it exists so
+        // a room provisioned under a different name still bridges to the right place.
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        var providerRoomName = meetingRoom?.ProviderRoomName ?? translationRoomId.ToString();
+
+        var identity = ExternalBridgeConstants.ParticipantUserId.ToString();
+        var tokenResult = _tokenService.GenerateToken(
+            roomName: providerRoomName,
+            participantIdentity: identity,
+            participantName: ExternalBridgeConstants.DisplayName,
+            canPublish: true,
+            canSubscribe: false);
+
+        if (!tokenResult.IsSuccess)
+            return Result.Failure<BridgeTokenResponse>(
+                tokenResult.Error ?? "Failed to generate token", ErrorCodes.InternalServerError);
+
+        // Tell the AI worker there is audio coming from this identity, exactly as the normal join
+        // path does for a person. Without it the far side's track can sit unread: the worker opens
+        // an audio task per participant it has been told about.
+        try
+        {
+            await PublishTrackPublishedAsync(providerRoomName, identity, "audio_track_1");
+        }
+        catch (Exception ex)
+        {
+            // Not fatal: the worker also discovers participants on its own. Failing the token here
+            // would take away the whole bridge for a notification that has a second source.
+            _logger.LogWarning(ex, "Failed to announce the bridge participant for room {RoomName}", providerRoomName);
+        }
+
+        _logger.LogInformation(
+            "Issued a bridge token for room {RoomId} to host {UserId}", translationRoomId, callerUserId);
+
+        return Result.Success(new BridgeTokenResponse
+        {
+            Token = tokenResult.Value!,
+            ProviderRoomName = providerRoomName,
+            ParticipantIdentity = identity
+        });
+    }
+
     public async Task<Result<bool>> TriggerAiAsync(Guid translationRoomId, TriggerAiRequest request)
     {
         // Re-publish meeting context when translation is explicitly started. The initial

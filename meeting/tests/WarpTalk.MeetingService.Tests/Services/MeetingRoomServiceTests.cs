@@ -1326,4 +1326,99 @@ public class MeetingRoomServiceTests
         var property = payload.GetType().GetProperty(propertyName);
         return string.Equals(property?.GetValue(payload)?.ToString(), expectedValue, StringComparison.Ordinal);
     }
+
+    // ---- WT-525: bridge token ----------------------------------------------------------------
+    //
+    // This is the one method that mints a LiveKit token for an identity other than the caller's,
+    // so the tests that matter most are the two REFUSALS. A regression that widens either gate
+    // would not break any of the happy-path assertions.
+
+    private void SetupBridgeRoom(Guid translationRoomId, string hostId, string roomType, string status = "IN_PROGRESS")
+    {
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+            {
+                HostId = hostId,
+                Status = status,
+                TranslationRoomType = roomType,
+            }));
+        _tokenServiceMock
+            .Setup(t => t.GenerateToken(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()))
+            .Returns(Result.Success("a-token"));
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_MintsTheStandInIdentity_ForTheHostOfABridgeRoom()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType);
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+        // The identity is the contract the AI pipeline routes on — assert the value, not just success.
+        Assert.Equal(ExternalBridgeConstants.ParticipantUserId.ToString(), result.Value!.ParticipantIdentity);
+        // Publish-only: subscribing the stand-in would send the room's dubs back into the device
+        // Meet is playing into, which is a feedback loop rather than a wasted subscription.
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(),
+            ExternalBridgeConstants.ParticipantUserId.ToString(),
+            ExternalBridgeConstants.DisplayName,
+            true,
+            false), Times.Once);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_RefusesANonHost_EvenInABridgeRoom()
+    {
+        var translationRoomId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType);
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_RefusesTheHost_WhenTheRoomIsNotABridge()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), "EVENT");
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_TreatsAnEmptyRoomTypeAsNotABridge()
+    {
+        // An older translation-room server does not send field 12, and proto3 delivers "". The
+        // failure being guarded is minting a second identity into someone else's meeting, so the
+        // absence of the field must read as "no" rather than as "unknown, allow".
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), string.Empty);
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
 }
