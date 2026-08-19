@@ -42,17 +42,34 @@ public static class RoomReadAccess
     /// entirely rather than probing the database with an empty string (which would match nothing,
     /// but only by luck).
     /// </summary>
+    /// <summary>
+    /// WT-496: lower-cased as well as trimmed.
+    ///
+    /// The comparison below used to be exact, and this is the line that made it wrong in practice:
+    /// an invitation typed "User@x.com" did not match a "user@x.com" token, so somebody who HAD
+    /// been invited read as having no access at all. The room detail then 404'd and the page
+    /// reported "You don't have access to this room yet" to a person holding a valid invitation.
+    ///
+    /// Case-insensitivity is not a loosening of the rule, it is the rule: the local part of an
+    /// address is technically case-sensitive per RFC 5321, but no mail provider in use treats it
+    /// that way, and this value is typed by a human into an invite box. Matching exactly means
+    /// matching the typing, not the person.
+    /// </summary>
     public static string? NormalizeEmail(string? email)
-        => string.IsNullOrWhiteSpace(email) ? null : email.Trim();
+        => string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
     /// <summary>
     /// The room-level read predicate, safe to hand to EF as a <c>Where</c>/<c>Any</c> clause.
     ///
-    /// Email comparison is deliberately exact rather than case-insensitive: that is what the rooms
-    /// list has always done, and loosening it here would widen the boundary for every consumer at
-    /// once, under cover of a bug fix. It is a known sharp edge — an invitation typed
-    /// "User@x.com" does not match a "user@x.com" token — but it is pre-existing, and it is now at
-    /// least wrong in exactly one place instead of three.
+    /// Email comparison is case-insensitive (WT-496). It was exact, with a comment calling that a
+    /// known sharp edge to be left alone because changing it would "widen the boundary for every
+    /// consumer at once". The edge then cut: an invited participant was told they had no access to
+    /// a room they had been invited to. Widening every consumer at once is the correct outcome
+    /// here precisely because all three consumers were wrong in the same way.
+    ///
+    /// `ToLower()` on the column rather than a StringComparison overload: EF Core translates the
+    /// former to SQL `lower()` and cannot translate the latter at all. The incoming address is
+    /// already lower-cased by NormalizeEmail, so only one side needs the call.
     /// </summary>
     public static Expression<Func<TranslationRoom, bool>> IsReadableBy(Guid userId, string? userEmail)
     {
@@ -76,7 +93,7 @@ public static class RoomReadAccess
             || room.ActiveHostId == userId
             || room.TranslationRoomParticipants.Any(p => p.UserId == userId)
             || room.TranslationRoomInvitations.Any(i =>
-                i.Email == email
+                i.Email.ToLower() == email
                 && InvitationStatusesGrantingRead.Contains(i.Status));
     }
 
@@ -90,6 +107,6 @@ public static class RoomReadAccess
     public static Expression<Func<TranslationRoomInvitation, bool>> GrantsReadOfRoom(Guid translationRoomId, string email)
         => invitation =>
             invitation.TranslationRoomId == translationRoomId
-            && invitation.Email == email
+            && invitation.Email.ToLower() == email
             && InvitationStatusesGrantingRead.Contains(invitation.Status);
 }

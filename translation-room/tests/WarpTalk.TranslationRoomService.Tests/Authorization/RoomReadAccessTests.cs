@@ -124,4 +124,55 @@ public class RoomReadAccessTests
     {
         RoomReadAccess.InvitationStatusesGrantingRead.Should().BeEquivalentTo(new[] { "PENDING", "ACCEPTED" });
     }
+
+    // ---- WT-496 -------------------------------------------------------------------------------
+    //
+    // The predicate used to compare the invitation address exactly, and a comment here called that
+    // a known sharp edge worth leaving alone. It then cut: a participant WITH an invitation was
+    // told "You don't have access to this room yet", because the invitation had been typed with a
+    // capital and their token carried the lower-cased form. These pin the fix in both directions,
+    // since either side can be the one that was capitalised.
+
+    [Fact]
+    public void AnInvitationTypedWithCapitalsStillGrantsReadToTheSamePerson()
+    {
+        var room = BuildRoom(
+            hostId: Guid.NewGuid(),
+            invitations: new[] { ("Invitee@WarpTalk.VN", "PENDING") });
+
+        var readable = new[] { room }
+            .AsQueryable()
+            .Any(RoomReadAccess.IsReadableBy(Guid.NewGuid(), InviteeEmail));
+
+        readable.Should().BeTrue("the invitation and the token name the same mailbox");
+    }
+
+    [Fact]
+    public void ATokenWithCapitalsMatchesALowerCasedInvitation()
+    {
+        var room = BuildRoom(
+            hostId: Guid.NewGuid(),
+            invitations: new[] { (InviteeEmail, "PENDING") });
+
+        var readable = new[] { room }
+            .AsQueryable()
+            .Any(RoomReadAccess.IsReadableBy(Guid.NewGuid(), "INVITEE@warptalk.vn"));
+
+        readable.Should().BeTrue("case is not part of who a person is");
+    }
+
+    [Fact]
+    public void ADifferentMailboxIsStillRefused()
+    {
+        // The widening must reach case and nothing else — a neighbouring address must not slip in.
+        var room = BuildRoom(
+            hostId: Guid.NewGuid(),
+            invitations: new[] { (InviteeEmail, "PENDING") });
+
+        var readable = new[] { room }
+            .AsQueryable()
+            .Any(RoomReadAccess.IsReadableBy(Guid.NewGuid(), "someone.else@warptalk.vn"));
+
+        readable.Should().BeFalse();
+    }
 }
