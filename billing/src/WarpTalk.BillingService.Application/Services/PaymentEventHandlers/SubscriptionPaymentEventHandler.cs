@@ -112,7 +112,37 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         }
         context.Subscription.CreditsUsedThisCycle = 0;
         context.Subscription.CurrentPeriodStart = DateTime.UtcNow;
-        context.Subscription.CurrentPeriodEnd = periodEnd;
+
+        // WT-524: a plan change must never shorten time the customer has already paid for.
+        //
+        // This assigned `periodEnd` unconditionally, and `periodEnd` is "now + one cycle of the
+        // NEW plan". Buy a year on 18 Aug 2026 (paid through 18 Aug 2027), then upgrade to a
+        // monthly plan, and the end date became 18 Sep 2026: eleven months of already-collected
+        // money erased by an assignment, with the billing page cheerfully reporting the new,
+        // shorter date as if it were correct.
+        //
+        // Keeping the later of the two is the whole rule. It is deliberately not proration:
+        // crediting the unused annual value against the new plan's price is a genuine billing
+        // decision that needs Stripe's own proration and somebody's sign-off. This only refuses
+        // to destroy paid time, which needs neither.
+        //
+        // Every other case still lands where it did. A monthly renewal picks now + 1 month
+        // because that is the later date. An upgrade from monthly to yearly picks now + 1 year
+        // for the same reason. A lapsed subscription whose end is in the past picks the new
+        // period, since anything already expired is not time the customer still holds.
+        var paidThrough = context.Subscription.CurrentPeriodEnd;
+        context.Subscription.CurrentPeriodEnd = periodEnd > paidThrough ? periodEnd : paidThrough;
+
+        if (context.Subscription.CurrentPeriodEnd != periodEnd)
+        {
+            _logger.LogInformation(
+                "Plan change for workspace {WorkspaceId} kept the existing paid-through date {PaidThrough:o} "
+                + "instead of the new cycle's {ProposedEnd:o}",
+                context.WorkspaceId,
+                paidThrough,
+                periodEnd);
+        }
+
         context.Subscription.UpdatedAt = DateTime.UtcNow;
         return context.Subscription;
     }
