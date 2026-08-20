@@ -225,13 +225,17 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     /// due. Null when the whole series is behind them, which is what turns a stable series link
     /// into an honest "nothing to join" rather than dropping someone into a finished meeting.
     /// </summary>
-    private static Guid? ResolveCurrentOccurrenceId(List<TranslationRoomListItemDto> occurrences)
+    private Guid? ResolveCurrentOccurrenceId(List<TranslationRoomListItemDto> occurrences)
     {
         var live = occurrences.FirstOrDefault(o =>
             o.Status is RoomStatus.IN_PROGRESS or RoomStatus.PAUSED or RoomStatus.WAITING);
         if (live is not null) return live.Id;
 
-        var now = DateTime.UtcNow;
+        // _utcNow, not DateTime.UtcNow. This class takes an injectable clock precisely so a
+        // series can be read at a chosen instant; reading the wall clock here meant the occurrences
+        // were laid out on one clock and judged against another, and any test that froze the first
+        // silently expired the day real time overtook the horizon it had materialised.
+        var now = _utcNow();
         var next = occurrences
             .Where(o => o.Status == RoomStatus.SCHEDULED && (o.ScheduledAt ?? o.CreatedAt) >= now)
             .OrderBy(o => o.ScheduledAt ?? o.CreatedAt)

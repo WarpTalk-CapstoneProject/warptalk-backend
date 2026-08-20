@@ -41,6 +41,13 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
+
+    /// <summary>
+    /// The clock the series grouping judges "upcoming" against, injectable for the same reason
+    /// <see cref="TranslationRoomSeriesService"/> takes one: a test that materialises occurrences
+    /// at a chosen instant has to be able to read them back at that instant.
+    /// </summary>
+    private readonly Func<DateTime> _utcNow;
     private readonly string _frontendBaseUrl;
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
     private readonly WarpTalk.Shared.Protos.UserService.UserServiceClient? _userClient;
@@ -129,8 +136,10 @@ public class TranslationRoomService : ITranslationRoomService
         // working. A room service that cannot reach the notification mesh still creates
         // rooms and still sends the invitation email; it just cannot ring the bell.
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
-        WarpTalk.Shared.Protos.UserService.UserServiceClient? userClient = null)
+        WarpTalk.Shared.Protos.UserService.UserServiceClient? userClient = null,
+        Func<DateTime>? utcNow = null)
     {
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
         _notificationClient = notificationClient;
         _userClient = userClient;
         _unitOfWork = unitOfWork;
@@ -730,7 +739,7 @@ public class TranslationRoomService : ITranslationRoomService
             // WT-327: one row per BOOKING, not per occurrence. Resolved before the count so that
             // "14 meetings" does not appear next to a single collapsed row.
             var seriesRows = request.GroupBySeries
-                ? await ResolveSeriesRepresentativesAsync(query, ct)
+                ? await ResolveSeriesRepresentativesAsync(query, _utcNow(), ct)
                 : null;
 
             if (seriesRows is not null)
@@ -2903,6 +2912,7 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private static async Task<Dictionary<Guid, SeriesGrouping>> ResolveSeriesRepresentativesAsync(
         IQueryable<TranslationRoom> query,
+        DateTime now,
         CancellationToken ct)
     {
         var occurrences = await query
@@ -2917,7 +2927,6 @@ public class TranslationRoomService : ITranslationRoomService
             })
             .ToListAsync(ct);
 
-        var now = DateTime.UtcNow;
         var grouped = new Dictionary<Guid, SeriesGrouping>();
 
         foreach (var series in occurrences.GroupBy(o => o.SeriesId))
@@ -3067,9 +3076,10 @@ public class TranslationRoomService : ITranslationRoomService
             artifact.RetentionUntil,
             artifact.Status,
             artifact.CreatedAt,
-            includeContent ? artifact.Content : null,
+            Content: includeContent ? artifact.Content : null,
+            UpdatedAt: artifact.UpdatedAt,
             // WT-473: null means NOT SEEKABLE, and the client must read it that way.
-            artifact.RecordingStartedAt
+            RecordingStartedAt: artifact.RecordingStartedAt
         );
     }
 

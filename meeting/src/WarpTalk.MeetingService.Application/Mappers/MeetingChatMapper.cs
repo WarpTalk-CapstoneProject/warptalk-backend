@@ -26,7 +26,8 @@ public static class MeetingChatMapper
             FileUrl = entity.FileUrl,
             FileName = entity.FileName,
             FileSizeBytes = entity.FileSizeBytes,
-            ContentType = entity.ContentType
+            ContentType = entity.ContentType,
+            SourcesJson = entity.SourcesJson
         };
     }
 

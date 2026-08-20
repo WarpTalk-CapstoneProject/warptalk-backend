@@ -37,4 +37,14 @@ public class MeetingChatNotifier : IMeetingChatNotifier
             new { requestId },
             cancellationToken: ct);
     }
+
+    public async Task BroadcastAssistantToolCallStartedAsync(
+        Guid roomId, Guid requestId, string toolName, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantToolCallStarted",
+            new { requestId, toolName },
+            cancellationToken: ct);
+    }
 }

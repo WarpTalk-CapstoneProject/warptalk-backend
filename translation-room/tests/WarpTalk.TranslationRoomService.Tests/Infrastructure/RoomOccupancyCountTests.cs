@@ -62,7 +62,9 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             new TranslationRoomSessionRepository(_dbContext),
             new TranslationRoomInvitationRepository(_dbContext),
             new TranslationRoomFeedbackRepository(_dbContext),
-            new TranslationRoomSeriesRepository(_dbContext));
+            new TranslationRoomSeriesRepository(_dbContext),
+            new MeetingMinutesRepository(_dbContext),
+            new MeetingActionItemRepository(_dbContext));
 
         var languagePolicy = new Mock<ILanguagePolicy>();
         languagePolicy.Setup(p => p.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);

@@ -124,6 +124,9 @@ public partial class MeetingDbContext : DbContext
                 .HasDefaultValueSql("'user'::character varying")
                 .HasColumnName("sender_type");
             entity.Property(e => e.SenderUserId).HasColumnName("sender_user_id");
+            entity.Property(e => e.SourcesJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("sources_json");
             entity.Property(e => e.TranslationEnabled).HasColumnName("translation_enabled");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");

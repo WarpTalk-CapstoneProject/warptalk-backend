@@ -9,6 +9,8 @@ public static class ArtifactMapper
 {
     public static TranslationRoomArtifact ToEntity(this CreateArtifactRequest request)
     {
+        var now = DateTime.UtcNow;
+
         return new TranslationRoomArtifact
         {
             Id = Guid.NewGuid(),
@@ -23,7 +25,10 @@ public static class ArtifactMapper
             ConsentRequired = request.ConsentRequired,
             RetentionUntil = request.RetentionUntil,
             Status = ArtifactStatus.Completed.ToString().ToUpperInvariant(),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = now,
+            // Equal to CreatedAt on a fresh artifact, so NULL keeps meaning "predates this column"
+            // instead of becoming ambiguous with "written and never rewritten".
+            UpdatedAt = now
         };
     }
 
