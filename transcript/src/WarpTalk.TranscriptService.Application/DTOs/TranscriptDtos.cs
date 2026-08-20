@@ -31,7 +31,12 @@ public record TranscriptSegmentDto(
     decimal? Confidence,
     long StartTimeMs,
     long EndTimeMs,
-    int SequenceOrder
+    int SequenceOrder,
+    /// <summary>A human has corrected this line. The client shows it, and uses it to tell whether
+    /// a summary written earlier is now behind the record.</summary>
+    bool IsCorrected = false,
+    /// <summary>When the row last changed — moved by a correction.</summary>
+    DateTime? UpdatedAt = null
 );
 
 public record TranscriptTranslationDto(

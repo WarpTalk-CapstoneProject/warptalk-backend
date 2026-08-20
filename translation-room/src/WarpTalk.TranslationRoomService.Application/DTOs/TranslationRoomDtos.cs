@@ -331,6 +331,11 @@ public record TranslationRoomArtifactDto(
     // need external file storage.
     string? Content = null,
     /// <summary>
+    /// When the CONTENT last changed. Null on artifacts predating the column — a reader compares
+    /// against <c>CreatedAt</c> then, rather than treating null as "never updated".
+    /// </summary>
+    DateTime? UpdatedAt = null,
+    /// <summary>
     /// WT-473: when the recording BEGAN, in UTC. Null for non-recordings, and for recordings made
     /// before the column existed.
     ///

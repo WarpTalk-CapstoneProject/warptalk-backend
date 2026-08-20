@@ -33,7 +33,9 @@ public static class TranscriptMapper
             entity.Confidence,
             entity.StartTimeMs,
             entity.EndTimeMs,
-            entity.SequenceOrder
+            entity.SequenceOrder,
+            entity.IsCorrected,
+            entity.UpdatedAt
         );
     }
 

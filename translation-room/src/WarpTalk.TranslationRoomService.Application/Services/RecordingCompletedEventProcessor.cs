@@ -67,6 +67,9 @@ public sealed class RecordingCompletedEventProcessor : IRecordingCompletedEventP
             ConsentRequired = true,
             Status = ArtifactStatus.Completed.ToString().ToUpperInvariant(),
             CreatedAt = envelope.OccurredAt.ToUniversalTime(),
+            // Equal to CreatedAt: a recording artifact is written once and never rewritten,
+            // so NULL here keeps meaning "predates the column" rather than "never updated".
+            UpdatedAt = envelope.OccurredAt.ToUniversalTime(),
             // WT-473. Null when the event predates the field or LiveKit did not report it; the UI
             // reads that as "not seekable" rather than substituting zero.
             RecordingStartedAt = payload.StartedAt?.ToUniversalTime()
