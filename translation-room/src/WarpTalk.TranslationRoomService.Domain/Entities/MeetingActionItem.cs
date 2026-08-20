@@ -54,9 +54,6 @@ public partial class MeetingActionItem
 
     public DateOnly? DueDate { get; set; }
 
-    /// <summary>Set when this task continues one an earlier meeting left open.</summary>
-    public Guid? CarriedFromActionItemId { get; set; }
-
     public DateTime? ClosedAt { get; set; }
 
     /// <summary>External AuthService user id. No physical FK.</summary>

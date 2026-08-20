@@ -435,6 +435,7 @@ public class MeetingMinutesDocxWriter : IMeetingMinutesDocumentWriter
     /// </summary>
     private static string SectionTitle(string key) => key switch
     {
+        "carriedOver" => "Công việc tồn từ kỳ trước",
         "summary" => "Tóm tắt",
         "decisions" => "Các quyết định",
         "actionItems" => "Công việc được giao",

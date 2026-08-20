@@ -59,13 +59,18 @@ public static class MeetingMinutesDrafter
     /// <summary>Property names on the summary JSON that are not narrative sections.</summary>
     private static readonly HashSet<string> NonSectionKeys = new(StringComparer.Ordinal)
     {
-        "summary", "citations", "translations", "templateKey", "insufficientData", "sections"
+        "summary", "citations", "translations", "templateKey", "insufficientData", "sections",
+        CarriedOverKey
     };
+
+    /// <summary>The section key under which a recurring meeting lists what it inherited.</summary>
+    public const string CarriedOverKey = "carriedOver";
 
     public static string BuildContent(
         TranslationRoom room,
         IReadOnlyCollection<TranslationRoomParticipant> participants,
-        string? summaryJson)
+        string? summaryJson,
+        IReadOnlyCollection<MeetingActionItem>? carriedOver = null)
     {
         var attended = participants.Where(p => Attended(p)).ToList();
 
@@ -80,7 +85,7 @@ public static class MeetingMinutesDrafter
             ScheduledAt = room.ScheduledAt,
             Agenda = null,
             Attendance = BuildAttendance(participants, attended),
-            Sections = BuildSections(summaryJson),
+            Sections = BuildSections(summaryJson, carriedOver),
             // The language the meeting was actually held in, so a bilingual document can say
             // which half is the original instead of leaving a reader to infer it.
             PrimaryLanguage = string.IsNullOrWhiteSpace(room.SourceLanguage) ? null : room.SourceLanguage,
@@ -203,9 +208,30 @@ public static class MeetingMinutesDrafter
         };
     }
 
-    private static List<MinutesSection> BuildSections(string? summaryJson)
+    private static List<MinutesSection> BuildSections(
+        string? summaryJson, IReadOnlyCollection<MeetingActionItem>? carriedOver = null)
     {
         var sections = new List<MinutesSection>();
+
+        // First, because a recurring meeting opens by asking what it owes from last time —
+        // Robert's Rules puts the previous minutes at the top for the same reason.
+        //
+        // These are a READ-THROUGH, not a copy. The task from the earlier meeting is still THE
+        // task: this section quotes it so the record is complete, and closing it there closes it
+        // everywhere. `atMs` is deliberately absent — the citation belongs to the meeting the
+        // commitment was made in, and carrying it here would point at a moment in a different
+        // recording.
+        if (carriedOver is { Count: > 0 })
+        {
+            sections.Add(new MinutesSection
+            {
+                Key = CarriedOverKey,
+                Kind = "items",
+                Items = carriedOver
+                    .Select(item => new MinutesItem { Text = item.Task, Owner = item.OwnerName })
+                    .ToList()
+            });
+        }
         if (string.IsNullOrWhiteSpace(summaryJson)) return sections;
 
         try

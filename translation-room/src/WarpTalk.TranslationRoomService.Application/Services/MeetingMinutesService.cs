@@ -97,6 +97,14 @@ public class MeetingMinutesService : IMeetingMinutesService
             .GetByRoomIdAsync(roomId, ct) ?? new List<TranslationRoomParticipant>();
 
         var summaryJson = await LoadSummaryContentAsync(roomId, ct);
+
+        // A recurring meeting inherits whatever the previous occurrences left open. One-off
+        // meetings have no series and therefore nothing to inherit, which is the common case.
+        var carriedOver = room.SeriesId.HasValue
+            ? await _unitOfWork.MeetingActionItemRepository
+                .GetOpenForSeriesAsync(room.SeriesId.Value, roomId, ct)
+            : new List<MeetingActionItem>();
+
         var now = DateTime.UtcNow;
 
         var minutes = new MeetingMinutes
@@ -115,7 +123,7 @@ public class MeetingMinutesService : IMeetingMinutesService
             DraftedByEngine = MeetingMinutesDrafter.DraftEngine,
             DraftedAt = now,
             EditCountVsDraft = 0,
-            Content = MeetingMinutesDrafter.BuildContent(room, participants, summaryJson),
+            Content = MeetingMinutesDrafter.BuildContent(room, participants, summaryJson, carriedOver),
             CreatedAt = now,
             CreatedBy = userId,
             UpdatedAt = now,
@@ -355,6 +363,9 @@ public class MeetingMinutesService : IMeetingMinutesService
         if (await _unitOfWork.MeetingActionItemRepository.AnyForMinutesAsync(minutes.Id, ct)) return;
 
         var content = TryReadContent(minutes.Content);
+        // "actionItems" only. The carried-over section quotes tasks that already exist as rows
+        // in an earlier meeting; materialising them again would show one commitment twice in
+        // somebody's list and split its history across two rows.
         var items = content?.Sections
             .FirstOrDefault(section => section.Key == "actionItems")?
             .Items;

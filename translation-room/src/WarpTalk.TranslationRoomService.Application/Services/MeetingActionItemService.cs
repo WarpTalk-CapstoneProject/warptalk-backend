@@ -160,7 +160,6 @@ public class MeetingActionItemService : IMeetingActionItemService
         item.AtMs,
         item.Status,
         item.DueDate,
-        item.CarriedFromActionItemId,
         item.ClosedAt,
         item.CreatedAt);
 }

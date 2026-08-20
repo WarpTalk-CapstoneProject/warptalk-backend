@@ -24,6 +24,12 @@
 --     Carry-over asks "what did the last occurrence of this recurring meeting leave open" — a
 --     query across rooms. Reaching it through translation_rooms on every read would make the most
 --     common carry-over query a join whose selectivity depends on a column on another table.
+--
+-- WHY THERE IS NO carried_from COLUMN
+--     Carry-over is a read-through, not a copy. A task left open by meeting 1 is still THE task
+--     at meeting 2 — its minutes reference it, and closing it closes it everywhere. Materialising
+--     a second row per occurrence would fragment its history and show one commitment twice in
+--     somebody's list.
 
 CREATE TABLE IF NOT EXISTS translation_room.meeting_action_items (
     id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -57,10 +63,6 @@ CREATE TABLE IF NOT EXISTS translation_room.meeting_action_items (
 
     status varchar(20) NOT NULL DEFAULT 'OPEN',
     due_date date NULL,
-
-    -- Set when this task is the continuation of one left open by an earlier meeting.
-    carried_from_action_item_id uuid NULL
-        REFERENCES translation_room.meeting_action_items (id),
 
     closed_at timestamptz NULL,
     closed_by uuid NULL,

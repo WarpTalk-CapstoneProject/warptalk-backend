@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using Xunit;
 
@@ -335,6 +336,58 @@ public class MeetingMinutesDrafterTests
             Room(), new List<TranslationRoomParticipant>(), summary));
 
         content.Translations.Should().BeNull();
+    }
+
+    private static MeetingActionItem Outstanding(string task, string? owner) => new()
+    {
+        Id = Guid.NewGuid(),
+        Task = task,
+        OwnerName = owner,
+        Status = MeetingActionItemConstants.StatusOpen,
+        AtMs = 999_000
+    };
+
+    [Fact]
+    public void ARecurringMeetingOpensWithWhatTheLastOneLeftOpen()
+    {
+        // Robert's Rules puts the previous minutes at the top for the same reason: a recurring
+        // meeting opens by asking what it owes from last time.
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(),
+            new List<TranslationRoomParticipant>(),
+            """{"summary": "Đã họp.", "decisions": [{"text": "Xong", "atMs": 1}]}""",
+            new List<MeetingActionItem> { Outstanding("Viết release note", "Nhi") }));
+
+        var carried = content.Sections.Find(s => s.Key == MeetingMinutesDrafter.CarriedOverKey)!;
+        carried.Items!.Should().ContainSingle();
+        carried.Items![0].Text.Should().Be("Viết release note");
+        carried.Items![0].Owner.Should().Be("Nhi");
+        // Ahead of the meeting's own content.
+        content.Sections.IndexOf(carried).Should().Be(0);
+    }
+
+    [Fact]
+    public void ACarriedOverLineCarriesNoCitation()
+    {
+        // The citation belongs to the meeting the commitment was made in. Copying it here would
+        // point a reader at a moment in a different recording.
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(),
+            new List<TranslationRoomParticipant>(),
+            null,
+            new List<MeetingActionItem> { Outstanding("Viết release note", "Nhi") }));
+
+        content.Sections.Find(s => s.Key == MeetingMinutesDrafter.CarriedOverKey)!
+            .Items![0].AtMs.Should().BeNull();
+    }
+
+    [Fact]
+    public void AOneOffMeetingHasNoCarriedOverSection()
+    {
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), """{"summary": "Đã họp."}"""));
+
+        content.Sections.Should().NotContain(s => s.Key == MeetingMinutesDrafter.CarriedOverKey);
     }
 
     [Fact]

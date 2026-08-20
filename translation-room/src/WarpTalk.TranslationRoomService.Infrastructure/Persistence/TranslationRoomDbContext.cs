@@ -386,7 +386,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasDefaultValueSql("'OPEN'::character varying")
                 .HasColumnName("status");
             entity.Property(e => e.DueDate).HasColumnName("due_date");
-            entity.Property(e => e.CarriedFromActionItemId).HasColumnName("carried_from_action_item_id");
             entity.Property(e => e.ClosedAt).HasColumnName("closed_at");
             entity.Property(e => e.ClosedBy)
                 .HasComment("External AuthService user id. No physical FK.")

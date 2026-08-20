@@ -22,7 +22,6 @@ public record MeetingActionItemDto(
     long? AtMs,
     string Status,
     DateOnly? DueDate,
-    Guid? CarriedFromActionItemId,
     DateTime? ClosedAt,
     DateTime CreatedAt);
 
