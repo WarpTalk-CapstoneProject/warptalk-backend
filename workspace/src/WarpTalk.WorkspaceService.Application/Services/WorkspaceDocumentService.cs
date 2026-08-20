@@ -196,10 +196,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var filteredDocs = documents.OrderByDescending(d => d.CreatedAt).AsEnumerable();
             if (!string.IsNullOrWhiteSpace(query.Search))
             {
-                var search = query.Search.Trim();
+                // SearchTextHelper, not string.Contains: a raw OrdinalIgnoreCase match reads the
+                // punctuation of a file name as if it were part of the word. Nobody types
+                // "bug-tracking" for a file called BUG-TRACKING-WT478-494, and nobody types the
+                // diacritics on a Vietnamese title either — both were misses, and WarpBot
+                // reported them to the user as "there is no such document".
+                var search = query.Search;
                 filteredDocs = filteredDocs.Where(d =>
-                    d.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                    d.FileName.Contains(search, StringComparison.OrdinalIgnoreCase));
+                    SearchTextHelper.Matches(d.Name, search) ||
+                    SearchTextHelper.Matches(d.FileName, search));
             }
 
             Dictionary<Guid, TranslationRoomDto?>? roomCache = null;
