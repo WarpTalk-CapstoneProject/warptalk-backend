@@ -82,7 +82,14 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
                     .ReturnsAsync(Result.Success());
                 services.AddScoped(_ => meetingPolicy.Object);
 
-                // The one substitution that matters: a clock this test owns.
+                // The one substitution that matters: a clock this test owns. Registering it as a
+                // service rather than only closing over it in the series factory below is what lets
+                // TranslationRoomService read the same instant: the list endpoint decides which
+                // occurrence is "next", and when it read the wall clock instead, the occurrences were
+                // laid out on this clock and judged against another. That is a test with an expiry
+                // date on it, and this one reached its expiry on 2026-08-20.
+                services.AddSingleton<Func<DateTime>>(_ => () => _now);
+
                 var seriesDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(ITranslationRoomSeriesService));
                 if (seriesDescriptor != null) services.Remove(seriesDescriptor);
                 services.AddScoped<ITranslationRoomSeriesService>(sp => new TranslationRoomSeriesService(
