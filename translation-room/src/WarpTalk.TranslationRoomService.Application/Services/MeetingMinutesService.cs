@@ -232,6 +232,12 @@ public class MeetingMinutesService : IMeetingMinutesService
         minutes.UpdatedBy = userId;
 
         _unitOfWork.MeetingMinutesRepository.Update(minutes);
+
+        // Approval is the moment the record becomes the record, so it is the moment a commitment
+        // becomes a task. Doing this from a draft would put work in people's lists that the
+        // meeting never ratified, and take it back out whenever the secretary edited a line.
+        await MaterialiseActionItemsAsync(minutes, ct);
+
         await _unitOfWork.SaveChangesAsync(ct);
 
         _logger.LogInformation("Minutes {MinutesNo} approved for room {RoomId}", minutes.MinutesNo, roomId);
@@ -308,7 +314,7 @@ public class MeetingMinutesService : IMeetingMinutesService
         }
 
         var minutes = current.Value!;
-        var content = JsonSerializer.Deserialize<MeetingMinutesContent>(minutes.Content, JsonOptions);
+        var content = TryReadContent(minutes.Content);
         if (content == null)
         {
             // The columns alone would render a file with a number, a signature block and nothing
@@ -330,6 +336,88 @@ public class MeetingMinutesService : IMeetingMinutesService
     }
 
     // ------------------------------------------------------------------ internals
+
+    /// <summary>
+    /// Turn the approved minutes' action items into rows somebody can be assigned and can close.
+    ///
+    /// IDEMPOTENT
+    ///     Approving twice — a retry, a double click — must not double somebody's task list, so a
+    ///     minutes version that has already produced its rows produces nothing.
+    ///
+    /// A REVISION INHERITS PROGRESS, MATCHED ON THE CITATION
+    ///     Version N+1 of a minutes describes the same meeting, so a task somebody has already
+    ///     ticked off must not come back OPEN because the secretary fixed a typo elsewhere. The
+    ///     match is on `atMs` — the same join key the bilingual layout uses, and for the same
+    ///     reason: position is not evidence that two lines are the same commitment.
+    /// </summary>
+    private async Task MaterialiseActionItemsAsync(MeetingMinutes minutes, CancellationToken ct)
+    {
+        if (await _unitOfWork.MeetingActionItemRepository.AnyForMinutesAsync(minutes.Id, ct)) return;
+
+        var content = TryReadContent(minutes.Content);
+        var items = content?.Sections
+            .FirstOrDefault(section => section.Key == "actionItems")?
+            .Items;
+
+        if (items == null || items.Count == 0) return;
+
+        var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(minutes.TranslationRoomId, ct);
+        var participants = await _unitOfWork.TranslationRoomParticipantRepository
+            .GetByRoomIdAsync(minutes.TranslationRoomId, ct) ?? new List<TranslationRoomParticipant>();
+
+        var existing = await _unitOfWork.MeetingActionItemRepository
+            .GetByRoomIdAsync(minutes.TranslationRoomId, ct);
+
+        var now = DateTime.UtcNow;
+
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item.Text)) continue;
+
+            var owner = ActionItemOwnerResolver.Resolve(item.Owner, participants);
+
+            // Only an unambiguous citation identifies the same commitment across versions. With
+            // no citation the safest reading is "a new line", which starts OPEN — the alternative
+            // is inheriting the status of whatever happened to look similar.
+            var prior = item.AtMs.HasValue
+                ? existing.SingleOrDefault(candidate => candidate.AtMs == item.AtMs)
+                : null;
+
+            await _unitOfWork.MeetingActionItemRepository.AddAsync(new MeetingActionItem
+            {
+                Id = Guid.CreateVersion7(),
+                TranslationRoomId = minutes.TranslationRoomId,
+                WorkspaceId = minutes.WorkspaceId,
+                SourceMinutesId = minutes.Id,
+                SeriesId = room?.SeriesId,
+                Task = item.Text.Trim(),
+                // Kept exactly as the meeting said it, whether or not it resolved to anybody.
+                OwnerName = string.IsNullOrWhiteSpace(item.Owner) ? null : item.Owner!.Trim(),
+                OwnerParticipantId = owner?.Id,
+                AssigneeUserId = owner?.UserId,
+                AtMs = item.AtMs,
+                Status = prior?.Status ?? MeetingActionItemConstants.StatusOpen,
+                ClosedAt = prior?.ClosedAt,
+                ClosedBy = prior?.ClosedBy,
+                DueDate = prior?.DueDate,
+                CreatedAt = now,
+                UpdatedAt = now
+            }, ct);
+        }
+    }
+
+    private static MeetingMinutesContent? TryReadContent(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<MeetingMinutesContent>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private async Task<Result<TranslationRoom>> AuthorizeManageAsync(
         Guid roomId, Guid userId, CancellationToken ct)

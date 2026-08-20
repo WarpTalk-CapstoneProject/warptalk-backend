@@ -40,6 +40,9 @@ public partial class TranslationRoomDbContext : DbContext
     /// <summary>Biên bản họp — the signed meeting record, distinct from the SUMMARY_EXPORT artifact.</summary>
     public virtual DbSet<MeetingMinutes> MeetingMinutes { get; set; }
 
+    /// <summary>Commitments from an approved biên bản, as rows somebody can be assigned.</summary>
+    public virtual DbSet<MeetingActionItem> MeetingActionItems { get; set; }
+
 
 
 
@@ -340,6 +343,60 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.UpdatedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<MeetingActionItem>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("meeting_action_items_pkey");
+
+            entity.ToTable("meeting_action_items", "translation_room");
+
+            entity.HasIndex(e => new { e.AssigneeUserId, e.Status }, "meeting_action_items_assignee_status_idx")
+                .HasFilter("assignee_user_id IS NOT NULL");
+
+            entity.HasIndex(e => new { e.SeriesId, e.Status }, "meeting_action_items_series_status_idx")
+                .HasFilter("series_id IS NOT NULL");
+
+            entity.HasIndex(e => e.TranslationRoomId, "meeting_action_items_room_idx");
+            entity.HasIndex(e => e.SourceMinutesId, "meeting_action_items_minutes_idx");
+
+            // Every column named explicitly. A missing HasColumnName here does not fail at
+            // startup — it 500s every SELECT over the table.
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.SourceMinutesId).HasColumnName("source_minutes_id");
+            entity.Property(e => e.SeriesId).HasColumnName("series_id");
+            entity.Property(e => e.Task).HasColumnName("task");
+            entity.Property(e => e.OwnerName)
+                .HasMaxLength(200)
+                .HasComment("What the meeting said. Never overwritten by resolution.")
+                .HasColumnName("owner_name");
+            entity.Property(e => e.OwnerParticipantId).HasColumnName("owner_participant_id");
+            entity.Property(e => e.AssigneeUserId)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("assignee_user_id");
+            entity.Property(e => e.AtMs).HasColumnName("at_ms");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'OPEN'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.DueDate).HasColumnName("due_date");
+            entity.Property(e => e.CarriedFromActionItemId).HasColumnName("carried_from_action_item_id");
+            entity.Property(e => e.ClosedAt).HasColumnName("closed_at");
+            entity.Property(e => e.ClosedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("closed_by");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<MeetingMinutes>(entity =>

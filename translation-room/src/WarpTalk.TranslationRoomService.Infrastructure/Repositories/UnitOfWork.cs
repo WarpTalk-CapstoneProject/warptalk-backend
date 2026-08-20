@@ -17,6 +17,7 @@ public class UnitOfWork : IUnitOfWork
     public ITranslationRoomFeedbackRepository TranslationRoomFeedbackRepository { get; }
     public ITranslationRoomSeriesRepository TranslationRoomSeriesRepository { get; }
     public IMeetingMinutesRepository MeetingMinutesRepository { get; }
+    public IMeetingActionItemRepository MeetingActionItemRepository { get; }
 
     public UnitOfWork(
         TranslationRoomDbContext context,
@@ -29,7 +30,8 @@ public class UnitOfWork : IUnitOfWork
         ITranslationRoomInvitationRepository translationRoomInvitationRepository,
         ITranslationRoomFeedbackRepository translationRoomFeedbackRepository,
         ITranslationRoomSeriesRepository translationRoomSeriesRepository,
-        IMeetingMinutesRepository meetingMinutesRepository)
+        IMeetingMinutesRepository meetingMinutesRepository,
+        IMeetingActionItemRepository meetingActionItemRepository)
     {
         _context = context;
         TranslationRoomRepository = translationRoomRepository;
@@ -42,6 +44,7 @@ public class UnitOfWork : IUnitOfWork
         TranslationRoomFeedbackRepository = translationRoomFeedbackRepository;
         TranslationRoomSeriesRepository = translationRoomSeriesRepository;
         MeetingMinutesRepository = meetingMinutesRepository;
+        MeetingActionItemRepository = meetingActionItemRepository;
     }
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;

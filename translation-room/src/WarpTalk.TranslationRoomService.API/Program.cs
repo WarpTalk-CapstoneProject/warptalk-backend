@@ -88,6 +88,7 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 // is no generic on IUnitOfWork and no Repository<T>() factory.
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
 builder.Services.AddScoped<IMeetingMinutesRepository, MeetingMinutesRepository>();
+builder.Services.AddScoped<IMeetingActionItemRepository, MeetingActionItemRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -103,6 +104,7 @@ builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseRedu
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
 builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MeetingMinutesDocxWriter>();
 builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
+builder.Services.AddScoped<IMeetingActionItemService, MeetingActionItemService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();
 builder.Services.AddScoped<IRecordingCompletedStreamMessageHandler, RecordingCompletedStreamMessageHandler>();
 builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();

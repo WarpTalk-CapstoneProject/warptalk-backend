@@ -29,10 +29,10 @@ public class MinutesBilingualPairingTests
         pairs!.Should().HaveCount(2);
         // Order follows the ORIGINAL, and each line meets the translation citing its own moment —
         // not the one that happened to sit at the same index.
-        pairs[0].Original.Text.Should().Be("Ship on Friday");
-        pairs[0].Translated.Text.Should().Be("Phát hành thứ Sáu");
-        pairs[1].Original.Text.Should().Be("Freeze the schema");
-        pairs[1].Translated.Text.Should().Be("Đóng băng schema");
+        pairs![0].Original.Text.Should().Be("Ship on Friday");
+        pairs![0].Translated.Text.Should().Be("Phát hành thứ Sáu");
+        pairs![1].Original.Text.Should().Be("Freeze the schema");
+        pairs![1].Translated.Text.Should().Be("Đóng băng schema");
     }
 
     [Fact]
@@ -87,7 +87,7 @@ public class MinutesBilingualPairingTests
 
         pairs.Should().NotBeNull();
         pairs!.Should().ContainSingle();
-        pairs[0].Translated.Text.Should().Be("Phát hành thứ Sáu");
+        pairs![0].Translated.Text.Should().Be("Phát hành thứ Sáu");
     }
 
     [Fact]
