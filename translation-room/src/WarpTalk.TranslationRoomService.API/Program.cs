@@ -86,6 +86,7 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 // WT-327: recurring bookings. Repository-per-entity, like every other repository above — there
 // is no generic on IUnitOfWork and no Repository<T>() factory.
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
+builder.Services.AddScoped<IMeetingMinutesRepository, MeetingMinutesRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -99,6 +100,7 @@ builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAud
 builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
 builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
+builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();
 builder.Services.AddScoped<IRecordingCompletedStreamMessageHandler, RecordingCompletedStreamMessageHandler>();
 builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();
