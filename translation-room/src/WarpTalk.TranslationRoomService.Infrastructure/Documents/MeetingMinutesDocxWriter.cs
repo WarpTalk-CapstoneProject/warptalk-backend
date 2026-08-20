@@ -7,6 +7,7 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Documents;
@@ -177,6 +178,9 @@ public class MeetingMinutesDocxWriter : IMeetingMinutesDocumentWriter
             body.AppendChild(Line(Blank, indent: true));
         }
 
+        var languages = content.Translations?.Keys.OrderBy(code => code, StringComparer.Ordinal).ToList()
+            ?? new List<string>();
+
         foreach (var section in content.Sections)
         {
             body.AppendChild(Line(SectionTitle(section.Key), size: 22, bold: true, indent: true));
@@ -184,20 +188,95 @@ public class MeetingMinutesDocxWriter : IMeetingMinutesDocumentWriter
             if (string.Equals(section.Kind, "paragraph", StringComparison.Ordinal))
             {
                 body.AppendChild(Line(section.Text ?? Blank, indent: true));
+                foreach (var language in languages)
+                {
+                    var translated = MinutesBilingualPairing.CounterpartOf(
+                        section, content.Translations![language]);
+                    if (!string.IsNullOrWhiteSpace(translated?.Text))
+                    {
+                        body.AppendChild(TranslatedLine(language, translated!.Text!));
+                    }
+                }
                 continue;
             }
 
-            foreach (var item in section.Items ?? new List<MinutesItem>())
+            var items = section.Items ?? new List<MinutesItem>();
+
+            // One language pairs line-by-line, the rest print as blocks. Interleaving several
+            // languages under every line turns a decision into a wall; the first that pairs is the
+            // one a bilingual room actually has.
+            var paired = languages
+                .Select(language => new
+                {
+                    Language = language,
+                    Pairs = MinutesBilingualPairing.PairByCitation(
+                        items,
+                        MinutesBilingualPairing.CounterpartOf(section, content.Translations![language])?.Items)
+                })
+                .FirstOrDefault(candidate => candidate.Pairs != null);
+
+            if (paired != null)
             {
-                var owner = string.IsNullOrWhiteSpace(item.Owner) ? string.Empty : $" — {item.Owner}";
-                // The citation is carried onto the printed page. It is what lets a reader of the
-                // paper copy go back to the recording and check a line somebody signed for.
-                var citation = item.AtMs.HasValue ? $" [{Offset(item.AtMs.Value)}]" : string.Empty;
-                body.AppendChild(Line($"- {item.Text}{owner}{citation}", indent: true));
+                foreach (var pair in paired.Pairs!)
+                {
+                    body.AppendChild(Line(OriginalLine(pair.Original), indent: true));
+                    body.AppendChild(TranslatedLine(paired.Language, pair.Translated.Text));
+                }
+            }
+            else
+            {
+                foreach (var item in items)
+                {
+                    body.AppendChild(Line(OriginalLine(item), indent: true));
+                }
+            }
+
+            // Every language that did not pair — and every language at all when none did — prints
+            // whole underneath. A block asserts nothing about any individual line, which is the
+            // honest thing to say when the citations do not line up.
+            foreach (var language in languages)
+            {
+                if (paired != null && language == paired.Language) continue;
+
+                var translated = MinutesBilingualPairing.CounterpartOf(
+                    section, content.Translations![language]);
+                if (translated?.Items == null || translated.Items.Count == 0) continue;
+
+                body.AppendChild(Line($"[{language}]", size: 18, italic: true, indent: true));
+                foreach (var item in translated.Items)
+                {
+                    body.AppendChild(TranslatedLine(language, item.Text, withPrefix: false));
+                }
             }
         }
 
         body.AppendChild(Spacer());
+    }
+
+    /// <summary>An original line: the words, who owns it, and the moment it came from.</summary>
+    private static string OriginalLine(MinutesItem item)
+    {
+        var owner = string.IsNullOrWhiteSpace(item.Owner) ? string.Empty : $" — {item.Owner}";
+        // The citation is carried onto the printed page. It is what lets a reader of the paper
+        // copy go back to the recording and check a line somebody signed for.
+        var citation = item.AtMs.HasValue ? $" [{Offset(item.AtMs.Value)}]" : string.Empty;
+        return $"- {item.Text}{owner}{citation}";
+    }
+
+    /// <summary>
+    /// A translated line, visibly subordinate to the original.
+    ///
+    /// Indented further and set in smaller italic on purpose: in a bilingual record it must be
+    /// unmistakable which text is what was said and which is a rendering of it. A translation
+    /// typeset identically to the original is a translation somebody will later quote as the
+    /// original.
+    /// </summary>
+    private static Paragraph TranslatedLine(string language, string text, bool withPrefix = true)
+    {
+        var prefix = withPrefix ? $"[{language}] " : "  ";
+        var paragraph = Line($"{prefix}{text}", size: 20, italic: true);
+        paragraph.ParagraphProperties?.AppendChild(new Indentation { Left = "720" });
+        return paragraph;
     }
 
     private static void WriteVotes(Body body, MeetingMinutesContent content)

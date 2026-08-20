@@ -28,6 +28,7 @@ public class MeetingMinutesDrafterTests
         Id = Guid.NewGuid(),
         WorkspaceId = Guid.NewGuid(),
         Title = "Sprint review",
+        SourceLanguage = "vi",
         EndedAt = Closed,
         ScheduledAt = Opened.AddMinutes(-5)
     };
@@ -271,6 +272,69 @@ public class MeetingMinutesDrafterTests
             Room(), new List<TranslationRoomParticipant>(), """{"summary": "Talked."}"""));
 
         content.Agenda.Should().BeNull();
+    }
+
+    [Fact]
+    public void TheLanguageTheMeetingWasHeldInIsRecorded()
+    {
+        // Without it a bilingual document cannot say which half is the original, and a reader is
+        // left inferring it from the script.
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), """{"summary": "Đã họp."}"""));
+
+        content.PrimaryLanguage.Should().Be("vi");
+    }
+
+    [Fact]
+    public void TranslatedSectionsAreCarriedThroughInTheSameShape()
+    {
+        var summary = """
+        {
+          "summary": "Đã rà soát sprint.",
+          "decisions": [{"text": "Phát hành thứ Sáu", "atMs": 120000}],
+          "translations": {
+            "en": {
+              "summary": "Reviewed the sprint.",
+              "decisions": [{"text": "Ship on Friday", "atMs": 120000}]
+            }
+          }
+        }
+        """;
+
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), summary));
+
+        content.Translations.Should().ContainKey("en");
+        var english = content.Translations!["en"];
+        english.Should().Contain(section => section.Key == "summary" && section.Text == "Reviewed the sprint.");
+        english.Find(section => section.Key == "decisions")!.Items![0].Text.Should().Be("Ship on Friday");
+        // The citation must survive: it is the only join key between the two languages.
+        english.Find(section => section.Key == "decisions")!.Items![0].AtMs.Should().Be(120000);
+    }
+
+    [Fact]
+    public void ASingleLanguageMeetingSimplyHasNoTranslations()
+    {
+        // The summary worker is only asked for translations when a room has more than one target
+        // language, so their absence is the normal case and must not read as an empty set.
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), """{"summary": "Đã họp."}"""));
+
+        content.Translations.Should().BeNull();
+    }
+
+    [Fact]
+    public void AnInsufficientDataSummaryContributesNoTranslationsEither()
+    {
+        var summary = """
+        {"summary": "No transcript content.", "insufficientData": true,
+         "translations": {"en": {"summary": "No transcript content."}}}
+        """;
+
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), summary));
+
+        content.Translations.Should().BeNull();
     }
 
     [Fact]

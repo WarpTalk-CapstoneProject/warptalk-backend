@@ -251,6 +251,92 @@ public class MeetingMinutesDocxWriterTests
     }
 
     [Fact]
+    public void ABilingualRecordPrintsTheTranslationBesideTheLineItTranslates()
+    {
+        var content = Content();
+        content.PrimaryLanguage = "vi";
+        content.Translations = new Dictionary<string, List<MinutesSection>>
+        {
+            ["en"] = new()
+            {
+                new()
+                {
+                    Key = "decisions",
+                    Kind = "items",
+                    // Same citation as the original: that is what makes pairing a join rather
+                    // than a guess.
+                    Items = new List<MinutesItem> { new() { Text = "Ship on Friday", AtMs = 125000 } }
+                }
+            }
+        };
+
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), content));
+
+        text.Should().Contain("Phát hành thứ Sáu");
+        text.Should().Contain("Ship on Friday");
+        // Labelled, so a reader can never mistake the rendering for what was said.
+        text.Should().Contain("[en]");
+    }
+
+    [Fact]
+    public void ATranslationThatCannotBePairedIsPrintedAsItsOwnBlock()
+    {
+        // No citation on the translated side, so nothing may be printed beside a specific line —
+        // but the translation is still the meeting's, and dropping it would lose content.
+        var content = Content();
+        content.Translations = new Dictionary<string, List<MinutesSection>>
+        {
+            ["en"] = new()
+            {
+                new()
+                {
+                    Key = "decisions",
+                    Kind = "items",
+                    Items = new List<MinutesItem> { new() { Text = "Ship on Friday", AtMs = null } }
+                }
+            }
+        };
+
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), content));
+
+        text.Should().Contain("Phát hành thứ Sáu");
+        text.Should().Contain("Ship on Friday");
+        text.Should().Contain("[en]");
+    }
+
+    [Fact]
+    public void ATranslatedOverviewFollowsTheOriginalParagraph()
+    {
+        var content = Content();
+        content.Translations = new Dictionary<string, List<MinutesSection>>
+        {
+            ["en"] = new()
+            {
+                new() { Key = "summary", Kind = "paragraph", Text = "Reviewed the sprint." }
+            }
+        };
+
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), content));
+
+        var original = text.IndexOf("Đã rà soát sprint.", StringComparison.Ordinal);
+        var translated = text.IndexOf("Reviewed the sprint.", StringComparison.Ordinal);
+
+        original.Should().BeGreaterThan(-1);
+        translated.Should().BeGreaterThan(original);
+    }
+
+    [Fact]
+    public void ASingleLanguageRecordGainsNoLanguageLabels()
+    {
+        // The overwhelming majority of meetings are monolingual, and a "[vi]" tag on every line
+        // of those would be noise dressed up as rigour.
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), Content()));
+
+        text.Should().NotContain("[en]");
+        text.Should().NotContain("[vi]");
+    }
+
+    [Fact]
     public void AMultiLineAgendaKeepsItsLines()
     {
         // A bare \n inside a Word run is not a line break, it is nothing — an agenda written as a

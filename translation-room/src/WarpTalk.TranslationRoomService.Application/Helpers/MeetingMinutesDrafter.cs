@@ -81,6 +81,10 @@ public static class MeetingMinutesDrafter
             Agenda = null,
             Attendance = BuildAttendance(participants, attended),
             Sections = BuildSections(summaryJson),
+            // The language the meeting was actually held in, so a bilingual document can say
+            // which half is the original instead of leaving a reader to infer it.
+            PrimaryLanguage = string.IsNullOrWhiteSpace(room.SourceLanguage) ? null : room.SourceLanguage,
+            Translations = BuildTranslations(summaryJson),
             // Votes are never inferred from the transcript. A count of who agreed has to come
             // from people pressing a button, because silence is not assent and "ừ" may be
             // answering a different question — a fabricated tally is worse than no tally.
@@ -260,6 +264,91 @@ public static class MeetingMinutesDrafter
         }
 
         return sections;
+    }
+
+    /// <summary>
+    /// The summary's translated copies, normalised into the same section shape as the original.
+    ///
+    /// WHY THIS IS NOT A MIRROR OF <see cref="BuildSections"/>
+    ///     The summary worker asks the model for {summary, decisions, actionItems} per language —
+    ///     three keys, not the template's full section set. So a technical meeting's "problems"
+    ///     and "options" have no translation and never will under the current contract. Returning
+    ///     only what exists keeps that visible; padding the gap with empty sections would make a
+    ///     document claim a translation it does not have.
+    ///
+    ///     The map is also model-produced and never defaulted upstream, so it can be absent from a
+    ///     multilingual room's summary entirely. Absent means "not produced", never "none".
+    /// </summary>
+    private static Dictionary<string, List<MinutesSection>>? BuildTranslations(string? summaryJson)
+    {
+        if (string.IsNullOrWhiteSpace(summaryJson)) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(summaryJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            if (root.TryGetProperty("insufficientData", out var insufficient) &&
+                insufficient.ValueKind == JsonValueKind.True)
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("translations", out var translations) ||
+                translations.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var result = new Dictionary<string, List<MinutesSection>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var language in translations.EnumerateObject())
+            {
+                if (language.Value.ValueKind != JsonValueKind.Object) continue;
+
+                var sections = new List<MinutesSection>();
+
+                if (language.Value.TryGetProperty("summary", out var overview) &&
+                    overview.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(overview.GetString()))
+                {
+                    sections.Add(new MinutesSection
+                    {
+                        Key = "summary",
+                        Kind = "paragraph",
+                        Text = overview.GetString()
+                    });
+                }
+
+                foreach (var property in language.Value.EnumerateObject())
+                {
+                    if (NonSectionKeys.Contains(property.Name)) continue;
+                    if (property.Value.ValueKind != JsonValueKind.Array) continue;
+
+                    var items = ReadItems(property.Value);
+                    if (items.Count == 0) continue;
+
+                    sections.Add(new MinutesSection
+                    {
+                        Key = property.Name,
+                        Kind = "items",
+                        Items = items
+                    });
+                }
+
+                if (sections.Count > 0)
+                {
+                    result[language.Name] = sections;
+                }
+            }
+
+            return result.Count > 0 ? result : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

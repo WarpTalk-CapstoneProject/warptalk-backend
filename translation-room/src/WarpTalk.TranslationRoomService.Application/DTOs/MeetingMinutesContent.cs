@@ -50,6 +50,25 @@ public class MeetingMinutesContent
     /// <summary>Anything the secretary adds that the meeting's own record cannot supply.</summary>
     [JsonPropertyName("notes")]
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// The language <see cref="Sections"/> is written in — the room's source language, i.e. the
+    /// one the meeting was actually held in. Named so a bilingual document can label which column
+    /// is the original rather than leaving a reader to guess from the script.
+    /// </summary>
+    [JsonPropertyName("primaryLanguage")]
+    public string? PrimaryLanguage { get; set; }
+
+    /// <summary>
+    /// The same sections in each of the room's other languages, keyed by language code.
+    ///
+    /// Present only for a room with more than one target language — that is the only case in
+    /// which the summary worker is asked for translations at all. PARTIAL by nature: the model is
+    /// asked for {summary, decisions, actionItems}, so a template with other sections has no
+    /// translation for them, and a missing language here means "not produced", never "empty".
+    /// </summary>
+    [JsonPropertyName("translations")]
+    public Dictionary<string, List<MinutesSection>>? Translations { get; set; }
 }
 
 public class MinutesAttendance
