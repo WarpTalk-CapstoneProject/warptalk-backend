@@ -19,7 +19,18 @@ public record TranscriptDto(
     int TotalDurationMs,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    DateTime? FinalizedAt
+    DateTime? FinalizedAt,
+    /// <summary>
+    /// WT-473: the UTC instant <c>TranscriptSegmentDto.StartTimeMs</c> is measured from — the
+    /// first audio chunk the STT pipeline saw.
+    ///
+    /// The other half of the pair is <c>translation_room_artifacts.recording_started_at</c>;
+    /// together they are what makes "click a transcript line, seek the recording" possible at all.
+    /// NULL for transcripts predating the column, and a consumer must read NULL as CANNOT ALIGN.
+    /// Substituting CreatedAt would be off by however long the meeting waited for its first word,
+    /// which renders as a plausible seek to the wrong place.
+    /// </summary>
+    DateTime? TimelineAnchorAt = null
 );
 
 public record TranscriptSegmentDto(

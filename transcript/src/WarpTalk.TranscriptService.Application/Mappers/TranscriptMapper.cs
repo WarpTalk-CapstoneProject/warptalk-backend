@@ -18,7 +18,8 @@ public static class TranscriptMapper
             entity.TotalDurationMs,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.FinalizedAt
+            entity.FinalizedAt,
+            entity.TimelineAnchorAt
         );
     }
 
