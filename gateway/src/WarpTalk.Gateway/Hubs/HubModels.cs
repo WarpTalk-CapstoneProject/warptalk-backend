@@ -96,7 +96,14 @@ public record AiSuggestionDto(
     string? Detail,
     float Confidence,
     string Language,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    // APPENDED, never inserted. Every member of a positional record is bound by position, so
+    // slipping a field in above CreatedAt would silently re-bind whatever shares its type — the
+    // compiler says nothing and the payload comes out scrambled.
+    //
+    // The documents the hint drew on, as the [{marker, kind, title}] array every AI surface
+    // publishes. Null when it came out of the transcript, which is the normal case.
+    string? SourcesJson = null);
 
 /// <summary>
 /// A translated caption chunk pushed as "TranslationTextReceived".

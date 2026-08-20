@@ -27,7 +27,8 @@ public class AiResultConsumerServiceTests
         string category = "action",
         string detail = "Deadline được nhắc tới nhưng thiếu owner.",
         string confidence = "0.82",
-        string language = "vi") =>
+        string language = "vi",
+        string sourcesJson = "") =>
         Entry(
             ("meeting_id", RoomId),
             ("segment_id", segmentId),
@@ -38,6 +39,7 @@ public class AiResultConsumerServiceTests
             ("confidence", confidence),
             ("language", language),
             ("token_count", "150"),
+            ("sources_json", sourcesJson),
             ("timestamp_ms", "1754006400000"));
 
     // ── Suggestions are recognised ────────────────────────────
@@ -175,5 +177,50 @@ public class AiResultConsumerServiceTests
         {
             CultureInfo.CurrentCulture = original;
         }
+    }
+
+    // ── The documents a hint drew on ──────────────────────────
+
+    [Fact]
+    public void TryReadSuggestion_CarriesTheSourcesArrayThrough()
+    {
+        // Relayed verbatim, not re-modelled: the shape belongs to warptalk-ai and is rendered
+        // by the client, and a copy of it here would be a third place to keep in step.
+        const string sources = """[{"marker":"S1","kind":"document","title":"Q3-budget.xlsx"}]""";
+
+        var suggestion = AiResultConsumerService.TryReadSuggestion(
+            SuggestionEntry(sourcesJson: sources), RoomId);
+
+        Assert.NotNull(suggestion);
+        Assert.Equal(sources, suggestion!.SourcesJson);
+    }
+
+    [Fact]
+    public void TryReadSuggestion_LeavesSourcesNullWhenTheHintNamedNoDocument()
+    {
+        // Which is the normal case: a hint about the transcript has no document to name.
+        var suggestion = AiResultConsumerService.TryReadSuggestion(SuggestionEntry(), RoomId);
+
+        Assert.NotNull(suggestion);
+        Assert.Null(suggestion!.SourcesJson);
+    }
+
+    [Fact]
+    public void TryReadSuggestion_LeavesSourcesNullWhenTheFieldIsAbsentEntirely()
+    {
+        // A producer that predates the field, or a replayed entry written before it shipped.
+        var entry = Entry(
+            ("meeting_id", RoomId),
+            ("segment_id", "segment-1"),
+            ("category", "action"),
+            ("content", "Chưa có ai nhận phần tích hợp."),
+            ("type", "suggestion"),
+            ("confidence", "0.82"),
+            ("language", "vi"));
+
+        var suggestion = AiResultConsumerService.TryReadSuggestion(entry, RoomId);
+
+        Assert.NotNull(suggestion);
+        Assert.Null(suggestion!.SourcesJson);
     }
 }
