@@ -635,6 +635,14 @@ public sealed class AiResultConsumerService : BackgroundService
             Detail: string.IsNullOrWhiteSpace(detail) ? null : detail,
             Confidence: confidence,
             Language: RedisStreamService.GetField(entry, "language") ?? "",
-            CreatedAt: DateTime.UtcNow);
+            CreatedAt: DateTime.UtcNow,
+            SourcesJson: NullIfBlank(RedisStreamService.GetField(entry, "sources_json")));
     }
+
+    /// <summary>
+    /// A hint that named no document publishes an empty field, which is "no sources" and not an
+    /// empty array. Null is what the client checks for.
+    /// </summary>
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 }

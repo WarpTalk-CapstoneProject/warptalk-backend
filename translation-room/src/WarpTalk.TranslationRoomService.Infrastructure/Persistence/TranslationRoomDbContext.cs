@@ -156,6 +156,9 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.CreatedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("created_by");
+            // Explicit, like every other column here — a missing HasColumnName does not fail
+            // at startup, it 500s every SELECT over the table.
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             entity.Property(e => e.DeletedBy)
                 .HasComment("External AuthService user id. No physical FK.")

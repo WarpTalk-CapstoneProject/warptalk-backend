@@ -44,6 +44,12 @@ public partial class MeetingChatMessage
 
     public string? ContentType { get; set; }
 
+    /// <summary>
+    /// Sources a WarpBot answer cited, as the stored JSON array. NULL on everything a person
+    /// wrote — provenance is a claim only an answer makes.
+    /// </summary>
+    public string? SourcesJson { get; set; }
+
     public virtual ICollection<MeetingChatAssistantRequest> MeetingChatAssistantRequests { get; set; } = new List<MeetingChatAssistantRequest>();
 
     public virtual ICollection<MeetingChatModerationEvent> MeetingChatModerationEvents { get; set; } = new List<MeetingChatModerationEvent>();

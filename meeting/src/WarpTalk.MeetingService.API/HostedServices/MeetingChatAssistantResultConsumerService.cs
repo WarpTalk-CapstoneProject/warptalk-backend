@@ -225,6 +225,16 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
                 await notifier.BroadcastAssistantResponsePendingAsync(request.MeetingRoomId, request.Id, ct);
             }
 
+            // The tool name was already on the message and was being dropped. It is the only
+            // evidence the room has that WarpBot is working rather than gone, and it is what the
+            // client re-arms its deadline on.
+            var toolName = fields.GetValueOrDefault("tool_name", "");
+            if (resultType == "tool_call_started" && !string.IsNullOrWhiteSpace(toolName))
+            {
+                await notifier.BroadcastAssistantToolCallStartedAsync(
+                    request.MeetingRoomId, request.Id, toolName, ct);
+            }
+
             return;
         }
 
@@ -251,7 +261,11 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             TranslationEnabled = false,
             IsHidden = false,
             Mentions = "[]",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            // Only on a real answer. A failure message is this service's own prose, and hanging
+            // the model's citations off it would attribute WarpTalk's apology to somebody's
+            // uploaded document.
+            SourcesJson = failed ? null : NullIfBlank(fields.GetValueOrDefault("sources_json"))
         };
 
         await unitOfWork.MeetingChatMessageRepository.AddAsync(response, ct);
@@ -261,4 +275,11 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         await unitOfWork.SaveChangesAsync(ct);
         await notifier.BroadcastMessageReceivedAsync(request.MeetingRoomId, response.ToDto(), ct);
     }
+
+    /// <summary>
+    /// An answer that cited nothing publishes an empty field, and an empty string is not valid
+    /// jsonb — it would fail the insert rather than store "no sources".
+    /// </summary>
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 }

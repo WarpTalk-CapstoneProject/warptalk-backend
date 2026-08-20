@@ -18,7 +18,8 @@ public static class TranscriptMapper
             entity.TotalDurationMs,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.FinalizedAt
+            entity.FinalizedAt,
+            entity.TimelineAnchorAt
         );
     }
 
@@ -33,7 +34,9 @@ public static class TranscriptMapper
             entity.Confidence,
             entity.StartTimeMs,
             entity.EndTimeMs,
-            entity.SequenceOrder
+            entity.SequenceOrder,
+            entity.IsCorrected,
+            entity.UpdatedAt
         );
     }
 
