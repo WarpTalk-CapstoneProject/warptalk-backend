@@ -51,6 +51,41 @@ public class SearchTextHelperTests
         Assert.True(SearchTextHelper.Matches(null, ""));
     }
 
+    [Theory]
+    // The reported miss: a document named BUG-TRACKING-WT478-494, searched for the way a person
+    // says it. WarpBot answered "no document whose name contains bug tracking" while the file
+    // was one row away in the same list.
+    [InlineData("BUG-TRACKING-WT478-494", "bug tracking")]
+    [InlineData("BUG-TRACKING-WT478-494", "BUG TRACKING")]
+    [InlineData("BUG-TRACKING-WT478-494", "bug-tracking")]
+    [InlineData("BUG-TRACKING-WT478-494.md", "tracking wt478")]
+    [InlineData("refactor_workspace_identity.md", "workspace identity")]
+    [InlineData("Report4_Software Design Document.docx", "software design")]
+    // And the reverse: punctuation typed against a name that has none.
+    [InlineData("Database Design Document", "database-design")]
+    public void Matches_IgnoresSeparators(string value, string term)
+    {
+        Assert.True(SearchTextHelper.Matches(value, term));
+    }
+
+    [Theory]
+    // Folding separators must not fold words together: "bugtracking" is not what the file says.
+    [InlineData("BUG-TRACKING-WT478-494", "bugtracking")]
+    [InlineData("BUG-TRACKING-WT478-494", "tracking bug")]
+    public void Matches_DoesNotJoinWordsAcrossSeparators(string value, string term)
+    {
+        Assert.False(SearchTextHelper.Matches(value, term));
+    }
+
+    [Fact]
+    public void Fold_CollapsesRunsOfSeparatorsIntoOneSpace()
+    {
+        Assert.Equal("bug tracking wt478 494", SearchTextHelper.Fold("BUG-TRACKING-WT478-494"));
+        Assert.Equal("wt478 494", SearchTextHelper.Fold("WT478 -  494"));
+        // Leading and trailing punctuation carries no word to separate, so it leaves no space.
+        Assert.Equal("readme", SearchTextHelper.Fold("--readme--"));
+    }
+
     [Fact]
     public void Fold_StripsDiacriticsAndLowercases()
     {
