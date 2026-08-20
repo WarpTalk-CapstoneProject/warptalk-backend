@@ -15,6 +15,8 @@ public static class MeetingMinutesConstants
         "Approved minutes cannot be edited. Issue a revision instead — the signed version stays on record.";
     public const string ErrorNotApproved = "Only approved minutes can be revised.";
     public const string ErrorSignBeforeApprove = "The secretary must sign the minutes before the chair approves them.";
+    public const string ErrorContentUnreadable =
+        "This minutes document could not be read. Edit and save it before exporting.";
     public const string ErrorNumberCollision =
         "Another minutes document took that number a moment ago. Try again.";
 }

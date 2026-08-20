@@ -32,3 +32,6 @@ public record MeetingMinutesDto(
     DateTime UpdatedAt);
 
 public record UpdateMinutesContentRequest(string Content);
+
+/// <summary>A rendered minutes file, ready to be handed to the browser.</summary>
+public record MinutesExportFile(byte[] Bytes, string FileName, string ContentType);

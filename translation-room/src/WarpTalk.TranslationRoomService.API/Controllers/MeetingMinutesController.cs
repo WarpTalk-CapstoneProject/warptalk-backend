@@ -94,6 +94,30 @@ public class MeetingMinutesController : ControllerBase
         return Respond(await _minutesService.ReviseAsync(roomId, minutesId, userId.Value, ct));
     }
 
+    /// <summary>Download the minutes as a Word document.</summary>
+    [HttpGet("export.docx")]
+    public async Task<IActionResult> ExportDocx(Guid roomId, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _minutesService.ExportDocxAsync(roomId, userId.Value, User.GetEmail(), ct);
+
+        if (!result.IsSuccess)
+        {
+            return result.ErrorCode switch
+            {
+                ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
+                ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+                ErrorCodes.InvalidState => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+                _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))
+            };
+        }
+
+        var file = result.Value!;
+        return File(file.Bytes, file.ContentType, file.FileName);
+    }
+
     private IActionResult Respond(Result<MeetingMinutesDto> result)
     {
         if (result.IsSuccess) return Ok(result.Value);

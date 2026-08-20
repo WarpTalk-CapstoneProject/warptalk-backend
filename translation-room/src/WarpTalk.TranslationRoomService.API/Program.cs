@@ -30,6 +30,7 @@ using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.API.Workers;
 using WarpTalk.TranslationRoomService.Infrastructure.Redis;
 using WarpTalk.TranslationRoomService.Infrastructure.Storage;
+using WarpTalk.TranslationRoomService.Infrastructure.Documents;
 using StackExchange.Redis;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -100,6 +101,7 @@ builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAud
 builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
 builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
+builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MeetingMinutesDocxWriter>();
 builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();
 builder.Services.AddScoped<IRecordingCompletedStreamMessageHandler, RecordingCompletedStreamMessageHandler>();

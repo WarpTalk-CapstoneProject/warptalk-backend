@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -23,17 +24,25 @@ public class MeetingMinutesService : IMeetingMinutesService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
+    private readonly IMeetingMinutesDocumentWriter _documentWriter;
     private readonly ILogger<MeetingMinutesService> _logger;
 
     public MeetingMinutesService(
         IUnitOfWork unitOfWork,
         IWorkspaceMemberDirectory workspaceMemberDirectory,
+        IMeetingMinutesDocumentWriter documentWriter,
         ILogger<MeetingMinutesService> logger)
     {
         _unitOfWork = unitOfWork;
         _workspaceMemberDirectory = workspaceMemberDirectory;
+        _documentWriter = documentWriter;
         _logger = logger;
     }
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     public async Task<Result<MeetingMinutesDto>> GetCurrentAsync(
         Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default)
@@ -283,6 +292,41 @@ public class MeetingMinutesService : IMeetingMinutesService
             "Opened revision v{Version} of minutes {MinutesNo}", revision.Version, revision.MinutesNo);
 
         return Result.Success(await ToDtoAsync(revision, ct));
+    }
+
+    public async Task<Result<MinutesExportFile>> ExportDocxAsync(
+        Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default)
+    {
+        // Deliberately the same gate as reading the minutes on screen, not the write gate.
+        // Downloading is reading; a separate, stricter rule here would mean the people who were
+        // at the meeting could see the record but not keep a copy of it.
+        var current = await GetCurrentAsync(roomId, userId, userEmail, ct);
+        if (!current.IsSuccess)
+        {
+            return Result.Failure<MinutesExportFile>(
+                current.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, current.ErrorCode);
+        }
+
+        var minutes = current.Value!;
+        var content = JsonSerializer.Deserialize<MeetingMinutesContent>(minutes.Content, JsonOptions);
+        if (content == null)
+        {
+            // The columns alone would render a file with a number, a signature block and nothing
+            // between them — a document that looks complete and says nothing.
+            return Result.Failure<MinutesExportFile>(
+                MeetingMinutesConstants.ErrorContentUnreadable, ErrorCodes.InvalidState);
+        }
+
+        var bytes = _documentWriter.WriteDocx(minutes, content);
+
+        // The minutes number is the file name, because that is what the recipient will file it
+        // under. Version only appears once there is more than one, so an ordinary document does
+        // not arrive looking like a revision.
+        var suffix = minutes.Version > 1 ? $"-v{minutes.Version}" : string.Empty;
+        return Result.Success(new MinutesExportFile(
+            bytes,
+            $"{minutes.MinutesNo}{suffix}.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
     }
 
     // ------------------------------------------------------------------ internals

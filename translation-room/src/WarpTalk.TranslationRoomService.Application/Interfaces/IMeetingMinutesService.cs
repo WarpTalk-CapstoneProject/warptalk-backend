@@ -48,4 +48,14 @@ public interface IMeetingMinutesService
     /// <summary>Open version N+1 from an approved document, leaving the signed one on record.</summary>
     Task<Result<MeetingMinutesDto>> ReviseAsync(
         Guid roomId, Guid minutesId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The minutes as a .docx, for anyone who can read the meeting.
+    ///
+    /// Read authority, not host authority: a biên bản exists to be circulated to the people who
+    /// were at the meeting, and one only its author can download is a record of nothing. The
+    /// document prints its own status, so a draft that leaves the building says it is a draft.
+    /// </summary>
+    Task<Result<MinutesExportFile>> ExportDocxAsync(
+        Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default);
 }
