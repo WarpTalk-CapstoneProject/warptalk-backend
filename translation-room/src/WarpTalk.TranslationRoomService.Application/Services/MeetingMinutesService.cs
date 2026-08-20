@@ -6,12 +6,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Authorization;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Authorization;
+using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -22,20 +24,30 @@ namespace WarpTalk.TranslationRoomService.Application.Services;
 /// <inheritdoc />
 public class MeetingMinutesService : IMeetingMinutesService
 {
+    /// <summary>Registered in NotificationValidator in the same commit as this producer.</summary>
+    private const string ActionItemAssignedNotificationType = "ACTION_ITEM_ASSIGNED";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly IMeetingMinutesDocumentWriter _documentWriter;
+    /// <summary>Nullable, matching TranslationRoomService: a deployment without it still runs.</summary>
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+    private readonly string _frontendBaseUrl;
     private readonly ILogger<MeetingMinutesService> _logger;
 
     public MeetingMinutesService(
         IUnitOfWork unitOfWork,
         IWorkspaceMemberDirectory workspaceMemberDirectory,
         IMeetingMinutesDocumentWriter documentWriter,
-        ILogger<MeetingMinutesService> logger)
+        ILogger<MeetingMinutesService> logger,
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
+        IOptions<AppSettings>? appSettings = null)
     {
         _unitOfWork = unitOfWork;
         _workspaceMemberDirectory = workspaceMemberDirectory;
         _documentWriter = documentWriter;
+        _notificationClient = notificationClient;
+        _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl?.TrimEnd('/') ?? "http://localhost:3000";
         _logger = logger;
     }
 
@@ -244,9 +256,13 @@ public class MeetingMinutesService : IMeetingMinutesService
         // Approval is the moment the record becomes the record, so it is the moment a commitment
         // becomes a task. Doing this from a draft would put work in people's lists that the
         // meeting never ratified, and take it back out whenever the secretary edited a line.
-        await MaterialiseActionItemsAsync(minutes, ct);
+        var created = await MaterialiseActionItemsAsync(minutes, ct);
 
         await _unitOfWork.SaveChangesAsync(ct);
+
+        // After the commit, never before: telling somebody about a task whose row failed to save
+        // is worse than telling them a moment late.
+        await NotifyAssigneesAsync(roomId, created, ct);
 
         _logger.LogInformation("Minutes {MinutesNo} approved for room {RoomId}", minutes.MinutesNo, roomId);
 
@@ -358,9 +374,11 @@ public class MeetingMinutesService : IMeetingMinutesService
     ///     match is on `atMs` — the same join key the bilingual layout uses, and for the same
     ///     reason: position is not evidence that two lines are the same commitment.
     /// </summary>
-    private async Task MaterialiseActionItemsAsync(MeetingMinutes minutes, CancellationToken ct)
+    private async Task<List<MeetingActionItem>> MaterialiseActionItemsAsync(
+        MeetingMinutes minutes, CancellationToken ct)
     {
-        if (await _unitOfWork.MeetingActionItemRepository.AnyForMinutesAsync(minutes.Id, ct)) return;
+        var created = new List<MeetingActionItem>();
+        if (await _unitOfWork.MeetingActionItemRepository.AnyForMinutesAsync(minutes.Id, ct)) return created;
 
         var content = TryReadContent(minutes.Content);
         // "actionItems" only. The carried-over section quotes tasks that already exist as rows
@@ -370,7 +388,7 @@ public class MeetingMinutesService : IMeetingMinutesService
             .FirstOrDefault(section => section.Key == "actionItems")?
             .Items;
 
-        if (items == null || items.Count == 0) return;
+        if (items == null || items.Count == 0) return created;
 
         var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(minutes.TranslationRoomId, ct);
         var participants = await _unitOfWork.TranslationRoomParticipantRepository
@@ -394,7 +412,7 @@ public class MeetingMinutesService : IMeetingMinutesService
                 ? existing.SingleOrDefault(candidate => candidate.AtMs == item.AtMs)
                 : null;
 
-            await _unitOfWork.MeetingActionItemRepository.AddAsync(new MeetingActionItem
+            var row = new MeetingActionItem
             {
                 Id = Guid.CreateVersion7(),
                 TranslationRoomId = minutes.TranslationRoomId,
@@ -413,7 +431,76 @@ public class MeetingMinutesService : IMeetingMinutesService
                 DueDate = prior?.DueDate,
                 CreatedAt = now,
                 UpdatedAt = now
-            }, ct);
+            };
+
+            await _unitOfWork.MeetingActionItemRepository.AddAsync(row, ct);
+            created.Add(row);
+        }
+
+        return created;
+    }
+
+    /// <summary>
+    /// Tell each person the meeting gave work to.
+    ///
+    /// Only rows that RESOLVED to a user: an unmatched owner has nobody to notify, and notifying
+    /// the host instead would turn "somebody said Nhi" into "you have a task".
+    ///
+    /// Failures are logged and swallowed. The minutes are approved and the tasks are committed by
+    /// the time this runs; losing a notification must not turn a successful approval into an error
+    /// the host has to retry.
+    /// </summary>
+    private async Task NotifyAssigneesAsync(
+        Guid roomId, IReadOnlyCollection<MeetingActionItem> created, CancellationToken ct)
+    {
+        if (created.Count == 0) return;
+
+        if (_notificationClient is null)
+        {
+            _logger.LogInformation(
+                "action_item_notification_skipped: reason=client_unavailable RoomId={RoomId}", roomId);
+            return;
+        }
+
+        var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+        var title = room?.Title ?? "Meeting";
+        var link = $"{_frontendBaseUrl}/room/{roomId}";
+
+        foreach (var item in created.Where(item => item.AssigneeUserId.HasValue))
+        {
+            try
+            {
+                var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+                {
+                    UserId = item.AssigneeUserId!.Value.ToString(),
+                    Type = ActionItemAssignedNotificationType,
+                    Title = $"You were given a task in \"{title}\"",
+                    Body = item.Task,
+                    ActionUrl = link
+                };
+                // Exactly the four fields NotificationValidator declares for this type. An
+                // undeclared field would reject the whole payload, not be ignored.
+                request.Metadata.Add("room_id", roomId.ToString());
+                request.Metadata.Add("room_title", title);
+                request.Metadata.Add("action_item_id", item.Id.ToString());
+                request.Metadata.Add("task", item.Task);
+
+                await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+
+                // The success side too, so "it fired and something downstream dropped it" can be
+                // told apart from "it never fired" — the distinction that took four notification
+                // types months to make.
+                _logger.LogInformation(
+                    "action_item_notification_sent: RoomId={RoomId} UserId={UserId} ItemId={ItemId}",
+                    roomId, item.AssigneeUserId, item.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Failed to notify {UserId} about action item {ItemId}. The task itself is unaffected.",
+                    item.AssigneeUserId, item.Id);
+            }
         }
     }
 
