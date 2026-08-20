@@ -45,6 +45,7 @@ public static class AssistantMapper
             Status = entity.Status,
             CreatedAt = entity.CreatedAt,
             CompletedAt = entity.CompletedAt,
+            SourcesJson = entity.SourcesJson,
         };
     }
 }
