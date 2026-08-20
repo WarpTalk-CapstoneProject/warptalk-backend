@@ -505,6 +505,15 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.CreatedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("created_by");
+            // The column this context could not name, and the outage it caused. UpdatedAt was
+            // added to the entity with the artifact_updated_at migration but never mapped here,
+            // so EF asked Postgres for "UpdatedAt" and got 42703 — on every SELECT that touches
+            // an artifact, which is every meeting listing. History and Schedules both went to an
+            // error state and the message blamed the service rather than the query.
+            //
+            // The two comments already in this block say exactly this will happen. Comments did
+            // not stop it; MappedColumnNamesTests does.
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             // WT-473. Explicit, like every other column here: this context hand-maps each one, and
             // a missing HasColumnName 500s every SELECT over the table rather than failing loudly
