@@ -27,6 +27,11 @@ public class LiveKitEgressService : ILiveKitEgressService
     private readonly string _apiSecret;
     private readonly string _host;
     private readonly object? _s3Output;
+    /// <summary>
+    /// Base URL of our own recording template, or null to use LiveKit's built-in layout.
+    /// Read once here, like the S3 output beside it.
+    /// </summary>
+    private readonly string? _templateBaseUrl;
     private readonly ILogger<LiveKitEgressService> _logger;
 
     public LiveKitEgressService(HttpClient httpClient, IConfiguration configuration, ILogger<LiveKitEgressService> logger)
@@ -38,6 +43,7 @@ public class LiveKitEgressService : ILiveKitEgressService
             ?? throw new InvalidOperationException("LiveKit:Url is required.");
         _host = ToHttpApiUrl(configuredUrl);
         _s3Output = BuildS3Output(configuration);
+        _templateBaseUrl = configuration["LiveKit:Egress:TemplateBaseUrl"]?.TrimEnd('/');
         _logger = logger;
     }
 
@@ -46,13 +52,40 @@ public class LiveKitEgressService : ILiveKitEgressService
         try
         {
             var filepath = $"recordings/{roomName}-{DateTime.UtcNow:yyyyMMddHHmmss}.mp4";
-            var payload = new
-            {
-                room_name = roomName,
-                layout = "grid",
-                audio_only = false,
-                file_outputs = new[] { new { filepath, s3 = _s3Output } }
-            };
+
+            // WHY A CUSTOM TEMPLATE, WHEN ONE IS CONFIGURED
+            //
+            // RoomComposite records the MIXED room, and tts_worker publishes one bot per
+            // (speaker, target language) INTO that room — so the default layout produces a file
+            // where the original speech and every translation play at once. No field on this
+            // request can filter that: RoomComposite has no include/exclude list
+            // (livekit/egress#923 is the open request for one). The supported way is a template
+            // page of ours, which the egress opens in Chrome and whose SUBSCRIPTIONS decide what
+            // is encoded — see warptalk-web /egress/composite.
+            //
+            // OFF UNLESS CONFIGURED, deliberately. A template that fails to load records a blank
+            // page for the length of the meeting, which is worse than the soup it replaces, and
+            // this path cannot be exercised without a real egress. Setting
+            // LiveKit:Egress:TemplateBaseUrl is the act that turns it on, and clearing it is the
+            // whole rollback.
+            object payload = string.IsNullOrWhiteSpace(_templateBaseUrl)
+                ? new
+                {
+                    room_name = roomName,
+                    layout = "grid",
+                    audio_only = false,
+                    file_outputs = new[] { new { filepath, s3 = _s3Output } }
+                }
+                : new
+                {
+                    room_name = roomName,
+                    layout = "grid",
+                    audio_only = false,
+                    // LiveKit appends ?url=&token=&layout= to this; the page reads them with the
+                    // egress SDK helpers.
+                    custom_base_url = _templateBaseUrl,
+                    file_outputs = new[] { new { filepath, s3 = _s3Output } }
+                };
 
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_host}/twirp/livekit.Egress/StartRoomCompositeEgress")
             {
