@@ -35,6 +35,14 @@ public static class NotificationConstants
     public const string TypeMeetingStarted = "MEETING_STARTED";
     public const string TypeMeetingSummaryReady = "MEETING_SUMMARY_READY";
 
+    /// <summary>
+    /// Somebody was given work by an approved biên bản. Registered in the same commit as its
+    /// producer, because this constant existing without a schema entry below is exactly how
+    /// MEETING_STARTED, MEETING_SUMMARY_READY, MEETING_INVITED and WORKSPACE_ROLE_CHANGED each
+    /// spent months being created, logged as sent, and discarded at validation.
+    /// </summary>
+    public const string TypeActionItemAssigned = "ACTION_ITEM_ASSIGNED";
+
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
     public const string TypeSystem = "SYSTEM";

@@ -11,6 +11,8 @@ public interface IUnitOfWork : IDisposable
     ITranslationRoomInvitationRepository TranslationRoomInvitationRepository { get; }
     ITranslationRoomFeedbackRepository TranslationRoomFeedbackRepository { get; }
     ITranslationRoomSeriesRepository TranslationRoomSeriesRepository { get; }
+    IMeetingMinutesRepository MeetingMinutesRepository { get; }
+    IMeetingActionItemRepository MeetingActionItemRepository { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
     Task BeginTransactionAsync(CancellationToken ct = default);
     Task CommitTransactionAsync(CancellationToken ct = default);

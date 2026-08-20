@@ -63,6 +63,20 @@ public static class NotificationValidator
             }
         },
         {
+            // Every field the producer sends is declared. An UNDECLARED field does not get
+            // ignored — it rejects the whole payload with UNSUPPORTED_PAYLOAD_FIELD.
+            NotificationConstants.TypeActionItemAssigned, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "room_id", JsonValueKind.String },
+                    { "room_title", JsonValueKind.String },
+                    { "action_item_id", JsonValueKind.String },
+                    { "task", JsonValueKind.String }
+                }
+            }
+        },
+        {
             "TRANSCRIPT_READY", new PayloadSchema
             {
                 RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } }
