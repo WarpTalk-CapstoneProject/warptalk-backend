@@ -169,7 +169,10 @@ public class TranslationRoomAudioRouteController : ControllerBase
 
         if (result.IsSuccess)
         {
-            return Ok(new { Enabled = result.Value });
+            // Source travels with the value: "on because the host said so" and "on because that
+            // is what this deployment does" are the same switch position and different sentences
+            // underneath it, and the UI cannot write the right one without being told which.
+            return Ok(new { result.Value!.Enabled, result.Value.Source });
         }
 
         return NotFound(new { Error = result.Error, Code = result.ErrorCode });
@@ -191,7 +194,9 @@ public class TranslationRoomAudioRouteController : ControllerBase
 
         if (result.IsSuccess)
         {
-            return Ok(new { Enabled = result.Value });
+            // Always "room": succeeding here IS the act of setting an override, whatever the
+            // deployment default happens to be. Shaped like the GET so one client type covers both.
+            return Ok(new { Enabled = result.Value, Source = FlashModeSources.Room });
         }
 
         // A non-host gets 403, not 400: the request was well formed and they are simply not

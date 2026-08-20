@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 
 namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 
@@ -25,8 +26,15 @@ namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 /// </summary>
 public interface IRoomFlashModeService
 {
-    /// <summary>Whether flash mode is currently on for this room. False when it was never set.</summary>
-    Task<Result<bool>> GetAsync(Guid roomId, Guid userId, CancellationToken ct = default);
+    /// <summary>
+    /// Whether this room is streaming audio during speech RIGHT NOW, and where that answer came
+    /// from — a host's override, the deployment default, or neither.
+    ///
+    /// It returned a bare bool meaning "an override exists and says on", which is a different
+    /// question from the one the switch is asking. While the deployment defaulted to off the two
+    /// agreed; once it defaulted to on, every untouched room reported "off" while streaming.
+    /// </summary>
+    Task<Result<FlashModeStateDto>> GetAsync(Guid roomId, Guid userId, CancellationToken ct = default);
 
     /// <summary>
     /// Turn flash mode on or off for the whole room. HOST ONLY.

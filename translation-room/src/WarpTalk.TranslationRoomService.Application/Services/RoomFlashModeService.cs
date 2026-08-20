@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -19,11 +20,41 @@ public class RoomFlashModeService : IRoomFlashModeService
     private static string KeyFor(Guid roomId) => $"translationRoom:{roomId}:flash_mode";
 
     /// <summary>
+    /// What livekit_ingress_worker publishes its own deployment default to, every heartbeat.
+    ///
+    /// The override key above answers "did a host choose something". This answers "what happens
+    /// to a room where nobody did" — and without it this service reported "off" for every
+    /// untouched room, which was true of the override and false of the room.
+    ///
+    /// Read rather than mirrored into this service's configuration: the value governs behaviour
+    /// on the AI side, and a second setting of the same name in a second service is a setting
+    /// that drifts.
+    /// </summary>
+    private const string DeploymentDefaultKey = "warptalk:stt:flash_mode_default";
+
+    /// <summary>
     /// Written as "on"/"off" rather than "true"/"false". The reader accepts both, and this
     /// spelling is what its own log lines and any redis-cli inspection will show.
     /// </summary>
     private const string On = "on";
     private const string Off = "off";
+
+    /// <summary>
+    /// Every spelling livekit_ingress_worker._flash_mode_enabled accepts, so a value set by hand
+    /// with redis-cli reads the same on both sides. Anything else is treated as unset rather than
+    /// as false — guessing at a typo is how a room ends up configured as nobody intended.
+    /// </summary>
+    private static readonly string[] TrueSpellings = ["on", "true", "1", "enabled", "yes"];
+    private static readonly string[] FalseSpellings = ["off", "false", "0", "disabled", "no"];
+
+    private static bool? Read(string? raw)
+    {
+        var value = raw?.Trim();
+        if (string.IsNullOrEmpty(value)) return null;
+        if (TrueSpellings.Contains(value, StringComparer.OrdinalIgnoreCase)) return true;
+        if (FalseSpellings.Contains(value, StringComparer.OrdinalIgnoreCase)) return false;
+        return null;
+    }
 
     /// <summary>
     /// Long enough to outlive any meeting, short enough that abandoned rooms do not accumulate
@@ -49,28 +80,47 @@ public class RoomFlashModeService : IRoomFlashModeService
         _logger = logger;
     }
 
-    public async Task<Result<bool>> GetAsync(Guid roomId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<FlashModeStateDto>> GetAsync(
+        Guid roomId, Guid userId, CancellationToken ct = default)
     {
         // Readable by any participant, so a guest's UI can show the state the host chose rather
         // than guessing. Still gated: this says something about a meeting they must be in.
         var participant = await _participants.GetByRoomAndUserAsync(roomId, userId, ct);
         if (participant == null)
         {
-            return Result.Failure<bool>(
+            return Result.Failure<FlashModeStateDto>(
                 AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
         }
 
         try
         {
-            var raw = await _redis.StringGetAsync(KeyFor(roomId));
-            return Result.Success(string.Equals(raw?.Trim(), On, StringComparison.OrdinalIgnoreCase));
+            // The host's own choice outranks everything, exactly as it does on the AI side.
+            var overridden = Read(await _redis.StringGetAsync(KeyFor(roomId)));
+            if (overridden.HasValue)
+            {
+                return Result.Success(new FlashModeStateDto(overridden.Value, FlashModeSources.Room));
+            }
+
+            // Nobody chose, so the room does whatever the deployment does — which is the fact
+            // this service used to have no way of knowing, and therefore used to report as "off".
+            var deployment = Read(await _redis.StringGetAsync(DeploymentDefaultKey));
+            if (deployment.HasValue)
+            {
+                return Result.Success(
+                    new FlashModeStateDto(deployment.Value, FlashModeSources.Deployment));
+            }
+
+            // No override and no worker has published a default recently. Say so rather than
+            // asserting a state: false here is something to render, not something observed.
+            return Result.Success(new FlashModeStateDto(false, FlashModeSources.Unknown));
         }
         catch (Exception ex)
         {
-            // Never an error to the caller. The AI side falls back to the deployment default when
-            // it cannot read this key, so the honest answer for a UI is "not on for this room".
+            // Never an error to the caller — a switch that cannot be read must not take the
+            // meeting panel down with it. But it is reported as unknown rather than as off,
+            // because "off" is a claim about the room and this code just failed to make one.
             _logger.LogWarning(ex, "Could not read flash mode for room {RoomId}.", roomId);
-            return Result.Success(false);
+            return Result.Success(new FlashModeStateDto(false, FlashModeSources.Unknown));
         }
     }
 
