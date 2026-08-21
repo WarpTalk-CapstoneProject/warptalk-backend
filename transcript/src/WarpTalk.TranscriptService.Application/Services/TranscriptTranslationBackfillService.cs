@@ -205,20 +205,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
 
                 await db.StreamAddAsync(
                     RequestStream,
-                    [
-                        new NameValueEntry("request_id", requestId.ToString()),
-                        new NameValueEntry("transcript_id", transcriptId.ToString()),
-                        // The consumer resolves a room from the payload, so the worker has to be
-                        // able to echo one back — see TranscriptConsumerPollingPolicy.TryResolveRoomId.
-                        new NameValueEntry("meeting_id", work.Transcript.TranslationRoomId.ToString()),
-                        new NameValueEntry("workspace_id", work.Transcript.WorkspaceId.ToString()),
-                        new NameValueEntry("target_lang", work.Language),
-                        new NameValueEntry("status_key", markerKey),
-                        new NameValueEntry("segments_json", JsonSerializer.Serialize(payload)),
-                        new NameValueEntry(
-                            "timestamp_ms",
-                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
-                    ],
+                    RequestEntries(requestId, work.Transcript, work.Language, markerKey, payload),
                     maxLength: 10000,
                     useApproximateMaxLength: true);
 
@@ -349,6 +336,108 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         }
     }
 
+    public async Task<int> RequestRetranslationAsync(Guid segmentId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var segment = await _unitOfWork.TranscriptSegments.GetByIdAsync(segmentId, cancellationToken);
+            if (segment == null || !IsTranslatableSegment(segment))
+            {
+                return 0;
+            }
+
+            var transcript = await _unitOfWork.Transcripts.GetByIdAsync(segment.TranscriptId, cancellationToken);
+            if (transcript == null)
+            {
+                return 0;
+            }
+
+            // Only the CURRENT link per language. A superseded one describes text nothing serves,
+            // and redoing it would spend a translation to replace a row already replaced.
+            var links = (await _unitOfWork.SegmentTranslationLinks.FindAsync(
+                    l => l.SegmentId == segmentId && l.IsCurrent, cancellationToken))
+                .ToList();
+
+            if (links.Count == 0)
+            {
+                return 0;
+            }
+
+            var sourceLanguage = NormalizeLanguage(segment.OriginalLanguage);
+            var db = _redis.GetDatabase();
+            var requestId = Guid.NewGuid();
+            var queued = 0;
+
+            foreach (var link in links)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var language = NormalizeLanguage(link.TargetLanguage);
+                if (language.Length == 0 || language == sourceLanguage)
+                {
+                    continue;
+                }
+
+                var payload = new[]
+                {
+                    new BackfillSegmentPayload(
+                        segmentId.ToString(),
+                        segment.OriginalText!.Trim(),
+                        sourceLanguage,
+                        link.TranslationContentId.ToString()),
+                };
+
+                // No status key. The run marker drives the reader's "translating the rest of this
+                // meeting" progress bar, and one corrected line is not that — it would show a bar
+                // over a count that never moves, because nothing about this line is missing.
+                await db.StreamAddAsync(
+                    RequestStream,
+                    RequestEntries(requestId, transcript, language, markerKey: string.Empty, payload),
+                    maxLength: 10000,
+                    useApproximateMaxLength: true);
+
+                queued++;
+            }
+
+            _logger.LogInformation(
+                "Queued a retranslation of segment {SegmentId} into {Languages} language(s) after a correction (request {RequestId})",
+                segmentId,
+                queued,
+                requestId);
+
+            return queued;
+        }
+        catch (Exception ex)
+        {
+            // The correction itself is already committed. Losing the retranslation leaves the
+            // transcript right and its translations stale, which is exactly the state that existed
+            // before this path was wired — a bad outcome, and not one worth failing a saved edit over.
+            _logger.LogError(ex, "Could not queue a retranslation for segment {SegmentId}", segmentId);
+            return 0;
+        }
+    }
+
+    private static NameValueEntry[] RequestEntries(
+        Guid requestId,
+        Transcript transcript,
+        string targetLanguage,
+        string markerKey,
+        IReadOnlyList<BackfillSegmentPayload> payload) =>
+        [
+            new NameValueEntry("request_id", requestId.ToString()),
+            new NameValueEntry("transcript_id", transcript.Id.ToString()),
+            // The consumer resolves a room from the payload, so the worker has to be able to echo
+            // one back — see TranscriptConsumerPollingPolicy.TryResolveRoomId.
+            new NameValueEntry("meeting_id", transcript.TranslationRoomId.ToString()),
+            new NameValueEntry("workspace_id", transcript.WorkspaceId.ToString()),
+            new NameValueEntry("target_lang", targetLanguage),
+            new NameValueEntry("status_key", markerKey),
+            new NameValueEntry("segments_json", JsonSerializer.Serialize(payload)),
+            new NameValueEntry(
+                "timestamp_ms",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
+        ];
+
     private async Task TryMarkFailedAsync(Guid transcriptId, string targetLanguage)
     {
         try
@@ -385,5 +474,11 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
     private sealed record BackfillSegmentPayload(
         [property: System.Text.Json.Serialization.JsonPropertyName("segment_id")] string SegmentId,
         [property: System.Text.Json.Serialization.JsonPropertyName("text")] string Text,
-        [property: System.Text.Json.Serialization.JsonPropertyName("source_lang")] string SourceLang);
+        [property: System.Text.Json.Serialization.JsonPropertyName("source_lang")] string SourceLang,
+        /// <summary>
+        /// The translation_contents row this line already has in the target language, when the
+        /// line is being redone after a correction. Empty for an ordinary gap fill — the worker
+        /// reads its presence as "this is a retranslation".
+        /// </summary>
+        [property: System.Text.Json.Serialization.JsonPropertyName("previous_translation_content_id")] string PreviousTranslationContentId = "");
 }

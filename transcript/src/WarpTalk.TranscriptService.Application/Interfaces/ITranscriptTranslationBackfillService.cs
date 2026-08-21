@@ -47,4 +47,22 @@ public interface ITranscriptTranslationBackfillService
         Guid userId,
         string targetLanguage,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Re-translates one corrected line into every language it already had a translation in.
+    ///
+    /// Correcting what somebody said leaves each of that line's translations describing a sentence
+    /// nobody spoke. The old code published a message announcing exactly this and no worker read
+    /// the stream, so a correction has never once propagated: the transcript showed the fix and
+    /// every translation of it kept the mistake.
+    ///
+    /// Each request names the translation_contents row it replaces, so the result is stored as a
+    /// retranslation rather than as a first translation.
+    /// </summary>
+    /// <returns>How many languages were queued. Zero when the line has no translations to redo.</returns>
+    /// <remarks>
+    /// Authorization is the caller's. This is reached only after a correction has been accepted
+    /// and committed, and it deliberately does not re-ask a question that was already answered.
+    /// </remarks>
+    Task<int> RequestRetranslationAsync(Guid segmentId, CancellationToken cancellationToken = default);
 }
