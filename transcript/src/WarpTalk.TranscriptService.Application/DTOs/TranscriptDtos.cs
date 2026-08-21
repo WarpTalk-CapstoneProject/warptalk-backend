@@ -62,3 +62,32 @@ public record TranscriptTranslationDto(
     bool IsRetranslated,
     int? LatencyMs
 );
+
+/// <summary>
+/// How much of a transcript can actually be read in one language.
+///
+/// The live pipeline only ever produces the target language that was selected at that moment, so
+/// a meeting whose speakers switched targets mid-way has a different subset translated for each
+/// language — and a meeting where translation was never started has none at all. The reader's
+/// language picker was built from whatever happened to exist, which made every choice partial:
+/// picking English still showed the Japanese stretch in Japanese. These counts are what a client
+/// needs to say "this language is short by N lines" and to ask for those N to be filled in.
+/// </summary>
+/// <param name="TargetLanguage">Bare ISO-639-1, as stored on SegmentTranslationLink.</param>
+/// <param name="TotalSegments">Real segments — control markers such as __MEETING_END__ excluded.</param>
+/// <param name="SpokenInTarget">Segments already spoken in this language; their original text IS the answer.</param>
+/// <param name="Translated">Segments carrying a current translation link into this language.</param>
+/// <param name="Missing">Segments that are neither — the backfill's work list.</param>
+/// <param name="Status">idle | running | complete | failed. "complete" is decided by Missing == 0,
+/// not by the run marker, so a finished backfill stops reading as running the moment its last line lands.</param>
+public record TranscriptLanguageCoverageDto(
+    string TargetLanguage,
+    int TotalSegments,
+    int SpokenInTarget,
+    int Translated,
+    int Missing,
+    string Status
+);
+
+/// <summary>Body of POST .../translations/backfill.</summary>
+public record BackfillTranscriptLanguageRequest(string TargetLanguage);

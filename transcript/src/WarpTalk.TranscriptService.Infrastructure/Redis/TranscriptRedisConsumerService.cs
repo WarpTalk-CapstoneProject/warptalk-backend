@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranscriptService.Application.Services;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
 
@@ -489,6 +490,22 @@ public class TranscriptRedisConsumerService : BackgroundService
             ? parsedLatency
             : (int?)null;
 
+        // Whether this translation REPLACES an earlier one of the same line, and which row it
+        // replaces. Both columns have existed since translation_contents was designed and neither
+        // was ever written: is_retranslated was hardcoded false here and
+        // previous_translation_content_id was never set at all, so the correction chain the schema
+        // models had no rows in it — a corrected line's translation history was unrecoverable.
+        //
+        // Only a producer can tell the two apart. The live pipeline is always translating a line
+        // for the first time and sends neither field; the post-correction path knows it is redoing
+        // one and names the row it supersedes. Absent stays false, so every existing producer
+        // behaves exactly as before.
+        var isRetranslated = values.GetValueOrDefault("is_retranslated") == "1";
+        var previousTranslationContentId =
+            Guid.TryParse(values.GetValueOrDefault("previous_translation_content_id"), out var parsedPrevious)
+                ? parsedPrevious
+                : (Guid?)null;
+
         if (string.IsNullOrWhiteSpace(translatedText))
         {
             return true; // flush/empty messages carry no translation to persist
@@ -540,7 +557,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                     // one measurement with another sentence's timing — the stored number belongs
                     // to the translation that produced the text.
                     LatencyMs = latencyMs,
-                    IsRetranslated = false,
+                    IsRetranslated = isRetranslated,
+                    PreviousTranslationContentId = previousTranslationContentId,
                     Status = "done"
                 };
                 await unitOfWork.TranslationContents.AddAsync(content, cancellationToken);
@@ -797,9 +815,10 @@ public class TranscriptRedisConsumerService : BackgroundService
         return Guid.TryParse(guidPart, out segmentId);
     }
 
-    private static string Md5Hex(string text)
-    {
-        var bytes = MD5.HashData(Encoding.UTF8.GetBytes(text));
-        return Convert.ToHexStringLower(bytes);
-    }
+    /// <summary>
+    /// Delegates to <see cref="TranslationTextHash"/>, which is now shared with the correction
+    /// service — two private copies of one unique index's key drift, and the way that surfaces is
+    /// a duplicate-key exception on a path nobody associates with hashing.
+    /// </summary>
+    private static string Md5Hex(string text) => TranslationTextHash.Of(text);
 }
