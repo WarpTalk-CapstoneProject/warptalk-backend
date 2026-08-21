@@ -175,7 +175,18 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             var claimed = await db.StringSetAsync(markerKey, StatusRunning, RunMarkerTtl, When.NotExists);
             if (!claimed)
             {
-                return Result.Success(await DescribeAsync(work, cancellationToken));
+                // Unless the marker is a corpse. A run that failed leaves one behind for the rest
+                // of its TTL, and refusing to start on that basis would tell the reader to try
+                // again beside a button that cannot: twenty minutes of a retry that silently does
+                // nothing. Two callers racing here both proceed, which costs a duplicate queue at
+                // worst; a stuck marker costs the feature.
+                var existing = await db.StringGetAsync(markerKey);
+                if (existing != StatusFailed)
+                {
+                    return Result.Success(await DescribeAsync(work, cancellationToken));
+                }
+
+                await db.StringSetAsync(markerKey, StatusRunning, RunMarkerTtl);
             }
 
             var requestId = Guid.NewGuid();
@@ -227,6 +238,11 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error queueing language backfill for transcript {TranscriptId}", transcriptId);
+
+            // A marker claimed a moment ago and then abandoned would report a run that is not
+            // happening until its TTL expires. Say what actually became of it instead.
+            await TryMarkFailedAsync(transcriptId, targetLanguage);
+
             return Result.Failure<TranscriptLanguageCoverageDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
@@ -330,6 +346,19 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             // the answer, the marker only says whether someone is already working on it.
             _logger.LogWarning(ex, "Could not read the backfill marker for transcript {TranscriptId}", work.Transcript.Id);
             return StatusIdle;
+        }
+    }
+
+    private async Task TryMarkFailedAsync(Guid transcriptId, string targetLanguage)
+    {
+        try
+        {
+            var key = RunMarkerKey(transcriptId, targetLanguage);
+            await _redis.GetDatabase().StringSetAsync(key, StatusFailed, RunMarkerTtl);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not mark the backfill failed for transcript {TranscriptId}", transcriptId);
         }
     }
 

@@ -178,6 +178,29 @@ public class TranscriptTranslationBackfillServiceTests
     }
 
     [Fact]
+    public async Task RequestBackfill_StartsAgainOverTheCorpseOfAFailedRun()
+    {
+        // A run that failed leaves its marker behind for the rest of a 20 minute TTL. Treating
+        // that as "already running" puts a Try again button in front of the reader that silently
+        // does nothing for the rest of the window.
+        var vietnamese = Segment("một", "vi");
+        var service = Build([vietnamese], [], out var database);
+
+        database
+            .StringSetAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<TimeSpan?>(), When.NotExists)
+            .Returns(false);
+        database.StringGetAsync(Arg.Any<RedisKey>(), Arg.Any<CommandFlags>())
+            .Returns(new RedisValue(TranscriptTranslationBackfillService.StatusFailed));
+
+        var result = await service.RequestBackfillAsync(TranscriptId, UserId, "en");
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(
+            database.ReceivedCalls(),
+            c => c.GetMethodInfo().Name == nameof(IDatabase.StreamAddAsync));
+    }
+
+    [Fact]
     public async Task RequestBackfill_RefusesAnEmptyLanguageRatherThanQueueingAgainstAnEmptyKey()
     {
         var service = Build([Segment("một", "vi")], [], out _);
