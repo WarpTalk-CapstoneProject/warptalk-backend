@@ -62,6 +62,7 @@ builder.Services.AddScoped<IGlossaryService, GlossaryService>();
 builder.Services.AddScoped<IGlobalGlossaryService, GlobalGlossaryService>();
 builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
+builder.Services.AddScoped<ITranscriptTranslationBackfillService, TranscriptTranslationBackfillService>();
 
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]

@@ -35,7 +35,10 @@ public static class TranscriptCorrectionMapper
             CorrectedText = dto.CorrectedText,
             CorrectionType = dto.CorrectionType ?? "STT",
             Status = "PENDING",
-            TriggeredRetranslation = true,
+            // False here, and decided by TranscriptCorrectionService, which is the only place that
+            // knows. This was hardcoded true while nothing retranslated anything — the column
+            // asserted, on every correction ever made, a thing that had never happened once.
+            TriggeredRetranslation = false,
             CreatedAt = DateTime.UtcNow
         };
     }
