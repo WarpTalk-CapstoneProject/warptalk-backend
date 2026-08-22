@@ -238,6 +238,25 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
                 await notifier.BroadcastAssistantResponsePendingAsync(request.MeetingRoomId, request.Id, ct);
             }
 
+            // The answer, as it is written. Until this the room saw nothing between the question
+            // and the finished reply — the message is not persisted until the turn is over — so a
+            // long answer looked like a stall while the widget beside it was visibly writing.
+            //
+            // Broadcast, not stored: this is a draft. The persisted message that follows is what
+            // everyone keeps, and it is the one that survives a reload or a late joiner.
+            if (resultType == "chunk")
+            {
+                var delta = fields.GetValueOrDefault("content", "");
+                if (!string.IsNullOrEmpty(delta))
+                {
+                    await notifier.BroadcastAssistantChunkAsync(
+                        request.MeetingRoomId,
+                        request.Id,
+                        delta,
+                        ct);
+                }
+            }
+
             // The tool name was already on the message and was being dropped. It is the only
             // evidence the room has that WarpBot is working rather than gone, and it is what the
             // client re-arms its deadline on.
