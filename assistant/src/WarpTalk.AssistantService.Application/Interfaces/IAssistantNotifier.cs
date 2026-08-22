@@ -10,8 +10,14 @@ public interface IAssistantNotifier
 {
     Task BroadcastMessageStartedAsync(Guid conversationId, Guid messageId, CancellationToken ct = default);
     Task BroadcastMessageChunkAsync(Guid conversationId, Guid messageId, string delta, CancellationToken ct = default);
-    Task BroadcastToolCallStartedAsync(Guid conversationId, Guid messageId, string toolName, CancellationToken ct = default);
-    Task BroadcastToolCallCompletedAsync(Guid conversationId, Guid messageId, string toolName, string status, CancellationToken ct = default);
+    /// <param name="toolDetail">
+    /// What the call is ABOUT — the phrase searched, the file opened, the site fetched. Empty
+    /// when the call has no subject worth naming; never a placeholder. The tool name alone says
+    /// a search happened, this says which one, which is what makes a wrong turn visible while
+    /// it is still running.
+    /// </param>
+    Task BroadcastToolCallStartedAsync(Guid conversationId, Guid messageId, string toolName, string toolDetail, CancellationToken ct = default);
+    Task BroadcastToolCallCompletedAsync(Guid conversationId, Guid messageId, string toolName, string status, string toolDetail, CancellationToken ct = default);
     Task BroadcastMessageCompletedAsync(Guid conversationId, AssistantMessageDto message, CancellationToken ct = default);
     /// <summary>
     /// The assistant is asking the user to choose, rather than guessing.

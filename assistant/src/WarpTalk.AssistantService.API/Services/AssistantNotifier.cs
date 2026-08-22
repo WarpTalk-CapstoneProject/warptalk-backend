@@ -26,11 +26,15 @@ public class AssistantNotifier : IAssistantNotifier
     public Task BroadcastMessageChunkAsync(Guid conversationId, Guid messageId, string delta, CancellationToken ct = default) =>
         Group(conversationId).SendAsync("AssistantMessageChunk", new { conversationId, messageId, delta }, ct);
 
-    public Task BroadcastToolCallStartedAsync(Guid conversationId, Guid messageId, string toolName, CancellationToken ct = default) =>
-        Group(conversationId).SendAsync("AssistantToolCallStarted", new { conversationId, messageId, toolName }, ct);
+    public Task BroadcastToolCallStartedAsync(Guid conversationId, Guid messageId, string toolName, string toolDetail, CancellationToken ct = default) =>
+        Group(conversationId).SendAsync("AssistantToolCallStarted", new { conversationId, messageId, toolName, toolDetail }, ct);
 
-    public Task BroadcastToolCallCompletedAsync(Guid conversationId, Guid messageId, string toolName, string status, CancellationToken ct = default) =>
-        Group(conversationId).SendAsync("AssistantToolCallCompleted", new { conversationId, messageId, toolName, status }, ct);
+    // The detail rides on the COMPLETED event too, and not only for symmetry: the hosted web
+    // search publishes its step before OpenAI has said what it is searching for, so this is
+    // often the first event that can name the target. The client fills a missing detail in
+    // from here rather than treating the two events as unrelated.
+    public Task BroadcastToolCallCompletedAsync(Guid conversationId, Guid messageId, string toolName, string status, string toolDetail, CancellationToken ct = default) =>
+        Group(conversationId).SendAsync("AssistantToolCallCompleted", new { conversationId, messageId, toolName, status, toolDetail }, ct);
 
     public Task BroadcastMessageCompletedAsync(Guid conversationId, AssistantMessageDto message, CancellationToken ct = default) =>
         Group(conversationId).SendAsync("AssistantMessageCompleted", message, ct);
