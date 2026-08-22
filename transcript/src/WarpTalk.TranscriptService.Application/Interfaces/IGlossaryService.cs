@@ -9,7 +9,15 @@ namespace WarpTalk.TranscriptService.Application.Interfaces;
 
 public interface IGlossaryService
 {
-    Task<Result> CreateGlossaryAsync(CreateGlossaryDto dto, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// WT-558: returns the glossary it created, so the caller can go on to put terms in it.
+    ///
+    /// It used to answer a bare 201 with no body, which meant a client that had just made a
+    /// glossary had no id for it and had to re-list the workspace's glossaries and guess which
+    /// one was new by name. Adding terms while creating — the thing the ticket asks for — is not
+    /// buildable on a guess.
+    /// </summary>
+    Task<Result<GlossaryDto>> CreateGlossaryAsync(CreateGlossaryDto dto, CancellationToken cancellationToken = default);
     Task<Result<GlossaryDto>> GetGlossaryByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Result<IEnumerable<GlossaryDto>>> GetGlossariesByWorkspaceIdAsync(Guid workspaceId, CancellationToken cancellationToken = default);
     Task<Result> UpdateGlossaryAsync(Guid id, UpdateGlossaryDto dto, CancellationToken cancellationToken = default);
