@@ -45,6 +45,23 @@ public interface IMeetingChatNotifier
         Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default);
 
     /// <summary>
+    /// A tool WarpBot reached for has finished, and what it was aimed at.
+    ///
+    /// Not a nicety: OpenAI's HOSTED web search never enters the worker's dispatch loop, so there
+    /// is no function call to report. The worker publishes its step by hand off the response
+    /// stream, and in production the event that carries the searched target is the COMPLETED one —
+    /// the started event fires before the item naming the query is on the wire, so it goes out
+    /// with an empty detail.
+    ///
+    /// The meeting consumer dropped this type entirely, so the room's whole record of a
+    /// web-search turn was discarded: for the length of the search the trail sat on "Reading your
+    /// question" while the widget beside it named every site. This is the event that makes the two
+    /// surfaces say the same thing.
+    /// </summary>
+    Task BroadcastAssistantToolCallCompletedAsync(
+        Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default);
+
+    /// <summary>
     /// The model's own account of the step it is taking — a heading and the sentence under it.
     /// A tool step says what ran and never why, and between two calls there is no tool at all.
     /// </summary>

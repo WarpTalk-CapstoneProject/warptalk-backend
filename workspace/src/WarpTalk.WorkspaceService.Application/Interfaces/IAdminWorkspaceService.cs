@@ -20,6 +20,14 @@ public interface IAdminWorkspaceService
 
     Task<Result<AdminWorkspaceDetailDto>> GetDetailAsync(Guid workspaceId, CancellationToken ct = default);
 
+    /// <summary>
+    /// The same detail addressed by the workspace's own slug, so the portal's URL can name the
+    /// workspace rather than carry its primary key (WT-560). Returns NotFound for an unknown or
+    /// blank slug, exactly as the id lookup does — a caller must not be able to tell the two
+    /// kinds of miss apart.
+    /// </summary>
+    Task<Result<AdminWorkspaceDetailDto>> GetDetailBySlugAsync(string slug, CancellationToken ct = default);
+
     Task<Result<AdminWorkspaceDetailDto>> SuspendAsync(
         Guid workspaceId,
         string reason,

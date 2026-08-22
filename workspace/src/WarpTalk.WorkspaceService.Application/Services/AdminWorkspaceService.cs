@@ -139,6 +139,32 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         }
     }
 
+    public async Task<Result<AdminWorkspaceDetailDto>> GetDetailBySlugAsync(string slug, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(slug))
+        {
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+        }
+
+        try
+        {
+            var row = await _unitOfWork.WorkspaceRepository.GetAdminDetailBySlugAsync(slug, ct);
+            var detail = await BuildDetailFromRowAsync(row, ct);
+            return detail is null
+                ? Result.Failure<AdminWorkspaceDetailDto>(
+                    WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound)
+                : Result.Success(detail);
+        }
+        catch (Exception ex)
+        {
+            // The slug is the caller's, so it is logged as a parameter rather than interpolated.
+            _logger.LogError(ex, "Admin workspace detail query by slug failed. Slug: {Slug}", slug);
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspace, ErrorCodes.InternalServerError);
+        }
+    }
+
     public Task<Result<AdminWorkspaceDetailDto>> SuspendAsync(
         Guid workspaceId,
         string reason,
@@ -430,13 +456,25 @@ public class AdminWorkspaceService : IAdminWorkspaceService
     private async Task<AdminWorkspaceDetailDto?> BuildDetailAsync(Guid workspaceId, CancellationToken ct)
     {
         var row = await _unitOfWork.WorkspaceRepository.GetAdminDetailAsync(workspaceId, ct);
+        return await BuildDetailFromRowAsync(row, ct);
+    }
+
+    /// <summary>
+    /// Everything after the row is found, so a lookup by slug produces exactly the detail a
+    /// lookup by id does. Keyed on the row's own id rather than on whatever the caller was
+    /// holding — the two must not be able to drift.
+    /// </summary>
+    private async Task<AdminWorkspaceDetailDto?> BuildDetailFromRowAsync(
+        WorkspaceDirectoryRow? row,
+        CancellationToken ct)
+    {
         if (row is null) return null;
 
         var owner = await _authIdentityClient.GetUserByIdAsync(row.OwnerId, ct);
         // Ordered and limited in SQL by the audit repository rather than in memory, and scoped
         // by entity so a platform-wide action never leaks into a workspace's history.
         var history = await _adminAuditLogRepository.GetForEntityAsync(
-            AdminAuditEntityTypes.Workspace, workspaceId, LifecycleHistoryLimit, ct);
+            AdminAuditEntityTypes.Workspace, row.Id, LifecycleHistoryLimit, ct);
 
         return AdminWorkspaceMapper.ToDetail(row, owner, history);
     }
