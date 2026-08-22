@@ -235,6 +235,18 @@ public class AssistantChatResultConsumerService : BackgroundService
                     ct);
                 break;
 
+            // The model narrating its own step. tool_detail carries the heading and content the
+            // paragraph — two existing fields rather than a schema change, because the shape is
+            // the same "one line about one step" every other event on this stream carries.
+            case "reasoning":
+                await notifier.BroadcastReasoningAsync(
+                    conversationId,
+                    requestId,
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    content,
+                    ct);
+                break;
+
             // The ask_user tool's output is a card, not text. Relayed on its own event so the
             // client never has to find questions inside an assistant message.
             case "question":

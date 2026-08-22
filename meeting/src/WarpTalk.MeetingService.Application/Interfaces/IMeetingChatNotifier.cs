@@ -25,4 +25,11 @@ public interface IMeetingChatNotifier
     /// </param>
     Task BroadcastAssistantToolCallStartedAsync(
         Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default);
+
+    /// <summary>
+    /// The model's own account of the step it is taking — a heading and the sentence under it.
+    /// A tool step says what ran and never why, and between two calls there is no tool at all.
+    /// </summary>
+    Task BroadcastAssistantReasoningAsync(
+        Guid roomId, Guid requestId, string title, string body, CancellationToken ct = default);
 }

@@ -18,6 +18,15 @@ public interface IAssistantNotifier
     /// </param>
     Task BroadcastToolCallStartedAsync(Guid conversationId, Guid messageId, string toolName, string toolDetail, CancellationToken ct = default);
     Task BroadcastToolCallCompletedAsync(Guid conversationId, Guid messageId, string toolName, string status, string toolDetail, CancellationToken ct = default);
+
+    /// <summary>
+    /// The model's own account of the step it is taking, as a heading and the sentence under it.
+    ///
+    /// Distinct from a tool call and it has to be: a tool step says WHAT ran and never why, and
+    /// between two calls — where the model is deciding what to do next — there is no tool to
+    /// report at all. That gap is the longest silent stretch of a slow turn.
+    /// </summary>
+    Task BroadcastReasoningAsync(Guid conversationId, Guid messageId, string title, string body, CancellationToken ct = default);
     Task BroadcastMessageCompletedAsync(Guid conversationId, AssistantMessageDto message, CancellationToken ct = default);
     /// <summary>
     /// The assistant is asking the user to choose, rather than guessing.

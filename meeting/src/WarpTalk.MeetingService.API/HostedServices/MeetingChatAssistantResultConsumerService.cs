@@ -213,6 +213,19 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         if (request == null || request.Status is "completed" or "failed")
             return;
 
+        // The model narrating its own step, which is neither a chunk of the answer nor a tool
+        // call — and which used to fall through this method entirely and be dropped.
+        if (resultType == "reasoning")
+        {
+            await notifier.BroadcastAssistantReasoningAsync(
+                request.MeetingRoomId,
+                request.Id,
+                fields.GetValueOrDefault("tool_detail", ""),
+                fields.GetValueOrDefault("content", ""),
+                ct);
+            return;
+        }
+
         if (resultType is "chunk" or "tool_call_started")
         {
             // "pending" is accepted for the rows already in the database when this shipped:
