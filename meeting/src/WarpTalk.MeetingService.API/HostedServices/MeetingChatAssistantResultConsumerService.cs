@@ -226,7 +226,16 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             return;
         }
 
-        if (resultType is "chunk" or "tool_call_started")
+        // `tool_call_completed` belongs with these and was missing, which is the whole of the
+        // reported defect. OpenAI's HOSTED web search never enters the worker's dispatch loop, so
+        // no function call is ever dispatched for it — the worker publishes the step by hand off
+        // the response stream, and the event carrying the searched target is the COMPLETED one
+        // (the started event fires before the item naming the query is on the wire, so its detail
+        // is empty). Falling through to the terminal check below, "tool_call_completed" is not
+        // "completed", so every web-search event a meeting produced was discarded: the room's
+        // trail sat on "Reading your question" for the length of the search while the widget
+        // beside it named every site it had read.
+        if (resultType is "chunk" or "tool_call_started" or "tool_call_completed")
         {
             // "pending" is accepted for the rows already in the database when this shipped:
             // they were written by the old spelling and would otherwise stay silent forever.
@@ -264,6 +273,19 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             if (resultType == "tool_call_started" && !string.IsNullOrWhiteSpace(toolName))
             {
                 await notifier.BroadcastAssistantToolCallStartedAsync(
+                    request.MeetingRoomId,
+                    request.Id,
+                    toolName,
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
+            }
+
+            // Sent as its own event rather than as another "started". The client folds it into the
+            // step already running for that tool — filling in a target the started event could not
+            // carry — and a second "started" would instead draw the same search twice.
+            if (resultType == "tool_call_completed" && !string.IsNullOrWhiteSpace(toolName))
+            {
+                await notifier.BroadcastAssistantToolCallCompletedAsync(
                     request.MeetingRoomId,
                     request.Id,
                     toolName,
