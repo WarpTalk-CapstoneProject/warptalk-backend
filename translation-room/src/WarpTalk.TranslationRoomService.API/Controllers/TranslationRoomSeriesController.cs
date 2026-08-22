@@ -87,12 +87,19 @@ public class TranslationRoomSeriesController : ControllerBase
     /// the PR body — rather than half-implemented behind an ambiguous button.
     /// </summary>
     [HttpPost("{id}/cancel")]
-    public async Task<IActionResult> CancelSeries(Guid id, CancellationToken ct)
+    public async Task<IActionResult> CancelSeries(
+        Guid id,
+        // WT-548: the occurrence the host is looking at while they press the button. It is KEPT.
+        // Optional so an older client, or a caller with no occurrence in hand, behaves exactly as
+        // before — but the meeting page always sends it, because "stop repeating" cancelling the
+        // meeting you are standing on is the bug this parameter exists to fix.
+        [FromQuery] Guid? keep,
+        CancellationToken ct)
     {
         var hostId = User.GetUserId();
         if (hostId == null) return Unauthorized();
 
-        var result = await _seriesService.CancelSeriesAsync(id, hostId.Value, ct);
+        var result = await _seriesService.CancelSeriesAsync(id, hostId.Value, keep, ct);
         if (!result.IsSuccess)
         {
             return result.ErrorCode switch

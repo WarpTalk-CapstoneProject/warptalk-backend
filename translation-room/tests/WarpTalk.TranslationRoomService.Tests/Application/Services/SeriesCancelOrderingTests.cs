@@ -134,4 +134,69 @@ public class SeriesCancelOrderingTests
         // One refused, one cancelled — and the loop did not stop at the refusal.
         result.Value!.CancelledOccurrenceCount.Should().Be(1);
     }
+
+    /// <summary>
+    /// WT-548 — "Stop repeating" was reported as deleting the meeting, and it was.
+    ///
+    /// The occurrence open on screen has not started, so it IS a future occurrence, so it was
+    /// cancelled along with every other one. Stopping a schedule means there are no MORE of
+    /// these, not that this one never happens.
+    /// </summary>
+    [Fact]
+    public async Task CancelSeriesAsync_ShouldNotCancel_TheOccurrenceTheHostIsLookingAt()
+    {
+        var seriesId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var series = ActiveSeries(seriesId, hostId);
+        var (service, seriesRepo, roomService, _) = CreateService(series);
+
+        var onScreen = new TranslationRoom { Id = Guid.NewGuid() };
+        var later = new TranslationRoom { Id = Guid.NewGuid() };
+        seriesRepo
+            .Setup(r => r.GetCancellableOccurrencesAsync(seriesId, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoom> { onScreen, later });
+        roomService
+            .Setup(s => s.CancelTranslationRoomAsync(It.IsAny<Guid>(), hostId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<TranslationRoomDto>(null!));
+
+        var result = await service.CancelSeriesAsync(seriesId, hostId, keepOccurrenceId: onScreen.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        series.Status.Should().Be(RecurrenceSeriesStatuses.Cancelled);
+        result.Value!.CancelledOccurrenceCount.Should().Be(1);
+
+        roomService.Verify(
+            s => s.CancelTranslationRoomAsync(onScreen.Id, hostId, It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the meeting the host was standing on must survive stopping its schedule");
+        roomService.Verify(
+            s => s.CancelTranslationRoomAsync(later.Id, hostId, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A caller that names no occurrence keeps the old behaviour exactly — every future
+    /// occurrence goes. Nothing else in the product passes one, and none of it changes.
+    /// </summary>
+    [Fact]
+    public async Task CancelSeriesAsync_WithNoOccurrenceNamed_StillCancelsEveryFutureOne()
+    {
+        var seriesId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var series = ActiveSeries(seriesId, hostId);
+        var (service, seriesRepo, roomService, _) = CreateService(series);
+
+        var first = new TranslationRoom { Id = Guid.NewGuid() };
+        var second = new TranslationRoom { Id = Guid.NewGuid() };
+        seriesRepo
+            .Setup(r => r.GetCancellableOccurrencesAsync(seriesId, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoom> { first, second });
+        roomService
+            .Setup(s => s.CancelTranslationRoomAsync(It.IsAny<Guid>(), hostId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<TranslationRoomDto>(null!));
+
+        var result = await service.CancelSeriesAsync(seriesId, hostId);
+
+        result.Value!.CancelledOccurrenceCount.Should().Be(2);
+    }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -92,6 +93,25 @@ public class PaymentsController : ControllerBase
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
+        // WT-545. THE BUYER IS WHOEVER HOLDS THE TOKEN — the body does not get a say.
+        //
+        // UserId arrived from the client and went straight onto the Stripe session's metadata,
+        // and that metadata is the very thing GetAndProcessCheckoutSessionAsync trusts to decide
+        // "this caller is the buyer, let them through without a role check". So a request could
+        // name somebody else as the buyer and mint a session that person was authorised to
+        // complete. Overwriting it here is what makes the downstream check mean anything.
+        //
+        // The email goes with it so Stripe binds its hosted page to this account rather than
+        // collecting whatever address the person holding the link types in.
+        var buyerId = User.GetUserId();
+        if (buyerId == null) return Unauthorized();
+
+        request = request with
+        {
+            UserId = buyerId.Value,
+            BuyerEmail = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty,
+        };
+
         try
         {
             var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);

@@ -212,7 +212,7 @@ public class TranslationRoomsController : ControllerBase
     /// correctly refuses them); this endpoint is their path into the waiting room instead.
     /// </summary>
     [HttpPost("{id:guid}/join")]
-    public async Task<IActionResult> JoinTranslationRoomById(Guid id, [FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
+    public async Task<IActionResult> JoinTranslationRoomById(Guid id, [FromBody] JoinTranslationRoomByIdRequest request, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null)

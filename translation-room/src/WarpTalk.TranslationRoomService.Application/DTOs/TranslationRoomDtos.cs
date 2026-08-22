@@ -143,6 +143,23 @@ public record JoinTranslationRoomRequest(
     string? ListenLanguage
 );
 
+/// <summary>
+/// WT-555: joining by ROOM ID carries no code — the route already names the room, and the handler
+/// reads the code off the room it loads.
+///
+/// It has its own type because sharing <see cref="JoinTranslationRoomRequest"/> put a required,
+/// format-checked TranslationRoomCode on a route that never has one: both DataAnnotations and the
+/// by-code FluentValidation rule run BEFORE the action, so every call through a shared meeting
+/// link was answered 400 ("The TranslationRoomCode field is required.") and the handler was never
+/// reached. Loosening the shared validator instead would have taken the check off the by-code
+/// route, where a malformed code is the whole thing worth rejecting.
+/// </summary>
+public record JoinTranslationRoomByIdRequest(
+    [Required] string DisplayName,
+    string? SpeakLanguage,
+    string? ListenLanguage
+);
+
 public record TranslationRoomDto(
     Guid Id,
     Guid WorkspaceId,
