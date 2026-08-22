@@ -217,12 +217,22 @@ public class AssistantChatResultConsumerService : BackgroundService
                 break;
 
             case "tool_call_started":
-                await notifier.BroadcastToolCallStartedAsync(conversationId, requestId, fields.GetValueOrDefault("tool_name", ""), ct);
+                await notifier.BroadcastToolCallStartedAsync(
+                    conversationId,
+                    requestId,
+                    fields.GetValueOrDefault("tool_name", ""),
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
                 break;
 
             case "tool_call_completed":
                 await notifier.BroadcastToolCallCompletedAsync(
-                    conversationId, requestId, fields.GetValueOrDefault("tool_name", ""), fields.GetValueOrDefault("tool_status", ""), ct);
+                    conversationId,
+                    requestId,
+                    fields.GetValueOrDefault("tool_name", ""),
+                    fields.GetValueOrDefault("tool_status", ""),
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
                 break;
 
             // The ask_user tool's output is a card, not text. Relayed on its own event so the

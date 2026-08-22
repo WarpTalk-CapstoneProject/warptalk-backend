@@ -232,7 +232,11 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             if (resultType == "tool_call_started" && !string.IsNullOrWhiteSpace(toolName))
             {
                 await notifier.BroadcastAssistantToolCallStartedAsync(
-                    request.MeetingRoomId, request.Id, toolName, ct);
+                    request.MeetingRoomId,
+                    request.Id,
+                    toolName,
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
             }
 
             return;
