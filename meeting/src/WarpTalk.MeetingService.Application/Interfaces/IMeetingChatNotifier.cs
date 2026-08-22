@@ -19,6 +19,10 @@ public interface IMeetingChatNotifier
     /// meeting's WarpBot said "thinking" for the whole of a tool-calling loop and a slow answer
     /// was indistinguishable from a dead worker.
     /// </summary>
+    /// <param name="toolDetail">
+    /// What the call is about — the phrase searched, the file opened. Empty when there is no
+    /// subject worth naming; the step still names its tool.
+    /// </param>
     Task BroadcastAssistantToolCallStartedAsync(
-        Guid roomId, Guid requestId, string toolName, CancellationToken ct = default);
+        Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default);
 }
