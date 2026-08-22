@@ -60,7 +60,7 @@ public interface ITranslationRoomSeriesService
     /// ended, or are happening right now are untouched — cancelling a booking cannot rewrite
     /// meetings that already happened.
     /// </summary>
-    Task<Result<CancelSeriesResult>> CancelSeriesAsync(Guid seriesId, Guid hostId, CancellationToken ct = default);
+    Task<Result<CancelSeriesResult>> CancelSeriesAsync(Guid seriesId, Guid hostId, Guid? keepOccurrenceId = null, CancellationToken ct = default);
 
     /// <summary>
     /// One materialisation pass over every series that still owes rooms. Called by

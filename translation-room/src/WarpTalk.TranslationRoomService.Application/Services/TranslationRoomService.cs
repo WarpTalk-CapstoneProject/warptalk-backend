@@ -1135,7 +1135,7 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     public async Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(
         Guid translationRoomId,
-        JoinTranslationRoomRequest request,
+        JoinTranslationRoomByIdRequest request,
         Guid userId,
         string? userEmail = null,
         CancellationToken ct = default)
@@ -1153,7 +1153,11 @@ public class TranslationRoomService : ITranslationRoomService
         }
 
         return await JoinTranslationRoomAsync(
-            request with { TranslationRoomCode = translationRoom.TranslationRoomCode },
+            new JoinTranslationRoomRequest(
+                translationRoom.TranslationRoomCode,
+                request.DisplayName,
+                request.SpeakLanguage,
+                request.ListenLanguage),
             userId,
             userEmail,
             ct);
