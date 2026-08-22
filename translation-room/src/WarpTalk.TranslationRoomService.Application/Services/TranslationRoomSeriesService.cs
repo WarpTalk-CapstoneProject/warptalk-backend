@@ -345,7 +345,11 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     /// a different hour, and changing the rule after creation. All three need edit semantics the
     /// UI has no controls for; a partial implementation would be worse than none.
     /// </summary>
-    public async Task<Result<CancelSeriesResult>> CancelSeriesAsync(Guid seriesId, Guid hostId, CancellationToken ct = default)
+    public async Task<Result<CancelSeriesResult>> CancelSeriesAsync(
+        Guid seriesId,
+        Guid hostId,
+        Guid? keepOccurrenceId = null,
+        CancellationToken ct = default)
     {
         var series = await _seriesRepository.GetByIdAsync(seriesId, ct);
         if (series is null)
@@ -390,6 +394,22 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
         await _unitOfWork.SaveChangesAsync(ct);
 
         var futureOccurrences = await _seriesRepository.GetCancellableOccurrencesAsync(seriesId, now, ct);
+
+        // WT-548 — THE MEETING YOU ARE STANDING ON SURVIVES.
+        //
+        // "Stop repeating" was reported as deleting the meeting, and it was: the occurrence open
+        // on screen has not started yet, so it is a future occurrence, so the loop below cancelled
+        // it along with all the others. From the host's chair one button turned "this happens
+        // daily" into "this does not happen at all", with no way back and no warning that the
+        // meeting in front of them was included.
+        //
+        // Stopping a schedule means there are no MORE of these, not that this one never happens —
+        // the same reading every calendar has. The caller names the occurrence it is showing and
+        // that one is left scheduled; everything after it still goes.
+        if (keepOccurrenceId is { } keepId)
+        {
+            futureOccurrences = futureOccurrences.Where(occurrence => occurrence.Id != keepId).ToList();
+        }
 
         var cancelled = 0;
         foreach (var occurrence in futureOccurrences)
