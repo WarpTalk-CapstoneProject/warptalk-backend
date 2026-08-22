@@ -46,7 +46,10 @@ public class GlossariesController : ControllerBase
         var result = await _glossaryService.CreateGlossaryAsync(request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
 
-        return StatusCode(201);
+        // WT-558: 201 WITH the created glossary. The empty 201 it used to return left a client
+        // that had just made a glossary unable to name it, so adding terms in the same breath
+        // meant re-listing and guessing which one was new.
+        return StatusCode(201, result.Value);
     }
 
     [HttpGet("{id}")]

@@ -29,7 +29,7 @@ public class GlossaryService : IGlossaryService
         _redis = redis;
     }
 
-    public async Task<Result> CreateGlossaryAsync(CreateGlossaryDto dto, CancellationToken cancellationToken = default)
+    public async Task<Result<GlossaryDto>> CreateGlossaryAsync(CreateGlossaryDto dto, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -38,12 +38,16 @@ public class GlossaryService : IGlossaryService
             await _unitOfWork.Glossaries.AddAsync(glossary, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            return Result.Success();
+            // WT-558: the created row, not a bare acknowledgement. The id is assigned by ToEntity
+            // before the insert, so this costs no extra read — and without it a client that has
+            // just created a glossary cannot name it, which is what made "add a term while
+            // creating" unbuildable.
+            return Result.Success(glossary.ToDto());
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error creating glossary for workspace {WorkspaceId}", dto.WorkspaceId);
-            return Result.Failure("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<GlossaryDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 
