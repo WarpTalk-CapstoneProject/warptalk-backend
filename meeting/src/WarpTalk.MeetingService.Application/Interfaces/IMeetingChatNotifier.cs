@@ -23,6 +23,24 @@ public interface IMeetingChatNotifier
     /// What the call is about — the phrase searched, the file opened. Empty when there is no
     /// subject worth naming; the step still names its tool.
     /// </param>
+    /// <summary>
+    /// A piece of the answer as WarpBot writes it.
+    ///
+    /// The room used to see nothing at all between the question and the finished reply — the
+    /// message is only persisted and broadcast once the whole turn is over, so a long answer
+    /// looked like a stall while the widget beside it was visibly writing. The agent takes the
+    /// same time on both surfaces; only one of them showed its work.
+    ///
+    /// `delta` is ADDITIVE: each one is the text since the last, exactly as the worker emits it,
+    /// so a client concatenates rather than replaces. The persisted message that follows is
+    /// authoritative — a client must swap the draft for it rather than keep its own accumulation.
+    /// </summary>
+    Task BroadcastAssistantChunkAsync(
+        Guid roomId,
+        Guid requestId,
+        string delta,
+        CancellationToken ct = default);
+
     Task BroadcastAssistantToolCallStartedAsync(
         Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default);
 
