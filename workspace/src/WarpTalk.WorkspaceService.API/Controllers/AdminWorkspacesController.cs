@@ -50,6 +50,20 @@ public class AdminWorkspacesController : ControllerBase
         return ToActionResult(result);
     }
 
+    /// <summary>
+    /// The same detail by slug (WT-560), so the portal's address bar can name the workspace
+    /// instead of carrying its primary key.
+    ///
+    /// The literal segment keeps this off the `{id:guid}` route: a slug is not a Guid, so
+    /// without it every request here would simply 404 on the route constraint.
+    /// </summary>
+    [HttpGet("by-slug/{slug}")]
+    public async Task<IActionResult> GetDetailBySlug(string slug, CancellationToken ct)
+    {
+        var result = await _adminWorkspaceService.GetDetailBySlugAsync(slug, ct);
+        return ToActionResult(result);
+    }
+
     [HttpPost("{id:guid}/suspend")]
     public async Task<IActionResult> Suspend(
         Guid id,
