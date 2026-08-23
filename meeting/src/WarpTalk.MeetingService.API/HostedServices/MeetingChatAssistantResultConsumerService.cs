@@ -213,12 +213,40 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         if (request == null || request.Status is "completed" or "failed")
             return;
 
+        // WHICH ROOM ID THE HUB GROUP IS KEYED ON — and it is not this one.
+        //
+        // MeetingChatHub.JoinMeetingRoom takes the TRANSLATION room id (the one in the URL),
+        // looks the meeting room up BY it, and then joins `meeting_chat:{translationRoomId}`.
+        // MeetingChatService broadcasts on that same value, because it is what the caller passed.
+        // This consumer had only `request.MeetingRoomId` — the meeting room's own primary key —
+        // and broadcast on that, so every assistant event was addressed to a group name no client
+        // has ever joined.
+        //
+        // Nothing errored: SignalR delivers to an empty group happily. The room's whole live
+        // record of a WarpBot turn — pending, every tool call, every reasoning line, every chunk,
+        // and the answer itself — went nowhere, and the answer appeared only because it is
+        // persisted and the panel reads it back from history. That is why the trail showed two
+        // steps: both of them are seeded by the client, and neither is evidence of a broadcast.
+        var room = await unitOfWork.MeetingRoomRepository.GetByIdAsync(request.MeetingRoomId, ct);
+        if (room == null)
+        {
+            // Deliberately not a fallback to request.MeetingRoomId: that is the broken address,
+            // and using it would restore the silent failure this exists to end.
+            _logger.LogWarning(
+                "Meeting room {MeetingRoomId} not found for assistant request {RequestId}; cannot address its chat group.",
+                request.MeetingRoomId,
+                request.Id);
+            return;
+        }
+
+        var groupRoomId = room.TranslationRoomId;
+
         // The model narrating its own step, which is neither a chunk of the answer nor a tool
         // call — and which used to fall through this method entirely and be dropped.
         if (resultType == "reasoning")
         {
             await notifier.BroadcastAssistantReasoningAsync(
-                request.MeetingRoomId,
+                groupRoomId,
                 request.Id,
                 fields.GetValueOrDefault("tool_detail", ""),
                 fields.GetValueOrDefault("content", ""),
@@ -244,7 +272,7 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
                 request.Status = "processing";
                 unitOfWork.MeetingChatAssistantRequestRepository.Update(request);
                 await unitOfWork.SaveChangesAsync(ct);
-                await notifier.BroadcastAssistantResponsePendingAsync(request.MeetingRoomId, request.Id, ct);
+                await notifier.BroadcastAssistantResponsePendingAsync(groupRoomId, request.Id, ct);
             }
 
             // The answer, as it is written. Until this the room saw nothing between the question
@@ -259,7 +287,7 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
                 if (!string.IsNullOrEmpty(delta))
                 {
                     await notifier.BroadcastAssistantChunkAsync(
-                        request.MeetingRoomId,
+                        groupRoomId,
                         request.Id,
                         delta,
                         ct);
@@ -273,7 +301,7 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             if (resultType == "tool_call_started" && !string.IsNullOrWhiteSpace(toolName))
             {
                 await notifier.BroadcastAssistantToolCallStartedAsync(
-                    request.MeetingRoomId,
+                    groupRoomId,
                     request.Id,
                     toolName,
                     fields.GetValueOrDefault("tool_detail", ""),
@@ -286,7 +314,7 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             if (resultType == "tool_call_completed" && !string.IsNullOrWhiteSpace(toolName))
             {
                 await notifier.BroadcastAssistantToolCallCompletedAsync(
-                    request.MeetingRoomId,
+                    groupRoomId,
                     request.Id,
                     toolName,
                     fields.GetValueOrDefault("tool_detail", ""),
@@ -331,7 +359,7 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         request.CompletedAt = DateTime.UtcNow;
         unitOfWork.MeetingChatAssistantRequestRepository.Update(request);
         await unitOfWork.SaveChangesAsync(ct);
-        await notifier.BroadcastMessageReceivedAsync(request.MeetingRoomId, response.ToDto(), ct);
+        await notifier.BroadcastMessageReceivedAsync(groupRoomId, response.ToDto(), ct);
     }
 
     /// <summary>
