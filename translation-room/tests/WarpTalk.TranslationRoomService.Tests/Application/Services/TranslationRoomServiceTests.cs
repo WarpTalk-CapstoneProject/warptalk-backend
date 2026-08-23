@@ -1281,7 +1281,7 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
-    public async Task EndTranslationRoomAsync_ShouldDisconnectConnectedAndWaitingParticipants()
+    public async Task EndTranslationRoomAsync_ShouldDisconnectOnlyConnectedParticipants()
     {
         // Arrange
         var roomId = Guid.NewGuid();
@@ -1302,9 +1302,14 @@ public class TranslationRoomServiceTests
         // Assert
         result.IsSuccess.Should().BeTrue();
         participant1.Status.Should().Be("DISCONNECTED");
-        participant2.Status.Should().Be("DISCONNECTED");
+        // WT-563: a WAITING row is left alone. DISCONNECTED is the state the rejoin path reads as
+        // proof the host admitted somebody, so writing it for the lobby's occupants said they had
+        // been in a room they were never let into. Ending the room makes their knock moot rather
+        // than granting it.
+        participant2.Status.Should().Be("WAITING");
         participant3.Status.Should().Be("INVITED"); // unchanged
-        _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(2));
+        // One write, for the one participant who was actually in the room.
+        _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(1));
     }
 
     // ------------------------------------------------------------------
