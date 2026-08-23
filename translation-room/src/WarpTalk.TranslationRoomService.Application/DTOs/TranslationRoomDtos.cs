@@ -160,6 +160,12 @@ public record JoinTranslationRoomByIdRequest(
     string? ListenLanguage
 );
 
+/// <summary>
+/// WT-552: who to add to a meeting that is already running.
+/// </summary>
+public record InviteParticipantsRequest(
+    List<string> Emails);
+
 public record TranslationRoomDto(
     Guid Id,
     Guid WorkspaceId,

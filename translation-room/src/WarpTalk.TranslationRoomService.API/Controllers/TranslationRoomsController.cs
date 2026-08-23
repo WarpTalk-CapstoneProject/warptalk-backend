@@ -439,6 +439,41 @@ public class TranslationRoomsController : ControllerBase
     }
 
     /// <summary>
+    /// WT-552: add somebody to a meeting that is already running.
+    ///
+    /// Separate from the settings update, which freezes at IN_PROGRESS on purpose — languages and
+    /// approval policy must not change under people already in the room. Inviting changes neither.
+    /// </summary>
+    [HttpPost("{id:guid}/invitations")]
+    public async Task<IActionResult> InviteParticipants(
+        Guid id,
+        [FromBody] InviteParticipantsRequest request,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var emails = request?.Emails ?? new List<string>();
+        if (emails.Count == 0)
+            return BadRequest(new ApiErrorResponse("At least one email is required.", ErrorCodes.ValidationError));
+
+        var result = await _translationRoomService.InviteParticipantsAsync(id, userId.Value, emails, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        // The count, so the caller can say "2 invited" rather than guessing — re-inviting somebody
+        // already on the list is a deliberate no-op and must not read as a failure.
+        return Ok(new { invited = result.Value });
+    }
+
+    /// <summary>
     /// The invitee accepts their own invitation. Not a join: the meeting is usually still ahead,
     /// and this is the only action the invitation notification can offer when it arrives.
     /// </summary>

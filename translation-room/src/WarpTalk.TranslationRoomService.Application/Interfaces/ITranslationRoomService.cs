@@ -144,6 +144,18 @@ public interface ITranslationRoomService
     /// caller in the waiting room). Non-members get NotFound, indistinguishable from a missing room.
     /// </summary>
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(Guid translationRoomId, JoinTranslationRoomByIdRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-552: invite somebody to a meeting that is already running. Room settings are frozen once
+    /// a room leaves SCHEDULED/WAITING, and that freeze is deliberate — inviting is not a settings
+    /// change, so it gets its own door rather than a hole in that guard.
+    /// </summary>
+    Task<Result<int>> InviteParticipantsAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        IReadOnlyList<string> emails,
+        CancellationToken ct = default);
+
     /// <summary>
     /// WT-341: takes a room live. The caller is no longer required to be the host.
     ///
