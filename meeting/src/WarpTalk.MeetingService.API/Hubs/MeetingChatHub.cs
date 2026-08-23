@@ -10,6 +10,15 @@ namespace WarpTalk.MeetingService.API.Hubs;
 [Authorize]
 public class MeetingChatHub : Hub
 {
+    /// <summary>
+    /// The meeting room has not been provisioned yet — the caller should retry. Distinct from
+    /// <see cref="NotAParticipant"/>, which no amount of retrying will change.
+    /// </summary>
+    public const string RoomNotReady = "Room not ready";
+
+    /// <summary>The caller does not belong to this meeting. Terminal; retrying is pointless.</summary>
+    public const string NotAParticipant = "Not a participant";
+
     private readonly IUnitOfWork _unitOfWork;
 
     public MeetingChatHub(IUnitOfWork unitOfWork)
@@ -29,34 +38,37 @@ public class MeetingChatHub : Hub
             throw new HubException("Unauthorized");
 
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId);
-        if (room == null) throw new HubException("Room not found");
 
+        // NOT AN ERROR ABOUT THE ROOM — a race with the meeting join.
+        //
+        // MeetingRoomService.JoinMeetingAsync is what provisions this row, and the chat hub
+        // connects alongside that call rather than after it. So on a first entry the row
+        // routinely does not exist yet for a second or two. The old message said "Room not
+        // found", which reads as a permanent, fatal answer; the client gave up after ~5s of
+        // retries and silently had no live chat for the rest of the meeting.
+        //
+        // Named distinctly so the client can tell "come back in a moment" apart from "you may
+        // not be here", and retry only the first.
+        if (room == null) throw new HubException(RoomNotReady);
+
+        // AUTHORIZATION, RATHER THAN MANUFACTURING THE MEMBERSHIP THAT AUTHORIZES.
+        //
+        // This used to create a MeetingParticipant row for whoever asked, with no check at all,
+        // and then add them to the group. MeetingChatService gates reading and sending on
+        // `room.CreatedBy == userId || participant != null` — so the hub was minting exactly the
+        // record those gates look for. Any authenticated user who knew a translation room id
+        // could call this and thereby become a participant of a meeting they were never invited
+        // to, which also let them read its history over REST.
+        //
+        // Membership belongs to the join, which enforces invitations, revocation, expiry and the
+        // room lock (MeetingRoomService.JoinMeetingAsync, step 3, before it registers anyone).
+        // The hub only subscribes a connection to a room it can already see the caller belongs to,
+        // and mutates nothing.
         var participant = await _unitOfWork.MeetingParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId);
 
-        if (participant == null)
-        {
-            participant = new WarpTalk.MeetingService.Domain.Entities.MeetingParticipant
-            {
-                Id = Guid.CreateVersion7(),
-                MeetingRoomId = room.Id,
-                UserId = userId,
-                ProviderIdentity = userIdString,
-                JoinedAt = DateTime.UtcNow,
-                IsActive = true,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
-            await _unitOfWork.SaveChangesAsync();
-        }
-        else if (!participant.IsActive)
-        {
-            participant.IsActive = true;
-            participant.LeftAt = null;
-            _unitOfWork.MeetingParticipantRepository.Update(participant);
-            await _unitOfWork.SaveChangesAsync();
-        }
+        if (room.CreatedBy != userId && participant == null)
+            throw new HubException(NotAParticipant);
 
         var groupName = GetRoomGroupName(roomId);
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
