@@ -1908,8 +1908,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
-                                p.Status == TranslationRoomParticipantStatuses.Waiting)
+                    // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
+                    // somebody who was never let in had been in the room, and DISCONNECTED is the
+                    // one status the rejoin path treats as proof of admission — so it handed the
+                    // lobby's occupants a way in. A row still waiting stays waiting; the room
+                    // ending makes it moot rather than admitted.
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
@@ -1966,8 +1970,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
-                                p.Status == TranslationRoomParticipantStatuses.Waiting)
+                    // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
+                    // somebody who was never let in had been in the room, and DISCONNECTED is the
+                    // one status the rejoin path treats as proof of admission — so it handed the
+                    // lobby's occupants a way in. A row still waiting stays waiting; the room
+                    // ending makes it moot rather than admitted.
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
@@ -2072,8 +2080,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
-                                p.Status == TranslationRoomParticipantStatuses.Waiting)
+                    // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
+                    // somebody who was never let in had been in the room, and DISCONNECTED is the
+                    // one status the rejoin path treats as proof of admission — so it handed the
+                    // lobby's occupants a way in. A row still waiting stays waiting; the room
+                    // ending makes it moot rather than admitted.
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
