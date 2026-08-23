@@ -2232,6 +2232,95 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-552 / WT-527: invite somebody once the meeting is already running.
+    ///
+    /// UpdateTranslationRoomSettingsAsync can add invitees and is the only path that could, but it
+    /// refuses the moment a room leaves SCHEDULED/WAITING ("Room settings cannot be updated after
+    /// the room has entered IN_PROGRESS status") — which is precisely when a host discovers they
+    /// need one more person. There was no way to do it, which is what the ticket reports.
+    ///
+    /// Deliberately NOT a relaxation of that guard. Settings being frozen mid-call is a real rule
+    /// — languages and approval policy cannot change under people already in the room — and
+    /// widening it to let an invite through would unfreeze everything beside it. Inviting is not a
+    /// settings change; it adds a row and sends a message, and it gets its own door.
+    /// </summary>
+    public async Task<Result<int>> InviteParticipantsAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        IReadOnlyList<string> emails,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null || translationRoom.DeletedAt != null)
+                return Result.Failure<int>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!translationRoom.IsHostedBy(hostId))
+                return Result.Failure<int>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+
+            // A finished meeting is the one state where this is meaningless: the link goes nowhere
+            // and the invitee would be sent to a room they cannot enter.
+            if (TranslationRoomConstants.TerminalStatuses.Contains(translationRoom.Status))
+                return Result.Failure<int>("This meeting has already ended.", ErrorCodes.InvalidState);
+
+            var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
+            var existingInvitations = await invitationRepo.FindAsync(
+                i => i.TranslationRoomId == translationRoom.Id, ct: ct);
+            var existingEmails = existingInvitations
+                .Select(i => i.Email)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Id, not code — see the identical link at room creation for why a code cannot survive
+            // the /room/{x} forward (WT-528).
+            var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.Id}";
+            var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
+
+            var added = 0;
+            foreach (var raw in emails)
+            {
+                var email = raw?.Trim() ?? string.Empty;
+                if (email.Length == 0)
+                    continue;
+
+                // Re-inviting somebody already on the list is a no-op rather than an error. A host
+                // adding one person to a group of five should not have to remember which of them
+                // were already invited, and a second email would read as the meeting starting again.
+                if (!existingEmails.Add(email))
+                    continue;
+
+                await invitationRepo.AddAsync(new Domain.Entities.TranslationRoomInvitation
+                {
+                    TranslationRoomId = translationRoom.Id,
+                    Email = email,
+                    Status = "PENDING"
+                }, ct);
+
+                await _emailService.SendMeetingInvitationAsync(
+                    email, "Participant", meetingLink, translationRoom.Title, scheduledTime, ct);
+                await NotifyInvitedUserAsync(email, translationRoom, meetingLink, ct);
+                added++;
+            }
+
+            if (added == 0)
+                return Result.Success(0);
+
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-187: after the commit, and only when somebody was really added — the invitee's own
+            // room list is driven by this, and a no-op call must stay a no-op on the wire.
+            await PublishRoomInvitationsChangedAsync(translationRoom);
+
+            return Result.Success(added);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error inviting participants. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
+            return Result.Failure<int>(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, CancellationToken ct = default)
     {
         try
