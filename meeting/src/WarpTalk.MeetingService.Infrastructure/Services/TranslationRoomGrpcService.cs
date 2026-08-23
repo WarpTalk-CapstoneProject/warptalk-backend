@@ -36,6 +36,43 @@ public class TranslationRoomGrpcService : ITranslationRoomGrpcService
         }
     }
 
+    public async Task<Result<bool>> KickRoomParticipantAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId)
+    {
+        try
+        {
+            var response = await _client.KickRoomParticipantAsync(new KickRoomParticipantRequest
+            {
+                RoomId = translationRoomId.ToString(),
+                ParticipantUserId = participantUserId.ToString(),
+                RequestedByUserId = requestedByUserId.ToString()
+            });
+
+            return Result.Success(response.Kicked);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return Result.Failure<bool>("Room not found", "ROOM_NOT_FOUND");
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.PermissionDenied)
+        {
+            return Result.Failure<bool>(ex.Status.Detail, "KICK_FORBIDDEN");
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.FailedPrecondition)
+        {
+            return Result.Failure<bool>(ex.Status.Detail, "KICK_REFUSED");
+        }
+        catch (RpcException ex)
+        {
+            // Deliberately NOT swallowed into a success. The caller aborts the kick when this
+            // fails, because a kick that does not reach the roster is one the person can undo by
+            // rejoining — and a host who saw "kicked" would never know.
+            return Result.Failure<bool>(ex.Status.Detail, "KICK_UNAVAILABLE");
+        }
+    }
+
     public async Task<Result<Guid>> TransferRoomHostAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
