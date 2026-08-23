@@ -122,10 +122,31 @@ public class VerifiedDomainService : IVerifiedDomainService
 
             await _unitOfWork.WorkspaceVerifiedDomainRepository.AddAsync(entry, ct);
 
-            // Adding the first domain is what makes this a domain-verified workspace. The policy
-            // column is derived from the domain list and is never assigned anywhere else.
-            await WorkspaceHelper.RecomputeDomainPolicyAsync(_unitOfWork, workspace, ct);
+            // PERSISTED BEFORE THE RECOMPUTE, AND THAT ORDER IS THE WHOLE FIX.
+            //
+            // RecomputeDomainPolicyAsync COUNTS the domain list through
+            // GetActiveVerifiedDomainsAsync, which is a database query (GenericRepository.FindAsync
+            // is `_dbSet.Where(predicate).ToListAsync()`). A row that has only been AddAsync'd is
+            // pending in the change tracker and does not exist in the database yet, so that query
+            // cannot return it.
+            //
+            // Recomputing first therefore counted the workspace's domains WITHOUT the one being
+            // added. For a workspace with no other domain that is a count of zero, so the policy
+            // stayed off — and "adding the first domain is what makes this a domain-verified
+            // workspace", the sentence this comment replaced, was never true through this path.
+            //
+            // The consequence is not a stale flag. UpdateWorkspaceSettings refuses any request
+            // whose RequireVerifiedDomainForInternal disagrees with the real domain count, and the
+            // settings PATCH merges the stored value into the document it validates. So a workspace
+            // left in this state cannot save ANY setting — language, retention, max rooms, all of
+            // it — and the error names verified domains, which is not what the Owner was editing.
+            //
+            // Two saves rather than one because this unit of work exposes no transaction. The
+            // second writes a single boolean; if it fails the state is what today's bug already
+            // produces, rather than something new.
+            await _unitOfWork.SaveChangesAsync(ct);
 
+            await WorkspaceHelper.RecomputeDomainPolicyAsync(_unitOfWork, workspace, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(entry.ToDto());
@@ -261,10 +282,13 @@ public class VerifiedDomainService : IVerifiedDomainService
 
             _unitOfWork.WorkspaceVerifiedDomainRepository.Update(entry);
 
-            // Revoking the last domain returns the workspace to manually-assigned membership.
-            // Same single writer as the add path.
-            await WorkspaceHelper.RecomputeDomainPolicyAsync(_unitOfWork, workspace, ct);
+            // Same ordering as the add path, for the mirror-image reason. The revocation is a
+            // pending UPDATE, so the row still satisfies `RevokedAt == null` in the database and
+            // the count would include a domain that is on its way out — leaving the policy ON
+            // after the last domain was revoked. Committed truth first, then recompute.
+            await _unitOfWork.SaveChangesAsync(ct);
 
+            await WorkspaceHelper.RecomputeDomainPolicyAsync(_unitOfWork, workspace, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success();
