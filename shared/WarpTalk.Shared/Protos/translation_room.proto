@@ -15,6 +15,18 @@ service TranslationRoomService {
   // host-gated operation — so a transfer that does not reach here is a transfer that silently
   // undoes itself the next time the old host rejoins.
   rpc TransferRoomHost (TransferRoomHostRequest) returns (TransferRoomHostResponse);
+
+  // WT-564: the second write, and it exists for the same reason as TransferRoomHost above.
+  //
+  // KICKED is a TERMINAL status stored here, and it is what JoinTranslationRoomAsync checks
+  // (BR-010) before letting anybody back into a room. The kick ACTION is owned and authorized by
+  // MeetingService, whose own kick evicted the participant from LiveKit, deactivated its local
+  // participant row and revoked the meeting invitation — and never touched this service. The
+  // roster row was therefore left CONNECTED, becoming DISCONNECTED when the socket dropped, which
+  // the rejoin path reads as "already admitted" and waves straight back in.
+  //
+  // A kick that does not reach here is not a kick; it is a disconnection the person can undo.
+  rpc KickRoomParticipant (KickRoomParticipantRequest) returns (KickRoomParticipantResponse);
 }
 
 message GetTranslationRoomRequest {
@@ -71,6 +83,20 @@ message TransferRoomHostResponse {
   // The host this replaced, so the caller can name both sides in the realtime event without a
   // second read. Empty when the room had never been transferred and the booker was still running it.
   string previous_host_user_id = 1;
+}
+
+message KickRoomParticipantRequest {
+  string room_id = 1;
+  // The USER, not the participant row: MeetingService knows who it evicted, not which row on this
+  // service records them.
+  string participant_user_id = 2;
+  string requested_by_user_id = 3;
+}
+
+message KickRoomParticipantResponse {
+  // False when the person had no roster row to terminate — the kick still succeeded, and saying so
+  // lets the caller tell "nothing to do" apart from "refused".
+  bool kicked = 1;
 }
 
 message GetParticipantsByRoomIdRequest {

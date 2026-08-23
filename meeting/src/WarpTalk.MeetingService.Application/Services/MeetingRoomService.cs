@@ -768,6 +768,25 @@ public class MeetingRoomService : IMeetingRoomService
         if (!isOriginalHost && !isActiveHost)
             return Result.Failure<bool>("Only the host can kick participants.", ErrorCodes.Forbidden);
 
+        // WT-564: THE ROSTER FIRST, BEFORE ANYTHING LOCAL.
+        //
+        // KICKED is a terminal status on the ROOM service, and it is the only thing that stops a
+        // rejoin there: JoinTranslationRoomAsync refuses on it (BR-010). Everything below this line
+        // — deactivating the local participant, revoking the invitation, evicting from LiveKit —
+        // stops the person being in the meeting NOW and none of it stops them coming back through
+        // the room service's own join, which reads a disconnected roster row as proof they were
+        // already admitted and lets them in without even a lobby.
+        //
+        // Called FIRST so a failure leaves nothing half-applied: the host sees the kick refused and
+        // retries, rather than a person evicted from LiveKit who quietly walks back in. The room
+        // service re-authorizes host identity against its own tables, so this is not a trusted
+        // instruction — it is a request that can be refused.
+        var rosterKick = await _grpcService.KickRoomParticipantAsync(
+            translationRoomId, hostUserId, participantUserId);
+
+        if (!rosterKick.IsSuccess)
+            return Result.Failure<bool>(rosterKick.Error ?? "Could not remove the participant from the room.", ErrorCodes.InternalServerError);
+
         // Update Participant status
         var participant = await _unitOfWork.MeetingParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);

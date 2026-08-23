@@ -901,6 +901,13 @@ public class MeetingRoomServiceTests
             .ReturnsAsync((MeetingInvitation?)null);
         _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
 
+        // WT-564: the kick now carries the TERMINAL status to the room service before it touches
+        // anything local, because that is the only write that stops a rejoin. Unstubbed, this is
+        // where the kick stops.
+        _grpcServiceMock
+            .Setup(g => g.KickRoomParticipantAsync(translationRoomId, hostId, participantUserId))
+            .ReturnsAsync(Result.Success(true));
+
         var result = await _sut.KickParticipantAsync(translationRoomId, hostId, participantUserId);
 
         Assert.True(result.IsSuccess);

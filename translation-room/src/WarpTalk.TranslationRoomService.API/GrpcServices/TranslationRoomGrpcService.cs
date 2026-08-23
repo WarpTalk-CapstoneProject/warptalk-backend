@@ -88,6 +88,44 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
     }
 
     /// <summary>
+    /// WT-564. MeetingService owns the kick and authorizes it; the TERMINAL status lives here,
+    /// because this is the service whose join path refuses on it. A kick that stopped at
+    /// MeetingService left the roster row CONNECTED — later DISCONNECTED — which the rejoin path
+    /// reads as proof of admission and waves straight back in.
+    /// </summary>
+    public override async Task<KickRoomParticipantResponse> KickRoomParticipant(
+        KickRoomParticipantRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var roomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        if (!Guid.TryParse(request.ParticipantUserId, out var participantUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        if (!Guid.TryParse(request.RequestedByUserId, out var requestedByUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        var result = await _directoryService.KickParticipantByUserAsync(
+            roomId, requestedByUserId, participantUserId, context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            // The same three-way split TransferRoomHost makes, for the same reason: the room is
+            // gone, the caller may not do this, or the request is impossible against the roster.
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                throw new RpcException(new Status(StatusCode.PermissionDenied, result.Error ?? "Not the current host."));
+
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Kick refused."));
+        }
+
+        return new KickRoomParticipantResponse { Kicked = result.Value };
+    }
+
+    /// <summary>
     /// WT-359. The only mutating RPC on this service, and it exists because host authority is
     /// stored here but the Transfer Host action is owned and authorized by MeetingService. Before
     /// this, a transfer wrote only meeting.meeting_rooms.active_host_id, so this service went on
