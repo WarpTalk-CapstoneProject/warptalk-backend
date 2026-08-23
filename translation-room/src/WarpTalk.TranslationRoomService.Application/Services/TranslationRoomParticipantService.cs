@@ -334,9 +334,21 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
             var leftAt = DateTime.UtcNow;
-            participant.Status = TranslationRoomParticipantStatuses.Left;
-            participant.LeftAt = leftAt;
-            participant.UpdatedAt = leftAt;
+
+            // WT-563: leaving the LOBBY is not leaving the room, and must not be recorded as one.
+            // LEFT is read by the rejoin path as proof of admission, so writing it here would let
+            // anyone waiting for approval promote themselves by leaving and coming back.
+            if (participant.Status == TranslationRoomParticipantStatuses.Waiting)
+            {
+                participant.Status = TranslationRoomParticipantStatuses.Invited;
+                participant.UpdatedAt = leftAt;
+            }
+            else
+            {
+                participant.Status = TranslationRoomParticipantStatuses.Left;
+                participant.LeftAt = leftAt;
+                participant.UpdatedAt = leftAt;
+            }
 
             _participantRepository.Update(participant);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -378,9 +390,18 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             // would rewrite that LEFT to DISCONNECTED and resurrect the person on the roster —
             // turning the fix into a worse version of the bug.
             //
-            // WAITING keeps its existing behaviour on purpose. A lobby row holds no seat and the
-            // host is looking at it as a queue; a closed tab should clear it, and marking it
-            // DISCONNECTED would leave a phantom request nobody can act on.
+            // A closed tab still clears the lobby queue — the host should not be left looking at a
+            // knock nobody can act on. What changed is WHERE it puts them.
+            //
+            // WT-563: it used to write LEFT, and LEFT is what the rejoin path reads as proof the
+            // host already admitted somebody (TranslationRoomParticipantMapper.UpdateFrom). So a
+            // visitor could knock, refresh, and walk into a requires-approval room: WAITING → LEFT
+            // → "already admitted" → CONNECTED, with the host never asked.
+            //
+            // INVITED is where they actually are: known to the room, not yet admitted. It clears
+            // the queue exactly as LEFT did, and the next join re-evaluates approval instead of
+            // waving them through. The invariant this restores is that a participant who has
+            // never been admitted can only ever be INVITED or WAITING.
             if (participant.Status == TranslationRoomParticipantStatuses.Connected)
             {
                 participant.Status = TranslationRoomParticipantStatuses.Disconnected;
@@ -391,10 +412,8 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             }
             else if (participant.Status == TranslationRoomParticipantStatuses.Waiting)
             {
-                var leftAt = DateTime.UtcNow;
-                participant.Status = TranslationRoomParticipantStatuses.Left;
-                participant.LeftAt = leftAt;
-                participant.UpdatedAt = leftAt;
+                participant.Status = TranslationRoomParticipantStatuses.Invited;
+                participant.UpdatedAt = DateTime.UtcNow;
             }
             else
             {
