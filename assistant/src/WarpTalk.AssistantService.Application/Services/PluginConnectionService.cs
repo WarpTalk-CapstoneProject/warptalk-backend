@@ -10,7 +10,7 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.AssistantService.Application.Services;
 
-public class PluginConnectionService : IPluginConnectionService
+public class PluginConnectionService : IPluginConnectionService, IPluginTokenRefresher
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IPluginOAuthClient _oauthClient;
@@ -140,6 +140,70 @@ public class PluginConnectionService : IPluginConnectionService
             connection.Status,
             connection.ProviderEmail,
             PluginScopeMapper.FromJson(connection.ScopesJson)));
+    }
+
+    public async Task<Result> RefreshAccessTokenAsync(
+        Plugin plugin,
+        PluginConnection connection,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken))
+            return await MarkExpiredAsync(connection, ct);
+
+        string refreshToken;
+        try
+        {
+            refreshToken = _credentialProtector.Unprotect(connection.EncryptedRefreshToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Undecryptable stored material (rotated Data Protection key ring) is as dead as a
+            // revoked grant - the only way out is a fresh consent.
+            return await MarkExpiredAsync(connection, ct);
+        }
+
+        PluginOAuthTokenDto token;
+        try
+        {
+            token = await _oauthClient.RefreshAccessTokenAsync(plugin, refreshToken, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return await MarkExpiredAsync(connection, ct);
+        }
+
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+            return await MarkExpiredAsync(connection, ct);
+
+        var now = DateTime.UtcNow;
+        connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
+        // Google returns a refresh token only on the first consent, so an omitted one means "keep
+        // using the stored one", not "the grant lost its refresh token".
+        if (!string.IsNullOrWhiteSpace(token.RefreshToken))
+            connection.EncryptedRefreshToken = _credentialProtector.Protect(token.RefreshToken);
+        connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
+        connection.Status = PluginConstants.ConnectionStatus.Connected;
+        connection.TokenRotatedAt = now;
+        connection.UpdatedAt = now;
+        _unitOfWork.PluginConnectionRepository.Update(connection);
+        await _unitOfWork.SaveChangesAsync(ct);
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// Flips the row to <c>expired</c> so the catalog stops advertising it as connected and the
+    /// Plugins page offers "Reconnect". The encrypted material is left in place: only a new
+    /// consent replaces it, and keeping it makes the failure diagnosable.
+    /// </summary>
+    private async Task<Result> MarkExpiredAsync(PluginConnection connection, CancellationToken ct)
+    {
+        connection.Status = PluginConstants.ConnectionStatus.Expired;
+        connection.UpdatedAt = DateTime.UtcNow;
+        _unitOfWork.PluginConnectionRepository.Update(connection);
+        await _unitOfWork.SaveChangesAsync(ct);
+        return Result.Failure(
+            "Reconnect your provider account.",
+            PluginConstants.ErrorCodes.ConnectionRequired);
     }
 
     public async Task<Result> DisconnectAsync(string pluginKey, Guid userId, CancellationToken ct = default)

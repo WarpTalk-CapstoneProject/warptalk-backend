@@ -69,10 +69,16 @@
 
 ## Phase 8: Pre-merge Hardening
 
-Derived from the as-built gap review in `plan.md` section 9. T037 blocks a credible demo; the rest block merge review.
+Derived from the as-built gap review in `plan.md` section 9. T037 blocked a credible demo and is now done; the rest block merge review.
 
-- [ ] T037 [US2] Add a refresh-token flow (gap G2/G3): `RefreshAsync` on `IPluginOAuthClient` + `GoogleWorkspaceOAuthClient`, used by the gateway's 401 path or when `token_expires_at` has passed. Refresh once, persist the re-encrypted access token, retry the call once; on refresh failure set `plugin_connections.status = expired` and return `connection_required`.
-  - Accept: a connection older than the Google access-token lifetime still answers `google_drive_search` without the user reconnecting; a grant revoked in the Google account flips the row to `expired` and the Plugins page shows "Reconnect".
+- [x] T037 [US2] Add a refresh-token flow (gap G2/G3). Done 2026-08-25. Before this, `encrypted_refresh_token` was written at consent and never read by anything, so the access token simply died about an hour in: every plugin tool call returned `connection_required` while `plugin_connections.status` still read `connected` and the Plugins page still said "Connected", and the only way out was disconnect + reconnect. `ConnectionStatus.Expired` existed in the constants and was never written.
+  - Added `RefreshAccessTokenAsync` to `IPluginOAuthClient` and implemented it in `GoogleWorkspaceOAuthClient` against the Google token endpoint with `grant_type=refresh_token`; it returns `RefreshToken = null` when Google omits one (which is the normal case) and skips the user-info round trip.
+  - `PluginConnectionService` now also implements a narrow `IPluginTokenRefresher`: it unprotects the stored refresh token, calls the provider, re-encrypts the new access token through `IPluginCredentialProtector`, keeps the stored refresh token when the response omits one, and saves through the unit of work. Any failure - no stored refresh token, undecryptable material, provider rejection - persists `status = expired` and returns `connection_required`.
+  - `McpToolOrchestrator` owns the decision, deliberately placed after every authorization gate so a write tool still waiting on confirmation does not burn the attempt: refresh when `access_token_expires_at` is within 60s of now, otherwise when the gateway itself answers `connection_required` (the provider 401), at most once per execution, then retry the gateway call once.
+  - The gateway stayed persistence-free and Domain gained no Google/HTTP/EF reference. DI resolves one scoped `PluginConnectionService` behind both interfaces.
+  - Verified the "Reconnect" path lines up end to end: `ListCatalogAsync` does not filter connections by status and `PluginCatalogItemMapper` passes `connection.Status` through unchanged, and the plugins page maps `expired` to "Reconnect". No web change needed. A successful reconnect through the existing OAuth callback already rewrites `Status = connected`; there is now a test pinning that.
+  - Tests: 13 added (`GoogleWorkspaceOAuthClientTests` x3, `McpToolOrchestratorTests` x5, `PluginConnectionServiceTests` x5), suite 14 -> 27, all green.
+  - Known limitation, recorded in `plan.md` section 9: a *transient* refresh failure also marks the connection `expired`, and gate 5 makes that sticky until the user reconnects. Separating `invalid_grant` from a Google 5xx needs the OAuth client to surface the status code and is out of T037's scope.
 - [ ] T038 [US3] Replace the confirmation token (gap G5). Today `McpConfirmationTokenFactory` returns `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, unbounded in time, reusable, and visible to the model in the confirmation card. Mint a Data Protection-protected, single-use token with a TTL <= 5 minutes bound to `userId + pluginKey + toolName + argument hash`.
   - Accept: replaying a consumed token returns `permission_denied`; a token minted for different arguments does not validate; an expired token returns `confirmation_required` again.
 - [ ] T039 [US3] Resolve `google_drive_get_file` (gap G1): either implement the gateway branch and add a seed-patch migration, or remove it from `spec.md`/`plan.md` so the MVP tool list is the three tools that actually ship.
@@ -90,7 +96,7 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocks a credi
 - Backend Domain/Application/Infrastructure/API phases should be implemented before frontend depends on real endpoints.
 - AI worker can implement dynamic tool loading after backend `GET /api/v1/assistant/mcp/tools` exists.
 - Frontend can initially use API mocks only inside tests, but production UI must use backend data.
-- T037 should land before T036 is attempted, otherwise the E2E walkthrough dies at the one-hour mark.
+- ~~T037 should land before T036 is attempted, otherwise the E2E walkthrough dies at the one-hour mark.~~ T037 landed 2026-08-25, so T036 is no longer time-boxed to the access-token lifetime.
 - Merge order across repos is backend -> ai -> web (`plan.md` section 12).
 
 ## Notes

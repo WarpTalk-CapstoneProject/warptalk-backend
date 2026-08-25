@@ -55,7 +55,10 @@ try
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
     builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
-    builder.Services.AddScoped<IPluginConnectionService, PluginConnectionService>();
+    builder.Services.AddScoped<PluginConnectionService>();
+    builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());
+    // Same instance behind the narrow refresh slice McpToolOrchestrator depends on.
+    builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
     builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
     builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
     builder.Services.Configure<GoogleWorkspaceApiOptions>(

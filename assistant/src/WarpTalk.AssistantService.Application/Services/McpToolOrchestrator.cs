@@ -3,6 +3,7 @@ using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
 
@@ -10,18 +11,27 @@ namespace WarpTalk.AssistantService.Application.Services;
 
 public class McpToolOrchestrator : IMcpToolOrchestrator
 {
+    /// <summary>
+    /// Refresh this far ahead of the recorded expiry so a token that dies in flight does not cost
+    /// the user a round trip.
+    /// </summary>
+    private static readonly TimeSpan AccessTokenExpirySkew = TimeSpan.FromSeconds(60);
+
     private readonly IMcpToolGateway _gateway;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspacePluginPolicyClient _workspacePluginPolicyClient;
+    private readonly IPluginTokenRefresher _tokenRefresher;
 
     public McpToolOrchestrator(
         IMcpToolGateway gateway,
         IUnitOfWork unitOfWork,
-        IWorkspacePluginPolicyClient workspacePluginPolicyClient)
+        IWorkspacePluginPolicyClient workspacePluginPolicyClient,
+        IPluginTokenRefresher tokenRefresher)
     {
         _gateway = gateway;
         _unitOfWork = unitOfWork;
         _workspacePluginPolicyClient = workspacePluginPolicyClient;
+        _tokenRefresher = tokenRefresher;
     }
 
     public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(Guid userId, Guid? workspaceId, CancellationToken ct = default)
@@ -111,7 +121,41 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                 "Confirmation token does not match this plugin action.",
                 ct);
 
+        // Refresh decision sits here, after every gate: the gates can end the call without
+        // touching the provider (a write tool still awaiting confirmation, for instance), and
+        // burning the refresh there would waste the one attempt this execution gets.
+        var refreshAttempted = false;
+        if (IsAccessTokenExpired(connection))
+        {
+            refreshAttempted = true;
+            var proactiveRefresh = await _tokenRefresher.RefreshAccessTokenAsync(pluginEntity, connection, ct);
+            if (!proactiveRefresh.IsSuccess)
+                return await McpToolAuditRecorder.RecordFailureAsync(
+                    _unitOfWork,
+                    userId,
+                    plugin.Id,
+                    request,
+                    PluginConstants.ErrorCodes.ConnectionRequired,
+                    "Reconnect your provider account first.",
+                    ct);
+        }
+
         var result = await _gateway.ExecuteAsync(plugin, tool, connection, request, ct);
+
+        // The stored expiry can lag reality - clock skew, or a grant revoked in the provider's
+        // account UI - so the provider's own 401 is the second and last trigger.
+        if (!refreshAttempted
+            && !result.IsSuccess
+            && string.Equals(result.ErrorCode, PluginConstants.ErrorCodes.ConnectionRequired, StringComparison.Ordinal))
+        {
+            var reactiveRefresh = await _tokenRefresher.RefreshAccessTokenAsync(pluginEntity, connection, ct);
+            result = reactiveRefresh.IsSuccess
+                ? await _gateway.ExecuteAsync(plugin, tool, connection, request, ct)
+                : McpToolExecutionResultMapper.ToFailure(
+                    PluginConstants.ErrorCodes.ConnectionRequired,
+                    "Reconnect your provider account first.");
+        }
+
         await McpToolAuditRecorder.RecordAsync(
             _unitOfWork,
             userId,
@@ -122,5 +166,16 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             ct);
 
         return Result.Success(result);
+    }
+
+    /// <summary>
+    /// <c>access_token_expires_at</c> is a <c>timestamptz</c> written from <see cref="DateTime.UtcNow"/>,
+    /// so it compares directly against UTC now. A connection with no recorded expiry is treated as
+    /// still valid - the provider 401 path below catches it.
+    /// </summary>
+    private static bool IsAccessTokenExpired(PluginConnection connection)
+    {
+        return connection.AccessTokenExpiresAt.HasValue
+            && connection.AccessTokenExpiresAt.Value - AccessTokenExpirySkew <= DateTime.UtcNow;
     }
 }

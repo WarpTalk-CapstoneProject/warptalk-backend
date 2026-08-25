@@ -80,6 +80,49 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             token.ExpiresIn.HasValue ? DateTime.UtcNow.AddSeconds(token.ExpiresIn.Value) : null);
     }
 
+    public async Task<PluginOAuthTokenDto> RefreshAccessTokenAsync(
+        Plugin plugin,
+        string refreshToken,
+        CancellationToken ct = default)
+    {
+        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            throw new InvalidOperationException("A refresh token is required to refresh Google OAuth credentials.");
+
+        var response = await _httpClient.PostAsync(
+            _options.TokenEndpoint,
+            new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = _options.ClientId,
+                ["client_secret"] = _options.ClientSecret,
+                ["refresh_token"] = refreshToken,
+                ["grant_type"] = "refresh_token",
+            }),
+            ct);
+        response.EnsureSuccessStatusCode();
+
+        var token = await response.Content.ReadFromJsonAsync<GoogleTokenResponse>(cancellationToken: ct)
+            ?? throw new InvalidOperationException("Google OAuth refresh response was empty.");
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+            throw new InvalidOperationException("Google OAuth refresh response did not include an access token.");
+
+        var grantedScopes = (token.Scope ?? "")
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToArray();
+
+        // No user-info round trip here: the identity behind the grant cannot change on a refresh,
+        // and RefreshToken stays null when Google omits it so the caller keeps the stored one.
+        return new PluginOAuthTokenDto(
+            null,
+            null,
+            grantedScopes,
+            token.AccessToken,
+            token.RefreshToken,
+            token.ExpiresIn.HasValue ? DateTime.UtcNow.AddSeconds(token.ExpiresIn.Value) : null);
+    }
+
     private async Task<GoogleUserInfoResponse?> GetUserInfoAsync(string accessToken, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, _options.UserInfoEndpoint);

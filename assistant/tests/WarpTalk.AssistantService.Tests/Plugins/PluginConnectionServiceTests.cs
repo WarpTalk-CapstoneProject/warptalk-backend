@@ -29,6 +29,8 @@ public class PluginConnectionServiceTests
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => $"protected:{call.Arg<string>()}");
+        _credentialProtector.Unprotect(Arg.Any<string>())
+            .Returns(call => call.Arg<string>().Replace("protected:", "", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -132,6 +134,154 @@ public class PluginConnectionServiceTests
                     && connection.Status == PluginConstants.ConnectionStatus.Connected),
                 Arg.Any<CancellationToken>());
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ClearsExpiredStatus_WhenUserReconnects()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var expiredConnection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = PluginId,
+            Status = PluginConstants.ConnectionStatus.Expired,
+            EncryptedAccessToken = "protected:stale-access-token",
+            EncryptedRefreshToken = "protected:revoked-refresh-token",
+            AccessTokenExpiresAt = DateTime.UtcNow.AddHours(-3),
+        };
+        ConfigureInstalledPlugin(plugin);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(expiredConnection);
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(
+                "google-user-id",
+                "user@example.com",
+                ["https://www.googleapis.com/auth/drive.readonly"],
+                "new-access-token",
+                "new-refresh-token",
+                DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, expiredConnection.Status);
+        Assert.Equal("protected:new-access-token", expiredConnection.EncryptedAccessToken);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_PersistsNewAccessToken_AndKeepsStoredRefreshToken_WhenProviderOmitsIt()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        var newExpiry = DateTime.UtcNow.AddHours(1);
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(null, null, [], "fresh-access-token", null, newExpiry));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("protected:fresh-access-token", connection.EncryptedAccessToken);
+        // Google only hands out a refresh token on first consent - dropping it here would break
+        // every later refresh.
+        Assert.Equal("protected:refresh-token", connection.EncryptedRefreshToken);
+        Assert.Equal(newExpiry, connection.AccessTokenExpiresAt);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        Assert.NotNull(connection.TokenRotatedAt);
+        _connectionRepository.Received(1).Update(connection);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_RotatesStoredRefreshToken_WhenProviderReturnsNewOne()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(
+                null,
+                null,
+                [],
+                "fresh-access-token",
+                "rotated-refresh-token",
+                DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("protected:rotated-refresh-token", connection.EncryptedRefreshToken);
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenProviderRejectsRefreshToken()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns<PluginOAuthTokenDto>(_ => throw new HttpRequestException("invalid_grant"));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
+        _connectionRepository.Received(1).Update(connection);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenNoRefreshTokenStored()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        connection.EncryptedRefreshToken = null;
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
+        await _oauthClient.DidNotReceive()
+            .RefreshAccessTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    private static PluginConnection ConnectedConnection()
+    {
+        return new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = PluginId,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "protected:stale-access-token",
+            EncryptedRefreshToken = "protected:refresh-token",
+            AccessTokenExpiresAt = DateTime.UtcNow.AddMinutes(-5),
+            ScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",
+            CreatedAt = DateTime.UtcNow.AddDays(-1),
+            UpdatedAt = DateTime.UtcNow.AddDays(-1),
+        };
+    }
+
+    private void ConfigureInstalledPlugin(Plugin plugin)
+    {
+        _stateProtector.Unprotect("state-token")
+            .Returns(new PluginOAuthStateDto(UserId, PluginConstants.GoogleWorkspace));
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.AnyAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
     }
 
     private PluginConnectionService CreateSut()

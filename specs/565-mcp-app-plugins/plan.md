@@ -11,7 +11,7 @@
 | 0-6 Implementation (T001-T032) | Done, pushed |
 | 7 Automated verification (T033-T035, T033A) | Green after merging `origin/development` on 2026-08-25 |
 | 7 Manual E2E (T036) | **Blocked** - needs a real Google OAuth client + running Postgres |
-| 8 Pre-merge hardening (T037-T042) | T040 done; T037-T039, T041-T042 open - see "Known gaps" |
+| 8 Pre-merge hardening (T037-T042) | T037, T040 done; T038-T039, T041-T042 open - see "Known gaps" |
 
 This file is now an *as-built* plan: sections 1-8 describe what actually exists on the branch, section 9 lists the deltas from the original design, and sections 10-12 are the remaining work.
 
@@ -24,7 +24,7 @@ Users install Google Workspace **for their own account**, connect **their own** 
 **Language/Version**: .NET 10 backend, TypeScript/Next.js frontend, Python AI worker
 **Primary Dependencies**: ASP.NET Core, EF Core/Npgsql, ASP.NET Data Protection, SignalR, Redis Streams, React Query, existing `warptalk-ai` tool-calling loop
 **Storage**: PostgreSQL `assistant` schema - 4 new tables, OAuth material stored encrypted
-**Testing**: xUnit (14 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
+**Testing**: xUnit (27 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
 **Constraints**: MVP stays inside `AssistantService`; installation/connection are **personal**, the workspace only gates *usage* via `AllowAnyPlugins`
 **Scale/Scope**: one provider (`google_workspace`), **three** shipped tools (see section 9, G1)
 
@@ -53,8 +53,9 @@ assistant/src/WarpTalk.AssistantService.Domain/
 assistant/src/WarpTalk.AssistantService.Application/
   DTOs/PluginDtos.cs                              catalog, connection, tool descriptor, exec req/result
   Interfaces/                                     IPluginInstallationService, IPluginConnectionService,
-                                                  IMcpToolGateway, IMcpToolOrchestrator,
-                                                  IPluginOAuthClient, IPluginCredentialProtector,
+                                                  IPluginTokenRefresher, IMcpToolGateway,
+                                                  IMcpToolOrchestrator, IPluginOAuthClient,
+                                                  IPluginCredentialProtector,
                                                   IPluginOAuthStateProtector, IWorkspacePluginPolicyClient
   Services/{PluginInstallationService,PluginConnectionService,McpToolOrchestrator}.cs
   Helpers/{McpConfirmationTokenFactory,McpToolAuditRecorder}.cs
@@ -79,7 +80,7 @@ workspace/...                                     policy surfaced through Worksp
                                                   WorkspaceSettingsDto, WorkspaceMapper,
                                                   WorkspaceConfiguration
 meeting/...                                       assistant step/confirmation parity in room chat
-assistant/tests/WarpTalk.AssistantService.Tests/Plugins/   4 test classes, 14 tests
+assistant/tests/WarpTalk.AssistantService.Tests/Plugins/   5 test classes, 27 tests
 ```
 
 ### warptalk-ai
@@ -154,7 +155,7 @@ POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionReq
 | `unknown_tool` | tool name not in the plugin's `tools_json`, or required arguments missing | internal error |
 | `permission_denied` | workspace `AllowAnyPlugins = false`, or confirmation token mismatch | WarpBot explains the workspace policy |
 | `plugin_not_installed` | no `installed` installation for this user | WarpBot points to Settings -> Plugins |
-| `connection_required` | no `connected` connection, empty stored token, **or provider 401** | WarpBot asks the user to connect |
+| `connection_required` | no `connected` connection, empty stored token, a provider 401 that survives one refresh, or a refresh the provider rejected (which also flips the row to `expired`) | WarpBot asks the user to connect |
 | `missing_scope` | granted scopes miss a tool scope, or provider 403 | WarpBot asks the user to reconnect |
 | `confirmation_required` | write tool called without a token; response carries a fresh `confirmationToken` | WarpBot renders the confirmation card |
 | `provider_rate_limited` | provider 429 | retry later, no state change |
@@ -170,7 +171,15 @@ POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionReq
 6. Every `tool.RequiredScopes` present in `connection.ScopesJson` -> else `missing_scope` (audited).
 7. If `tool.Effect == write` and no `confirmationToken` -> `confirmation_required` + freshly minted token (audited).
 8. If `tool.Effect == write` and token does not match -> `permission_denied` (audited).
-9. `IMcpToolGateway.ExecuteAsync` -> result audited with `success` or the provider error code.
+9. If `connection.AccessTokenExpiresAt` is within 60s of now (or already past), `IPluginTokenRefresher.RefreshAccessTokenAsync` -> on failure the row becomes `expired` and the call returns `connection_required` (audited).
+10. `IMcpToolGateway.ExecuteAsync`. If it comes back `connection_required` **and** step 9 did not already refresh, refresh once and retry the call once; if that refresh fails the row becomes `expired` and the call returns `connection_required`.
+11. Result audited with `success` or the provider error code.
+
+The refresh decision sits in `McpToolOrchestrator` (Application), after every gate so a call that
+ends at confirmation does not burn the one refresh attempt an execution gets. The persistence -
+re-encrypting through `IPluginCredentialProtector`, writing `expired` - sits in
+`PluginConnectionService`, which implements the narrow `IPluginTokenRefresher` alongside
+`IPluginConnectionService`. `Domain` is untouched: no Google, HTTP, or EF reference was added.
 
 `ListAvailableToolsAsync` applies gate 3 only, then returns the tools of every `installed` plugin - so a workspace with the policy off exposes **zero** plugin tools to the model rather than failing later.
 
@@ -202,13 +211,20 @@ POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionReq
 | # | Gap | Impact | Where |
 |---|---|---|---|
 | G1 | `google_drive_get_file` was in the MVP tool list but is **not** seeded and **not** implemented - three tools ship, not four | plan/reality mismatch; Drive results are search-only | migration seed, `GoogleWorkspaceMcpToolGateway` switch |
-| G2 | **No refresh-token flow.** `IPluginOAuthClient` has no refresh method; `encrypted_refresh_token` is stored and never read | ~60 min after connecting, every tool call returns `connection_required` while the row still says `connected`; the user must disconnect and reconnect | `IPluginOAuthClient`, `PluginConnectionService`, gateway 401 path |
-| G3 | `ConnectionStatus.Expired` is **never written**; only `Revoked` on explicit disconnect | the "Reconnect" state the UI already renders is unreachable for real expiry; catalog keeps showing "Connected" while every call fails | `PluginConnectionService`, gateway 401 path |
+| G2 | ~~**No refresh-token flow.**~~ **Fixed 2026-08-25 (T037).** `IPluginOAuthClient` had no refresh method, so `encrypted_refresh_token` was written on consent and never read again - roughly 60 min later every tool call returned `connection_required` while the row still said `connected`, and the only recovery was disconnect + reconnect | resolved: `RefreshAccessTokenAsync` on the OAuth client + Google `grant_type=refresh_token` implementation; the orchestrator refreshes once per execution (expiry ahead of the call, or the provider's own 401) and retries the call once | `IPluginOAuthClient`, `GoogleWorkspaceOAuthClient`, `IPluginTokenRefresher`, `PluginConnectionService`, `McpToolOrchestrator` |
+| G3 | ~~`ConnectionStatus.Expired` is **never written**~~ **Fixed 2026-08-25 (T037).** Only `Revoked` was ever written, on explicit disconnect, so the "Reconnect" state the UI already renders was unreachable for a real expiry | resolved: a refresh the provider rejects (or a connection with no stored refresh token) persists `status = expired`; `ListCatalogAsync` does not filter on status and `PluginCatalogItemMapper` passes it straight through, so the plugins page renders "Reconnect" | `PluginConnectionService.MarkExpiredAsync` |
 | G4 | ~~No disconnect or remove action anywhere in the UI~~ **Fixed 2026-08-25.** `useDisconnectAssistantPlugin` was written but never called, and `DELETE /plugins/{pluginKey}` was unwired, so a connection could be created and never undone - which with G2 left no recovery path at all | resolved: the connect dialog now carries Disconnect and Remove behind an inline confirm, and Remove disconnects first so provider tokens do not linger | `assistant.service.ts`, `use-assistant.ts`, `endpoints.ts`, plugins page |
 | G5 | Confirmation token is `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, no TTL, not single-use, and it is handed to the model inside the question card | the gate is a UX gate, not a security boundary: the model can re-derive or replay it without the user pressing Confirm | `McpConfirmationTokenFactory` |
 | G6 | `GET /plugins/installed` and `API.assistant.installedPlugins` exist but nothing consumes them (the page derives the installed row from the catalog) | dead surface | backend controller, `endpoints.ts` |
 
-G2/G3 together are the demo-visible ones; G5 is the one a reviewer will challenge.
+G5 is now the one a reviewer will challenge; G2/G3, the demo-visible pair, closed with T037.
+
+**Left open by T037 on purpose:** *any* refresh failure marks the connection `expired`, including a
+transient one (Google 5xx, a dropped connection). Because gate 5 rejects a non-`connected` row
+before the refresh code is ever reached, `expired` is sticky until the user reconnects - a network
+blip costs a re-consent. Distinguishing `invalid_grant` from a transient failure needs the OAuth
+client to surface the provider's status code rather than just throwing; worth doing, but it is a
+behaviour change beyond T037's brief.
 
 ## 10. Remaining work
 
@@ -216,8 +232,8 @@ Tracked as T036-T042 in `tasks.md`.
 
 **Blocking the demo**
 
-- **T037 - Refresh flow (G2/G3).** Add `RefreshAsync` to `IPluginOAuthClient` + Google implementation. In the gateway's 401 path (or before execution when `token_expires_at` is past), refresh once, persist the new encrypted access token, retry the call once; if refresh fails, set the connection to `expired` and return `connection_required`. Accept: a connection older than the Google token lifetime still answers a Drive search without the user reconnecting; a revoked grant flips the row to `expired` and the catalog shows "Reconnect".
-- **T036 - Manual E2E.** `manual-e2e.md`, once section 11 is satisfied.
+- ~~**T037** - Refresh flow (G2/G3).~~ **Done 2026-08-25.** `IPluginOAuthClient.RefreshAccessTokenAsync` + a Google `grant_type=refresh_token` implementation; `PluginConnectionService` also implements the narrow `IPluginTokenRefresher` and owns the persistence (re-encrypt, keep the stored refresh token when Google omits a new one, write `expired` on failure); `McpToolOrchestrator` owns the decision - refresh before the call when the recorded expiry is within 60s, otherwise on the provider's 401, at most once per execution, then retry the call once. 13 new tests, 27 total.
+- **T036 - Manual E2E.** `manual-e2e.md`, once section 11 is satisfied. T037 no longer blocks it.
 
 **Pre-merge hardening**
 
