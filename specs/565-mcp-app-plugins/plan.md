@@ -1,167 +1,248 @@
 # Implementation Plan: MCP App Plugins for WarpBot
 
-**Branch**: `feat/wt-565-mcp-plugins` | **Date**: 2026-08-23 | **Spec**: `specs/565-mcp-app-plugins/spec.md`  
-**Input**: Feature specification from `specs/565-mcp-app-plugins/spec.md`
+**Branch**: `feat/wt-565-mcp-plugins` | **Created**: 2026-08-23 | **Last updated**: 2026-08-25
+**Spec**: `specs/565-mcp-app-plugins/spec.md` | **Tasks**: `specs/565-mcp-app-plugins/tasks.md`
+**Repos on this branch**: `warptalk-backend`, `warptalk-web`, `warptalk-ai` (worked in `_worktrees/wt-565-*`)
 
-## Summary
+## Status
 
-Add a clean, MVP-sized MCP plugin layer inside `AssistantService` so users can install Google Workspace for their own account, connect their own Google account, and WarpBot can execute dynamic MCP-backed tools through the backend when the active workspace policy allows personal plugins. The UI will use the reference Plugins screen as visual inspiration, but plugin rows and installed icons must be API-driven and the MVP will not include Public/Personal tabs.
+| Phase | State |
+|---|---|
+| 0-6 Implementation (T001-T032) | Done, pushed |
+| 7 Automated verification (T033-T035, T033A) | Green after merging `origin/development` on 2026-08-25 |
+| 7 Manual E2E (T036) | **Blocked** - needs a real Google OAuth client + running Postgres |
+| 8 Pre-merge hardening (T037-T042) | **Not started** - see "Known gaps" |
 
-## Technical Context
+This file is now an *as-built* plan: sections 1-8 describe what actually exists on the branch, section 9 lists the deltas from the original design, and sections 10-12 are the remaining work.
 
-**Language/Version**: .NET 10 backend, TypeScript/Next.js frontend, Python AI worker  
-**Primary Dependencies**: ASP.NET Core, EF Core/Npgsql, SignalR, Redis Streams, React Query, existing `warptalk-ai` tool-calling loop  
-**Storage**: PostgreSQL `assistant` schema for plugin installation, connection with encrypted credential fields, and audit tables  
-**Testing**: xUnit backend tests, pytest AI worker tests, existing frontend lint/build and targeted component checks  
-**Target Platform**: WarpTalk web app and backend services  
-**Project Type**: Multi-repo web application feature spanning `warptalk-backend`, `warptalk-web`, and `warptalk-ai`  
-**Performance Goals**: Plugin catalog/status should load within normal settings page latency; MCP read tools should fail gracefully when provider is slow; write tools must not execute without confirmation  
-**Constraints**: No new microservice for MVP; no hardcoded frontend plugin catalog; no OAuth credentials outside AssistantService; no Public/Personal tabs in UI; plugin installation/connection state is personal, while workspace only gates usage through `AllowAnyPlugins`  
-**Scale/Scope**: One MVP provider (`google_workspace`) with four initial tools
+## 1. Summary
 
-## Constitution Check
+Users install Google Workspace **for their own account**, connect **their own** Google account, and WarpBot executes MCP-backed tools through `AssistantService` when the active workspace allows personal plugins. No new microservice; no provider credentials outside `AssistantService`; no hardcoded plugin rows in the frontend; no Public/Personal tabs.
 
-*GATE: Constitution in this checkout is a placeholder file under `.specify/memory/constitution.md`; project-specific rules are taken from existing WarpTalk architecture/spec conventions.*
+## 2. Technical Context
 
-- [x] Clean Architecture: Domain entities/value objects stay provider-agnostic; Application uses interfaces; Infrastructure owns OAuth/MCP/provider clients; API controllers only map HTTP.
-- [x] Communication: `warptalk-ai` uses existing assistant tool-calling flow and calls AssistantService execution endpoint with caller bearer token; no direct provider token handling in AI worker.
-- [x] API Standards: New HTTP routes use `/api/v1/assistant/...`; structured error codes are returned for expected plugin failures.
-- [x] Security: OAuth credentials are encrypted at rest and never returned to frontend/AI worker; execution is scoped by user and gated by active workspace policy.
-- [x] TDD: Write backend/AI/frontend tests before implementation tasks for each story.
-- [x] Scope Control: Keep capability inside AssistantService for MVP; design interfaces so extraction to IntegrationService is possible later.
+**Language/Version**: .NET 10 backend, TypeScript/Next.js frontend, Python AI worker
+**Primary Dependencies**: ASP.NET Core, EF Core/Npgsql, ASP.NET Data Protection, SignalR, Redis Streams, React Query, existing `warptalk-ai` tool-calling loop
+**Storage**: PostgreSQL `assistant` schema - 4 new tables, OAuth material stored encrypted
+**Testing**: xUnit (14 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
+**Constraints**: MVP stays inside `AssistantService`; installation/connection are **personal**, the workspace only gates *usage* via `AllowAnyPlugins`
+**Scale/Scope**: one provider (`google_workspace`), **three** shipped tools (see section 9, G1)
 
-## Project Structure
+## 3. Constitution Check
 
-### Documentation
+- [x] Clean Architecture - `Domain` has no Google/MCP/HTTP/EF references; `Application` depends on interfaces; `Infrastructure` owns OAuth, MCP gateway, protectors, gRPC client; controllers only map HTTP.
+- [x] Communication - `warptalk-ai` calls `AssistantService` over HTTP with the **caller's** bearer token; it never sees provider tokens.
+- [x] API Standards - all routes under `/api/v1/assistant/...`, structured `errorCode` on expected failures.
+- [x] Security - OAuth tokens encrypted at rest, never serialized to frontend or AI worker; execution scoped by `userId` from the token and gated by workspace policy.
+- [x] TDD - Phase 0 tests written before implementation.
+- [x] Scope Control - interfaces (`IPluginOAuthClient`, `IMcpToolGateway`, `IWorkspacePluginPolicyClient`) are provider-agnostic so an IntegrationService extraction stays possible.
 
-```text
-specs/565-mcp-app-plugins/
-├── spec.md
-├── plan.md
-└── tasks.md
-```
+## 4. As-built inventory
 
-### Source Code
+### warptalk-backend
 
 ```text
-assistant/
-├── database/migrations/
-├── src/WarpTalk.AssistantService.Domain/
-├── src/WarpTalk.AssistantService.Application/
-├── src/WarpTalk.AssistantService.Infrastructure/
-└── src/WarpTalk.AssistantService.API/
+assistant/database/migrations/
+  20260823090000_add_mcp_plugin_tables.sql        4 tables + google_workspace seed row
 
-warptalk-ai/
-└── ai_assistant_worker/
+assistant/src/WarpTalk.AssistantService.Domain/
+  Constants/PluginConstants.cs                    plugin key, statuses, effects, 9 error codes
+  Entities/{Plugin,PluginInstallation,PluginConnection,PluginToolAudit}.cs
+  Interfaces/IPlugin*Repository.cs                4 repositories, added to IUnitOfWork
 
-warptalk-web/
-└── src/
+assistant/src/WarpTalk.AssistantService.Application/
+  DTOs/PluginDtos.cs                              catalog, connection, tool descriptor, exec req/result
+  Interfaces/                                     IPluginInstallationService, IPluginConnectionService,
+                                                  IMcpToolGateway, IMcpToolOrchestrator,
+                                                  IPluginOAuthClient, IPluginCredentialProtector,
+                                                  IPluginOAuthStateProtector, IWorkspacePluginPolicyClient
+  Services/{PluginInstallationService,PluginConnectionService,McpToolOrchestrator}.cs
+  Helpers/{McpConfirmationTokenFactory,McpToolAuditRecorder}.cs
+  Mappers/                                        PluginDefinition, PluginCatalogItem, PluginScope,
+                                                  McpToolAudit, McpToolExecutionResult
+
+assistant/src/WarpTalk.AssistantService.Infrastructure/
+  OAuth/{GoogleWorkspaceOAuthClient,GoogleWorkspaceOAuthOptions}.cs
+  Mcp/{GoogleWorkspaceMcpToolGateway,GoogleWorkspaceApiOptions}.cs
+  Security/DataProtectionPluginCredentialProtector.cs   purpose PluginCredentials.v1
+  Security/DataProtectionPluginOAuthStateProtector.cs   purpose PluginOAuthState.v1
+  Clients/WorkspacePluginPolicyGrpcClient.cs            reads AllowAnyPlugins over gRPC
+  Repositories/Plugin*Repository.cs
+
+assistant/src/WarpTalk.AssistantService.API/
+  Controllers/{AssistantPluginsController,AssistantMcpToolsController}.cs
+  Program.cs                                      DI, lines 57-68
+  appsettings.json                                Plugins:GoogleWorkspace:{OAuth,Api}
+
+shared/WarpTalk.Shared/Protos/workspace.proto     AllowAnyPlugins on the settings message
+workspace/...                                     policy surfaced through WorkspaceGrpcService,
+                                                  WorkspaceSettingsDto, WorkspaceMapper,
+                                                  WorkspaceConfiguration
+meeting/...                                       assistant step/confirmation parity in room chat
+assistant/tests/WarpTalk.AssistantService.Tests/Plugins/   4 test classes, 14 tests
 ```
 
-**Structure Decision**: Use the existing AssistantService four-layer structure for backend plugin/MCP orchestration. Frontend renders plugin marketplace/settings from service hooks. AI worker adds dynamic MCP-backed ChatTools that proxy execution through AssistantService.
-
-## Data Model
-
-Add assistant schema tables:
+### warptalk-ai
 
 ```text
-assistant.plugins
-- id
-- plugin_key
-- label
-- description
-- avatar_url
-- provider
-- required_scopes_json
-- tools_json
-- is_active
-
-assistant.plugin_installations
-- id
-- user_id
-- plugin_id
-- status
-- config_json
-- installed_at
-- disabled_at
-
-assistant.plugin_connections
-- id
-- user_id
-- plugin_id
-- provider_account_id
-- provider_email
-- status
-- encrypted_access_token
-- encrypted_refresh_token
-- token_expires_at
-- scopes_json
-- created_at
-- updated_at
-
-assistant.plugin_tool_audits
-- id
-- workspace_id
-- user_id
-- conversation_id
-- assistant_message_id
-- plugin_key
-- tool_name
-- input_summary
-- result_status
-- provider_resource_ref
-- created_at
+ai_assistant_worker/mcp_tools.py       confirmation parameter injection, argument splitting,
+                                       error-code -> userAction normalization, question card builder
+ai_assistant_worker/chat_worker.py     _load_dynamic_mcp_tools (line ~845),
+                                       _build_mcp_tool_handler (line ~912),
+                                       dynamic tools merged into the tool table (line ~603)
+shared/config.py                       ChatAssistantSettings.assistant_service_url
+                                       (env ASSISTANT_CHAT_ASSISTANT_SERVICE_URL, default :5108)
+tests/{test_mcp_tools,test_chat_agent_loop}.py    16 tests
 ```
 
-## Backend API Plan
+### warptalk-web
 
 ```text
-GET    /api/v1/assistant/plugins
-GET    /api/v1/assistant/plugins/installed
-POST   /api/v1/assistant/plugins/{pluginKey}/install
-DELETE /api/v1/assistant/plugins/{pluginKey}
-
-GET    /api/v1/assistant/plugins/{pluginKey}/connect-url
-GET    /api/v1/assistant/plugins/{pluginKey}/oauth/callback
-DELETE /api/v1/assistant/plugins/{pluginKey}/connection
-
-GET    /api/v1/assistant/mcp/tools
-POST   /api/v1/assistant/mcp/tools/execute
+src/app/(app)/[workspaceSlug]/settings/plugins/page.tsx   marketplace, installed row, detail drawer
+src/app/(app)/[workspaceSlug]/settings/page.tsx           allowAnyPlugins workspace switch
+src/hooks/use-assistant.ts                                useAssistantPlugins, useInstallAssistantPlugin,
+                                                          usePluginConnectUrl, useDisconnectAssistantPlugin
+src/services/assistant.service.ts                         listPlugins, installPlugin,
+                                                          getPluginConnectUrl, disconnectPlugin
+src/lib/api/endpoints.ts                                  API.assistant.plugins*
+src/components/layout/{global-chatbot,assistant-question-card}.tsx   confirmation card
+src/components/rooms/live/chat-panel.tsx                  same confirmation card in room chat
+scripts/check-plugin-{marketplace-contract,confirmation-surfaces}.mjs
 ```
 
-## MVP Provider
+## 5. Data model (as migrated)
 
-Plugin key: `google_workspace`.
+`20260823090000_add_mcp_plugin_tables.sql` creates, in schema `assistant`:
 
-Initial tools:
+| Table | Key columns | Notes |
+|---|---|---|
+| `plugins` | `plugin_key` UNIQUE, `required_scopes_json`, `tools_json`, `is_active` | catalog is **data**, not code; seeds `google_workspace` (id `7f8f66db-...f38b1`) with 3 tools |
+| `plugin_installations` | `user_id`, `plugin_id`, `status`, `installed_at`, `disabled_at` | personal scope; status `not_installed` / `installed` / `disabled` |
+| `plugin_connections` | `user_id`, `plugin_id`, `provider_account_id`, `provider_email`, `encrypted_access_token`, `encrypted_refresh_token`, `token_expires_at`, `scopes_json`, `status` | status `not_connected` / `connected` / `revoked` / `expired` |
+| `plugin_tool_audits` | `workspace_id`, `user_id`, `conversation_id`, `assistant_message_id`, `plugin_key`, `tool_name`, `input_summary`, `result_status`, `provider_resource_ref` | written on success **and** on every rejected attempt |
 
-- `google_drive_search`
-- `google_drive_get_file`
-- `google_calendar_list_events`
-- `google_calendar_create_event`
+Adding a provider or a tool = insert/patch a `plugins` row + a gateway branch. No frontend change required.
 
-Defer broad Google Docs write scope. Gmail remains a separate privacy/scoping decision even if represented visually later.
+## 6. API contract (as implemented)
 
-## Frontend UI Plan
+```text
+GET    /api/v1/assistant/plugins                      catalog + this user's install/connection state
+GET    /api/v1/assistant/plugins/installed            installed subset            (not consumed by web)
+POST   /api/v1/assistant/plugins/{pluginKey}/install  idempotent; re-install re-enables a disabled row
+DELETE /api/v1/assistant/plugins/{pluginKey}          disable installation        (not wired in web, G4)
 
-Create a Plugins screen inspired by the attached reference:
+GET    /api/v1/assistant/plugins/{pluginKey}/connection      current connection status
+GET    /api/v1/assistant/plugins/{pluginKey}/connect-url     builds Google consent URL + protected state
+GET    /api/v1/assistant/plugins/{pluginKey}/oauth/callback  code -> token exchange, stores encrypted
+DELETE /api/v1/assistant/plugins/{pluginKey}/connection      sets status = revoked
 
-- Header: `Plugins`
-- Subtitle: `Work with WarpBot across your favorite tools`
-- Search input
-- Installed plugin icon row
-- Unified featured/catalog list
-- Plugin detail drawer or panel
+GET    /api/v1/assistant/mcp/tools?workspaceId={guid}        tools visible to this user in this workspace
+POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionRequest -> McpToolExecutionResult
+```
 
-Explicit UI constraints:
+`McpToolExecutionRequest`: `workspaceId?`, `pluginKey`, `toolName`, `arguments?`, `conversationId?`, `assistantMessageId?`, `confirmationToken?`
+`McpToolExecutionResult`: `isSuccess`, `errorCode?`, `message?`, `data?`, `providerResourceRef?`, `confirmationToken?`
 
-- Do not hardcode plugin rows in the component.
-- Do not implement Public/Personal tabs for MVP.
-- Fetch catalog/status through services/hooks.
-- Plugin states come from API: `Install`, `Connect`, `Connected`, `Manage`, `Reconnect`, `Disabled`.
+### Error codes (`PluginConstants.ErrorCodes`)
+
+| Code | Raised when | Client behaviour |
+|---|---|---|
+| `unknown_plugin` | no active `plugins` row for the key | internal error |
+| `unknown_tool` | tool name not in the plugin's `tools_json`, or required arguments missing | internal error |
+| `permission_denied` | workspace `AllowAnyPlugins = false`, or confirmation token mismatch | WarpBot explains the workspace policy |
+| `plugin_not_installed` | no `installed` installation for this user | WarpBot points to Settings -> Plugins |
+| `connection_required` | no `connected` connection, empty stored token, **or provider 401** | WarpBot asks the user to connect |
+| `missing_scope` | granted scopes miss a tool scope, or provider 403 | WarpBot asks the user to reconnect |
+| `confirmation_required` | write tool called without a token; response carries a fresh `confirmationToken` | WarpBot renders the confirmation card |
+| `provider_rate_limited` | provider 429 | retry later, no state change |
+| `provider_unavailable` | provider 5xx or unclassified failure | degrade gracefully |
+
+## 7. Authorization chain (`McpToolOrchestrator.ExecuteAsync`, in order)
+
+1. Plugin exists and `is_active` -> else `unknown_plugin`.
+2. Tool exists in that plugin's descriptor list -> else `unknown_tool`.
+3. If `workspaceId` present: `IWorkspacePluginPolicyClient.AllowsPluginUsageAsync` -> else `permission_denied` (audited).
+4. Installation for `userId` with status `installed` -> else `plugin_not_installed` (audited).
+5. Connection for `userId` with status `connected` -> else `connection_required` (audited).
+6. Every `tool.RequiredScopes` present in `connection.ScopesJson` -> else `missing_scope` (audited).
+7. If `tool.Effect == write` and no `confirmationToken` -> `confirmation_required` + freshly minted token (audited).
+8. If `tool.Effect == write` and token does not match -> `permission_denied` (audited).
+9. `IMcpToolGateway.ExecuteAsync` -> result audited with `success` or the provider error code.
+
+`ListAvailableToolsAsync` applies gate 3 only, then returns the tools of every `installed` plugin - so a workspace with the policy off exposes **zero** plugin tools to the model rather than failing later.
+
+## 8. Flows
+
+### 8.1 Connect (OAuth)
+
+1. Web calls `GET .../{pluginKey}/connect-url`.
+2. `PluginConnectionService` asks `DataProtectionPluginOAuthStateProtector` to protect `{UserId, PluginKey}` and `GoogleWorkspaceOAuthClient.BuildAuthorizationUrl` to assemble the consent URL from `Plugins:GoogleWorkspace:OAuth` + the plugin's `required_scopes_json`.
+3. User consents in Google; Google redirects to `.../{pluginKey}/oauth/callback?code=...&state=...`.
+4. State is unprotected back to `{UserId, PluginKey}` - the callback trusts the protected state, not the session.
+5. `ExchangeCodeAsync` returns access/refresh tokens, provider account id, email, granted scopes.
+6. Tokens are `Protect`ed (purpose `PluginCredentials.v1`) and stored; status becomes `connected`.
+
+### 8.2 Execute (read)
+
+`chat_worker._load_dynamic_mcp_tools` -> `GET /mcp/tools?workspaceId=` with the caller bearer -> descriptors become `ChatTool`s merged into `TOOLS_BY_NAME` -> model calls one -> `_build_mcp_tool_handler` POSTs to `/mcp/tools/execute` -> orchestrator gates -> gateway calls Google -> JSON data returned to the model.
+
+### 8.3 Execute (write, confirmed)
+
+1. Write descriptors get an extra `confirmationToken` property injected by `with_mcp_confirmation_parameter`.
+2. First call has no token -> `confirmation_required` + token.
+3. `normalize_mcp_tool_payload` adds `userAction.type = confirm_write`; `build_mcp_confirmation_questions` renders a two-option card (Confirm / Cancel).
+4. Web shows the card via `assistant-question-card.tsx` in both `/ai-chat` and the room chat panel.
+5. On Confirm the model repeats the call with the token; gate 8 compares it in fixed time; the gateway executes; `providerResourceRef` is audited.
+
+## 9. Known gaps (delta from the original design)
+
+| # | Gap | Impact | Where |
+|---|---|---|---|
+| G1 | `google_drive_get_file` was in the MVP tool list but is **not** seeded and **not** implemented - three tools ship, not four | plan/reality mismatch; Drive results are search-only | migration seed, `GoogleWorkspaceMcpToolGateway` switch |
+| G2 | **No refresh-token flow.** `IPluginOAuthClient` has no refresh method; `encrypted_refresh_token` is stored and never read | ~60 min after connecting, every tool call returns `connection_required` while the row still says `connected`; the user must disconnect and reconnect | `IPluginOAuthClient`, `PluginConnectionService`, gateway 401 path |
+| G3 | `ConnectionStatus.Expired` is **never written**; only `Revoked` on explicit disconnect | the "Reconnect" state the UI already renders is unreachable for real expiry; catalog keeps showing "Connected" while every call fails | `PluginConnectionService`, gateway 401 path |
+| G4 | `DELETE /plugins/{pluginKey}` (disable) is not called from web; the UI's "Enable" relies on idempotent install | a user cannot remove a plugin from the UI | `assistant.service.ts`, plugins page |
+| G5 | Confirmation token is `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, no TTL, not single-use, and it is handed to the model inside the question card | the gate is a UX gate, not a security boundary: the model can re-derive or replay it without the user pressing Confirm | `McpConfirmationTokenFactory` |
+| G6 | `GET /plugins/installed` and `API.assistant.installedPlugins` exist but nothing consumes them (the page derives the installed row from the catalog) | dead surface | backend controller, `endpoints.ts` |
+
+G2/G3 together are the demo-visible ones; G5 is the one a reviewer will challenge.
+
+## 10. Remaining work
+
+Tracked as T036-T042 in `tasks.md`.
+
+**Blocking the demo**
+
+- **T037 - Refresh flow (G2/G3).** Add `RefreshAsync` to `IPluginOAuthClient` + Google implementation. In the gateway's 401 path (or before execution when `token_expires_at` is past), refresh once, persist the new encrypted access token, retry the call once; if refresh fails, set the connection to `expired` and return `connection_required`. Accept: a connection older than the Google token lifetime still answers a Drive search without the user reconnecting; a revoked grant flips the row to `expired` and the catalog shows "Reconnect".
+- **T036 - Manual E2E.** `manual-e2e.md`, once section 11 is satisfied.
+
+**Pre-merge hardening**
+
+- **T038 - Signed confirmation tokens (G5).** Replace the base64 payload with a Data Protection-protected, time-limited (<= 5 min), single-use token bound to `userId + pluginKey + toolName + argument hash`; persist or cache the nonce so a replay fails. Accept: replaying a used token returns `permission_denied`; a token minted for different arguments does not validate.
+- **T039 - Ship or drop `google_drive_get_file` (G1).** Either add the gateway branch + seed patch migration, or delete it from spec/plan so the MVP tool list is three.
+- **T040 - Wire disable (G4)** in `assistant.service.ts` + hook + page action, or remove the endpoint.
+- **T041 - Remove or use `plugins/installed` (G6).**
+- **T042 - Ops readiness.** Confirm Data Protection keys are persisted and shared across AssistantService replicas - with the default in-memory/per-container key ring, every restart or second replica makes stored tokens and OAuth state undecryptable. Document `Plugins:GoogleWorkspace:OAuth:*` as deployment secrets.
+
+## 11. Local run / E2E prerequisites
+
+1. Google Cloud -> OAuth 2.0 Client (Web application), authorized redirect URI `http://localhost:5108/api/v1/assistant/plugins/google_workspace/oauth/callback`, scopes `drive.readonly` + `calendar.events`.
+2. Supply secrets **outside** git (`dotnet user-secrets` in `WarpTalk.AssistantService.API`, or env):
+   - `Plugins:GoogleWorkspace:OAuth:ClientId`
+   - `Plugins:GoogleWorkspace:OAuth:ClientSecret`
+3. Postgres up, then apply `assistant/database/migrations/20260823090000_add_mcp_plugin_tables.sql`.
+4. Run WorkspaceService (gRPC `:50056`, for `AllowAnyPlugins`), AssistantService (`:5108`), the `warptalk-ai` chat worker with `ASSISTANT_CHAT_ASSISTANT_SERVICE_URL=http://localhost:5108`, and `warptalk-web`.
+5. Walk `manual-e2e.md`. The Google consent step must be performed by a human.
+
+## 12. Merge & rollout
+
+1. Land **backend** first - web and ai both call its endpoints. Migration is additive (`CREATE TABLE IF NOT EXISTS` + seed), no destructive step, safe to apply before deploy.
+2. Then **ai** (tool discovery degrades to zero tools if the endpoint 404s - `_load_dynamic_mcp_tools` swallows failures), then **web**.
+3. Secrets are per-environment; with `ClientId`/`ClientSecret` blank the connect-url call fails and the rest of WarpBot is unaffected.
+4. Rollback: turn `AllowAnyPlugins` off at workspace level to disable the whole feature path without a deploy.
 
 ## Complexity Tracking
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
-| None | N/A | N/A |
+| Confirmation token minted in `Application` rather than a dedicated security service | keeps the MVP inside AssistantService | a separate token service is unjustified for one provider - revisit with T038 |
