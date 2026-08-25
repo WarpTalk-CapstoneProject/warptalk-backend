@@ -147,6 +147,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         PluginConnection connection,
         CancellationToken ct = default)
     {
+        // Nothing to refresh with. Permanent by construction - only a new consent stores one.
         if (string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken))
             return await MarkExpiredAsync(connection, ct);
 
@@ -162,18 +163,43 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             return await MarkExpiredAsync(connection, ct);
         }
 
-        PluginOAuthTokenDto token;
+        PluginOAuthRefreshResultDto refresh;
         try
         {
-            token = await _oauthClient.RefreshAccessTokenAsync(plugin, refreshToken, ct);
+            refresh = await _oauthClient.RefreshAccessTokenAsync(plugin, refreshToken, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return await MarkExpiredAsync(connection, ct);
+            // The client classifies everything it can foresee; an unforeseen fault (a provider
+            // contract change, a bug in the client) is not evidence the grant is dead. Ending the
+            // connection is the one outcome the user cannot undo without a browser round trip, so
+            // an unknown fault degrades to transient rather than to destructive.
+            return TransientFailure(
+                PluginConstants.ErrorCodes.ProviderUnavailable,
+                "The provider could not be reached to refresh access. Try again in a moment.");
         }
 
-        if (string.IsNullOrWhiteSpace(token.AccessToken))
-            return await MarkExpiredAsync(connection, ct);
+        switch (refresh.Outcome)
+        {
+            case PluginOAuthRefreshOutcome.GrantRejected:
+                return await MarkExpiredAsync(connection, ct);
+
+            case PluginOAuthRefreshOutcome.ProviderRateLimited:
+                return TransientFailure(
+                    PluginConstants.ErrorCodes.ProviderRateLimited,
+                    "The provider is rate limiting this account. Try again in a moment.");
+
+            case PluginOAuthRefreshOutcome.ProviderUnavailable:
+                return TransientFailure(
+                    PluginConstants.ErrorCodes.ProviderUnavailable,
+                    "The provider could not be reached to refresh access. Try again in a moment.");
+        }
+
+        var token = refresh.Token;
+        if (token == null || string.IsNullOrWhiteSpace(token.AccessToken))
+            return TransientFailure(
+                PluginConstants.ErrorCodes.ProviderUnavailable,
+                "The provider could not be reached to refresh access. Try again in a moment.");
 
         var now = DateTime.UtcNow;
         connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
@@ -195,6 +221,11 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     /// Plugins page offers "Reconnect". The encrypted material is left in place: only a new
     /// consent replaces it, and keeping it makes the failure diagnosable.
     /// </summary>
+    /// <remarks>
+    /// Reserved for a grant that is provably gone. Gate 5 of <c>McpToolOrchestrator</c> rejects any
+    /// non-<c>connected</c> row before the refresh code runs, so this write is effectively
+    /// one-way: nothing short of the user re-consenting in a browser undoes it.
+    /// </remarks>
     private async Task<Result> MarkExpiredAsync(PluginConnection connection, CancellationToken ct)
     {
         connection.Status = PluginConstants.ConnectionStatus.Expired;
@@ -204,6 +235,17 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         return Result.Failure(
             "Reconnect your provider account.",
             PluginConstants.ErrorCodes.ConnectionRequired);
+    }
+
+    /// <summary>
+    /// Fails the refresh <em>without writing anything</em>. The row keeps
+    /// <c>status = connected</c> and its existing tokens, so the next execution walks the same path
+    /// and refreshes again - which is exactly what should happen when the provider was merely
+    /// having a bad minute.
+    /// </summary>
+    private static Result TransientFailure(string errorCode, string message)
+    {
+        return Result.Failure(message, errorCode);
     }
 
     public async Task<Result> DisconnectAsync(string pluginKey, Guid userId, CancellationToken ct = default)

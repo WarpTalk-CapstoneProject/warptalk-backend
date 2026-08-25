@@ -182,7 +182,8 @@ public class PluginConnectionServiceTests
         var connection = ConnectedConnection();
         var newExpiry = DateTime.UtcNow.AddHours(1);
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
-            .Returns(new PluginOAuthTokenDto(null, null, [], "fresh-access-token", null, newExpiry));
+            .Returns(PluginOAuthRefreshResultDto.Succeeded(
+                new PluginOAuthTokenDto(null, null, [], "fresh-access-token", null, newExpiry)));
 
         var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
 
@@ -204,13 +205,13 @@ public class PluginConnectionServiceTests
         var plugin = GoogleWorkspacePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
-            .Returns(new PluginOAuthTokenDto(
+            .Returns(PluginOAuthRefreshResultDto.Succeeded(new PluginOAuthTokenDto(
                 null,
                 null,
                 [],
                 "fresh-access-token",
                 "rotated-refresh-token",
-                DateTime.UtcNow.AddHours(1)));
+                DateTime.UtcNow.AddHours(1))));
 
         var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
 
@@ -219,12 +220,15 @@ public class PluginConnectionServiceTests
     }
 
     [Fact]
-    public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenProviderRejectsRefreshToken()
+    public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenProviderRejectsTheGrant()
     {
+        // The rejection that ends a connection is specifically an invalid_grant-shaped one: the
+        // provider looked at the stored refresh token and refused it.
         var plugin = GoogleWorkspacePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
-            .Returns<PluginOAuthTokenDto>(_ => throw new HttpRequestException("invalid_grant"));
+            .Returns(PluginOAuthRefreshResultDto.GrantRejected(
+                "Google token endpoint returned 400 (invalid_grant)."));
 
         var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
 
@@ -233,6 +237,82 @@ public class PluginConnectionServiceTests
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
         _connectionRepository.Received(1).Update(connection);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_LeavesConnectionConnected_WhenProviderIsUnavailable()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.ProviderUnavailable(
+                "Google token endpoint returned 503."));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.ErrorCode);
+        // The whole point: a bad minute at Google must not cost the user a browser re-consent.
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        Assert.Equal("protected:stale-access-token", connection.EncryptedAccessToken);
+        Assert.Equal("protected:refresh-token", connection.EncryptedRefreshToken);
+        _connectionRepository.DidNotReceive().Update(Arg.Any<PluginConnection>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_LeavesConnectionConnected_WhenProviderRateLimits()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.ProviderRateLimited(
+                "Google token endpoint returned 429 (rateLimitExceeded)."));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderRateLimited, result.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        _connectionRepository.DidNotReceive().Update(Arg.Any<PluginConnection>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_LeavesConnectionConnected_WhenTheClientThrowsUnclassified()
+    {
+        // A fault the OAuth client did not foresee is not evidence the grant is dead. Degrading to
+        // transient keeps an unexpected bug from silently expiring every connection it touches.
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns<PluginOAuthRefreshResultDto>(_ => throw new HttpRequestException("Connection reset."));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        _connectionRepository.DidNotReceive().Update(Arg.Any<PluginConnection>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenStoredMaterialWillNotDecrypt()
+    {
+        // A rotated Data Protection key ring makes the stored refresh token unusable forever.
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConnectedConnection();
+        _credentialProtector.Unprotect("protected:refresh-token")
+            .Returns<string>(_ => throw new InvalidOperationException("The key was not found in the key ring."));
+
+        var result = await CreateSut().RefreshAccessTokenAsync(plugin, connection);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
+        await _oauthClient.DidNotReceive()
+            .RefreshAccessTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

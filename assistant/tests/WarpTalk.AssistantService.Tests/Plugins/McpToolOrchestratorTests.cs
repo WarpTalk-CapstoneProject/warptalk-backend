@@ -26,6 +26,9 @@ public class McpToolOrchestratorTests
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
     private readonly IPluginConnectionRepository _connectionRepository = Substitute.For<IPluginConnectionRepository>();
     private readonly IPluginToolAuditRepository _auditRepository = Substitute.For<IPluginToolAuditRepository>();
+    private readonly IPluginOAuthClient _oauthClient = Substitute.For<IPluginOAuthClient>();
+    private readonly IPluginOAuthStateProtector _stateProtector = Substitute.For<IPluginOAuthStateProtector>();
+    private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
 
     public McpToolOrchestratorTests()
     {
@@ -34,6 +37,9 @@ public class McpToolOrchestratorTests
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
+        _credentialProtector.Protect(Arg.Any<string>()).Returns(call => $"protected:{call.Arg<string>()}");
+        _credentialProtector.Unprotect(Arg.Any<string>())
+            .Returns(call => call.Arg<string>().Replace("protected:", "", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -366,6 +372,206 @@ public class McpToolOrchestratorTests
                 Arg.Any<PluginConnection>(),
                 Arg.Any<McpToolExecutionRequest>(),
                 Arg.Any<CancellationToken>());
+    }
+
+    // The cases below wire the *real* PluginConnectionService in as IPluginTokenRefresher and stub
+    // only the provider client, because the behaviour under test spans both halves: the refresher
+    // decides whether to write `expired`, the orchestrator decides which error code the caller and
+    // the audit row see. A substituted refresher would let either half drift without a red test.
+
+    [Fact]
+    public async Task ExecuteAsync_MarksConnectionExpired_AndReturnsConnectionRequired_WhenProviderRejectsTheGrant()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.GrantRejected(
+                "Google token endpoint returned 400 (invalid_grant)."));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit =>
+                    audit.ResultStatus == PluginConstants.ErrorCodes.ConnectionRequired),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_LeavesConnectionConnected_AndReturnsProviderUnavailable_WhenRefreshHitsProviderOutage()
+    {
+        // A Google 503 is not a verdict on the grant. Before this, it expired the row - and because
+        // gate 5 rejects a non-connected row before the refresh code is reached, that was sticky:
+        // one blip cost a full browser re-consent.
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.ProviderUnavailable(
+                "Google token endpoint returned 503."));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        Assert.Equal("protected:access-token", connection.EncryptedAccessToken);
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit =>
+                    audit.ResultStatus == PluginConstants.ErrorCodes.ProviderUnavailable),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_LeavesConnectionConnected_AndReturnsProviderRateLimited_WhenRefreshIsThrottled()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.ProviderRateLimited(
+                "Google token endpoint returned 429 (rateLimitExceeded)."));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderRateLimited, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit =>
+                    audit.ResultStatus == PluginConstants.ErrorCodes.ProviderRateLimited),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_LeavesConnectionConnected_WhenRefreshRequestNeverReachesTheProvider()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns<PluginOAuthRefreshResultDto>(_ => throw new HttpRequestException("No such host is known."));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        _connectionRepository.DidNotReceive().Update(Arg.Any<PluginConnection>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MarksConnectionExpired_WhenNothingIsStoredToRefreshWith()
+    {
+        // Regression guard on T037: a connection with no stored refresh token is dead by
+        // construction, and must keep ending the connection rather than looking transient.
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
+        connection.EncryptedRefreshToken = null;
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
+        await _oauthClient.DidNotReceive()
+            .RefreshAccessTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReturnsProviderUnavailableRatherThanReconnect_WhenReactiveRefreshHitsProviderOutage()
+    {
+        // The gateway 401 said "this access token is stale"; the failed refresh said nothing at all
+        // about the grant. Answering connection_required here would push the user through a browser
+        // consent to fix a ten-second outage, so the transient code wins.
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.ProviderUnavailable(
+                "Google token endpoint returned 503."));
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(false, PluginConstants.ErrorCodes.ConnectionRequired, "401", null, null, null));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit =>
+                    audit.ResultStatus == PluginConstants.ErrorCodes.ProviderUnavailable),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_StillRefreshesAtMostOnce_WhenAProactiveRefreshFailsTransiently()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.ProviderUnavailable(
+                "Google token endpoint returned 503."));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.Value!.ErrorCode);
+        // One attempt, and the gateway is never called with a token we already know is stale.
+        await _oauthClient.Received(1)
+            .RefreshAccessTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KeepsConnectionRequired_WhenReactiveRefreshIsRejectedByTheProvider()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
+        _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
+            .Returns(PluginOAuthRefreshResultDto.GrantRejected(
+                "Google token endpoint returned 400 (invalid_grant)."));
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(false, PluginConstants.ErrorCodes.ConnectionRequired, "401", null, null, null));
+
+        var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value!.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
+    }
+
+    private McpToolOrchestrator CreateSutWithRealRefresher()
+    {
+        return new McpToolOrchestrator(
+            _gateway,
+            _unitOfWork,
+            _workspacePolicy,
+            new PluginConnectionService(_unitOfWork, _oauthClient, _stateProtector, _credentialProtector));
     }
 
     private McpToolOrchestrator CreateSut()

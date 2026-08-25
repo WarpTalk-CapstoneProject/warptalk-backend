@@ -130,13 +130,18 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             refreshAttempted = true;
             var proactiveRefresh = await _tokenRefresher.RefreshAccessTokenAsync(pluginEntity, connection, ct);
             if (!proactiveRefresh.IsSuccess)
+                // The refresher already decided whether the grant is dead (connection_required,
+                // row now expired) or the provider was merely unreachable (provider_unavailable /
+                // provider_rate_limited, row untouched). Pass its verdict through unflattened so
+                // the model tells the user to retry rather than to reconnect, and so the audit row
+                // records what actually happened.
                 return await McpToolAuditRecorder.RecordFailureAsync(
                     _unitOfWork,
                     userId,
                     plugin.Id,
                     request,
-                    PluginConstants.ErrorCodes.ConnectionRequired,
-                    "Reconnect your provider account first.",
+                    proactiveRefresh.ErrorCode ?? PluginConstants.ErrorCodes.ConnectionRequired,
+                    proactiveRefresh.Error ?? "Reconnect your provider account first.",
                     ct);
         }
 
@@ -149,11 +154,24 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             && string.Equals(result.ErrorCode, PluginConstants.ErrorCodes.ConnectionRequired, StringComparison.Ordinal))
         {
             var reactiveRefresh = await _tokenRefresher.RefreshAccessTokenAsync(pluginEntity, connection, ct);
+
+            // Worth spelling out, because the obvious move is wrong. The gateway just answered
+            // connection_required off a real provider 401, so it is tempting to keep that result
+            // when the refresh then fails. But a *transient* refresh failure means we never got an
+            // answer about the grant: the access token we hold is stale (that much the 401 proves)
+            // and the token endpoint was unreachable, which proves nothing. Telling the user to
+            // reconnect there sends them through a browser consent to fix what may be a ten-second
+            // outage - and re-consenting is the one action they cannot take back cheaply.
+            // So the transient code wins over the gateway's connection_required. If the grant
+            // really is dead, the next turn retries, the token endpoint answers invalid_grant, and
+            // the user gets connection_required then - one extra turn, and self-correcting.
+            // A *permanent* refresh failure returns connection_required anyway, so that path is
+            // unchanged.
             result = reactiveRefresh.IsSuccess
                 ? await _gateway.ExecuteAsync(plugin, tool, connection, request, ct)
                 : McpToolExecutionResultMapper.ToFailure(
-                    PluginConstants.ErrorCodes.ConnectionRequired,
-                    "Reconnect your provider account first.");
+                    reactiveRefresh.ErrorCode ?? PluginConstants.ErrorCodes.ConnectionRequired,
+                    reactiveRefresh.Error ?? "Reconnect your provider account first.");
         }
 
         await McpToolAuditRecorder.RecordAsync(

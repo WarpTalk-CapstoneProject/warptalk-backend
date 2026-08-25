@@ -11,7 +11,7 @@
 | 0-6 Implementation (T001-T032) | Done, pushed |
 | 7 Automated verification (T033-T035, T033A) | Green after merging `origin/development` on 2026-08-25 |
 | 7 Manual E2E (T036) | **Blocked** - needs a real Google OAuth client + running Postgres |
-| 8 Pre-merge hardening (T037-T042) | T037, T040 done; T038-T039, T041-T042 open - see "Known gaps" |
+| 8 Pre-merge hardening (T037-T043) | T037, T040, T043 done; T038-T039, T041-T042 open - see "Known gaps" |
 
 This file is now an *as-built* plan: sections 1-8 describe what actually exists on the branch, section 9 lists the deltas from the original design, and sections 10-12 are the remaining work.
 
@@ -24,7 +24,7 @@ Users install Google Workspace **for their own account**, connect **their own** 
 **Language/Version**: .NET 10 backend, TypeScript/Next.js frontend, Python AI worker
 **Primary Dependencies**: ASP.NET Core, EF Core/Npgsql, ASP.NET Data Protection, SignalR, Redis Streams, React Query, existing `warptalk-ai` tool-calling loop
 **Storage**: PostgreSQL `assistant` schema - 4 new tables, OAuth material stored encrypted
-**Testing**: xUnit (27 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
+**Testing**: xUnit (44 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
 **Constraints**: MVP stays inside `AssistantService`; installation/connection are **personal**, the workspace only gates *usage* via `AllowAnyPlugins`
 **Scale/Scope**: one provider (`google_workspace`), **three** shipped tools (see section 9, G1)
 
@@ -80,7 +80,7 @@ workspace/...                                     policy surfaced through Worksp
                                                   WorkspaceSettingsDto, WorkspaceMapper,
                                                   WorkspaceConfiguration
 meeting/...                                       assistant step/confirmation parity in room chat
-assistant/tests/WarpTalk.AssistantService.Tests/Plugins/   5 test classes, 27 tests
+assistant/tests/WarpTalk.AssistantService.Tests/Plugins/   5 test classes, 44 tests
 ```
 
 ### warptalk-ai
@@ -155,11 +155,11 @@ POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionReq
 | `unknown_tool` | tool name not in the plugin's `tools_json`, or required arguments missing | internal error |
 | `permission_denied` | workspace `AllowAnyPlugins = false`, or confirmation token mismatch | WarpBot explains the workspace policy |
 | `plugin_not_installed` | no `installed` installation for this user | WarpBot points to Settings -> Plugins |
-| `connection_required` | no `connected` connection, empty stored token, a provider 401 that survives one refresh, or a refresh the provider rejected (which also flips the row to `expired`) | WarpBot asks the user to connect |
+| `connection_required` | no `connected` connection, empty stored token, a provider 401 that survives one refresh, or a refresh the provider **rejected** - Google 400 `invalid_grant`, nothing stored to refresh with, or stored material that no longer decrypts (which also flips the row to `expired`) | WarpBot asks the user to connect |
 | `missing_scope` | granted scopes miss a tool scope, or provider 403 | WarpBot asks the user to reconnect |
 | `confirmation_required` | write tool called without a token; response carries a fresh `confirmationToken` | WarpBot renders the confirmation card |
-| `provider_rate_limited` | provider 429 | retry later, no state change |
-| `provider_unavailable` | provider 5xx or unclassified failure | degrade gracefully |
+| `provider_rate_limited` | provider 429, on a tool call **or on a token refresh** | retry later, no state change |
+| `provider_unavailable` | provider 5xx, timeout, network failure, or any unclassified failure, on a tool call **or on a token refresh** | degrade gracefully; the connection is left `connected` so the next turn retries |
 
 ## 7. Authorization chain (`McpToolOrchestrator.ExecuteAsync`, in order)
 
@@ -171,8 +171,10 @@ POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionReq
 6. Every `tool.RequiredScopes` present in `connection.ScopesJson` -> else `missing_scope` (audited).
 7. If `tool.Effect == write` and no `confirmationToken` -> `confirmation_required` + freshly minted token (audited).
 8. If `tool.Effect == write` and token does not match -> `permission_denied` (audited).
-9. If `connection.AccessTokenExpiresAt` is within 60s of now (or already past), `IPluginTokenRefresher.RefreshAccessTokenAsync` -> on failure the row becomes `expired` and the call returns `connection_required` (audited).
-10. `IMcpToolGateway.ExecuteAsync`. If it comes back `connection_required` **and** step 9 did not already refresh, refresh once and retry the call once; if that refresh fails the row becomes `expired` and the call returns `connection_required`.
+9. If `connection.AccessTokenExpiresAt` is within 60s of now (or already past), `IPluginTokenRefresher.RefreshAccessTokenAsync`. A failed refresh is **not** one thing (T043):
+   - the provider **rejected the grant** (`invalid_grant`), nothing is stored to refresh with, or the stored material no longer decrypts -> the row becomes `expired` and the call returns `connection_required` (audited);
+   - the provider or the network **got in the way** (5xx, 429, timeout, DNS, any non-`invalid_grant` 4xx) -> `plugin_connections.status` is left untouched and the call returns `provider_unavailable` / `provider_rate_limited` (audited under that code), so the next turn simply tries again.
+10. `IMcpToolGateway.ExecuteAsync`. If it comes back `connection_required` **and** step 9 did not already refresh, refresh once and retry the call once. If that refresh is rejected, the row becomes `expired` and the call returns `connection_required`. If it fails transiently, the transient code **replaces** the gateway's `connection_required`: the 401 proves the access token is stale, the failed refresh proves nothing about the grant, and sending the user through a browser re-consent over a ten-second outage is the one mistake here that is expensive to undo. If the grant really is dead, the next turn's refresh gets `invalid_grant` and the user is told to reconnect then.
 11. Result audited with `success` or the provider error code.
 
 The refresh decision sits in `McpToolOrchestrator` (Application), after every gate so a call that
@@ -180,6 +182,15 @@ ends at confirmation does not burn the one refresh attempt an execution gets. Th
 re-encrypting through `IPluginCredentialProtector`, writing `expired` - sits in
 `PluginConnectionService`, which implements the narrow `IPluginTokenRefresher` alongside
 `IPluginConnectionService`. `Domain` is untouched: no Google, HTTP, or EF reference was added.
+
+The permanent/transient split crosses the layer boundary **semantically**, not as HTTP:
+`IPluginOAuthClient.RefreshAccessTokenAsync` returns a `PluginOAuthRefreshResultDto` carrying a
+`PluginOAuthRefreshOutcome` (`Succeeded` / `GrantRejected` / `ProviderUnavailable` /
+`ProviderRateLimited`). `GoogleWorkspaceOAuthClient` is the only place that reads a status code or
+parses `{"error": ...}`; `Application` switches on the enum and never sees `HttpStatusCode`.
+Only `GrantRejected` ends a connection - anything ambiguous, including an exception the client did
+not foresee, degrades to transient, because expiring a row is effectively one-way (gate 5 rejects a
+non-`connected` row before the refresh code runs) while a retry costs nothing.
 
 `ListAvailableToolsAsync` applies gate 3 only, then returns the tools of every `installed` plugin - so a workspace with the policy off exposes **zero** plugin tools to the model rather than failing later.
 
@@ -219,12 +230,22 @@ re-encrypting through `IPluginCredentialProtector`, writing `expired` - sits in
 
 G5 is now the one a reviewer will challenge; G2/G3, the demo-visible pair, closed with T037.
 
-**Left open by T037 on purpose:** *any* refresh failure marks the connection `expired`, including a
-transient one (Google 5xx, a dropped connection). Because gate 5 rejects a non-`connected` row
-before the refresh code is ever reached, `expired` is sticky until the user reconnects - a network
-blip costs a re-consent. Distinguishing `invalid_grant` from a transient failure needs the OAuth
-client to surface the provider's status code rather than just throwing; worth doing, but it is a
-behaviour change beyond T037's brief.
+**Closed by T043 (2026-08-25), left open by T037 on purpose:** T037 funnelled *any* refresh
+failure into `expired` - a Google 5xx, a timeout or a dropped connection ended the connection just
+as firmly as a revoked grant. `GoogleWorkspaceOAuthClient` called `EnsureSuccessStatusCode()`, so
+a 400 `invalid_grant` and a 503 arrived at `PluginConnectionService` as the same exception, and its
+`catch (Exception)` sent both to `MarkExpiredAsync`. Because gate 5 rejects a non-`connected` row
+before the refresh code is ever reached, that `expired` was sticky: one network blip cost the user
+a full browser re-consent.
+
+Now the OAuth client classifies the provider's answer into a `PluginOAuthRefreshOutcome` and only
+`GrantRejected` (Google 400 `invalid_grant`), no stored refresh token, or undecryptable stored
+material ends the connection. 5xx, 429, timeouts, network failures and any non-`invalid_grant` 4xx
+leave `plugin_connections.status` alone and surface `provider_unavailable` /
+`provider_rate_limited`, which the audit row records as well - so the next turn retries instead of
+the user re-consenting. `invalid_client` is deliberately on the transient side: it means *our*
+client id/secret is wrong, and reading it as a dead user grant would turn one bad config push into
+a mass re-consent.
 
 ## 10. Remaining work
 
@@ -242,6 +263,7 @@ Tracked as T036-T042 in `tasks.md`.
 - ~~**T040** - Wire disconnect + disable (G4).~~ Done 2026-08-25.
 - **T041 - Remove or use `plugins/installed` (G6).**
 - **T042 - Ops readiness.** Confirm Data Protection keys are persisted and shared across AssistantService replicas - with the default in-memory/per-container key ring, every restart or second replica makes stored tokens and OAuth state undecryptable. Document `Plugins:GoogleWorkspace:OAuth:*` as deployment secrets.
+- ~~**T043** - Tell a rejected grant apart from a transient refresh failure.~~ **Done 2026-08-25.** See section 9 and section 7 gates 9-10. 17 new/changed tests, 27 -> 44.
 
 ## 11. Local run / E2E prerequisites
 

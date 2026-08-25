@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Web;
 using Microsoft.Extensions.Options;
@@ -80,7 +81,7 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             token.ExpiresIn.HasValue ? DateTime.UtcNow.AddSeconds(token.ExpiresIn.Value) : null);
     }
 
-    public async Task<PluginOAuthTokenDto> RefreshAccessTokenAsync(
+    public async Task<PluginOAuthRefreshResultDto> RefreshAccessTokenAsync(
         Plugin plugin,
         string refreshToken,
         CancellationToken ct = default)
@@ -89,38 +90,130 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
 
         if (string.IsNullOrWhiteSpace(refreshToken))
-            throw new InvalidOperationException("A refresh token is required to refresh Google OAuth credentials.");
+            throw new ArgumentException("A refresh token is required to refresh Google OAuth credentials.", nameof(refreshToken));
 
-        var response = await _httpClient.PostAsync(
-            _options.TokenEndpoint,
-            new FormUrlEncodedContent(new Dictionary<string, string>
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsync(
+                _options.TokenEndpoint,
+                new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["client_id"] = _options.ClientId,
+                    ["client_secret"] = _options.ClientSecret,
+                    ["refresh_token"] = refreshToken,
+                    ["grant_type"] = "refresh_token",
+                }),
+                ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            // Never reached Google at all - DNS, TLS, connection reset. Says nothing about the grant.
+            return PluginOAuthRefreshResultDto.ProviderUnavailable($"Google token endpoint unreachable: {ex.Message}");
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            // HttpClient surfaces its own timeout as TaskCanceledException; the caller's
+            // cancellation is a different thing and must keep propagating.
+            return PluginOAuthRefreshResultDto.ProviderUnavailable($"Google token endpoint timed out: {ex.Message}");
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+                return await ClassifyRefreshFailureAsync(response, ct);
+
+            GoogleTokenResponse? token;
+            try
             {
-                ["client_id"] = _options.ClientId,
-                ["client_secret"] = _options.ClientSecret,
-                ["refresh_token"] = refreshToken,
-                ["grant_type"] = "refresh_token",
-            }),
-            ct);
-        response.EnsureSuccessStatusCode();
+                token = await response.Content.ReadFromJsonAsync<GoogleTokenResponse>(cancellationToken: ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return PluginOAuthRefreshResultDto.ProviderUnavailable($"Google refresh response was unreadable: {ex.Message}");
+            }
 
-        var token = await response.Content.ReadFromJsonAsync<GoogleTokenResponse>(cancellationToken: ct)
-            ?? throw new InvalidOperationException("Google OAuth refresh response was empty.");
-        if (string.IsNullOrWhiteSpace(token.AccessToken))
-            throw new InvalidOperationException("Google OAuth refresh response did not include an access token.");
+            if (token == null || string.IsNullOrWhiteSpace(token.AccessToken))
+                // A 200 with no access token is Google misbehaving, not Google refusing the grant.
+                return PluginOAuthRefreshResultDto.ProviderUnavailable("Google refresh response did not include an access token.");
 
-        var grantedScopes = (token.Scope ?? "")
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToArray();
+            var grantedScopes = (token.Scope ?? "")
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToArray();
 
-        // No user-info round trip here: the identity behind the grant cannot change on a refresh,
-        // and RefreshToken stays null when Google omits it so the caller keeps the stored one.
-        return new PluginOAuthTokenDto(
-            null,
-            null,
-            grantedScopes,
-            token.AccessToken,
-            token.RefreshToken,
-            token.ExpiresIn.HasValue ? DateTime.UtcNow.AddSeconds(token.ExpiresIn.Value) : null);
+            // No user-info round trip here: the identity behind the grant cannot change on a refresh,
+            // and RefreshToken stays null when Google omits it so the caller keeps the stored one.
+            return PluginOAuthRefreshResultDto.Succeeded(new PluginOAuthTokenDto(
+                null,
+                null,
+                grantedScopes,
+                token.AccessToken,
+                token.RefreshToken,
+                token.ExpiresIn.HasValue ? DateTime.UtcNow.AddSeconds(token.ExpiresIn.Value) : null));
+        }
+    }
+
+    /// <summary>
+    /// Turns Google's answer into the one distinction the caller needs: is this grant dead, or was
+    /// this just a bad minute?
+    /// </summary>
+    /// <remarks>
+    /// Only <c>invalid_grant</c> ends a connection. Google returns it (with a 400) when the user
+    /// revoked access, changed their password, or the token was pruned for age - all of which need
+    /// a fresh consent. Every other rejection is deliberately treated as transient, including
+    /// <c>invalid_client</c>: that one means <em>our</em> client id/secret is wrong, and expiring
+    /// every user's connection over a deployment misconfiguration would turn one bad config push
+    /// into a mass re-consent.
+    /// </remarks>
+    private static async Task<PluginOAuthRefreshResultDto> ClassifyRefreshFailureAsync(
+        HttpResponseMessage response,
+        CancellationToken ct)
+    {
+        var body = await ReadBodySafelyAsync(response, ct);
+        var providerError = ExtractErrorCode(body);
+        var detail = $"Google token endpoint returned {(int)response.StatusCode}"
+            + (string.IsNullOrWhiteSpace(providerError) ? "." : $" ({providerError}).");
+
+        if (string.Equals(providerError, "invalid_grant", StringComparison.OrdinalIgnoreCase))
+            return PluginOAuthRefreshResultDto.GrantRejected(detail);
+
+        if ((int)response.StatusCode == 429)
+            return PluginOAuthRefreshResultDto.ProviderRateLimited(detail);
+
+        return PluginOAuthRefreshResultDto.ProviderUnavailable(detail);
+    }
+
+    private static async Task<string?> ReadBodySafelyAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            return await response.Content.ReadAsStringAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ExtractErrorCode(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("error", out var error)
+                && error.ValueKind == JsonValueKind.String
+                    ? error.GetString()
+                    : null;
+        }
+        catch (JsonException)
+        {
+            // Google fronts its token endpoint with proxies that can answer HTML on a bad day.
+            return null;
+        }
     }
 
     private async Task<GoogleUserInfoResponse?> GetUserInfoAsync(string accessToken, CancellationToken ct)

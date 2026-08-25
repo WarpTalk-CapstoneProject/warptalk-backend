@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
+using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Infrastructure.OAuth;
@@ -31,8 +32,10 @@ public class GoogleWorkspaceOAuthClientTests
         }));
         var sut = CreateSut(httpClient);
 
-        var token = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
 
+        Assert.Equal(PluginOAuthRefreshOutcome.Succeeded, refresh.Outcome);
+        var token = refresh.Token!;
         Assert.Equal(HttpMethod.Post, capturedRequest!.Method);
         Assert.Equal("https://oauth2.google.test/token", capturedRequest.RequestUri!.ToString());
         Assert.Contains("grant_type=refresh_token", capturedBody);
@@ -62,15 +65,18 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        var token = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
 
-        Assert.Equal("fresh-access-token", token.AccessToken);
-        Assert.Null(token.RefreshToken);
+        Assert.Equal(PluginOAuthRefreshOutcome.Succeeded, refresh.Outcome);
+        Assert.Equal("fresh-access-token", refresh.Token!.AccessToken);
+        Assert.Null(refresh.Token.RefreshToken);
     }
 
     [Fact]
-    public async Task RefreshAccessTokenAsync_Throws_WhenGoogleRejectsTheGrant()
+    public async Task RefreshAccessTokenAsync_ReportsGrantRejected_WhenGoogleAnswersInvalidGrant()
     {
+        // The only answer that proves the stored grant is dead: revoked access, a password change,
+        // or a token pruned for age all surface as 400 invalid_grant.
         var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
@@ -78,8 +84,82 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        await Assert.ThrowsAnyAsync<Exception>(
-            () => sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "revoked-refresh-token"));
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "revoked-refresh-token");
+
+        Assert.Equal(PluginOAuthRefreshOutcome.GrantRejected, refresh.Outcome);
+        Assert.Null(refresh.Token);
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_ReportsProviderUnavailable_WhenGoogleReturnsServerError()
+    {
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))));
+        var sut = CreateSut(httpClient);
+
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+
+        Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_ReportsProviderRateLimited_WhenGoogleReturns429()
+    {
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage((HttpStatusCode)429)
+            {
+                Content = new StringContent("""{"error":"rateLimitExceeded"}"""),
+            })));
+        var sut = CreateSut(httpClient);
+
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+
+        Assert.Equal(PluginOAuthRefreshOutcome.ProviderRateLimited, refresh.Outcome);
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_ReportsProviderUnavailable_WhenGoogleReturnsNonInvalidGrantBadRequest()
+    {
+        // invalid_client means our own client id/secret is wrong. Reading that as a dead user grant
+        // would turn one bad config push into a mass re-consent, so it stays transient.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"error":"invalid_client"}"""),
+            })));
+        var sut = CreateSut(httpClient);
+
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+
+        Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_ReportsProviderUnavailable_WhenTheRequestNeverReachesGoogle()
+    {
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            throw new HttpRequestException("No such host is known.")));
+        var sut = CreateSut(httpClient);
+
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+
+        Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
+    }
+
+    [Fact]
+    public async Task RefreshAccessTokenAsync_ReportsProviderUnavailable_WhenGoogleAnswersUnparseableBody()
+    {
+        // Google's token endpoint sits behind proxies that can answer HTML on a bad day.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway)
+            {
+                Content = new StringContent("<html><body>502 Bad Gateway</body></html>"),
+            })));
+        var sut = CreateSut(httpClient);
+
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+
+        Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
     }
 
     private static GoogleWorkspaceOAuthClient CreateSut(HttpClient httpClient)
