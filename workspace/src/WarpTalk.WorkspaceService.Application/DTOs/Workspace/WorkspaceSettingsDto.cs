@@ -31,7 +31,8 @@ public record WorkspaceSettingsDto(
     /// </summary>
     int? MaxActiveRoomsCeiling = null,
     /// <summary>Provenance of the ceiling — <c>plan:enterprise</c>, <c>platform_default</c>, … Null with the ceiling.</summary>
-    string? MaxActiveRoomsCeilingSource = null
+    string? MaxActiveRoomsCeilingSource = null,
+    bool AllowAnyPlugins = true
 );
 
 public record WorkspaceSettingsPatchRequest(
@@ -45,7 +46,8 @@ public record WorkspaceSettingsPatchRequest(
     bool? AllowExternalCollaboration = null,
     bool? RequireVerifiedDomainForInternal = null,
     AiUsagePolicyPatchDto? AiUsagePolicy = null,
-    bool? IsProfanityFilterEnabled = null
+    bool? IsProfanityFilterEnabled = null,
+    bool? AllowAnyPlugins = null
 );
 
 public record AiUsagePolicyPatchDto(

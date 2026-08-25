@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\WarpTalk.AssistantService.Domain\WarpTalk.AssistantService.Domain.csproj" />
     <ProjectReference Include="..\WarpTalk.AssistantService.Application\WarpTalk.AssistantService.Application.csproj" />
+    <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -196,7 +196,8 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             AllowExternalCollaboration = settings.AllowExternalCollaboration,
             IsProfanityFilterEnabled = settings.IsProfanityFilterEnabled,
             AllowExternalLlm = settings.AllowExternalLlm,
-            UseGlobalGlossary = settings.UseGlobalGlossary
+            UseGlobalGlossary = settings.UseGlobalGlossary,
+            AllowAnyPlugins = settings.AllowAnyPlugins
         };
         response.AllowedTargetLanguages.AddRange(settings.AllowedTargetLanguages);
         return response;

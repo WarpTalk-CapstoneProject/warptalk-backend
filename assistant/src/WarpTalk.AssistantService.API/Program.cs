@@ -10,8 +10,14 @@ using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.AssistantService.Infrastructure.Persistence;
 using WarpTalk.AssistantService.Infrastructure.Repositories;
+using WarpTalk.AssistantService.Infrastructure.Clients;
 using WarpTalk.AssistantService.Infrastructure.Messaging;
+using WarpTalk.AssistantService.Infrastructure.Mcp;
+using WarpTalk.AssistantService.Infrastructure.OAuth;
+using WarpTalk.AssistantService.Infrastructure.Security;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.Protos;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -48,8 +54,29 @@ try
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
+    builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
+    builder.Services.AddScoped<IPluginConnectionService, PluginConnectionService>();
+    builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
+    builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
+    builder.Services.Configure<GoogleWorkspaceApiOptions>(
+        builder.Configuration.GetSection("Plugins:GoogleWorkspace:Api"));
+    builder.Services.AddHttpClient<IMcpToolGateway, GoogleWorkspaceMcpToolGateway>();
+    builder.Services.Configure<GoogleWorkspaceOAuthOptions>(
+        builder.Configuration.GetSection("Plugins:GoogleWorkspace:OAuth"));
+    builder.Services.AddHttpClient<IPluginOAuthClient, GoogleWorkspaceOAuthClient>();
+    builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
+    builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
     builder.Services.AddScoped<IAssistantNotifier, AssistantNotifier>();
     builder.Services.AddScoped<IAssistantChatRequestPublisher, RedisAssistantChatRequestPublisher>();
+
+    builder.Services.AddGrpcClient<WorkspaceService.WorkspaceServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:WorkspaceServiceUrl",
+            "http://localhost:50056");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
     // The OpenAI tool-calling loop runs in ai_assistant_worker (Python) — this service only
     // publishes the chat request (see IAssistantChatRequestPublisher) and consumes the result
