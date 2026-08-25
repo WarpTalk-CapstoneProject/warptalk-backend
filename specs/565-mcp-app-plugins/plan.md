@@ -11,7 +11,7 @@
 | 0-6 Implementation (T001-T032) | Done, pushed |
 | 7 Automated verification (T033-T035, T033A) | Green after merging `origin/development` on 2026-08-25 |
 | 7 Manual E2E (T036) | **Blocked** - needs a real Google OAuth client + running Postgres |
-| 8 Pre-merge hardening (T037-T042) | **Not started** - see "Known gaps" |
+| 8 Pre-merge hardening (T037-T042) | T040 done; T037-T039, T041-T042 open - see "Known gaps" |
 
 This file is now an *as-built* plan: sections 1-8 describe what actually exists on the branch, section 9 lists the deltas from the original design, and sections 10-12 are the remaining work.
 
@@ -98,12 +98,15 @@ tests/{test_mcp_tools,test_chat_agent_loop}.py    16 tests
 ### warptalk-web
 
 ```text
-src/app/(app)/[workspaceSlug]/settings/plugins/page.tsx   marketplace, installed row, detail drawer
+src/app/(app)/[workspaceSlug]/settings/plugins/page.tsx   marketplace, installed row, detail drawer,
+                                                          disconnect/remove actions, search empty state
 src/app/(app)/[workspaceSlug]/settings/page.tsx           allowAnyPlugins workspace switch
 src/hooks/use-assistant.ts                                useAssistantPlugins, useInstallAssistantPlugin,
-                                                          usePluginConnectUrl, useDisconnectAssistantPlugin
+                                                          usePluginConnectUrl, useDisconnectAssistantPlugin,
+                                                          useDisableAssistantPlugin
 src/services/assistant.service.ts                         listPlugins, installPlugin,
-                                                          getPluginConnectUrl, disconnectPlugin
+                                                          getPluginConnectUrl, disconnectPlugin,
+                                                          disablePlugin
 src/lib/api/endpoints.ts                                  API.assistant.plugins*
 src/components/layout/{global-chatbot,assistant-question-card}.tsx   confirmation card
 src/components/rooms/live/chat-panel.tsx                  same confirmation card in room chat
@@ -201,7 +204,7 @@ POST   /api/v1/assistant/mcp/tools/execute                   McpToolExecutionReq
 | G1 | `google_drive_get_file` was in the MVP tool list but is **not** seeded and **not** implemented - three tools ship, not four | plan/reality mismatch; Drive results are search-only | migration seed, `GoogleWorkspaceMcpToolGateway` switch |
 | G2 | **No refresh-token flow.** `IPluginOAuthClient` has no refresh method; `encrypted_refresh_token` is stored and never read | ~60 min after connecting, every tool call returns `connection_required` while the row still says `connected`; the user must disconnect and reconnect | `IPluginOAuthClient`, `PluginConnectionService`, gateway 401 path |
 | G3 | `ConnectionStatus.Expired` is **never written**; only `Revoked` on explicit disconnect | the "Reconnect" state the UI already renders is unreachable for real expiry; catalog keeps showing "Connected" while every call fails | `PluginConnectionService`, gateway 401 path |
-| G4 | `DELETE /plugins/{pluginKey}` (disable) is not called from web; the UI's "Enable" relies on idempotent install | a user cannot remove a plugin from the UI | `assistant.service.ts`, plugins page |
+| G4 | ~~No disconnect or remove action anywhere in the UI~~ **Fixed 2026-08-25.** `useDisconnectAssistantPlugin` was written but never called, and `DELETE /plugins/{pluginKey}` was unwired, so a connection could be created and never undone - which with G2 left no recovery path at all | resolved: the connect dialog now carries Disconnect and Remove behind an inline confirm, and Remove disconnects first so provider tokens do not linger | `assistant.service.ts`, `use-assistant.ts`, `endpoints.ts`, plugins page |
 | G5 | Confirmation token is `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, no TTL, not single-use, and it is handed to the model inside the question card | the gate is a UX gate, not a security boundary: the model can re-derive or replay it without the user pressing Confirm | `McpConfirmationTokenFactory` |
 | G6 | `GET /plugins/installed` and `API.assistant.installedPlugins` exist but nothing consumes them (the page derives the installed row from the catalog) | dead surface | backend controller, `endpoints.ts` |
 
@@ -220,7 +223,7 @@ Tracked as T036-T042 in `tasks.md`.
 
 - **T038 - Signed confirmation tokens (G5).** Replace the base64 payload with a Data Protection-protected, time-limited (<= 5 min), single-use token bound to `userId + pluginKey + toolName + argument hash`; persist or cache the nonce so a replay fails. Accept: replaying a used token returns `permission_denied`; a token minted for different arguments does not validate.
 - **T039 - Ship or drop `google_drive_get_file` (G1).** Either add the gateway branch + seed patch migration, or delete it from spec/plan so the MVP tool list is three.
-- **T040 - Wire disable (G4)** in `assistant.service.ts` + hook + page action, or remove the endpoint.
+- ~~**T040** - Wire disconnect + disable (G4).~~ Done 2026-08-25.
 - **T041 - Remove or use `plugins/installed` (G6).**
 - **T042 - Ops readiness.** Confirm Data Protection keys are persisted and shared across AssistantService replicas - with the default in-memory/per-container key ring, every restart or second replica makes stored tokens and OAuth state undecryptable. Document `Plugins:GoogleWorkspace:OAuth:*` as deployment secrets.
 
