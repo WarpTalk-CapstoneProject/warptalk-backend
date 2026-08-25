@@ -1,6 +1,7 @@
 using System.Web;
 using System.Text.Json;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
@@ -149,7 +150,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     {
         // Nothing to refresh with. Permanent by construction - only a new consent stores one.
         if (string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken))
-            return await MarkExpiredAsync(connection, ct);
+            return await PluginConnectionStateTransitions.MarkExpiredAsync(_unitOfWork, connection, ct);
 
         string refreshToken;
         try
@@ -160,7 +161,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         {
             // Undecryptable stored material (rotated Data Protection key ring) is as dead as a
             // revoked grant - the only way out is a fresh consent.
-            return await MarkExpiredAsync(connection, ct);
+            return await PluginConnectionStateTransitions.MarkExpiredAsync(_unitOfWork, connection, ct);
         }
 
         PluginOAuthRefreshResultDto refresh;
@@ -174,7 +175,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             // contract change, a bug in the client) is not evidence the grant is dead. Ending the
             // connection is the one outcome the user cannot undo without a browser round trip, so
             // an unknown fault degrades to transient rather than to destructive.
-            return TransientFailure(
+            return PluginConnectionRefreshFailures.Transient(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 "The provider could not be reached to refresh access. Try again in a moment.");
         }
@@ -182,22 +183,22 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         switch (refresh.Outcome)
         {
             case PluginOAuthRefreshOutcome.GrantRejected:
-                return await MarkExpiredAsync(connection, ct);
+                return await PluginConnectionStateTransitions.MarkExpiredAsync(_unitOfWork, connection, ct);
 
             case PluginOAuthRefreshOutcome.ProviderRateLimited:
-                return TransientFailure(
+                return PluginConnectionRefreshFailures.Transient(
                     PluginConstants.ErrorCodes.ProviderRateLimited,
                     "The provider is rate limiting this account. Try again in a moment.");
 
             case PluginOAuthRefreshOutcome.ProviderUnavailable:
-                return TransientFailure(
+                return PluginConnectionRefreshFailures.Transient(
                     PluginConstants.ErrorCodes.ProviderUnavailable,
                     "The provider could not be reached to refresh access. Try again in a moment.");
         }
 
         var token = refresh.Token;
         if (token == null || string.IsNullOrWhiteSpace(token.AccessToken))
-            return TransientFailure(
+            return PluginConnectionRefreshFailures.Transient(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 "The provider could not be reached to refresh access. Try again in a moment.");
 
@@ -214,38 +215,6 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         _unitOfWork.PluginConnectionRepository.Update(connection);
         await _unitOfWork.SaveChangesAsync(ct);
         return Result.Success();
-    }
-
-    /// <summary>
-    /// Flips the row to <c>expired</c> so the catalog stops advertising it as connected and the
-    /// Plugins page offers "Reconnect". The encrypted material is left in place: only a new
-    /// consent replaces it, and keeping it makes the failure diagnosable.
-    /// </summary>
-    /// <remarks>
-    /// Reserved for a grant that is provably gone. Gate 5 of <c>McpToolOrchestrator</c> rejects any
-    /// non-<c>connected</c> row before the refresh code runs, so this write is effectively
-    /// one-way: nothing short of the user re-consenting in a browser undoes it.
-    /// </remarks>
-    private async Task<Result> MarkExpiredAsync(PluginConnection connection, CancellationToken ct)
-    {
-        connection.Status = PluginConstants.ConnectionStatus.Expired;
-        connection.UpdatedAt = DateTime.UtcNow;
-        _unitOfWork.PluginConnectionRepository.Update(connection);
-        await _unitOfWork.SaveChangesAsync(ct);
-        return Result.Failure(
-            "Reconnect your provider account.",
-            PluginConstants.ErrorCodes.ConnectionRequired);
-    }
-
-    /// <summary>
-    /// Fails the refresh <em>without writing anything</em>. The row keeps
-    /// <c>status = connected</c> and its existing tokens, so the next execution walks the same path
-    /// and refreshes again - which is exactly what should happen when the provider was merely
-    /// having a bad minute.
-    /// </summary>
-    private static Result TransientFailure(string errorCode, string message)
-    {
-        return Result.Failure(message, errorCode);
     }
 
     public async Task<Result> DisconnectAsync(string pluginKey, Guid userId, CancellationToken ct = default)

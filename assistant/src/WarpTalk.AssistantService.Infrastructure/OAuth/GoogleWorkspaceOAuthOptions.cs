@@ -6,7 +6,7 @@ public class GoogleWorkspaceOAuthOptions
 
     public string ClientSecret { get; set; } = "";
 
-    public string RedirectUri { get; set; } = "http://localhost:5108/api/v1/assistant/plugins/google_workspace/oauth/callback";
+    public string RedirectUri { get; set; } = "http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback";
 
     public string AuthorizationEndpoint { get; set; } = "https://accounts.google.com/o/oauth2/v2/auth";
 

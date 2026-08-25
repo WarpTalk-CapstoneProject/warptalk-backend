@@ -14,33 +14,33 @@ As a signed-in user, I want to install an external app MCP integration for my ow
 
 **Why this priority**: Plugin availability is personal. WarpBot should know which external app tools the asking account installed without coupling installation to workspace membership.
 
-**Independent Test**: Can be tested by signing in, installing Google Workspace, and verifying the plugin appears in the installed plugin list and dynamic WarpBot capabilities for that same account only.
+**Independent Test**: Can be tested by signing in, installing Google Drive & Calendar, and verifying the plugin appears in the installed plugin list and dynamic WarpBot capabilities for that same account only.
 
 **Acceptance Scenarios**:
 
-1. **Given** a signed-in user, **When** they install Google Workspace from the plugins screen, **Then** the backend persists a personal plugin installation and returns the plugin as installed for that account.
+1. **Given** a signed-in user, **When** they install Google Drive & Calendar from the plugins screen, **Then** the backend persists a personal plugin installation and returns the plugin as installed for that account.
 2. **Given** another signed-in user in the same workspace, **When** they open the plugins screen, **Then** they do not inherit the first user's installation or provider connection.
 
 ---
 
 ### User Story 2 - Connect Personal Provider Account (Priority: P1)
 
-As a user, I want to connect my own Google Workspace account after I install the plugin so that WarpBot can act only through my account and scopes.
+As a user, I want to connect my own Google Drive and Calendar account after I install the plugin so that WarpBot can act only through my account and scopes.
 
 **Why this priority**: MCP tool execution must use the asking user's own provider identity, not a shared admin token.
 
-**Independent Test**: Can be tested by installing Google Workspace, connecting one user's Google account, and verifying the connection status is visible only for that user.
+**Independent Test**: Can be tested by installing Google Drive & Calendar, connecting one user's Google account, and verifying the connection status is visible only for that user.
 
 **Acceptance Scenarios**:
 
-1. **Given** Google Workspace is installed by the account, **When** a user completes OAuth, **Then** the backend stores encrypted credential fields on the user plugin connection and reports the provider email as connected.
-2. **Given** no personal connection exists, **When** WarpBot needs a Google Workspace tool, **Then** WarpBot receives a `connection_required` result and shows a connect CTA instead of fabricating an answer.
+1. **Given** Google Drive & Calendar is installed by the account, **When** a user completes OAuth, **Then** the backend stores encrypted credential fields on the user plugin connection and reports the provider email as connected.
+2. **Given** no personal connection exists, **When** WarpBot needs a Google Drive or Calendar tool, **Then** WarpBot receives a `connection_required` result and shows a connect CTA instead of fabricating an answer.
 
 ---
 
 ### User Story 3 - Execute MCP Tools Through WarpBot (Priority: P1)
 
-As a user, I want to ask WarpBot to search Drive files or create Calendar events so that I can work with Google Workspace from the chat window.
+As a user, I want to ask WarpBot to search/read Drive files or create Calendar events so that I can work with Google Drive and Calendar from the chat window.
 
 **Why this priority**: This is the core product value: natural language actions through WarpBot backed by installed MCP tools.
 
@@ -48,9 +48,10 @@ As a user, I want to ask WarpBot to search Drive files or create Calendar events
 
 **Acceptance Scenarios**:
 
-1. **Given** Google Workspace is installed and connected by the asking account, **When** the user asks WarpBot to search Drive, **Then** WarpBot calls the backend MCP execution endpoint and answers from sanitized provider results.
-2. **Given** Google Workspace is installed and connected by the asking account, **When** the user asks WarpBot to create a Calendar event, **Then** WarpBot asks for confirmation before the write action is executed.
-3. **Given** a write tool request has not been confirmed, **When** the AI worker attempts execution, **Then** the backend returns `confirmation_required` and no provider write occurs.
+1. **Given** Google Drive & Calendar is installed and connected by the asking account, **When** the user asks WarpBot to search Drive, **Then** WarpBot calls the backend MCP execution endpoint and answers from sanitized provider results.
+2. **Given** Google Drive & Calendar is installed and connected by the asking account, **When** the user asks WarpBot to read a supported Drive file, **Then** WarpBot calls `google_drive_get_file` and answers from sanitized metadata and bounded text content.
+3. **Given** Google Drive & Calendar is installed and connected by the asking account, **When** the user asks WarpBot to create a Calendar event, **Then** WarpBot asks for confirmation before the write action is executed.
+4. **Given** a write tool request has not been confirmed, **When** the AI worker attempts execution, **Then** the backend returns `confirmation_required` and no provider write occurs.
 
 ---
 
@@ -70,7 +71,7 @@ As a user, I want a Plugins screen inspired by the reference UI so that I can di
 
 ## Edge Cases
 
-- Google Workspace is installed but the current user has not connected a Google account.
+- Google Drive & Calendar is installed but the current user has not connected a Google account.
 - User connects Google successfully but later revokes provider access.
 - Stored access token expires and refresh succeeds.
 - Stored refresh token is invalid or revoked.
@@ -95,7 +96,7 @@ As a user, I want a Plugins screen inspired by the reference UI so that I can di
 - **FR-565-008**: System MUST return structured execution errors including `plugin_not_installed`, `connection_required`, `missing_scope`, `confirmation_required`, `permission_denied`, `provider_rate_limited`, and `provider_unavailable`.
 - **FR-565-009**: System MUST audit every MCP tool execution attempt with workspace, user, plugin key, tool name, result status, and related assistant message/conversation when available.
 - **FR-565-010**: System MUST require explicit confirmation before provider write tools are executed.
-- **FR-565-011**: System MUST implement Google Workspace as the first MCP plugin with Drive search/read and Calendar list/create capabilities.
+- **FR-565-011**: System MUST implement `google_workspace` as the first MCP plugin key, displayed as Google Drive & Calendar, with Drive search/read and Calendar list/create capabilities.
 - **FR-565-012**: Plugin UI MUST render catalog, installed row, and actions from backend API data without hardcoded plugin rows.
 - **FR-565-013**: Plugin UI MUST NOT include Public/Personal tabs in the MVP.
 - **FR-565-014**: WarpBot Skills/Plugins UI MUST show installed plugin status and connection CTA when the user needs to connect a provider account.
@@ -115,7 +116,7 @@ As a user, I want a Plugins screen inspired by the reference UI so that I can di
 
 ### Measurable Outcomes
 
-- **SC-565-001**: A user can install Google Workspace and see it in their installed plugin list without a page refresh.
+- **SC-565-001**: A user can install Google Drive & Calendar and see it in their installed plugin list without a page refresh.
 - **SC-565-002**: Another account in the same workspace does not inherit the first user's plugin installation or connection.
 - **SC-565-003**: A connected user can ask WarpBot to search Google Drive and receive provider-backed results.
 - **SC-565-004**: Calendar event creation never calls the provider until the user confirms the generated action.
@@ -124,7 +125,7 @@ As a user, I want a Plugins screen inspired by the reference UI so that I can di
 
 ## Assumptions
 
-- The MVP starts with Google Workspace; Gmail can be catalogued later once provider scopes and privacy copy are ready.
+- The MVP starts with the `google_workspace` plugin key displayed as Google Drive & Calendar; Gmail and Docs-write capabilities can be catalogued later once provider scopes and privacy copy are ready.
 - Provider OAuth setup and MCP server configuration are available through environment variables.
 - `AssistantService` is the correct MVP home because WarpBot already depends on it.
 - The implementation should be internally modular so it can later be extracted into an Integration Service.

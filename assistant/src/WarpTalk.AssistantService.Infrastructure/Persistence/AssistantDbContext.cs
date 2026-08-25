@@ -23,6 +23,7 @@ public partial class AssistantDbContext : DbContext
     public virtual DbSet<PluginInstallation> PluginInstallations { get; set; }
     public virtual DbSet<PluginConnection> PluginConnections { get; set; }
     public virtual DbSet<PluginToolAudit> PluginToolAudits { get; set; }
+    public virtual DbSet<PluginConfirmationToken> PluginConfirmationTokens { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -176,6 +177,29 @@ public partial class AssistantDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.PluginId)
                 .HasConstraintName("plugin_tool_audits_plugin_id_fkey");
+        });
+
+        modelBuilder.Entity<PluginConfirmationToken>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("plugin_confirmation_tokens_pkey");
+            entity.ToTable("plugin_confirmation_tokens", "assistant");
+            entity.HasIndex(e => new { e.UserId, e.ExpiresAt }, "idx_plugin_confirmation_tokens_user_expires");
+            entity.HasIndex(e => new { e.PluginId, e.ToolName, e.CreatedAt }, "idx_plugin_confirmation_tokens_plugin_tool_created");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.PluginId).HasColumnName("plugin_id");
+            entity.Property(e => e.PluginKey).HasMaxLength(100).HasColumnName("plugin_key");
+            entity.Property(e => e.ToolName).HasMaxLength(150).HasColumnName("tool_name");
+            entity.Property(e => e.ArgumentHash).HasMaxLength(64).HasColumnName("argument_hash");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.ConsumedAt).HasColumnName("consumed_at");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+
+            entity.HasOne<Plugin>()
+                .WithMany()
+                .HasForeignKey(e => e.PluginId)
+                .HasConstraintName("plugin_confirmation_tokens_plugin_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

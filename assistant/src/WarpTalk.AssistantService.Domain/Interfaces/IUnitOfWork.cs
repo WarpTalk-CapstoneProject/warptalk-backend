@@ -11,6 +11,7 @@ public interface IUnitOfWork : IDisposable
     IPluginInstallationRepository PluginInstallationRepository { get; }
     IPluginConnectionRepository PluginConnectionRepository { get; }
     IPluginToolAuditRepository PluginToolAuditRepository { get; }
+    IPluginConfirmationTokenRepository PluginConfirmationTokenRepository { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

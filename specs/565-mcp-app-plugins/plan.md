@@ -10,14 +10,15 @@
 |---|---|
 | 0-6 Implementation (T001-T032) | Done, pushed |
 | 7 Automated verification (T033-T035, T033A) | Green after merging `origin/development` on 2026-08-25 |
-| 7 Manual E2E (T036) | **Blocked** - needs a real Google OAuth client + running Postgres |
-| 8 Pre-merge hardening (T037-T043) | T037, T040, T043 done; T038-T039, T041-T042 open - see "Known gaps" |
+| 7 Manual E2E (T036) | **Almost ready** - Google redirect URI is registered for gateway `:5200`; Docker/Postgres and migrations are ready, pending browser OAuth walkthrough |
+| 8 Pre-merge hardening (T037-T043) | T037, T038, T039, T040, T041, T042, T043 done; only final cross-repo gates and manual E2E remain |
+| 9 Full-scope closeout | Planned: signed confirmation tokens, Drive get-file/read, plugin label correction, dead API cleanup, ops readiness, manual E2E |
 
 This file is now an *as-built* plan: sections 1-8 describe what actually exists on the branch, section 9 lists the deltas from the original design, and sections 10-12 are the remaining work.
 
 ## 1. Summary
 
-Users install Google Workspace **for their own account**, connect **their own** Google account, and WarpBot executes MCP-backed tools through `AssistantService` when the active workspace allows personal plugins. No new microservice; no provider credentials outside `AssistantService`; no hardcoded plugin rows in the frontend; no Public/Personal tabs.
+Users install Google Drive & Calendar **for their own account**, connect **their own** Google account, and WarpBot executes MCP-backed tools through `AssistantService` when the active workspace allows personal plugins. The internal plugin key stays `google_workspace` for compatibility. No new microservice; no provider credentials outside `AssistantService`; no hardcoded plugin rows in the frontend; no Public/Personal tabs.
 
 ## 2. Technical Context
 
@@ -26,7 +27,7 @@ Users install Google Workspace **for their own account**, connect **their own** 
 **Storage**: PostgreSQL `assistant` schema - 4 new tables, OAuth material stored encrypted
 **Testing**: xUnit (44 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
 **Constraints**: MVP stays inside `AssistantService`; installation/connection are **personal**, the workspace only gates *usage* via `AllowAnyPlugins`
-**Scale/Scope**: one provider (`google_workspace`), **three** shipped tools (see section 9, G1)
+**Scale/Scope**: one provider (`google_workspace`), currently three shipped tools; closeout target is the original four-tool scope: Drive search, Drive get/read file, Calendar list, Calendar create.
 
 ## 3. Constitution Check
 
@@ -131,7 +132,6 @@ Adding a provider or a tool = insert/patch a `plugins` row + a gateway branch. N
 
 ```text
 GET    /api/v1/assistant/plugins                      catalog + this user's install/connection state
-GET    /api/v1/assistant/plugins/installed            installed subset            (not consumed by web)
 POST   /api/v1/assistant/plugins/{pluginKey}/install  idempotent; re-install re-enables a disabled row
 DELETE /api/v1/assistant/plugins/{pluginKey}          disable installation        (not wired in web, G4)
 
@@ -221,14 +221,14 @@ non-`connected` row before the refresh code runs) while a retry costs nothing.
 
 | # | Gap | Impact | Where |
 |---|---|---|---|
-| G1 | `google_drive_get_file` was in the MVP tool list but is **not** seeded and **not** implemented - three tools ship, not four | plan/reality mismatch; Drive results are search-only | migration seed, `GoogleWorkspaceMcpToolGateway` switch |
+| G1 | `google_drive_get_file` was in the MVP tool list but was not seeded or implemented | resolved 2026-08-25: seed patch, gateway branch, privacy bounds, and refusal tests ship the fourth tool |
 | G2 | ~~**No refresh-token flow.**~~ **Fixed 2026-08-25 (T037).** `IPluginOAuthClient` had no refresh method, so `encrypted_refresh_token` was written on consent and never read again - roughly 60 min later every tool call returned `connection_required` while the row still said `connected`, and the only recovery was disconnect + reconnect | resolved: `RefreshAccessTokenAsync` on the OAuth client + Google `grant_type=refresh_token` implementation; the orchestrator refreshes once per execution (expiry ahead of the call, or the provider's own 401) and retries the call once | `IPluginOAuthClient`, `GoogleWorkspaceOAuthClient`, `IPluginTokenRefresher`, `PluginConnectionService`, `McpToolOrchestrator` |
 | G3 | ~~`ConnectionStatus.Expired` is **never written**~~ **Fixed 2026-08-25 (T037).** Only `Revoked` was ever written, on explicit disconnect, so the "Reconnect" state the UI already renders was unreachable for a real expiry | resolved: a refresh the provider rejects (or a connection with no stored refresh token) persists `status = expired`; `ListCatalogAsync` does not filter on status and `PluginCatalogItemMapper` passes it straight through, so the plugins page renders "Reconnect" | `PluginConnectionService.MarkExpiredAsync` |
 | G4 | ~~No disconnect or remove action anywhere in the UI~~ **Fixed 2026-08-25.** `useDisconnectAssistantPlugin` was written but never called, and `DELETE /plugins/{pluginKey}` was unwired, so a connection could be created and never undone - which with G2 left no recovery path at all | resolved: the connect dialog now carries Disconnect and Remove behind an inline confirm, and Remove disconnects first so provider tokens do not linger | `assistant.service.ts`, `use-assistant.ts`, `endpoints.ts`, plugins page |
-| G5 | Confirmation token is `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, no TTL, not single-use, and it is handed to the model inside the question card | the gate is a UX gate, not a security boundary: the model can re-derive or replay it without the user pressing Confirm | `McpConfirmationTokenFactory` |
-| G6 | `GET /plugins/installed` and `API.assistant.installedPlugins` exist but nothing consumes them (the page derives the installed row from the catalog) | dead surface | backend controller, `endpoints.ts` |
+| G5 | Confirmation token was `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, no TTL, and reusable | resolved 2026-08-25: Data Protection protection, five-minute TTL, canonical argument hash, persisted claim row, and atomic consume | `McpConfirmationTokenService`, `plugin_confirmation_tokens` |
+| G6 | `GET /plugins/installed` and `API.assistant.installedPlugins` existed but nothing consumed them (the page derives the installed row from the catalog) | dead surface | backend endpoint removed; no web caller exists |
 
-G5 is now the one a reviewer will challenge; G2/G3, the demo-visible pair, closed with T037.
+G1, G5, and G6 are now closed; G2/G3, the demo-visible pair, closed with T037.
 
 **Closed by T043 (2026-08-25), left open by T037 on purpose:** T037 funnelled *any* refresh
 failure into `expired` - a Google 5xx, a timeout or a dropped connection ended the connection just
@@ -247,30 +247,66 @@ the user re-consenting. `invalid_client` is deliberately on the transient side: 
 client id/secret is wrong, and reading it as a dead user grant would turn one bad config push into
 a mass re-consent.
 
-## 10. Remaining work
+## 10. Continuation implementation plan
 
-Tracked as T036-T042 in `tasks.md`.
+Tracked as T036-T048 in `tasks.md`. Land the remaining work in this order so every commit either removes a review objection or restores the promised scope.
 
-**Blocking the demo**
+### 10.1 Prep the E2E lane
 
-- ~~**T037** - Refresh flow (G2/G3).~~ **Done 2026-08-25.** `IPluginOAuthClient.RefreshAccessTokenAsync` + a Google `grant_type=refresh_token` implementation; `PluginConnectionService` also implements the narrow `IPluginTokenRefresher` and owns the persistence (re-encrypt, keep the stored refresh token when Google omits a new one, write `expired` on failure); `McpToolOrchestrator` owns the decision - refresh before the call when the recorded expiry is within 60s, otherwise on the provider's 401, at most once per execution, then retry the call once. 13 new tests, 27 total.
-- **T036 - Manual E2E.** `manual-e2e.md`, once section 11 is satisfied. T037 no longer blocks it.
+- **T044 - Align local redirect/docs.** Local browser OAuth through compose/gateway uses `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`. `5108` is the AssistantService direct port and should only be used for direct-service debugging. Update `manual-e2e.md`, this plan, and local run notes so Google Cloud, Gateway, and `Plugins:GoogleWorkspace:OAuth:RedirectUri` agree.
+- **T036 - Manual E2E.** Run this last, after T038/T039, so the walkthrough exercises the review-ready path. Docker/Postgres and the WT-565 migrations are ready locally; the only remaining step is the browser OAuth walkthrough with the configured Google credentials.
 
-**Pre-merge hardening**
+### 10.2 Close the security gap reviewers will ask about
 
-- **T038 - Signed confirmation tokens (G5).** Replace the base64 payload with a Data Protection-protected, time-limited (<= 5 min), single-use token bound to `userId + pluginKey + toolName + argument hash`; persist or cache the nonce so a replay fails. Accept: replaying a used token returns `permission_denied`; a token minted for different arguments does not validate.
-- **T039 - Ship or drop `google_drive_get_file` (G1).** Either add the gateway branch + seed patch migration, or delete it from spec/plan so the MVP tool list is three.
+- **T038 - Signed, single-use confirmation tokens (G5).** Replace the base64 payload with a Data Protection-protected, time-limited token and a persisted nonce/claim row so replay fails across requests and replicas.
+  - Add a small confirmation-token persistence model in the `assistant` schema, or an equivalent repository-backed store: token id/nonce hash, `user_id`, optional `workspace_id`, `plugin_key`, `tool_name`, `argument_hash`, `expires_at`, `consumed_at`, `created_at`.
+  - Canonicalize tool arguments before hashing, so semantically identical JSON validates and changed arguments fail.
+  - Protect a compact payload with `ITimeLimitedDataProtector` or the existing Data Protection abstraction: version, token id, user id, workspace id, plugin key, tool name, argument hash, expiry.
+  - Validation order: unprotect/expiry -> user/plugin/tool/workspace match -> argument hash match -> atomically consume nonce -> execute.
+  - Expected errors: replayed or wrong-user/wrong-tool/wrong-argument token returns `permission_denied`; expired token returns `confirmation_required` with a fresh token.
+  - Tests: mint/validate happy path, replay rejection, wrong arguments, wrong user/workspace/tool, expired token, concurrent consume only succeeds once, audit status on rejection.
+
+### 10.3 Restore the original provider scope
+
+- **T039 - Implement `google_drive_get_file` and correct the provider label (G1).** **Implemented 2026-08-25.** Full scope ships Drive read/get-file, not a trimmed tool list.
+  - Keep plugin key `google_workspace` for compatibility, but change display label/copy to **Google Drive & Calendar** so the UI does not imply Gmail or Docs-write support.
+  - Add a seed-patch migration that updates the `plugins` row label/description and adds `google_drive_get_file` to `tools_json` if missing.
+  - Implement the gateway branch in `GoogleWorkspaceMcpToolGateway`.
+  - Read behavior should be privacy-bounded: return sanitized metadata plus text content only when the file type is supported and under a strict size limit; for Google Docs-style files, use Drive export to `text/plain`; for binary/oversized files, return metadata and an explicit unsupported/too-large message instead of dumping bytes to the model.
+  - Add backend gateway tests for metadata success, exported text success, missing id validation, provider 404/403 mapping, and oversize/binary refusal.
+  - Add AI worker/tool-schema tests proving the fourth tool is loaded and routed.
+  - Update manual E2E to ask WarpBot to open/read a known Drive file after search.
+
+### 10.4 Remove dead surface area
+
 - ~~**T040** - Wire disconnect + disable (G4).~~ Done 2026-08-25.
-- **T041 - Remove or use `plugins/installed` (G6).**
-- **T042 - Ops readiness.** Confirm Data Protection keys are persisted and shared across AssistantService replicas - with the default in-memory/per-container key ring, every restart or second replica makes stored tokens and OAuth state undecryptable. Document `Plugins:GoogleWorkspace:OAuth:*` as deployment secrets.
+- **T041 - Remove or deliberately consume `GET /plugins/installed` (G6).** **Implemented 2026-08-25:** removed the dead backend endpoint; repository-wide search found no web caller or frontend constant in the active worktrees.
+
+### 10.5 Make it deployable
+
+- **T042 - Ops readiness.** **Implemented 2026-08-25:** AssistantService uses a configurable Data Protection key-ring path, and local/production compose mounts the named `assistant-data-protection-keys` volume at that path. With the default per-container key ring, a restart or a second replica makes stored OAuth tokens, OAuth state, and T038 confirmation tokens undecryptable.
+  - Add production/docker configuration for a shared key ring location or a documented managed key store. **Done:** `DataProtection__KeyRingPath` plus shared compose volume; multi-host deployments must replace the named volume with a managed shared store.
+  - Document `Plugins:GoogleWorkspace:OAuth:ClientId`, `ClientSecret`, and `RedirectUri` as per-environment deployment secrets.
+  - Confirm local compose uses gateway redirect URI `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`.
+  - Add a configuration/readiness check or runbook note so a missing key-ring persistence decision is visible before rollout.
 - ~~**T043** - Tell a rejected grant apart from a transient refresh failure.~~ **Done 2026-08-25.** See section 9 and section 7 gates 9-10. 17 new/changed tests, 27 -> 44.
+
+### 10.6 Final quality gate
+
+- **T045 - Re-run targeted backend tests** **Done 2026-08-25:** AssistantService plugin tests `56/56`, Google Workspace gateway coverage included, MeetingService assistant-step parity `11/11`.
+- **T046 - Re-run AI worker tests** **Done 2026-08-25:** dynamic MCP loading, confirmation normalization, provider-error mapping, and Drive get-file routing tests `31 passed`.
+- **T047 - Re-run web checks** **Done 2026-08-25:** `npm run typecheck`, plugin marketplace contract, and confirmation-surface contract pass.
+- **T048 - Manual E2E and evidence capture**: run `manual-e2e.md` through gateway `:5200`, record the exact config values used, and update T036 with pass/fail notes.
 
 ## 11. Local run / E2E prerequisites
 
-1. Google Cloud -> OAuth 2.0 Client (Web application), authorized redirect URI `http://localhost:5108/api/v1/assistant/plugins/google_workspace/oauth/callback`, scopes `drive.readonly` + `calendar.events`.
+1. Google Cloud -> OAuth 2.0 Client (Web application), authorized redirect URI `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`, scopes `drive.readonly` + `calendar.events`.
+   - This URI is already registered for local E2E through compose/gateway.
+   - `http://localhost:5108/...` is only for direct AssistantService debugging and should not be used for the normal compose walkthrough.
 2. Supply secrets **outside** git (`dotnet user-secrets` in `WarpTalk.AssistantService.API`, or env):
    - `Plugins:GoogleWorkspace:OAuth:ClientId`
    - `Plugins:GoogleWorkspace:OAuth:ClientSecret`
+   - `Plugins:GoogleWorkspace:OAuth:RedirectUri=http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`
 3. Postgres up, then apply `assistant/database/migrations/20260823090000_add_mcp_plugin_tables.sql`.
 4. Run WorkspaceService (gRPC `:50056`, for `AllowAnyPlugins`), AssistantService (`:5108`), the `warptalk-ai` chat worker with `ASSISTANT_CHAT_ASSISTANT_SERVICE_URL=http://localhost:5108`, and `warptalk-web`.
 5. Walk `manual-e2e.md`. The Google consent step must be performed by a human.

@@ -35,20 +35,6 @@ public class AssistantPluginsController : ControllerBase
         return Ok(result.Value);
     }
 
-    [HttpGet("installed")]
-    [ProducesResponseType(typeof(IReadOnlyList<PluginCatalogItemDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> ListInstalled(CancellationToken ct)
-    {
-        var result = await _installationService.ListCatalogAsync(CurrentUserId, ct);
-        if (!result.IsSuccess) return BadRequest(result.Error);
-
-        var installed = result.Value!
-            .Where(p => p.InstallationStatus == PluginConstants.InstallationStatus.Installed)
-            .ToList();
-        return Ok(installed);
-    }
-
     [HttpPost("{pluginKey}/install")]
     [ProducesResponseType(typeof(PluginCatalogItemDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]

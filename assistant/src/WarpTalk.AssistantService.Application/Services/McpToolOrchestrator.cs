@@ -11,27 +11,24 @@ namespace WarpTalk.AssistantService.Application.Services;
 
 public class McpToolOrchestrator : IMcpToolOrchestrator
 {
-    /// <summary>
-    /// Refresh this far ahead of the recorded expiry so a token that dies in flight does not cost
-    /// the user a round trip.
-    /// </summary>
-    private static readonly TimeSpan AccessTokenExpirySkew = TimeSpan.FromSeconds(60);
-
     private readonly IMcpToolGateway _gateway;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspacePluginPolicyClient _workspacePluginPolicyClient;
     private readonly IPluginTokenRefresher _tokenRefresher;
+    private readonly IMcpConfirmationTokenService _confirmationTokenService;
 
     public McpToolOrchestrator(
         IMcpToolGateway gateway,
         IUnitOfWork unitOfWork,
         IWorkspacePluginPolicyClient workspacePluginPolicyClient,
-        IPluginTokenRefresher tokenRefresher)
+        IPluginTokenRefresher tokenRefresher,
+        IMcpConfirmationTokenService confirmationTokenService)
     {
         _gateway = gateway;
         _unitOfWork = unitOfWork;
         _workspacePluginPolicyClient = workspacePluginPolicyClient;
         _tokenRefresher = tokenRefresher;
+        _confirmationTokenService = confirmationTokenService;
     }
 
     public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(Guid userId, Guid? workspaceId, CancellationToken ct = default)
@@ -100,6 +97,8 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.MissingScope, "Reconnect the provider account with the required scopes.", ct);
 
         if (tool.Effect == PluginConstants.ToolEffect.Write && string.IsNullOrWhiteSpace(request.ConfirmationToken))
+        {
+            var token = await _confirmationTokenService.CreateAsync(userId, plugin.Id, request, ct);
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,
                 userId,
@@ -108,24 +107,44 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                 PluginConstants.ErrorCodes.ConfirmationRequired,
                 "Confirm this action before WarpBot changes data in the connected app.",
                 ct,
-                confirmationToken: McpConfirmationTokenFactory.Create(userId, request));
+                confirmationToken: token.Value);
+        }
 
-        if (tool.Effect == PluginConstants.ToolEffect.Write
-            && !McpConfirmationTokenFactory.Matches(userId, request, request.ConfirmationToken))
-            return await McpToolAuditRecorder.RecordFailureAsync(
+        if (tool.Effect == PluginConstants.ToolEffect.Write)
+        {
+            var confirmation = await _confirmationTokenService.ValidateAndConsumeAsync(
+                userId,
+                plugin.Id,
+                request,
+                request.ConfirmationToken!,
+                ct);
+
+            if (!confirmation.IsSuccess)
+            {
+                string? freshToken = null;
+                if (string.Equals(confirmation.ErrorCode, PluginConstants.ErrorCodes.ConfirmationRequired, StringComparison.Ordinal))
+                {
+                    var token = await _confirmationTokenService.CreateAsync(userId, plugin.Id, request, ct);
+                    freshToken = token.Value;
+                }
+
+                return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,
                 userId,
                 plugin.Id,
                 request,
-                PluginConstants.ErrorCodes.PermissionDenied,
-                "Confirmation token does not match this plugin action.",
-                ct);
+                    confirmation.ErrorCode ?? PluginConstants.ErrorCodes.PermissionDenied,
+                    confirmation.Error ?? "Confirmation token does not match this plugin action.",
+                    ct,
+                    confirmationToken: freshToken);
+            }
+        }
 
         // Refresh decision sits here, after every gate: the gates can end the call without
         // touching the provider (a write tool still awaiting confirmation, for instance), and
         // burning the refresh there would waste the one attempt this execution gets.
         var refreshAttempted = false;
-        if (IsAccessTokenExpired(connection))
+        if (McpToolAccessTokenPolicy.IsExpiredOrExpiring(connection))
         {
             refreshAttempted = true;
             var proactiveRefresh = await _tokenRefresher.RefreshAccessTokenAsync(pluginEntity, connection, ct);
@@ -186,14 +205,4 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         return Result.Success(result);
     }
 
-    /// <summary>
-    /// <c>access_token_expires_at</c> is a <c>timestamptz</c> written from <see cref="DateTime.UtcNow"/>,
-    /// so it compares directly against UTC now. A connection with no recorded expiry is treated as
-    /// still valid - the provider 401 path below catches it.
-    /// </summary>
-    private static bool IsAccessTokenExpired(PluginConnection connection)
-    {
-        return connection.AccessTokenExpiresAt.HasValue
-            && connection.AccessTokenExpiresAt.Value - AccessTokenExpirySkew <= DateTime.UtcNow;
-    }
 }

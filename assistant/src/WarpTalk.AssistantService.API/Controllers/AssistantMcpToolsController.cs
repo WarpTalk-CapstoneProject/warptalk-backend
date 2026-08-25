@@ -32,8 +32,8 @@ public class AssistantMcpToolsController : ControllerBase
 
     [HttpPost("execute")]
     [ProducesResponseType(typeof(McpToolExecutionResult), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
-    [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(McpToolExecutionErrorDto), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(McpToolExecutionErrorDto), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Execute([FromBody] McpToolExecutionRequest request, CancellationToken ct)
     {
         var result = await _orchestrator.ExecuteAsync(CurrentUserId, request, ct);
@@ -45,6 +45,8 @@ public class AssistantMcpToolsController : ControllerBase
             _ => StatusCodes.Status400BadRequest,
         };
 
-        return StatusCode(status, result.Error);
+        return StatusCode(
+            status,
+            new McpToolExecutionErrorDto(result.Error ?? "Plugin tool failed.", result.ErrorCode));
     }
 }

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using Serilog;
@@ -32,6 +33,13 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
+    var keyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
+    var dataProtection = builder.Services
+        .AddDataProtection()
+        .SetApplicationName("WarpTalk.AssistantService");
+    if (!string.IsNullOrWhiteSpace(keyRingPath))
+        dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+
     builder.Services.AddWarpTalkObservability(
         builder.Configuration,
         builder.Environment,
@@ -55,6 +63,7 @@ try
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
     builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
+    builder.Services.AddScoped<IMcpConfirmationTokenService, McpConfirmationTokenService>();
     builder.Services.AddScoped<PluginConnectionService>();
     builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());
     // Same instance behind the narrow refresh slice McpToolOrchestrator depends on.
@@ -69,6 +78,7 @@ try
     builder.Services.AddHttpClient<IPluginOAuthClient, GoogleWorkspaceOAuthClient>();
     builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
     builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
+    builder.Services.AddScoped<IMcpConfirmationTokenProtector, DataProtectionMcpConfirmationTokenProtector>();
     builder.Services.AddScoped<IAssistantNotifier, AssistantNotifier>();
     builder.Services.AddScoped<IAssistantChatRequestPublisher, RedisAssistantChatRequestPublisher>();
 

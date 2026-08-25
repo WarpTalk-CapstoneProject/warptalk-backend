@@ -105,6 +105,180 @@ public class GoogleWorkspaceMcpToolGatewayTests
         Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.ErrorCode);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_GetDriveFile_ExportsGoogleDocAndReturnsSanitizedBoundedContent()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var responses = new Queue<HttpResponseMessage>([
+            new(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["id"] = "doc-1",
+                    ["name"] = "Roadmap",
+                    ["mimeType"] = "application/vnd.google-apps.document",
+                    ["modifiedTime"] = "2026-08-25T10:00:00Z",
+                    ["webViewLink"] = "https://drive.google.test/doc-1",
+                    ["owner"] = new JsonObject { ["emailAddress"] = "private@example.com" },
+                }),
+            },
+            new(HttpStatusCode.OK) { Content = new StringContent("bounded roadmap text") },
+        ]);
+        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            requests.Add(request);
+            return responses.Dequeue();
+        }));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions
+            {
+                DriveFilesEndpoint = "https://google.test/drive/v3/files",
+            }));
+
+        var result = await sut.ExecuteAsync(
+            GoogleWorkspaceDefinition(),
+            DriveGetFileTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                PluginConstants.GoogleWorkspace,
+                "google_drive_get_file",
+                new JsonObject { ["fileId"] = "doc-1" },
+                null,
+                null,
+                null));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, requests.Count);
+        Assert.Contains("/doc-1/export", requests[1].RequestUri!.AbsoluteUri);
+        Assert.Equal("available", result.Data!["contentStatus"]!.GetValue<string>());
+        Assert.Equal("bounded roadmap text", result.Data["content"]!.GetValue<string>());
+        Assert.Null(result.Data["file"]!["owner"]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GetDriveFile_RejectsUnsupportedFileWithoutFetchingBytes()
+    {
+        var requestCount = 0;
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+        {
+            requestCount++;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["id"] = "binary-1",
+                    ["name"] = "Photo",
+                    ["mimeType"] = "image/png",
+                    ["size"] = 100,
+                }),
+            };
+        }));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions { DriveFilesEndpoint = "https://google.test/drive/v3/files" }));
+
+        var result = await sut.ExecuteAsync(
+            GoogleWorkspaceDefinition(),
+            DriveGetFileTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                PluginConstants.GoogleWorkspace,
+                "google_drive_get_file",
+                new JsonObject { ["fileId"] = "binary-1" },
+                null,
+                null,
+                null));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("unsupported", result.Data!["contentStatus"]!.GetValue<string>());
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GetDriveFile_RejectsMissingFileIdBeforeProviderCall()
+    {
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            throw new InvalidOperationException("Provider must not be called.")));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions()));
+
+        var result = await sut.ExecuteAsync(
+            GoogleWorkspaceDefinition(),
+            DriveGetFileTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                PluginConstants.GoogleWorkspace,
+                "google_drive_get_file",
+                new JsonObject(),
+                null,
+                null,
+                null));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.UnknownTool, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GetDriveFile_RejectsOversizedTextBeforeFetchingContent()
+    {
+        var requestCount = 0;
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+        {
+            requestCount++;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["id"] = "text-1",
+                    ["name"] = "Large text",
+                    ["mimeType"] = "text/plain",
+                    ["size"] = 201,
+                }),
+            };
+        }));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions
+            {
+                DriveFilesEndpoint = "https://google.test/drive/v3/files",
+                MaxDriveFileBytes = 200,
+            }));
+
+        var result = await sut.ExecuteAsync(
+            GoogleWorkspaceDefinition(),
+            DriveGetFileTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                PluginConstants.GoogleWorkspace,
+                "google_drive_get_file",
+                new JsonObject { ["fileId"] = "text-1" },
+                null,
+                null,
+                null));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("too_large", result.Data!["contentStatus"]!.GetValue<string>());
+        Assert.Equal(1, requestCount);
+    }
+
     private static PluginDefinitionDto GoogleWorkspaceDefinition()
     {
         return new PluginDefinitionDto(
@@ -124,6 +298,18 @@ public class GoogleWorkspaceMcpToolGatewayTests
             PluginConstants.GoogleWorkspace,
             "Search Google Drive",
             "Search files in Google Drive.",
+            PluginConstants.ToolEffect.Read,
+            [],
+            new JsonObject());
+    }
+
+    private static McpToolDescriptorDto DriveGetFileTool()
+    {
+        return new McpToolDescriptorDto(
+            "google_drive_get_file",
+            PluginConstants.GoogleWorkspace,
+            "Read Google Drive file",
+            "Read supported text content from a Google Drive file.",
             PluginConstants.ToolEffect.Read,
             [],
             new JsonObject());

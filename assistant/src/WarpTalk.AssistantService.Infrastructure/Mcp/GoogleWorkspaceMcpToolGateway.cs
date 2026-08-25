@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text;
 using System.Web;
 using Microsoft.Extensions.Options;
 using WarpTalk.AssistantService.Application.DTOs;
@@ -45,6 +46,7 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         return tool.Name switch
         {
             "google_drive_search" => await SearchDriveAsync(accessToken, request.Arguments, ct),
+            "google_drive_get_file" => await GetDriveFileAsync(accessToken, request.Arguments, ct),
             "google_calendar_list_events" => await ListCalendarEventsAsync(accessToken, request.Arguments, ct),
             "google_calendar_create_event" => await CreateCalendarEventAsync(accessToken, request.Arguments, ct),
             _ => Failure(PluginConstants.ErrorCodes.UnknownTool, "Unsupported Google Workspace tool."),
@@ -99,6 +101,51 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
             ?? new JsonObject();
         var items = json["items"] as JsonArray ?? [];
         return Success(new JsonObject { ["events"] = items.DeepClone() });
+    }
+
+    private async Task<McpToolExecutionResult> GetDriveFileAsync(
+        string accessToken,
+        JsonObject? arguments,
+        CancellationToken ct)
+    {
+        var fileId = GetString(arguments, "fileId");
+        if (string.IsNullOrWhiteSpace(fileId))
+            return Failure(PluginConstants.ErrorCodes.UnknownTool, "Reading a Drive file requires a fileId.");
+
+        var metadataUrl = $"{_options.DriveFilesEndpoint}/{Uri.EscapeDataString(fileId)}?fields=id,name,mimeType,size,modifiedTime,webViewLink,description";
+        using var metadataRequest = AuthorizedRequest(HttpMethod.Get, metadataUrl, accessToken);
+        var metadataResponse = await _httpClient.SendAsync(metadataRequest, ct);
+        if (!metadataResponse.IsSuccessStatusCode)
+            return await ProviderFailureAsync(metadataResponse, ct);
+
+        var metadataResponseJson = await metadataResponse.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct)
+            ?? new JsonObject();
+        var metadata = SanitizeDriveMetadata(metadataResponseJson);
+        var mimeType = metadataResponseJson["mimeType"]?.GetValue<string>();
+        var size = GetLong(metadataResponseJson, "size");
+        var data = new JsonObject { ["file"] = metadata };
+
+        if (!IsSupportedTextFile(mimeType))
+            return SuccessWithMessage(data, "unsupported", "This Drive file type is not supported for inline reading.");
+
+        if (size.HasValue && size.Value > _options.MaxDriveFileBytes)
+            return SuccessWithMessage(data, "too_large", "This Drive file is too large for inline reading.");
+
+        var contentUrl = IsGoogleDocument(mimeType)
+            ? $"{_options.DriveFilesEndpoint}/{Uri.EscapeDataString(fileId)}/export?mimeType=text/plain"
+            : $"{_options.DriveFilesEndpoint}/{Uri.EscapeDataString(fileId)}?alt=media";
+        using var contentRequest = AuthorizedRequest(HttpMethod.Get, contentUrl, accessToken);
+        var contentResponse = await _httpClient.SendAsync(contentRequest, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!contentResponse.IsSuccessStatusCode)
+            return await ProviderFailureAsync(contentResponse, ct);
+
+        var contentResult = await ReadBoundedTextAsync(contentResponse, ct);
+        if (!contentResult.IsSuccess)
+            return SuccessWithMessage(data, "too_large", "This Drive file is too large for inline reading.");
+
+        data["content"] = contentResult.Content;
+        data["contentStatus"] = "available";
+        return Success(data);
     }
 
     private async Task<McpToolExecutionResult> CreateCalendarEventAsync(
@@ -194,6 +241,78 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         {
             return null;
         }
+    }
+
+    private static long? GetLong(JsonObject json, string name)
+    {
+        if (!json.TryGetPropertyValue(name, out var value) || value == null)
+            return null;
+
+        try
+        {
+            return value.GetValueKind() == JsonValueKind.Number ? value.GetValue<long>() : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsGoogleDocument(string? mimeType)
+    {
+        return string.Equals(mimeType, "application/vnd.google-apps.document", StringComparison.Ordinal);
+    }
+
+    private static bool IsSupportedTextFile(string? mimeType)
+    {
+        return !string.IsNullOrWhiteSpace(mimeType)
+            && (mimeType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mimeType, "application/json", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mimeType, "application/xml", StringComparison.OrdinalIgnoreCase)
+                || IsGoogleDocument(mimeType));
+    }
+
+    private JsonObject SanitizeDriveMetadata(JsonObject source)
+    {
+        var metadata = new JsonObject();
+        foreach (var name in new[] { "id", "name", "mimeType", "size", "modifiedTime", "webViewLink", "description" })
+        {
+            if (source.TryGetPropertyValue(name, out var value) && value != null)
+                metadata[name] = value.DeepClone();
+        }
+
+        return metadata;
+    }
+
+    private async Task<(bool IsSuccess, string? Content)> ReadBoundedTextAsync(
+        HttpResponseMessage response,
+        CancellationToken ct)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream);
+        var content = new StringBuilder();
+        var buffer = new char[4096];
+        while (content.Length <= _options.MaxDriveFileCharacters)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), ct);
+            if (read == 0)
+                return (true, content.ToString());
+
+            content.Append(buffer, 0, read);
+        }
+
+        return (false, null);
+    }
+
+    private static McpToolExecutionResult SuccessWithMessage(JsonObject data, string status, string message)
+    {
+        data["contentStatus"] = status;
+        data["message"] = message;
+        return Success(data);
     }
 
     private static McpToolExecutionResult Success(JsonObject data, string? providerResourceRef = null)

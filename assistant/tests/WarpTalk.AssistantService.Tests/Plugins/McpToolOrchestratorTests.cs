@@ -1,5 +1,4 @@
 using System.Linq.Expressions;
-using System.Text;
 using System.Text.Json.Nodes;
 using NSubstitute;
 using WarpTalk.AssistantService.Application.DTOs;
@@ -21,11 +20,13 @@ public class McpToolOrchestratorTests
     private readonly IMcpToolGateway _gateway = Substitute.For<IMcpToolGateway>();
     private readonly IWorkspacePluginPolicyClient _workspacePolicy = Substitute.For<IWorkspacePluginPolicyClient>();
     private readonly IPluginTokenRefresher _tokenRefresher = Substitute.For<IPluginTokenRefresher>();
+    private readonly IMcpConfirmationTokenService _confirmationTokenService = Substitute.For<IMcpConfirmationTokenService>();
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
     private readonly IPluginConnectionRepository _connectionRepository = Substitute.For<IPluginConnectionRepository>();
     private readonly IPluginToolAuditRepository _auditRepository = Substitute.For<IPluginToolAuditRepository>();
+    private readonly IPluginConfirmationTokenRepository _confirmationTokenRepository = Substitute.For<IPluginConfirmationTokenRepository>();
     private readonly IPluginOAuthClient _oauthClient = Substitute.For<IPluginOAuthClient>();
     private readonly IPluginOAuthStateProtector _stateProtector = Substitute.For<IPluginOAuthStateProtector>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
@@ -36,6 +37,7 @@ public class McpToolOrchestratorTests
         _unitOfWork.PluginInstallationRepository.Returns(_installationRepository);
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
+        _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => $"protected:{call.Arg<string>()}");
         _credentialProtector.Unprotect(Arg.Any<string>())
@@ -142,6 +144,8 @@ public class McpToolOrchestratorTests
         var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
         var request = Request("google_calendar_create_event");
+        _confirmationTokenService.CreateAsync(UserId, PluginId, request, Arg.Any<CancellationToken>())
+            .Returns(Result.Success("signed-confirmation-token"));
         var sut = CreateSut();
 
         var result = await sut.ExecuteAsync(UserId, request);
@@ -149,7 +153,7 @@ public class McpToolOrchestratorTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.ConfirmationRequired, result.Value.ErrorCode);
-        Assert.False(string.IsNullOrWhiteSpace(result.Value.ConfirmationToken));
+        Assert.Equal("signed-confirmation-token", result.Value.ConfirmationToken);
         await _gateway.DidNotReceive()
             .ExecuteAsync(
                 Arg.Any<PluginDefinitionDto>(),
@@ -164,13 +168,19 @@ public class McpToolOrchestratorTests
     {
         var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
-        var confirmedDifferentAction = Request(
-            "google_calendar_create_event",
-            new JsonObject { ["summary"] = "Different meeting" });
         var replayedRequest = Request(
             "google_calendar_create_event",
             new JsonObject { ["summary"] = "Roadmap review" },
-            ConfirmationToken(UserId, confirmedDifferentAction));
+            "signed-confirmation-token");
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId,
+                PluginId,
+                replayedRequest,
+                "signed-confirmation-token",
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Failure(
+                "Confirmation token does not match this plugin action.",
+                PluginConstants.ErrorCodes.PermissionDenied));
         var sut = CreateSut();
 
         var result = await sut.ExecuteAsync(UserId, replayedRequest);
@@ -188,6 +198,75 @@ public class McpToolOrchestratorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_RejectsReplayedConfirmationToken()
+    {
+        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        ConfigureInstalledConnected(plugin);
+        var replayedRequest = Request(
+            "google_calendar_create_event",
+            new JsonObject { ["summary"] = "Roadmap review" },
+            "signed-confirmation-token");
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId,
+                PluginId,
+                replayedRequest,
+                "signed-confirmation-token",
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Failure(
+                "Confirmation token has already been used.",
+                PluginConstants.ErrorCodes.PermissionDenied));
+
+        var result = await CreateSut().ExecuteAsync(UserId, replayedRequest);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value.ErrorCode);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReturnsFreshConfirmationToken_WhenConfirmationTokenExpired()
+    {
+        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        ConfigureInstalledConnected(plugin);
+        var expiredRequest = Request(
+            "google_calendar_create_event",
+            new JsonObject { ["summary"] = "Roadmap review" },
+            "expired-confirmation-token");
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId,
+                PluginId,
+                expiredRequest,
+                "expired-confirmation-token",
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Failure(
+                "Confirmation token expired. Confirm this action again.",
+                PluginConstants.ErrorCodes.ConfirmationRequired));
+        _confirmationTokenService.CreateAsync(UserId, PluginId, expiredRequest, Arg.Any<CancellationToken>())
+            .Returns(Result.Success("fresh-confirmation-token"));
+
+        var result = await CreateSut().ExecuteAsync(UserId, expiredRequest);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConfirmationRequired, result.Value.ErrorCode);
+        Assert.Equal("fresh-confirmation-token", result.Value.ConfirmationToken);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ExecuteAsync_AllowsWriteTool_WhenConfirmationTokenMatchesAction()
     {
         var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
@@ -195,7 +274,14 @@ public class McpToolOrchestratorTests
         var unconfirmed = Request(
             "google_calendar_create_event",
             new JsonObject { ["summary"] = "Roadmap review" });
-        var confirmed = unconfirmed with { ConfirmationToken = ConfirmationToken(UserId, unconfirmed) };
+        var confirmed = unconfirmed with { ConfirmationToken = "signed-confirmation-token" };
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId,
+                PluginId,
+                confirmed,
+                "signed-confirmation-token",
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
         _gateway.ExecuteAsync(
                 Arg.Any<PluginDefinitionDto>(),
                 Arg.Any<McpToolDescriptorDto>(),
@@ -571,12 +657,13 @@ public class McpToolOrchestratorTests
             _gateway,
             _unitOfWork,
             _workspacePolicy,
-            new PluginConnectionService(_unitOfWork, _oauthClient, _stateProtector, _credentialProtector));
+            new PluginConnectionService(_unitOfWork, _oauthClient, _stateProtector, _credentialProtector),
+            _confirmationTokenService);
     }
 
     private McpToolOrchestrator CreateSut()
     {
-        return new McpToolOrchestrator(_gateway, _unitOfWork, _workspacePolicy, _tokenRefresher);
+        return new McpToolOrchestrator(_gateway, _unitOfWork, _workspacePolicy, _tokenRefresher, _confirmationTokenService);
     }
 
     private McpToolExecutionRequest Request(string toolName)
@@ -644,12 +731,6 @@ public class McpToolOrchestratorTests
                 Arg.Any<CancellationToken>())
             .Returns(connection);
         return connection;
-    }
-
-    private static string ConfirmationToken(Guid userId, McpToolExecutionRequest request)
-    {
-        var raw = $"{userId}:{request.WorkspaceId}:{request.PluginKey}:{request.ToolName}:{request.Arguments?.ToJsonString()}";
-        return Convert.ToBase64String(Encoding.UTF8.GetBytes(raw));
     }
 
     private static Plugin GoogleWorkspacePlugin(bool includeWriteTool = false)

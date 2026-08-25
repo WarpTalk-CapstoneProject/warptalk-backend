@@ -3,6 +3,7 @@ namespace WarpTalk.AssistantService.Domain.Constants;
 public static class PluginConstants
 {
     public const string GoogleWorkspace = "google_workspace";
+    public const int ConfirmationTokenLifetimeMinutes = 5;
 
     public static class InstallationStatus
     {

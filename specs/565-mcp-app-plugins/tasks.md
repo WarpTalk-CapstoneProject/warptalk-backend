@@ -64,7 +64,7 @@
 - [x] T034 Run AI worker tests for MCP plugin tools.
 - [x] T035 Run frontend plugin marketplace typecheck and backend/web compile checks.
 - [x] T033A Re-run T033-T035 after merging `origin/development` into the branch on 2026-08-25: AssistantService plugin tests 14/14, MeetingService assistant-step parity 11/11, AI worker MCP tests 16/16, web typecheck clean, plugin marketplace + confirmation contracts pass.
-- [ ] T036 Manual E2E: Owner installs Google Workspace, user connects Google, WarpBot searches Drive, WarpBot creates Calendar event only after confirmation. Checklist: `specs/565-mcp-app-plugins/manual-e2e.md`.
+- [ ] T036 Manual E2E: user installs Google Drive & Calendar, connects Google through gateway redirect `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`, WarpBot searches Drive, WarpBot reads a Drive file, and WarpBot creates Calendar event only after confirmation. Checklist: `specs/565-mcp-app-plugins/manual-e2e.md`.
 
 
 ## Phase 8: Pre-merge Hardening
@@ -79,12 +79,16 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocked a cred
   - Verified the "Reconnect" path lines up end to end: `ListCatalogAsync` does not filter connections by status and `PluginCatalogItemMapper` passes `connection.Status` through unchanged, and the plugins page maps `expired` to "Reconnect". No web change needed. A successful reconnect through the existing OAuth callback already rewrites `Status = connected`; there is now a test pinning that.
   - Tests: 13 added (`GoogleWorkspaceOAuthClientTests` x3, `McpToolOrchestratorTests` x5, `PluginConnectionServiceTests` x5), suite 14 -> 27, all green.
   - Known limitation, recorded in `plan.md` section 9 and left open on purpose: a *transient* refresh failure also marks the connection `expired`, and gate 5 makes that sticky until the user reconnects. Separating `invalid_grant` from a Google 5xx needs the OAuth client to surface the status code and is out of T037's scope. **Closed by T043.**
-- [ ] T038 [US3] Replace the confirmation token (gap G5). Today `McpConfirmationTokenFactory` returns `base64(userId:workspaceId:pluginKey:toolName:arguments)` - deterministic, unsigned, unbounded in time, reusable, and visible to the model in the confirmation card. Mint a Data Protection-protected, single-use token with a TTL <= 5 minutes bound to `userId + pluginKey + toolName + argument hash`.
-  - Accept: replaying a consumed token returns `permission_denied`; a token minted for different arguments does not validate; an expired token returns `confirmation_required` again.
-- [ ] T039 [US3] Resolve `google_drive_get_file` (gap G1): either implement the gateway branch and add a seed-patch migration, or remove it from `spec.md`/`plan.md` so the MVP tool list is the three tools that actually ship.
+- [x] T038 [US3] Replace the confirmation token (gap G5). Implemented Data Protection protection, five-minute TTL, canonical argument hashing, persisted claim row, atomic consume, and direct service/orchestrator tests for replay, expiry, changed arguments, and happy path.
+  - Accept: replaying a consumed token returns `permission_denied`; a token minted for different arguments does not validate; an expired token returns `confirmation_required` again; concurrent consume succeeds once.
+  - Implementation notes: canonicalize JSON arguments before hashing; store token id/nonce hash, user id, optional workspace id, plugin key, tool name, argument hash, expiry, consumed timestamp; validate then atomically consume before provider execution.
+- [x] T039 [US3] Implement `google_drive_get_file` (gap G1) and rename the provider display label to `Google Drive & Calendar`. Implemented privacy-bounded metadata/content reads, refusal tests, and seed-patch migration.
+  - Add a seed-patch migration that updates the `plugins` row label/description and inserts `google_drive_get_file` into `tools_json` when missing.
+  - Implement the `GoogleWorkspaceMcpToolGateway` branch with privacy-bounded reads: sanitized metadata plus text content only for supported text/exportable files under a strict size limit; return explicit unsupported/too-large messages for binary or oversized files.
+  - Add backend gateway tests and AI worker dynamic-tool routing tests for the fourth tool.
 - [x] T040 [US4] Wire plugin disconnect + disable (gap G4). Done 2026-08-25: the gap was wider than first recorded - `useDisconnectAssistantPlugin` existed but no component called it, and `DELETE /api/v1/assistant/plugins/{pluginKey}` had no service method, so an installed and connected plugin could not be undone from the UI at all. Added `disablePlugin` to the service/endpoints/hooks, put Disconnect and Remove in the connect dialog behind an inline confirm, made Remove disconnect first so stored provider tokens do not outlive the plugin, and added a search empty state. Contract script now asserts both actions and the empty state.
-- [ ] T041 [US1] Remove or consume `GET /api/v1/assistant/plugins/installed` and `API.assistant.installedPlugins` (gap G6) - the page derives the installed row from the catalog, so both are currently dead.
-- [ ] T042 Ops readiness: verify the ASP.NET Data Protection key ring is persisted and shared across AssistantService replicas. With the default per-container key ring, a restart or a second replica makes every stored OAuth token and in-flight OAuth state undecryptable. Document `Plugins:GoogleWorkspace:OAuth:ClientId` / `ClientSecret` as per-environment deployment secrets.
+- [x] T041 [US1] Remove or consume `GET /api/v1/assistant/plugins/installed` and `API.assistant.installedPlugins` (gap G6). Removed the dead backend endpoint; no active caller exists.
+- [x] T042 Ops readiness: configure a persisted/shared ASP.NET Data Protection key ring and document the per-environment Google OAuth secrets. Compose mounts `assistant-data-protection-keys` and sets `DataProtection__KeyRingPath`.
 - [x] T043 [US2] Stop a transient refresh failure from killing a connection (the limitation T037 left open). Done 2026-08-25. **What was wrong:** every way a token refresh could fail looked identical by the time anything could act on it. `GoogleWorkspaceOAuthClient.RefreshAccessTokenAsync` called `response.EnsureSuccessStatusCode()`, so Google answering 400 `invalid_grant` (the grant really is dead - revoked, password changed, token pruned) and Google answering 503, or a request timing out, or DNS failing, all arrived as the same exception. `PluginConnectionService.RefreshAccessTokenAsync` caught `Exception` and sent every one of them to `MarkExpiredAsync`, which writes `plugin_connections.status = expired`. Gate 5 of `McpToolOrchestrator` rejects any non-`connected` row *before* the refresh code is reached, so that write was effectively one-way: a five-second Google hiccup permanently ended the connection and the only way back was a full OAuth re-consent in the browser. The user-visible cost of a network blip was the same as the cost of revoking access.
   - **Layer boundary.** `IPluginOAuthClient.RefreshAccessTokenAsync` now returns `PluginOAuthRefreshResultDto` (`Outcome` + optional `Token` + a diagnostic `Detail`) instead of a token-or-throw. `PluginOAuthRefreshOutcome` is `Succeeded` / `GrantRejected` / `ProviderUnavailable` / `ProviderRateLimited` - provider-neutral by design. `GoogleWorkspaceOAuthClient` is the only code that reads an `HttpStatusCode` or parses Google's `{"error": ...}` body; `Application` switches on the enum. `Domain` gained nothing.
   - Chose a result object over a typed exception pair: an hourly token refresh failing because a provider is having a bad minute is an ordinary outcome, not an exceptional one, and the rest of this service already models expected failure as `Result` + `ErrorCode`. It also keeps a genuine bug distinguishable - an unforeseen exception is still an exception rather than being silently classified.
@@ -93,9 +97,17 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocked a cred
   - `McpToolOrchestrator` passes the refresher's `ErrorCode`/`Error` through on both triggers instead of hardcoding `connection_required`, so `McpToolAuditRecorder` writes the code that actually happened. `refreshAttempted` (one refresh per execution) and the two triggers (60s expiry skew, gateway `connection_required`) are unchanged.
   - Tests: 17 added or rewritten, suite 27 -> 44, all green. `GoogleWorkspaceOAuthClientTests` +6 classification cases (`invalid_grant` -> `GrantRejected`, 503/429/`invalid_client`/unreachable host/HTML body); `PluginConnectionServiceTests` +4 transient cases and the T037 rejection test renamed to `..._WhenProviderRejectsTheGrant` so it is explicit the rejection is `invalid_grant`-shaped, plus an undecryptable-material case; `McpToolOrchestratorTests` +8 cases that wire the real `PluginConnectionService` in as `IPluginTokenRefresher` and assert the row is still `connected` after a transient failure.
 
+## Phase 9: Full-scope Closeout Plan
+
+- [x] T044 Align local OAuth redirect documentation and config examples to gateway `:5200`; keep `:5108` documented only as direct-service debugging.
+- [x] T045 Re-run targeted backend tests after T038/T039/T041/T042: AssistantService plugin tests `56/56`, Google Workspace gateway tests included, and MeetingService assistant-step parity `11/11`.
+- [x] T046 Re-run AI worker tests for dynamic MCP tool loading, confirmation payload normalization, and provider-error mapping: `31 passed` (`test_mcp_tools.py`, `test_chat_agent_loop.py`, `test_chat_tools.py`).
+- [x] T047 Re-run web checks: `npm run typecheck`, plugin marketplace contract, and confirmation-surface contract all pass.
+- [ ] T048 Run manual E2E through gateway `:5200`, capture pass/fail evidence in `manual-e2e.md`, and mark T036 complete only if install, connect, Drive search, Drive read, Calendar confirmation, account isolation, and workspace policy gates pass.
+
 ## Blockers
 
-- T036 needs a real Google Cloud OAuth client. `Plugins:GoogleWorkspace:OAuth:ClientId` / `ClientSecret` are intentionally blank in `assistant/src/WarpTalk.AssistantService.API/appsettings.json`; supply them through user secrets or env, plus a running Postgres with `20260823090000_add_mcp_plugin_tables.sql` applied. Full prerequisites: `plan.md` section 11. The Google consent step must be performed by a human.
+- T036 no longer needs a new Google redirect URI: `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback` has been registered. Docker/Postgres is running and the plugin, confirmation-token, and Drive get-file migrations are applied locally. Remaining blockers are supplying `Plugins:GoogleWorkspace:OAuth:ClientId` / `ClientSecret` outside git and performing the Google consent step manually.
 
 ## Dependencies & Execution Order
 
@@ -104,6 +116,8 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocked a cred
 - AI worker can implement dynamic tool loading after backend `GET /api/v1/assistant/mcp/tools` exists.
 - Frontend can initially use API mocks only inside tests, but production UI must use backend data.
 - ~~T037 should land before T036 is attempted, otherwise the E2E walkthrough dies at the one-hour mark.~~ T037 landed 2026-08-25, so T036 is no longer time-boxed to the access-token lifetime.
+- T038 should land before final T036 so the write-confirmation E2E validates the security boundary reviewers will inspect.
+- T039 should land before final T036 so the E2E validates full scope: Drive search, Drive read/get-file, Calendar list/create.
 - Merge order across repos is backend -> ai -> web (`plan.md` section 12).
 
 ## Notes
