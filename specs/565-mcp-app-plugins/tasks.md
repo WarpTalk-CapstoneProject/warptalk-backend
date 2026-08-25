@@ -63,7 +63,10 @@
 - [x] T033 Run targeted AssistantService tests for plugin services and MCP orchestration.
 - [x] T034 Run AI worker tests for MCP plugin tools.
 - [x] T035 Run frontend plugin marketplace typecheck and backend/web compile checks.
+- [x] T033A Re-run T033-T035 after merging `origin/development` into the branch on 2026-08-25: AssistantService plugin tests 14/14, MeetingService assistant-step parity 11/11, AI worker MCP tests 16/16, web typecheck clean, plugin marketplace + confirmation contracts pass.
 - [ ] T036 Manual E2E: Owner installs Google Workspace, user connects Google, WarpBot searches Drive, WarpBot creates Calendar event only after confirmation. Checklist: `specs/565-mcp-app-plugins/manual-e2e.md`.
+
+- [ ] T036 blocker: needs a real Google Cloud OAuth client. `GoogleWorkspace:OAuth:ClientId` / `ClientSecret` are intentionally blank in `assistant/src/WarpTalk.AssistantService.API/appsettings.json`; supply them locally (user secrets or env) plus a running Postgres with `20260823090000_add_mcp_plugin_tables.sql` applied.
 
 ## Dependencies & Execution Order
 
