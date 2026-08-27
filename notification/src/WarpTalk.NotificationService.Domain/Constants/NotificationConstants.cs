@@ -66,6 +66,20 @@ public static class NotificationConstants
     public const string TypeWorkspaceSuspended = "WORKSPACE_SUSPENDED";
     public const string TypeWorkspaceReactivated = "WORKSPACE_REACTIVATED";
 
+    /// <summary>
+    /// The Leave Workspace round trip. WT-521.
+    ///
+    /// A member asked to leave and nobody was told, in either direction: Owners and Admins had to
+    /// open the Requests tab and notice, and the member who asked never heard whether it had been
+    /// approved. The toast said "Awaiting Admin/Owner approval" to somebody nobody was going to
+    /// tell, about a request nobody had been shown.
+    ///
+    /// Registered with schemas below in the same change as the producers.
+    /// </summary>
+    public const string TypeWorkspaceLeaveRequested = "WORKSPACE_LEAVE_REQUESTED";
+    public const string TypeWorkspaceLeaveApproved = "WORKSPACE_LEAVE_APPROVED";
+    public const string TypeWorkspaceLeaveRejected = "WORKSPACE_LEAVE_REJECTED";
+
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
     public const string TypeSystem = "SYSTEM";

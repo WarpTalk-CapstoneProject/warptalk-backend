@@ -125,6 +125,42 @@ public static class NotificationValidator
                     { "workspace_name", JsonValueKind.String }
                 }
             }
+        },
+        {
+            // WT-521, to every Owner and Admin. `requester_id` is required because the Requests
+            // tab has to be able to find the row this notification is about; a notice that only
+            // says somebody wants to leave sends the reader hunting.
+            NotificationConstants.TypeWorkspaceLeaveRequested, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String },
+                    { "requester_id", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            // WT-521, back to the member who asked. Both outcomes carry the same shape, because
+            // the member needs the same two facts either way: which workspace, and what happened.
+            NotificationConstants.TypeWorkspaceLeaveApproved, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            NotificationConstants.TypeWorkspaceLeaveRejected, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
         }
     };
 
