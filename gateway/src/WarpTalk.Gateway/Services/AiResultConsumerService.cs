@@ -49,6 +49,15 @@ public sealed class AiResultConsumerService : BackgroundService
     // translationRoomId → CancellationTokenSource (for stopping consumers when translationRoom ends)
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _translationRoomCts = new();
 
+    /// <summary>
+    /// "{translationRoomId}:{speakerId}" → the speaker's display name. WT-534.
+    ///
+    /// A name does not change during a meeting, so the Redis read happens once per speaker per
+    /// room rather than once per sentence. Same unbounded-per-room shape as _roomPolicyCache
+    /// above, and bounded in practice by rooms × participants.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _speakerNameCache = new();
+
     public AiResultConsumerService(
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
@@ -263,10 +272,21 @@ public sealed class AiResultConsumerService : BackgroundService
                         originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
                     }
 
+                    var speakerId = RedisStreamService.GetField(entry, "speaker_id") ?? "";
+
                     var segment = new TranscriptSegmentDto(
                         SegmentId: Guid.TryParse(RedisStreamService.GetField(entry, "segment_id"), out var sid) ? sid : Guid.NewGuid(),
-                        SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
-                        SpeakerName: RedisStreamService.GetField(entry, "speaker_id") ?? "Unknown",
+                        SpeakerId: Guid.TryParse(speakerId, out var spk) ? spk : Guid.Empty,
+                        // WT-534: a name, when one is known. This field carried the speaker's UUID
+                        // — the id, put in the field called Name — so the live transcript had no
+                        // name in it at all. The web client guards against printing a UUID at
+                        // somebody, so every line whose speaker was not already in the reader's
+                        // roster rendered as the literal word "Speaker", and a reader watching a
+                        // rejoin saw attribution they could not trust. The SAVED transcript never
+                        // had this problem: TranscriptRedisConsumerService resolves the name over
+                        // auth gRPC before it writes the row, so the two copies of the same
+                        // meeting disagreed about who spoke.
+                        SpeakerName: await ResolveSpeakerNameAsync(translationRoomId, speakerId),
                         OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
@@ -292,6 +312,51 @@ public sealed class AiResultConsumerService : BackgroundService
                 await Task.Delay(1000, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// The speaker's display name for the live transcript, falling back to their id. WT-534.
+    /// </summary>
+    /// <remarks>
+    /// Read from <c>meeting:{roomId}:speaker_names</c>, the hash the AI ingress worker fills as it
+    /// meets each speaker (WT-529) from the <c>name</c> claim on their LiveKit token. Redis rather
+    /// than auth gRPC because this runs once per sentence spoken in every live meeting, and the
+    /// ingress worker has already paid for the lookup.
+    ///
+    /// The id is the fallback, not "Unknown": it is what this field carried before, so nothing
+    /// that reads it regresses, and the web client already refuses to print a UUID as a name —
+    /// it shows "Speaker" instead, which is honest. Inventing a name here would not be.
+    /// </remarks>
+    private async Task<string> ResolveSpeakerNameAsync(string translationRoomId, string speakerId)
+    {
+        if (string.IsNullOrEmpty(speakerId)) return "Unknown";
+
+        var cacheKey = $"{translationRoomId}:{speakerId}";
+        if (_speakerNameCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        try
+        {
+            var name = await _streamService.GetHashFieldAsync(
+                $"meeting:{translationRoomId}:speaker_names", speakerId);
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                _speakerNameCache[cacheKey] = name;
+                return name;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Best-effort by design. A transcript line with a weaker name is worth delivering;
+            // one that never arrives because Redis hiccuped is not.
+            _logger.LogDebug(ex, "Speaker name lookup failed for {SpeakerId} in room {RoomId}",
+                speakerId, translationRoomId);
+        }
+
+        // Deliberately NOT cached: the ingress worker writes the hash as it meets each speaker,
+        // so a miss here is usually "not yet", and caching it would freeze the id in place for
+        // the rest of the meeting.
+        return speakerId;
     }
 
     // ── Translation Results → TranslationTextReceived ────────

@@ -170,6 +170,22 @@ public sealed class RedisStreamService
         await db.StringSetAsync(key, value, ttl);
     }
 
+    /// <summary>
+    /// Read one field of a hash, or null when the hash or the field is absent.
+    /// </summary>
+    /// <remarks>
+    /// Added for the live transcript's speaker names (WT-534). The AI ingress worker writes
+    /// <c>meeting:{roomId}:speaker_names</c> as identity → display name, and this is the only way
+    /// the gateway can read it: the name lives in auth, and putting a gRPC call on a per-segment
+    /// realtime path would add a network hop to every sentence anybody says.
+    /// </remarks>
+    public async Task<string?> GetHashFieldAsync(string key, string field)
+    {
+        var db = _redis.GetDatabase();
+        var value = await db.HashGetAsync(key, field);
+        return value.IsNullOrEmpty ? null : value.ToString();
+    }
+
     // ── Helpers ──────────────────────────────────────────────
 
     /// <summary>
