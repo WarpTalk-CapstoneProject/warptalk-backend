@@ -393,6 +393,12 @@ public class WorkspaceService : IWorkspaceService
                 : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
             var ceiling = entitlements.SelfServiceLimit(EntitlementKeys.MaxActiveRooms);
 
+            // WT-500: the same argument, for languages. `Limit` rather than `SelfServiceLimit`
+            // because ValidatePlanLanguageQuota — the code that actually refuses the meeting —
+            // calls `Limit`. A ceiling reported from the other function could differ from the one
+            // enforced, which would be a fresh instance of the bug above rather than a fix for it.
+            var languageCeiling = entitlements.Limit(EntitlementKeys.MaxLanguages);
+
             return Result.Success(settings.ToSettingsDto() with
             {
                 MaxActiveRoomsCeiling = ceiling.HasValue
@@ -400,6 +406,12 @@ public class WorkspaceService : IWorkspaceService
                     : null,
                 MaxActiveRoomsCeilingSource = ceiling.HasValue
                     ? entitlements.Source(EntitlementKeys.MaxActiveRooms)
+                    : null,
+                MaxLanguagesCeiling = languageCeiling.HasValue
+                    ? (int)Math.Clamp(languageCeiling.Value, int.MinValue, int.MaxValue)
+                    : null,
+                MaxLanguagesCeilingSource = languageCeiling.HasValue
+                    ? entitlements.Source(EntitlementKeys.MaxLanguages)
                     : null,
             });
         }
