@@ -242,6 +242,49 @@ public sealed class AiResultConsumerService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Whether this failure is a consumer group that no longer exists — and if so, put it back.
+    /// </summary>
+    /// <remarks>
+    /// WT-387. EnsureConsumerGroupWithRetryAsync runs ONCE, before each consume loop starts. A
+    /// consumer group lives inside its stream, so deleting the stream deletes the group with it,
+    /// and from then on every XREADGROUP answers NOGROUP. That landed in the loop's generic catch,
+    /// which logged and slept — forever. The pipeline was dead for the life of the process while
+    /// the service went on reporting healthy, which is exactly the report: live transcript stops
+    /// mid-meeting and never resumes.
+    ///
+    /// Two things delete a stream, and BOTH are in production today:
+    ///
+    ///   * REDIS_STREAM_TTL_SECONDS=3600, added as the mitigation for this very incident. Any
+    ///     stream that goes quiet for an hour expires, which makes this reachable on an ordinary
+    ///     idle night rather than only under memory pressure.
+    ///   * maxmemory-policy allkeys-lru, which is what deleted live meetings' streams on
+    ///     2026-08-14 to make room (see deploy/production/app.compose.yml).
+    ///
+    /// Recreating is safe and cheap: EnsureConsumerGroupAsync passes createStream:true and
+    /// swallows BUSYGROUP, so it is a no-op when the group is already there. Messages published
+    /// while the stream did not exist are genuinely gone — nothing can recover those — but the
+    /// consumer resumes instead of staying dead until somebody restarts the gateway.
+    /// </remarks>
+    private async Task<bool> TryRestoreConsumerGroupAsync(Exception ex, string streamKey, CancellationToken ct)
+    {
+        // Matched on the message: StackExchange.Redis surfaces this as a RedisServerException
+        // whose text begins "NOGROUP No such key '…' or consumer group '…'", and there is no
+        // typed error to test instead.
+        if (ex is not RedisServerException || !ex.Message.Contains("NOGROUP", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            ex,
+            "Consumer group {Group} on {Stream} has vanished — the stream was deleted (TTL expiry or eviction). "
+            + "Recreating it; messages published while it was gone are lost.",
+            ConsumerGroupName, streamKey);
+
+        return await EnsureConsumerGroupWithRetryAsync(streamKey, ct);
+    }
+
     // ── STT Results → TranscriptSegmentReceived ──────────────
 
     private async Task ConsumeSTTResultsAsync(CancellationToken ct)
@@ -308,6 +351,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming STT results");
                 await Task.Delay(1000, ct);
             }
@@ -414,6 +459,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming Translation results");
                 await Task.Delay(2000, ct);
             }
@@ -476,6 +523,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming TTS results");
                 await Task.Delay(1000, ct);
             }
@@ -549,6 +598,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming voice clone state");
                 await Task.Delay(1000, ct);
             }
@@ -635,6 +686,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming AI Assistant results");
                 await Task.Delay(2000, ct);
             }
