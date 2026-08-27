@@ -87,6 +87,44 @@ public static class NotificationValidator
             {
                 RequiredFields = { { "sender_id", JsonValueKind.String }, { "sender_name", JsonValueKind.String }, { "room_id", JsonValueKind.String } }
             }
+        },
+        {
+            // Producer: WorkspaceMemberService.NotifyMemberRoleChangedAsync, which has been
+            // sending exactly these three fields against no schema at all — so every role change
+            // fell through to the unknown-type branch below and was rejected.
+            NotificationConstants.TypeWorkspaceRoleChanged, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "old_role", JsonValueKind.String },
+                    { "new_role", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            // WT-454. The reason is required, not optional: a suspension notice that does not say
+            // why is the same dead end as no notice, and the admin endpoint already refuses to
+            // suspend without one.
+            NotificationConstants.TypeWorkspaceSuspended, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String },
+                    { "reason", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            NotificationConstants.TypeWorkspaceReactivated, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
         }
     };
 

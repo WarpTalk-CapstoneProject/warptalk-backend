@@ -43,6 +43,29 @@ public static class NotificationConstants
     /// </summary>
     public const string TypeActionItemAssigned = "ACTION_ITEM_ASSIGNED";
 
+    /// <summary>
+    /// A member's role in a workspace changed. Published by WorkspaceMemberService's
+    /// NotifyMemberRoleChangedAsync, which attaches workspace_id / old_role / new_role.
+    ///
+    /// The comment above named this as one of the types that had already been caught doing this,
+    /// and it was still doing it: the producer existed, the constant did not, and there was no
+    /// schema entry — so the validator took it down the unknown-type branch, saw a payload, and
+    /// rejected every one with UNSUPPORTED_NOTIFICATION_TYPE. The producer wraps the call in a
+    /// catch that logs at Warning and carries on, so nothing upstream ever noticed.
+    /// </summary>
+    public const string TypeWorkspaceRoleChanged = "WORKSPACE_ROLE_CHANGED";
+
+    /// <summary>
+    /// A system admin suspended a workspace, or lifted the suspension. WT-454 — the owner was
+    /// told nothing at all, so a workspace that stopped working came with no explanation and no
+    /// reason, and support had to send the mail by hand.
+    ///
+    /// Registered here in the same change as the producer, which is the rule this file keeps
+    /// having to relearn.
+    /// </summary>
+    public const string TypeWorkspaceSuspended = "WORKSPACE_SUSPENDED";
+    public const string TypeWorkspaceReactivated = "WORKSPACE_REACTIVATED";
+
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
     public const string TypeSystem = "SYSTEM";
