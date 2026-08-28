@@ -51,7 +51,12 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             // WT-525: Meeting Service gates the bridge-token endpoint on this. Sent as the stored
             // string rather than a normalized one — the consumer compares against the same
             // TranslationRoomTypes constants this service writes.
-            TranslationRoomType = result.Value!.TranslationRoomType ?? string.Empty
+            TranslationRoomType = result.Value!.TranslationRoomType ?? string.Empty,
+            // WT-587: TranscriptService gates persistence on this. Always set, so that "absent"
+            // on the wire means only one thing — an older server — rather than being ambiguous
+            // with a room that genuinely wants no record. ReadSettings has already resolved the
+            // default, so a room whose blob predates the key arrives here as TRUE.
+            SaveTranscript = result.Value!.Settings.SaveTranscript
         };
     }
 
