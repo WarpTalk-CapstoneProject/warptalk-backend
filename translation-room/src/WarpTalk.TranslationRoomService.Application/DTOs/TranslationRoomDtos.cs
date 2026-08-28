@@ -18,7 +18,11 @@ public record RoomSettingsRequest(
     bool? MuteOnEntry = null,
     bool? AutoRecord = null,
     bool? BreakoutsEnabled = null,
-    bool? ParticipantsCanStartTranslation = null
+    bool? ParticipantsCanStartTranslation = null,
+    // WT-587: false makes this an ephemeral meeting — captions and translation still run, nothing
+    // is written to transcript_segments. Null (the default) leaves it alone, which for a new room
+    // means TranslationRoomSettings' own TRUE.
+    bool? SaveTranscript = null
 );
 
 public record RoomSettingsResponse(
@@ -27,7 +31,11 @@ public record RoomSettingsResponse(
     bool MuteOnEntry,
     bool AutoRecord,
     bool BreakoutsEnabled,
-    bool ParticipantsCanStartTranslation
+    bool ParticipantsCanStartTranslation,
+    // WT-587. Trailing with a default so every existing positional construction site — and every
+    // client reading this record — is unaffected, and so an older caller cannot accidentally
+    // report a room as ephemeral by omission.
+    bool SaveTranscript = true
 );
 
 public record UpdateRoomSettingsRequest(

@@ -37,6 +37,18 @@ public class TranscriptRedisConsumerService : BackgroundService
     private readonly Dictionary<Guid, (bool AllowExternalLlm, DateTime CachedAt)> _workspacePolicyCache = new();
     private static readonly TimeSpan WorkspacePolicyCacheDuration = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// WT-587: roomId → whether that room is to be written down, and when we last asked.
+    ///
+    /// Cached for hours rather than minutes because, unlike the workspace policy above, this
+    /// answer CANNOT change while the meeting runs: UpdateTranslationRoomSettingsAsync refuses
+    /// every settings edit once a room leaves SCHEDULED/WAITING. Re-asking per utterance would be
+    /// one gRPC round trip per sentence per meeting to learn a value that is fixed for the
+    /// meeting's whole life.
+    /// </summary>
+    private readonly Dictionary<Guid, (bool SaveTranscript, DateTime CachedAt)> _roomRetentionCache = new();
+    private static readonly TimeSpan RoomRetentionCacheDuration = TimeSpan.FromHours(4);
+
     public TranscriptRedisConsumerService(
         IConnectionMultiplexer redis,
         ILogger<TranscriptRedisConsumerService> logger,
@@ -289,6 +301,18 @@ public class TranscriptRedisConsumerService : BackgroundService
             return true;
         }
 
+        // WT-587: an ephemeral meeting stops here — captions and translation have already
+        // happened elsewhere, and this is the step that would have written the room down.
+        //
+        // return TRUE, not false. False is "I could not handle this, try me again", which after a
+        // bounded number of attempts dead-letters the message and raises an alert. Declining to
+        // record a meeting nobody asked to have recorded is a success, and a dead-letter dashboard
+        // full of deliberate behaviour is how a real broken consumer gets missed.
+        if (!await ShouldPersistRoomAsync(roomId, cancellationToken))
+        {
+            return true;
+        }
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -511,6 +535,21 @@ public class TranscriptRedisConsumerService : BackgroundService
             return true; // flush/empty messages carry no translation to persist
         }
 
+        // WT-587: the same gate, and it is NOT optional here just because the STT half already
+        // ran. In an ephemeral room no segment row was written, so the "Verify Segment Exists"
+        // check below finds nothing and returns false — which is the retry-then-dead-letter path.
+        // Every translated sentence of every ephemeral meeting would land in the dead-letter
+        // stream and be reported as a broken consumer.
+        //
+        // The room id is on the wire even though nothing else on this path uses it: every
+        // *ResultMessage.to_redis() in warptalk-ai/shared/schemas.py carries meeting_id. When it
+        // cannot be resolved we fall through and persist, exactly as this method did before.
+        if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var translationRoomId)
+            && !await ShouldPersistRoomAsync(translationRoomId, cancellationToken))
+        {
+            return true;
+        }
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -718,6 +757,61 @@ public class TranscriptRedisConsumerService : BackgroundService
     /// WorkspaceService outage degrades to today's behavior rather than blocking every
     /// transcript segment from being embedded.
     /// </summary>
+    /// <summary>
+    /// WT-587: whether this room's meeting is to leave a written record.
+    ///
+    /// THE ONLY GATE ON PERSISTENCE, and deliberately the only one. The caption lane never read
+    /// the database — the Gateway broadcasts stt:results straight over SignalR under its own
+    /// consumer group — so live captions, live translation and the dubbed voice all keep working
+    /// for an ephemeral room. This consumer group is the one thing that turned "somebody switched
+    /// captions on" into "this conversation is now on disk forever", and it ran unconditionally.
+    ///
+    /// FAILS OPEN, TOWARDS KEEPING THE TRANSCRIPT. A room we cannot ask about is persisted, and
+    /// an older TranslationRoomService that does not send the field at all is persisted. Both
+    /// directions of this decision are irreversible in one sense and not the other: a transcript
+    /// wrongly kept can be deleted afterwards, while a transcript wrongly discarded is gone with
+    /// the audio that made it. The wire format is built for this too — see the `optional` on
+    /// save_transcript in translation_room.proto.
+    /// </summary>
+    private async Task<bool> ShouldPersistRoomAsync(Guid roomId, CancellationToken ct)
+    {
+        if (_roomRetentionCache.TryGetValue(roomId, out var cached) &&
+            DateTime.UtcNow - cached.CachedAt < RoomRetentionCacheDuration)
+        {
+            return cached.SaveTranscript;
+        }
+
+        bool saveTranscript;
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var roomClient = scope.ServiceProvider
+                .GetRequiredService<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
+
+            var room = await roomClient.GetTranslationRoomByIdAsync(
+                new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomId.ToString() },
+                cancellationToken: ct);
+
+            // HasSaveTranscript, not the value alone. Absent means the responder predates this
+            // field, and proto3 would hand us `false` for it — an instruction to stop recording
+            // every meeting in the system, issued by nobody.
+            saveTranscript = !room.HasSaveTranscript || room.SaveTranscript;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not read the transcript-retention setting for room {RoomId}; persisting this meeting. "
+                + "Keeping a transcript that was meant to be ephemeral is recoverable by deleting it; "
+                + "discarding one that was meant to be kept is not.",
+                roomId);
+            saveTranscript = true;
+        }
+
+        _roomRetentionCache[roomId] = (saveTranscript, DateTime.UtcNow);
+        return saveTranscript;
+    }
+
     private async Task<bool> ResolveAllowExternalLlmAsync(
         Guid workspaceId, WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient, CancellationToken ct)
     {

@@ -172,6 +172,24 @@ Thiết kế đề xuất ở mục 3.
 
 ## 3. Thiết kế đề xuất
 
+> **Đã implement 28/08 — mục 3.1 dưới đây KHÔNG còn đúng.**
+>
+> Đề xuất ban đầu là thêm cột `translation_rooms.save_transcript` + migration. Khi vào code thì
+> thấy `translation_rooms.settings` (jsonb) đã là nơi ở của đúng loại cờ này — `requires_approval`
+> nằm đó, có default an toàn resolve trong `TranslationRoomMapper.ReadSettings`, đã đi sẵn qua
+> create/update/DTO, và `UpdateTranslationRoomSettingsAsync` đã từ chối mọi sửa đổi khi phòng rời
+> `SCHEDULED`/`WAITING` — tức là luật của Q2 có sẵn, không phải xây.
+>
+> Nên bản thực thi dùng `TranslationRoomSettings.SaveTranscript` (mặc định `true`), **không có
+> migration**. Cổng vẫn đúng chỗ mục 3.2 nói. Hai điểm bản đề xuất chưa lường:
+>
+> - Cổng phải đặt ở **cả** `ProcessTranslateMessageAsync`, không chỉ STT. Không có hàng segment
+>   thì check "Verify Segment Exists" trả `false` → retry → dead-letter mọi câu dịch của phòng
+>   ephemeral. Mục 5 có cảnh báo dead-letter nhưng chưa nối được với nguyên nhân này.
+> - Field gRPC phải là `optional bool`. proto3 default một `bool` trần là `false`, mà `false` ở
+>   đây nghĩa là "vứt bản ghi cuộc họp này" — một server cũ sẽ vô tình ra lệnh ngừng ghi toàn hệ
+>   thống. Có presence thì "vắng mặt" chỉ còn nghĩa "server cũ", và reader trả lời bằng cách ghi.
+
 ### 3.1 Database
 
 Migration mới trong `warptalk-backend/translation-room/database/migrations/`

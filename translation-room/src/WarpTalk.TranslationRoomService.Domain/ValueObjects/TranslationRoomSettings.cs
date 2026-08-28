@@ -53,4 +53,29 @@ public class TranslationRoomSettings
     /// </summary>
     [JsonPropertyName("participants_can_start_translation")]
     public bool ParticipantsCanStartTranslation { get; set; }
+
+    /// <summary>
+    /// Whether this meeting leaves a written record. WT-587.
+    ///
+    /// FALSE is an EPHEMERAL meeting: captions still appear, translation and dubbing still run,
+    /// and nothing is written to transcript_segments. It is the whole of the privacy story —
+    /// the caption lane never read the database in the first place (the Gateway broadcasts
+    /// stt:results straight over SignalR under its own consumer group), so the only thing that
+    /// ever forced a meeting to be recorded was TranscriptService's persistence consumer, which
+    /// ran unconditionally.
+    ///
+    /// DEFAULTS TRUE, and the default is load-bearing twice over. Every room that existed before
+    /// this field has no such key in its settings blob and must keep its transcript. And an
+    /// ephemeral room has no transcript, therefore no summary, no minutes and no knowledge-base
+    /// entry — turning that on by accident silently removes most of what the product does after
+    /// a meeting ends.
+    ///
+    /// Only changeable while the room is SCHEDULED or WAITING. UpdateTranslationRoomSettingsAsync
+    /// already refuses every settings edit past that point (ErrorSettingsLocked), which is the
+    /// rule this field needs rather than one it had to add: flipping it mid-meeting would produce
+    /// a transcript that begins at minute twelve and says nothing about the twelve, and flipping
+    /// it the other way cannot unwrite the rows already committed.
+    /// </summary>
+    [JsonPropertyName("save_transcript")]
+    public bool SaveTranscript { get; set; } = true;
 }
