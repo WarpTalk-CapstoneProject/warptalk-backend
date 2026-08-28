@@ -2,6 +2,11 @@ using System.Text.Json.Nodes;
 
 namespace WarpTalk.AssistantService.Application.DTOs;
 
+/// <summary>
+/// <paramref name="Kind"/> selects which integration path serves this plugin
+/// (<c>PluginConstants.PluginKind</c>): a compiled-in provider, or a remote MCP server. It is the
+/// key <c>IPluginProviderResolver</c> dispatches on, so Application never names a concrete provider.
+/// </summary>
 public record PluginDefinitionDto(
     Guid Id,
     string Key,
@@ -9,7 +14,8 @@ public record PluginDefinitionDto(
     string Description,
     string? AvatarUrl,
     IReadOnlyList<string> RequiredScopes,
-    IReadOnlyList<McpToolDescriptorDto> Tools);
+    IReadOnlyList<McpToolDescriptorDto> Tools,
+    string Kind = "native");
 
 public record PluginCatalogItemDto(
     string Key,

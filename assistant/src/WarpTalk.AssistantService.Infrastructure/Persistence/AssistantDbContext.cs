@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 
 namespace WarpTalk.AssistantService.Infrastructure.Persistence;
@@ -105,6 +106,16 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.Provider).HasMaxLength(100).HasColumnName("provider");
             entity.Property(e => e.RequiredScopesJson).HasColumnType("jsonb").HasDefaultValue("[]").HasColumnName("required_scopes_json");
             entity.Property(e => e.ToolsJson).HasColumnType("jsonb").HasDefaultValue("[]").HasColumnName("tools_json");
+            entity.Property(e => e.Kind).HasMaxLength(20).HasDefaultValue(PluginConstants.PluginKind.Native).HasColumnName("kind");
+            entity.Property(e => e.McpServerUrl).HasMaxLength(1000).HasColumnName("mcp_server_url");
+            entity.Property(e => e.OAuthAuthorizationEndpoint).HasMaxLength(1000).HasColumnName("oauth_authorization_endpoint");
+            entity.Property(e => e.OAuthTokenEndpoint).HasMaxLength(1000).HasColumnName("oauth_token_endpoint");
+            entity.Property(e => e.OAuthRevokeEndpoint).HasMaxLength(1000).HasColumnName("oauth_revoke_endpoint");
+            entity.Property(e => e.OAuthRegistrationEndpoint).HasMaxLength(1000).HasColumnName("oauth_registration_endpoint");
+            entity.Property(e => e.OAuthClientId).HasMaxLength(500).HasColumnName("oauth_client_id");
+            entity.Property(e => e.OAuthClientSecretEncrypted).HasColumnName("oauth_client_secret_encrypted");
+            entity.Property(e => e.ToolsSyncedAt).HasColumnName("tools_synced_at");
+            entity.Property(e => e.ToolsManifestHash).HasMaxLength(128).HasColumnName("tools_manifest_hash");
             entity.Property(e => e.IsActive).HasDefaultValue(true).HasColumnName("is_active");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");

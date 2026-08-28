@@ -715,16 +715,25 @@ public class McpToolOrchestratorTests
     private McpToolOrchestrator CreateSutWithRealRefresher()
     {
         return new McpToolOrchestrator(
-            _gateway,
+            new TestPluginProviderResolver(_gateway, _oauthClient),
             _unitOfWork,
             _workspacePolicy,
-            new PluginConnectionService(_unitOfWork, _oauthClient, _stateProtector, _credentialProtector),
+            new PluginConnectionService(
+                _unitOfWork,
+                new TestPluginProviderResolver(oauthClient: _oauthClient),
+                _stateProtector,
+                _credentialProtector),
             _confirmationTokenService);
     }
 
     private McpToolOrchestrator CreateSut()
     {
-        return new McpToolOrchestrator(_gateway, _unitOfWork, _workspacePolicy, _tokenRefresher, _confirmationTokenService);
+        return new McpToolOrchestrator(
+            new TestPluginProviderResolver(_gateway),
+            _unitOfWork,
+            _workspacePolicy,
+            _tokenRefresher,
+            _confirmationTokenService);
     }
 
     private McpToolExecutionRequest Request(string toolName)

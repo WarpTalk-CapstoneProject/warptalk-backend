@@ -11,20 +11,20 @@ namespace WarpTalk.AssistantService.Application.Services;
 
 public class McpToolOrchestrator : IMcpToolOrchestrator
 {
-    private readonly IMcpToolGateway _gateway;
+    private readonly IPluginProviderResolver _providerResolver;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspacePluginPolicyClient _workspacePluginPolicyClient;
     private readonly IPluginTokenRefresher _tokenRefresher;
     private readonly IMcpConfirmationTokenService _confirmationTokenService;
 
     public McpToolOrchestrator(
-        IMcpToolGateway gateway,
+        IPluginProviderResolver providerResolver,
         IUnitOfWork unitOfWork,
         IWorkspacePluginPolicyClient workspacePluginPolicyClient,
         IPluginTokenRefresher tokenRefresher,
         IMcpConfirmationTokenService confirmationTokenService)
     {
-        _gateway = gateway;
+        _providerResolver = providerResolver;
         _unitOfWork = unitOfWork;
         _workspacePluginPolicyClient = workspacePluginPolicyClient;
         _tokenRefresher = tokenRefresher;
@@ -172,7 +172,8 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                     ct);
         }
 
-        var result = await _gateway.ExecuteAsync(plugin, tool, connection, request, ct);
+        var gateway = _providerResolver.ResolveGateway(plugin.Kind);
+        var result = await gateway.ExecuteAsync(plugin, tool, connection, request, ct);
 
         // The stored expiry can lag reality - clock skew, or a grant revoked in the provider's
         // account UI - so the provider's own 401 is the second and last trigger.
@@ -195,7 +196,7 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             // A *permanent* refresh failure returns connection_required anyway, so that path is
             // unchanged.
             result = reactiveRefresh.IsSuccess
-                ? await _gateway.ExecuteAsync(plugin, tool, connection, request, ct)
+                ? await gateway.ExecuteAsync(plugin, tool, connection, request, ct)
                 : string.Equals(reactiveRefresh.ErrorCode, PluginConstants.ErrorCodes.ConnectionRequired, StringComparison.Ordinal)
                     ? BuildConnectionRequiredResult(plugin, connection, reactiveRefresh.Error)
                     : McpToolExecutionResultMapper.ToFailure(

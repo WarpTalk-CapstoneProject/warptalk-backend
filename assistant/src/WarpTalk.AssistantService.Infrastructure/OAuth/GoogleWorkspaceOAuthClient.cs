@@ -12,6 +12,17 @@ using WarpTalk.AssistantService.Domain.Entities;
 
 namespace WarpTalk.AssistantService.Infrastructure.OAuth;
 
+/// <summary>
+/// OAuth for the one provider that has no official remote MCP server for Drive/Calendar, so it
+/// keeps a hand-written client instead of going through the generic MCP path.
+/// </summary>
+/// <remarks>
+/// The <c>PluginKey</c> checks in every method are <em>not</em> dispatch - <c>IPluginProviderResolver</c>
+/// does that, keyed on <c>Plugin.Kind</c>. They are invariant assertions, and they must stay: this
+/// client reads its endpoints and client credentials from <c>GoogleWorkspaceOAuthOptions</c>, so if a
+/// second <c>native</c> plugin were ever routed here it would silently send that provider's
+/// authorization code to Google's token endpoint. Failing loudly is the only safe answer.
+/// </remarks>
 public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
 {
     private static readonly string[] IdentityScopes = ["openid", "email", "profile"];

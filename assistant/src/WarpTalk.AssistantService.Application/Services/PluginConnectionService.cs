@@ -14,21 +14,28 @@ namespace WarpTalk.AssistantService.Application.Services;
 public class PluginConnectionService : IPluginConnectionService, IPluginTokenRefresher
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IPluginOAuthClient _oauthClient;
+    private readonly IPluginProviderResolver _providerResolver;
     private readonly IPluginOAuthStateProtector _stateProtector;
     private readonly IPluginCredentialProtector _credentialProtector;
 
     public PluginConnectionService(
         IUnitOfWork unitOfWork,
-        IPluginOAuthClient oauthClient,
+        IPluginProviderResolver providerResolver,
         IPluginOAuthStateProtector stateProtector,
         IPluginCredentialProtector credentialProtector)
     {
         _unitOfWork = unitOfWork;
-        _oauthClient = oauthClient;
+        _providerResolver = providerResolver;
         _stateProtector = stateProtector;
         _credentialProtector = credentialProtector;
     }
+
+    /// <summary>
+    /// The OAuth client that serves this plugin. Resolved per call rather than injected, because a
+    /// single service instance handles plugins of different kinds within one request.
+    /// </summary>
+    private IPluginOAuthClient OAuthClientFor(Plugin plugin) =>
+        _providerResolver.ResolveOAuthClient(plugin.Kind);
 
     public async Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(string pluginKey, Guid userId, CancellationToken ct = default)
     {
@@ -47,7 +54,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         var scopes = PluginScopeMapper.FromJson(plugin.RequiredScopesJson);
         var state = _stateProtector.Protect(new PluginOAuthStateDto(userId, pluginKey));
-        var url = _oauthClient.BuildAuthorizationUrl(plugin, scopes, state);
+        var url = OAuthClientFor(plugin).BuildAuthorizationUrl(plugin, scopes, state);
         return Result.Success(new PluginConnectUrlDto(url));
     }
 
@@ -83,7 +90,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!installed)
             return Result.Failure<PluginConnectionStatusDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
-        var token = await _oauthClient.ExchangeCodeAsync(plugin, code, ct);
+        var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, ct);
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == oauthState.UserId && c.PluginId == plugin.Id, ct: ct);
         var now = DateTime.UtcNow;
@@ -189,7 +196,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         PluginOAuthRefreshResultDto refresh;
         try
         {
-            refresh = await _oauthClient.RefreshAccessTokenAsync(plugin, refreshToken, ct);
+            refresh = await OAuthClientFor(plugin).RefreshAccessTokenAsync(plugin, refreshToken, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -288,7 +295,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         try
         {
-            await _oauthClient.RevokeTokenAsync(plugin, token, ct);
+            await OAuthClientFor(plugin).RevokeTokenAsync(plugin, token, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

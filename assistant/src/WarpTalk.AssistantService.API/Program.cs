@@ -8,6 +8,7 @@ using WarpTalk.AssistantService.API.Hubs;
 using WarpTalk.AssistantService.API.Services;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Services;
+using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.AssistantService.Infrastructure.Persistence;
 using WarpTalk.AssistantService.Infrastructure.Repositories;
@@ -15,6 +16,7 @@ using WarpTalk.AssistantService.Infrastructure.Clients;
 using WarpTalk.AssistantService.Infrastructure.Messaging;
 using WarpTalk.AssistantService.Infrastructure.Mcp;
 using WarpTalk.AssistantService.Infrastructure.OAuth;
+using WarpTalk.AssistantService.Infrastructure.Plugins;
 using WarpTalk.AssistantService.Infrastructure.Security;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -71,12 +73,22 @@ try
     builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
     builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
     builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
+    // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
+    // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
+    // has no official remote MCP server for Drive/Calendar.
+    builder.Services.AddScoped<IPluginProviderResolver, PluginProviderResolver>();
     builder.Services.Configure<GoogleWorkspaceApiOptions>(
         builder.Configuration.GetSection("Plugins:GoogleWorkspace:Api"));
-    builder.Services.AddHttpClient<IMcpToolGateway, GoogleWorkspaceMcpToolGateway>();
+    builder.Services.AddHttpClient<GoogleWorkspaceMcpToolGateway>();
+    builder.Services.AddKeyedScoped<IMcpToolGateway>(
+        PluginConstants.PluginKind.Native,
+        (sp, _) => sp.GetRequiredService<GoogleWorkspaceMcpToolGateway>());
     builder.Services.Configure<GoogleWorkspaceOAuthOptions>(
         builder.Configuration.GetSection("Plugins:GoogleWorkspace:OAuth"));
-    builder.Services.AddHttpClient<IPluginOAuthClient, GoogleWorkspaceOAuthClient>();
+    builder.Services.AddHttpClient<GoogleWorkspaceOAuthClient>();
+    builder.Services.AddKeyedScoped<IPluginOAuthClient>(
+        PluginConstants.PluginKind.Native,
+        (sp, _) => sp.GetRequiredService<GoogleWorkspaceOAuthClient>());
     builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
     builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
     builder.Services.AddScoped<IMcpConfirmationTokenProtector, DataProtectionMcpConfirmationTokenProtector>();

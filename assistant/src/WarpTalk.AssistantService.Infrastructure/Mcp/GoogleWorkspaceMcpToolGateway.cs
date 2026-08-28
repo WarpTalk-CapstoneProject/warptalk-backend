@@ -36,6 +36,9 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         McpToolExecutionRequest request,
         CancellationToken ct = default)
     {
+        // Not dispatch - IPluginProviderResolver already picked this gateway from Plugin.Kind. This
+        // is an invariant assertion, and it stays: the endpoints below come from Google-specific
+        // options, so another provider routed here would have its user's token sent to Google.
         if (!string.Equals(plugin.Key, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
             return Failure(PluginConstants.ErrorCodes.UnknownPlugin, "Unsupported plugin.");
 

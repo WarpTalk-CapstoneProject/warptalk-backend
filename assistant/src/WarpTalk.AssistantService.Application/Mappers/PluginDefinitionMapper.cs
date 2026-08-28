@@ -22,6 +22,7 @@ internal static class PluginDefinitionMapper
             plugin.Description,
             plugin.AvatarUrl,
             requiredScopes,
-            tools);
+            tools,
+            plugin.Kind);
     }
 }

@@ -557,7 +557,7 @@ public class PluginConnectionServiceTests
     {
         return new PluginConnectionService(
             _unitOfWork,
-            _oauthClient,
+            new TestPluginProviderResolver(oauthClient: _oauthClient),
             _stateProtector,
             _credentialProtector);
     }
