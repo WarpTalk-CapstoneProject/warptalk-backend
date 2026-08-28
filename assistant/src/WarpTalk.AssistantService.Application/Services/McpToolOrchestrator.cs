@@ -84,12 +84,17 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
 
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == userId
-                && c.PluginId == plugin.Id
-                && c.Status == PluginConstants.ConnectionStatus.Connected,
+                && c.PluginId == plugin.Id,
             ct: ct);
 
-        if (connection == null)
-            return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.ConnectionRequired, "Connect your provider account first.", ct);
+        if (connection == null || connection.Status != PluginConstants.ConnectionStatus.Connected)
+            return await McpToolAuditRecorder.RecordFailureAsync(
+                _unitOfWork,
+                userId,
+                plugin.Id,
+                request,
+                BuildConnectionRequiredResult(plugin, connection),
+                ct);
 
         var grantedScopes = PluginScopeMapper.FromJson(connection.ScopesJson).ToHashSet(StringComparer.Ordinal);
         var missingScopes = tool.RequiredScopes.Where(scope => !grantedScopes.Contains(scope)).ToList();
@@ -159,8 +164,11 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                     userId,
                     plugin.Id,
                     request,
-                    proactiveRefresh.ErrorCode ?? PluginConstants.ErrorCodes.ConnectionRequired,
-                    proactiveRefresh.Error ?? "Reconnect your provider account first.",
+                    string.Equals(proactiveRefresh.ErrorCode, PluginConstants.ErrorCodes.ConnectionRequired, StringComparison.Ordinal)
+                        ? BuildConnectionRequiredResult(plugin, connection, proactiveRefresh.Error)
+                        : McpToolExecutionResultMapper.ToFailure(
+                            proactiveRefresh.ErrorCode ?? PluginConstants.ErrorCodes.ConnectionRequired,
+                            proactiveRefresh.Error ?? "Reconnect your provider account first."),
                     ct);
         }
 
@@ -188,9 +196,18 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             // unchanged.
             result = reactiveRefresh.IsSuccess
                 ? await _gateway.ExecuteAsync(plugin, tool, connection, request, ct)
-                : McpToolExecutionResultMapper.ToFailure(
-                    reactiveRefresh.ErrorCode ?? PluginConstants.ErrorCodes.ConnectionRequired,
-                    reactiveRefresh.Error ?? "Reconnect your provider account first.");
+                : string.Equals(reactiveRefresh.ErrorCode, PluginConstants.ErrorCodes.ConnectionRequired, StringComparison.Ordinal)
+                    ? BuildConnectionRequiredResult(plugin, connection, reactiveRefresh.Error)
+                    : McpToolExecutionResultMapper.ToFailure(
+                        reactiveRefresh.ErrorCode ?? PluginConstants.ErrorCodes.ConnectionRequired,
+                        reactiveRefresh.Error ?? "Reconnect your provider account first.");
+        }
+
+        if (!result.IsSuccess
+            && string.Equals(result.ErrorCode, PluginConstants.ErrorCodes.ConnectionRequired, StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(result.PluginKey))
+        {
+            result = BuildConnectionRequiredResult(plugin, connection, result.Message);
         }
 
         await McpToolAuditRecorder.RecordAsync(
@@ -203,6 +220,37 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             ct);
 
         return Result.Success(result);
+    }
+
+    private static McpToolExecutionResult BuildConnectionRequiredResult(
+        PluginDefinitionDto plugin,
+        PluginConnection? connection,
+        string? message = null)
+    {
+        var status = connection?.Status;
+        if (string.IsNullOrWhiteSpace(status))
+            status = PluginConstants.ConnectionStatus.NotConnected;
+        else if (status == PluginConstants.ConnectionStatus.Connected)
+            status = PluginConstants.ConnectionStatus.Expired;
+
+        return McpToolExecutionResultMapper.ToConnectionRequiredFailure(
+            plugin,
+            status,
+            connection?.ProviderEmail,
+            message ?? ConnectionRequiredMessage(plugin.Label, status));
+    }
+
+    private static string ConnectionRequiredMessage(string pluginLabel, string connectionStatus)
+    {
+        return connectionStatus switch
+        {
+            PluginConstants.ConnectionStatus.Expired =>
+                $"Your {pluginLabel} connection has expired. Reconnect it before WarpBot can use it for this request.",
+            PluginConstants.ConnectionStatus.Revoked =>
+                $"Reconnect {pluginLabel} before WarpBot can use it for this request.",
+            _ =>
+                $"Connect {pluginLabel} before WarpBot can use it for this request.",
+        };
     }
 
 }

@@ -162,6 +162,26 @@ public class GoogleWorkspaceOAuthClientTests
         Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
     }
 
+    [Fact]
+    public async Task RevokeTokenAsync_PostsTokenToGoogleRevokeEndpoint()
+    {
+        string? capturedBody = null;
+        HttpRequestMessage? capturedRequest = null;
+        var httpClient = new HttpClient(new StubHttpMessageHandler(async request =>
+        {
+            capturedRequest = request;
+            capturedBody = request.Content == null ? null : await request.Content.ReadAsStringAsync();
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }));
+        var sut = CreateSut(httpClient);
+
+        await sut.RevokeTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+
+        Assert.Equal(HttpMethod.Post, capturedRequest!.Method);
+        Assert.Equal("https://oauth2.google.test/revoke", capturedRequest.RequestUri!.ToString());
+        Assert.Equal("token=stored-refresh-token", capturedBody);
+    }
+
     private static GoogleWorkspaceOAuthClient CreateSut(HttpClient httpClient)
     {
         return new GoogleWorkspaceOAuthClient(
@@ -171,6 +191,7 @@ public class GoogleWorkspaceOAuthClientTests
                 ClientId = "test-client",
                 ClientSecret = "test-secret",
                 TokenEndpoint = "https://oauth2.google.test/token",
+                RevokeEndpoint = "https://oauth2.google.test/revoke",
             }));
     }
 

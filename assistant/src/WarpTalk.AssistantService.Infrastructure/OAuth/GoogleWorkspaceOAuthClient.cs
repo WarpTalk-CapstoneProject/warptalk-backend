@@ -6,6 +6,7 @@ using System.Web;
 using Microsoft.Extensions.Options;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
+using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 
@@ -109,13 +110,13 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         catch (HttpRequestException ex)
         {
             // Never reached Google at all - DNS, TLS, connection reset. Says nothing about the grant.
-            return PluginOAuthRefreshResultDto.ProviderUnavailable($"Google token endpoint unreachable: {ex.Message}");
+            return PluginOAuthRefreshResultMapper.ProviderUnavailable($"Google token endpoint unreachable: {ex.Message}");
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
             // HttpClient surfaces its own timeout as TaskCanceledException; the caller's
             // cancellation is a different thing and must keep propagating.
-            return PluginOAuthRefreshResultDto.ProviderUnavailable($"Google token endpoint timed out: {ex.Message}");
+            return PluginOAuthRefreshResultMapper.ProviderUnavailable($"Google token endpoint timed out: {ex.Message}");
         }
 
         using (response)
@@ -130,12 +131,12 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return PluginOAuthRefreshResultDto.ProviderUnavailable($"Google refresh response was unreadable: {ex.Message}");
+                return PluginOAuthRefreshResultMapper.ProviderUnavailable($"Google refresh response was unreadable: {ex.Message}");
             }
 
             if (token == null || string.IsNullOrWhiteSpace(token.AccessToken))
                 // A 200 with no access token is Google misbehaving, not Google refusing the grant.
-                return PluginOAuthRefreshResultDto.ProviderUnavailable("Google refresh response did not include an access token.");
+                return PluginOAuthRefreshResultMapper.ProviderUnavailable("Google refresh response did not include an access token.");
 
             var grantedScopes = (token.Scope ?? "")
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -143,7 +144,7 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
 
             // No user-info round trip here: the identity behind the grant cannot change on a refresh,
             // and RefreshToken stays null when Google omits it so the caller keeps the stored one.
-            return PluginOAuthRefreshResultDto.Succeeded(new PluginOAuthTokenDto(
+            return PluginOAuthRefreshResultMapper.Succeeded(new PluginOAuthTokenDto(
                 null,
                 null,
                 grantedScopes,
@@ -151,6 +152,27 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
                 token.RefreshToken,
                 token.ExpiresIn.HasValue ? DateTime.UtcNow.AddSeconds(token.ExpiresIn.Value) : null));
         }
+    }
+
+    public async Task RevokeTokenAsync(
+        Plugin plugin,
+        string token,
+        CancellationToken ct = default)
+    {
+        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+
+        if (string.IsNullOrWhiteSpace(token))
+            return;
+
+        using var response = await _httpClient.PostAsync(
+            _options.RevokeEndpoint,
+            new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["token"] = token,
+            }),
+            ct);
+        response.EnsureSuccessStatusCode();
     }
 
     /// <summary>
@@ -175,12 +197,12 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             + (string.IsNullOrWhiteSpace(providerError) ? "." : $" ({providerError}).");
 
         if (string.Equals(providerError, "invalid_grant", StringComparison.OrdinalIgnoreCase))
-            return PluginOAuthRefreshResultDto.GrantRejected(detail);
+            return PluginOAuthRefreshResultMapper.GrantRejected(detail);
 
         if ((int)response.StatusCode == 429)
-            return PluginOAuthRefreshResultDto.ProviderRateLimited(detail);
+            return PluginOAuthRefreshResultMapper.ProviderRateLimited(detail);
 
-        return PluginOAuthRefreshResultDto.ProviderUnavailable(detail);
+        return PluginOAuthRefreshResultMapper.ProviderUnavailable(detail);
     }
 
     private static async Task<string?> ReadBodySafelyAsync(HttpResponseMessage response, CancellationToken ct)

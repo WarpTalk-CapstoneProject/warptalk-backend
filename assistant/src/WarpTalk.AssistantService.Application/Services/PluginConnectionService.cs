@@ -87,6 +87,11 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == oauthState.UserId && c.PluginId == plugin.Id, ct: ct);
         var now = DateTime.UtcNow;
+        var canReuseStoredRefreshToken = connection is
+        {
+            Status: PluginConstants.ConnectionStatus.Connected,
+            EncryptedRefreshToken: not null
+        } && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken);
 
         if (connection == null)
         {
@@ -106,14 +111,31 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         connection.ProviderAccountId = token.ProviderAccountId;
         connection.ProviderEmail = token.ProviderEmail;
-        connection.Status = PluginConstants.ConnectionStatus.Connected;
         connection.ScopesJson = JsonSerializer.Serialize(token.GrantedScopes);
+        connection.UpdatedAt = now;
+
+        if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
+        {
+            connection.Status = PluginConstants.ConnectionStatus.Expired;
+            connection.EncryptedAccessToken = null;
+            connection.EncryptedRefreshToken = null;
+            connection.AccessTokenExpiresAt = null;
+            connection.TokenRotatedAt = null;
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success(new PluginConnectionStatusDto(
+                pluginKey,
+                connection.Status,
+                connection.ProviderEmail,
+                token.GrantedScopes));
+        }
+
+        connection.Status = PluginConstants.ConnectionStatus.Connected;
         connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
         if (!string.IsNullOrWhiteSpace(token.RefreshToken))
             connection.EncryptedRefreshToken = _credentialProtector.Protect(token.RefreshToken);
         connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
         connection.TokenRotatedAt = now;
-        connection.UpdatedAt = now;
 
         await _unitOfWork.SaveChangesAsync(ct);
 
@@ -229,10 +251,49 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (connection == null)
             return Result.Success();
 
+        await TryRevokeProviderTokenAsync(plugin, connection, ct);
+
         connection.Status = PluginConstants.ConnectionStatus.Revoked;
+        connection.EncryptedAccessToken = null;
+        connection.EncryptedRefreshToken = null;
+        connection.AccessTokenExpiresAt = null;
+        connection.TokenRotatedAt = null;
         connection.UpdatedAt = DateTime.UtcNow;
         _unitOfWork.PluginConnectionRepository.Update(connection);
         await _unitOfWork.SaveChangesAsync(ct);
         return Result.Success();
+    }
+
+    private async Task TryRevokeProviderTokenAsync(
+        Plugin plugin,
+        PluginConnection connection,
+        CancellationToken ct)
+    {
+        var encryptedToken =
+            string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)
+                ? connection.EncryptedAccessToken
+                : connection.EncryptedRefreshToken;
+        if (string.IsNullOrWhiteSpace(encryptedToken))
+            return;
+
+        string token;
+        try
+        {
+            token = _credentialProtector.Unprotect(encryptedToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            await _oauthClient.RevokeTokenAsync(plugin, token, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Local disconnect is still authoritative for WarpTalk. Provider revoke is best-effort
+            // because a network failure here should not trap the user in a connected local state.
+        }
     }
 }

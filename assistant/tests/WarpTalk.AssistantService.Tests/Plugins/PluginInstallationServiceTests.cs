@@ -61,7 +61,9 @@ public class PluginInstallationServiceTests
                     PluginId = PluginId,
                     Status = PluginConstants.ConnectionStatus.Connected,
                     ProviderEmail = "user@example.com",
-                    ScopesJson = "[]",
+                    // Only Drive was granted at Google's consent screen - the catalog item must
+                    // reflect that partial grant rather than implying every scope was given.
+                    ScopesJson = "[\"https://www.googleapis.com/auth/drive.readonly\"]",
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
                 }
@@ -74,6 +76,7 @@ public class PluginInstallationServiceTests
         Assert.Equal(PluginConstants.InstallationStatus.Installed, item.InstallationStatus);
         Assert.Equal(PluginConstants.ConnectionStatus.Connected, item.ConnectionStatus);
         Assert.Equal("user@example.com", item.ConnectedAccountEmail);
+        Assert.Equal(["https://www.googleapis.com/auth/drive.readonly"], item.GrantedScopes);
         await _installationRepository.Received(1)
             .FindAsync(
                 Arg.Is<Expression<Func<PluginInstallation, bool>>>(predicate =>

@@ -20,7 +20,8 @@ public record PluginCatalogItemDto(
     string InstallationStatus,
     string ConnectionStatus,
     string? ConnectedAccountEmail,
-    IReadOnlyList<McpToolDescriptorDto> Tools);
+    IReadOnlyList<McpToolDescriptorDto> Tools,
+    IReadOnlyList<string> GrantedScopes);
 
 public record InstallPluginRequest();
 
@@ -80,23 +81,13 @@ public enum PluginOAuthRefreshOutcome
 public record PluginOAuthRefreshResultDto(
     PluginOAuthRefreshOutcome Outcome,
     PluginOAuthTokenDto? Token,
-    string? Detail = null)
-{
-    public bool IsSuccess => Outcome == PluginOAuthRefreshOutcome.Succeeded;
+    string? Detail = null);
 
-    public static PluginOAuthRefreshResultDto Succeeded(PluginOAuthTokenDto token) =>
-        new(PluginOAuthRefreshOutcome.Succeeded, token);
-
-    public static PluginOAuthRefreshResultDto GrantRejected(string detail) =>
-        new(PluginOAuthRefreshOutcome.GrantRejected, null, detail);
-
-    public static PluginOAuthRefreshResultDto ProviderUnavailable(string detail) =>
-        new(PluginOAuthRefreshOutcome.ProviderUnavailable, null, detail);
-
-    public static PluginOAuthRefreshResultDto ProviderRateLimited(string detail) =>
-        new(PluginOAuthRefreshOutcome.ProviderRateLimited, null, detail);
-}
-
+/// <summary>
+/// A tool's <see cref="ResourceKey"/> groups it with sibling tools in the catalog UI (for example,
+/// a plugin whose OAuth grant covers two distinct products can render one tile per product without
+/// the frontend hardcoding provider-specific logic). Null when a plugin's tools are not grouped.
+/// </summary>
 public record McpToolDescriptorDto(
     string Name,
     string PluginKey,
@@ -104,7 +95,10 @@ public record McpToolDescriptorDto(
     string Description,
     string Effect,
     IReadOnlyList<string> RequiredScopes,
-    JsonObject Parameters);
+    JsonObject Parameters,
+    string? ResourceKey = null,
+    string? ResourceLabel = null,
+    string? ResourceAvatarUrl = null);
 
 public record McpToolExecutionRequest(
     Guid? WorkspaceId,
@@ -121,4 +115,8 @@ public record McpToolExecutionResult(
     string? Message,
     JsonObject? Data,
     string? ProviderResourceRef,
-    string? ConfirmationToken);
+    string? ConfirmationToken,
+    string? PluginKey = null,
+    string? PluginLabel = null,
+    string? ConnectionStatus = null,
+    string? ConnectedAccountEmail = null);

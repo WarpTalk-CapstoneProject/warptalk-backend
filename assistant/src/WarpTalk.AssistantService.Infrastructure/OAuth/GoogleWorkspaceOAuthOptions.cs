@@ -12,5 +12,7 @@ public class GoogleWorkspaceOAuthOptions
 
     public string TokenEndpoint { get; set; } = "https://oauth2.googleapis.com/token";
 
+    public string RevokeEndpoint { get; set; } = "https://oauth2.googleapis.com/revoke";
+
     public string UserInfoEndpoint { get; set; } = "https://openidconnect.googleapis.com/v1/userinfo";
 }

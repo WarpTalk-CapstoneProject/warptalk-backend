@@ -88,7 +88,7 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocked a cred
   - Add backend gateway tests and AI worker dynamic-tool routing tests for the fourth tool.
 - [x] T040 [US4] Wire plugin disconnect + disable (gap G4). Done 2026-08-25: the gap was wider than first recorded - `useDisconnectAssistantPlugin` existed but no component called it, and `DELETE /api/v1/assistant/plugins/{pluginKey}` had no service method, so an installed and connected plugin could not be undone from the UI at all. Added `disablePlugin` to the service/endpoints/hooks, put Disconnect and Remove in the connect dialog behind an inline confirm, made Remove disconnect first so stored provider tokens do not outlive the plugin, and added a search empty state. Contract script now asserts both actions and the empty state.
 - [x] T041 [US1] Remove or consume `GET /api/v1/assistant/plugins/installed` and `API.assistant.installedPlugins` (gap G6). Removed the dead backend endpoint; no active caller exists.
-- [x] T042 Ops readiness: configure a persisted/shared ASP.NET Data Protection key ring and document the per-environment Google OAuth secrets. Compose mounts `assistant-data-protection-keys` and sets `DataProtection__KeyRingPath`.
+- [x] T042 Ops readiness: configure a persisted/shared ASP.NET Data Protection key ring and document the per-environment Google OAuth secrets. Compose mounts `assistant-data-protection-keys`, sets `DataProtection__KeyRingPath`, and the Assistant image pre-creates the key directory owned by runtime UID `1654` so the first key can be persisted.
 - [x] T043 [US2] Stop a transient refresh failure from killing a connection (the limitation T037 left open). Done 2026-08-25. **What was wrong:** every way a token refresh could fail looked identical by the time anything could act on it. `GoogleWorkspaceOAuthClient.RefreshAccessTokenAsync` called `response.EnsureSuccessStatusCode()`, so Google answering 400 `invalid_grant` (the grant really is dead - revoked, password changed, token pruned) and Google answering 503, or a request timing out, or DNS failing, all arrived as the same exception. `PluginConnectionService.RefreshAccessTokenAsync` caught `Exception` and sent every one of them to `MarkExpiredAsync`, which writes `plugin_connections.status = expired`. Gate 5 of `McpToolOrchestrator` rejects any non-`connected` row *before* the refresh code is reached, so that write was effectively one-way: a five-second Google hiccup permanently ended the connection and the only way back was a full OAuth re-consent in the browser. The user-visible cost of a network blip was the same as the cost of revoking access.
   - **Layer boundary.** `IPluginOAuthClient.RefreshAccessTokenAsync` now returns `PluginOAuthRefreshResultDto` (`Outcome` + optional `Token` + a diagnostic `Detail`) instead of a token-or-throw. `PluginOAuthRefreshOutcome` is `Succeeded` / `GrantRejected` / `ProviderUnavailable` / `ProviderRateLimited` - provider-neutral by design. `GoogleWorkspaceOAuthClient` is the only code that reads an `HttpStatusCode` or parses Google's `{"error": ...}` body; `Application` switches on the enum. `Domain` gained nothing.
   - Chose a result object over a typed exception pair: an hourly token refresh failing because a provider is having a bad minute is an ordinary outcome, not an exceptional one, and the rest of this service already models expected failure as `Result` + `ErrorCode`. It also keeps a genuine bug distinguishable - an unforeseen exception is still an exception rather than being silently classified.
@@ -102,12 +102,103 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocked a cred
 - [x] T044 Align local OAuth redirect documentation and config examples to gateway `:5200`; keep `:5108` documented only as direct-service debugging.
 - [x] T045 Re-run targeted backend tests after T038/T039/T041/T042: AssistantService plugin tests `56/56`, Google Workspace gateway tests included, and MeetingService assistant-step parity `11/11`.
 - [x] T046 Re-run AI worker tests for dynamic MCP tool loading, confirmation payload normalization, and provider-error mapping: `31 passed` (`test_mcp_tools.py`, `test_chat_agent_loop.py`, `test_chat_tools.py`).
-- [x] T047 Re-run web checks: `npm run typecheck`, plugin marketplace contract, and confirmation-surface contract all pass.
+- [x] T047 Re-run web checks: `npm run typecheck`, plugin marketplace contract, and confirmation-surface contract all pass. Re-checked 2026-08-26 after moving Plugins to the personal `/settings/plugins` route and adding a legacy workspace-route redirect: local `npm run typecheck`, Docker `next build`, and `git diff --check` pass.
 - [ ] T048 Run manual E2E through gateway `:5200`, capture pass/fail evidence in `manual-e2e.md`, and mark T036 complete only if install, connect, Drive search, Drive read, Calendar confirmation, account isolation, and workspace policy gates pass.
+
+## Phase 10: Continuation Gaps Before Merge
+
+These tasks close the remaining gaps identified after the 2026-08-26 Docker/API smoke. They do not
+change the core product decision: plugin installation and provider connection remain personal;
+workspace settings only gate usage through `AllowAnyPlugins`.
+
+- [x] T049 [US2] Extend backend MCP execution failures for `connection_required` with reconnect metadata. Done 2026-08-27: `McpToolExecutionResult` now carries plugin key/label, connection status, and connected account email for reconnectable failures; workspace policy blocks remain `permission_denied` without reconnect metadata; AssistantService plugin tests pass `66/66`.
+  - Add fields to `McpToolExecutionResult`: `pluginKey`, `pluginLabel`, `connectionStatus`, optional `connectedAccountEmail`.
+  - Populate metadata when no connection exists, connection is `expired`/`revoked`, or refresh permanently expires the row.
+  - Keep `permission_denied` for `AllowAnyPlugins=false` without reconnect metadata.
+  - Add tests for `not_connected`, `expired`, `revoked`, and policy-blocked workspace behavior.
+- [x] T050 [US3] Map backend reconnect metadata in the AI worker. Done 2026-08-27: `connection_required` with metadata maps to `plugin_connection_required`, legacy payloads still map to `connect_plugin`, and the worker publishes a `pluginConnection` action payload for clients; targeted pytest passes `52/52`.
+  - Change `connection_required` normalization from generic `connect_plugin` to `plugin_connection_required` when metadata is present.
+  - Preserve fallback behavior for old payloads that only include `errorCode=connection_required`.
+  - Ensure the model does not fabricate a provider-backed answer when tool execution is blocked by connection state.
+  - Add/extend `tests/test_mcp_tools.py` and chat-loop tests.
+- [x] T051 [US3] Render plugin reconnect/connect action cards inside WarpBot chat. Done 2026-08-27: global chatbot and room chat parse `pluginConnection` payloads, render `PluginConnectionActionCard`, support local `Not now`, and open the existing connect-url flow for Connect/Reconnect.
+  - Add a reusable `PluginConnectionActionCard` beside the existing assistant action-card components.
+  - Wire it in global chatbot and room chat surfaces.
+  - Primary action uses the existing connect-url hook and opens Google OAuth in a new tab.
+  - Secondary `Not now` dismisses locally and does not mutate backend state.
+  - The card must link/manage personal plugins through `/settings/plugins`, not workspace settings.
+- [x] T052 [US4] Add frontend contracts for plugin connection action cards. Done 2026-08-27: added `check-plugin-connection-action-contract.mjs`, wired `test:plugin-connection-action`, and re-ran web typecheck plus plugin marketplace/confirmation/connection-action contracts.
+  - Assert global chatbot can render `plugin_connection_required`.
+  - Assert room chat can render the same action.
+  - Assert primary action depends on the connect-url hook/service.
+  - Assert no workspace-scoped plugins route dependency returns.
+- [ ] T053 [US3] Complete provider manual E2E after a fresh Google reconnect. Partially verified 2026-08-27 through gateway on the rebuilt AssistantService runtime image: Drive search returns real provider files; `google_drive_get_file` returns bounded text content for `text/plain` and explicit unsupported metadata for Google Sheets/octet-stream files; Calendar create returns `confirmation_required` and no event is written before confirmation; expired connection execution returns reconnect metadata for the in-chat action card. Still open because Google Calendar list/create is currently rejected by Google reason `accessNotConfigured`, now surfaced as `provider_unavailable` **by T057's gateway fix** (2026-08-28, previously misclassified as `missing_scope`); the code-side fix is done, the remaining action is to enable Google Calendar API on the Google Cloud project and re-run confirmed Calendar write live.
+  - Drive search from WarpBot.
+  - Drive get/read file from WarpBot.
+  - Calendar create shows confirmation and does not write before confirmation.
+  - Confirmed Calendar create writes the event.
+  - Expired/revoked/not-connected card appears in global and room chat.
+- [x] T054 [US1] Re-verify account and workspace boundaries after reconnect-card changes. Done 2026-08-27 through gateway on the compose stack: account A sees `google_workspace` installed/connected to `hanhnhi10022005@gmail.com`; account B in the same workspace sees `not_installed`/`not_connected`; `AllowAnyPlugins=false` returns zero tools and tool execution returns `permission_denied` with reconnect metadata null; restoring `AllowAnyPlugins=true` returns all four tools.
+  - Account B in the same workspace does not inherit account A's plugin installation or connection.
+  - `AllowAnyPlugins=false` exposes zero plugin tools and does not show a reconnect card.
+  - `AllowAnyPlugins=true` restores tools for the personally connected account.
+- [ ] T055 [Ops] Rebuild and smoke runtime images after T049-T052.
+  - Infra compose config is quiet.
+  - Frontend image builds from WT-565 worktree; verified 2026-08-27 with Docker `next build` and `/settings/plugins` in the route manifest.
+  - AssistantService local Release publish succeeds; a runtime smoke image rebuilt from that publish boots in compose and served the 2026-08-27 gateway E2E checks. AssistantService Dockerfile now copies `Directory.Build.props` and lock files before restore, ignores `.tmp/`, disables first-time workload/telemetry/audit noise, and uses BuildKit NuGet package/cache mounts plus `--disable-parallel --ignore-failed-sources` locked restore to make retrying Docker builds less fragile. A direct SDK container restore with the host NuGet cache mounted succeeds, proving the project graph is restorable in Linux. A minimal Docker restore harness shows the unseeded-container path is not deadlocked but spends minutes downloading packages from NuGet (`Microsoft.EntityFrameworkCore.Design` index alone took ~67s) and timed out after 180s while still progressing. A container-only EF design-time exclusion was rejected because it conflicts with locked restore package references, so it was not kept. Re-running standard compose build with clean context stayed in restore for more than 10 minutes without a clean result; this task cannot be checked yet.
+  - AI assistant Docker target builds and boots against Redis; verified 2026-08-27 with temporary smoke container.
+  - Remove any temporary smoke AI container after boot.
+- [ ] T056 [Review] Split and clean PR-ready changes.
+  - Keep unrelated infrastructure ERD/Qdrant/database-doc changes out of WT-565 commits.
+  - Commit order: backend, AI, web, infra config/docs.
+  - Run final `git diff --check` in every touched repo.
+
+## Phase 11: Gaps closed while re-verifying before commit (2026-08-28)
+
+Found by re-reading the working tree against the docs above, which had drifted: real, tested code
+already existed for part of T053 and for a few other gaps that were never given a task number.
+These three tasks name that code so "done" in this file matches what ships.
+
+- [x] T057 [US3] Stop misclassifying `accessNotConfigured` as a scope problem (closes the T053
+  root cause). `GoogleWorkspaceMcpToolGateway` mapped every Google 403 to `missing_scope`,
+  telling the user to reconnect with more scopes — wrong when the real problem is that the Google
+  Cloud project itself hasn't enabled the Calendar API (`accessNotConfigured`), which reconnecting
+  cannot fix. The gateway now parses `error.errors[].reason` (falling back to `error.status`) and
+  only maps a real insufficient-scope reason (`insufficientPermissions`,
+  `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) to `missing_scope`; every other 403 reason returns
+  `provider_unavailable` with the provider's reason in the message. Tests added in
+  `GoogleWorkspaceMcpToolGatewayTests.cs`. Live re-verification against a real Calendar call is
+  T053's remaining item, tracked there.
+- [x] T058 [US2] Extend reconnect metadata to the never-connected path; make the OAuth callback
+  browser-safe; revoke on disconnect. `McpToolOrchestrator`'s reconnect metadata (T049) only
+  populated on the refresh-failure branch — a user who never connected at all still got a bare
+  `connection_required` with no `pluginKey`/`pluginLabel`, so the in-chat action card (T051)
+  couldn't render for that case. `BuildConnectionRequiredResult` now runs for the `connection ==
+  null` branch too. Separately, `AssistantPluginsController`'s OAuth callback returned raw JSON,
+  but Google redirects the end user's own browser straight at that URL — no human should land on
+  an API response; it now redirects (302) to `/settings/plugins` and lets the page's own refetch
+  show the outcome. `IPluginOAuthClient.RevokeTokenAsync` + a `GoogleWorkspaceOAuthClient`
+  implementation make disconnect best-effort revoke the token at Google and clear stored token
+  material locally, so a removed plugin doesn't leave a live grant at the provider. Tests added in
+  `PluginConnectionServiceTests.cs` and `McpToolOrchestratorTests.cs`.
+- [x] T059 [US4] Tool `resourceKey` grouping + `@mention` for installed/connected plugins. A
+  plugin's tools can now declare `resourceKey`/`resourceLabel`/`resourceAvatarUrl`
+  (`McpToolDescriptorDto`, backed by migration `20260826130000_add_plugin_tool_resource_groups.sql`)
+  so one OAuth connection renders as separate tiles per product (Drive vs Calendar) without the
+  frontend hardcoding provider-specific logic — `src/lib/assistant/plugin-tiles.ts`
+  (`toDisplayTiles`), shared between the Plugins settings page and the new `@mention` picker.
+  `AssistantMentionDto.entityType` gained `"plugin"`; `global-chatbot.tsx` offers only
+  installed-**and-connected** plugins as mentionable, and `chat_worker.py`'s `_format_mentions`
+  tells the model to prefer that plugin's tools for the turn. Scope note: this shipped only in the
+  global WarpBot widget — room chat (`chat-panel.tsx`) has no `@mention` picker at all (not a
+  WT-565 regression; it never had one for members/rooms/documents either), so there is no room-chat
+  parity gap to close here. New web contract: `scripts/check-plugin-mention-contract.mjs`
+  (`npm run test:plugin-mention`).
 
 ## Blockers
 
-- T036 no longer needs a new Google redirect URI: `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback` has been registered. Docker/Postgres is running and the plugin, confirmation-token, and Drive get-file migrations are applied locally. Remaining blockers are supplying `Plugins:GoogleWorkspace:OAuth:ClientId` / `ClientSecret` outside git and performing the Google consent step manually.
+- T036 no longer needs a new Google redirect URI: `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback` has been registered. Docker/Postgres is running and the plugin, confirmation-token, and Drive get-file migrations are applied locally. Google consent has completed successfully once through the gateway callback and the connection now has a stored refresh token. Workspace policy gRPC routing is fixed in compose and verified through gateway: `AllowAnyPlugins=true` exposes four tools, `false` exposes zero, then `true` restores four. Account isolation is verified through gateway with a second demo account in the same workspace. Drive search/read and pre-write Calendar confirmation are verified; remaining manual E2E proof is confirmed Calendar write after enabling/configuring Google Calendar API for the Google Cloud project (`accessNotConfigured`, gateway-side misclassification already fixed by T057 — this is now purely a Google Cloud Console step, not a code gap).
+- T055's Docker build blocker is unresolved as of 2026-08-27: standard `docker compose build assistant-service` still doesn't finish `dotnet restore` cleanly. The diagnostic evidence rules out a restore deadlock (a direct SDK-container restore with the host NuGet cache mounted succeeds), so the remaining work is re-timing the build now that `--disable-parallel` is suspect as the actual cause of the slowness rather than its fix.
 
 ## Dependencies & Execution Order
 
@@ -118,6 +209,7 @@ Derived from the as-built gap review in `plan.md` section 9. T037 blocked a cred
 - ~~T037 should land before T036 is attempted, otherwise the E2E walkthrough dies at the one-hour mark.~~ T037 landed 2026-08-25, so T036 is no longer time-boxed to the access-token lifetime.
 - T038 should land before final T036 so the write-confirmation E2E validates the security boundary reviewers will inspect.
 - T039 should land before final T036 so the E2E validates full scope: Drive search, Drive read/get-file, Calendar list/create.
+- T049-T052 should land before final T036/T048 so the manual walkthrough validates the in-chat recovery path rather than the old generic connect response.
 - Merge order across repos is backend -> ai -> web (`plan.md` section 12).
 
 ## Notes

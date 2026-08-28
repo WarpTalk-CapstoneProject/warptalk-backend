@@ -194,14 +194,51 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
             ? "Google Workspace provider request failed."
             : body;
 
+        var providerReason = ExtractGoogleErrorReason(body);
         return response.StatusCode switch
         {
             HttpStatusCode.Unauthorized => Failure(PluginConstants.ErrorCodes.ConnectionRequired, "Reconnect the provider account first."),
-            HttpStatusCode.Forbidden => Failure(PluginConstants.ErrorCodes.MissingScope, "Reconnect the provider account with the required scopes."),
+            HttpStatusCode.Forbidden when IsInsufficientScopeForbidden(providerReason, body) => Failure(PluginConstants.ErrorCodes.MissingScope, "Reconnect the provider account with the required scopes."),
+            HttpStatusCode.Forbidden => Failure(PluginConstants.ErrorCodes.ProviderUnavailable, ProviderRejectedMessage(providerReason)),
             (HttpStatusCode)429 => Failure(PluginConstants.ErrorCodes.ProviderRateLimited, "Google Workspace rate limit reached."),
             _ when (int)response.StatusCode >= 500 => Failure(PluginConstants.ErrorCodes.ProviderUnavailable, "Google Workspace is unavailable."),
             _ => Failure(PluginConstants.ErrorCodes.ProviderUnavailable, message),
         };
+    }
+
+    private static string ProviderRejectedMessage(string? providerReason)
+    {
+        return string.IsNullOrWhiteSpace(providerReason)
+            ? "Google Workspace provider rejected the request."
+            : $"Google Workspace provider rejected the request ({providerReason}).";
+    }
+
+    private static bool IsInsufficientScopeForbidden(string? providerReason, string body)
+    {
+        return string.Equals(providerReason, "insufficientPermissions", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(providerReason, "ACCESS_TOKEN_SCOPE_INSUFFICIENT", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("insufficient authentication scopes", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("insufficientPermissions", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ExtractGoogleErrorReason(string body)
+    {
+        try
+        {
+            var parsed = JsonNode.Parse(body);
+            var reason = parsed?["error"]?["errors"]?.AsArray()
+                .Select(error => error?["reason"]?.GetValue<string>())
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            if (!string.IsNullOrWhiteSpace(reason))
+                return reason;
+
+            return parsed?["error"]?["status"]?.GetValue<string>();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private string CalendarEventsEndpoint(string calendarId)

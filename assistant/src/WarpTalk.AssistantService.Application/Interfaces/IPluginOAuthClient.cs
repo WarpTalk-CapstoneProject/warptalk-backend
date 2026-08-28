@@ -34,4 +34,17 @@ public interface IPluginOAuthClient
         Plugin plugin,
         string refreshToken,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Best-effort provider-side revocation for a stored access or refresh token.
+    /// </summary>
+    /// <remarks>
+    /// Disconnecting a plugin is primarily a local account decision, so callers should not block
+    /// local disconnect on provider unavailability. A successful revoke helps the next consent
+    /// produce a new refresh token for providers that otherwise keep the old grant alive.
+    /// </remarks>
+    Task RevokeTokenAsync(
+        Plugin plugin,
+        string token,
+        CancellationToken ct = default);
 }

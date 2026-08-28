@@ -1,6 +1,6 @@
 # Implementation Plan: MCP App Plugins for WarpBot
 
-**Branch**: `feat/wt-565-mcp-plugins` | **Created**: 2026-08-23 | **Last updated**: 2026-08-25
+**Branch**: `feat/wt-565-mcp-plugins` | **Created**: 2026-08-23 | **Last updated**: 2026-08-26
 **Spec**: `specs/565-mcp-app-plugins/spec.md` | **Tasks**: `specs/565-mcp-app-plugins/tasks.md`
 **Repos on this branch**: `warptalk-backend`, `warptalk-web`, `warptalk-ai` (worked in `_worktrees/wt-565-*`)
 
@@ -10,9 +10,10 @@
 |---|---|
 | 0-6 Implementation (T001-T032) | Done, pushed |
 | 7 Automated verification (T033-T035, T033A) | Green after merging `origin/development` on 2026-08-25 |
-| 7 Manual E2E (T036) | **Almost ready** - Google redirect URI is registered for gateway `:5200`; Docker/Postgres and migrations are ready, pending browser OAuth walkthrough |
+| 7 Manual E2E (T036) | **In progress** - Google redirect URI is registered for gateway `:5200`; Docker/Postgres and migrations are ready; browser OAuth connect succeeded once; workspace policy discovery is fixed; provider-tool walkthrough needs a fresh Google reconnect with a stored refresh token |
 | 8 Pre-merge hardening (T037-T043) | T037, T038, T039, T040, T041, T042, T043 done; only final cross-repo gates and manual E2E remain |
 | 9 Full-scope closeout | Planned: signed confirmation tokens, Drive get-file/read, plugin label correction, dead API cleanup, ops readiness, manual E2E |
+| 10 Continuation gaps (T049-T059) | T049-T052, T054, T057-T059 done. T053 code-fixed (T057), pending a live Calendar re-run after enabling Google Calendar API on the Google Cloud project. T055 (Docker build) and T056 (commit split) still open. |
 
 This file is now an *as-built* plan: sections 1-8 describe what actually exists on the branch, section 9 lists the deltas from the original design, and sections 10-12 are the remaining work.
 
@@ -25,9 +26,9 @@ Users install Google Drive & Calendar **for their own account**, connect **their
 **Language/Version**: .NET 10 backend, TypeScript/Next.js frontend, Python AI worker
 **Primary Dependencies**: ASP.NET Core, EF Core/Npgsql, ASP.NET Data Protection, SignalR, Redis Streams, React Query, existing `warptalk-ai` tool-calling loop
 **Storage**: PostgreSQL `assistant` schema - 4 new tables, OAuth material stored encrypted
-**Testing**: xUnit (44 plugin tests), pytest (16 MCP tests), web contract scripts + `tsc --noEmit`
+**Testing**: xUnit (56 plugin tests), pytest (31 MCP/chat tests), web contract scripts + `tsc --noEmit`
 **Constraints**: MVP stays inside `AssistantService`; installation/connection are **personal**, the workspace only gates *usage* via `AllowAnyPlugins`
-**Scale/Scope**: one provider (`google_workspace`), currently three shipped tools; closeout target is the original four-tool scope: Drive search, Drive get/read file, Calendar list, Calendar create.
+**Scale/Scope**: one provider (`google_workspace`) with four shipped tools: Drive search, Drive get/read file, Calendar list, Calendar create.
 
 ## 3. Constitution Check
 
@@ -100,7 +101,9 @@ tests/{test_mcp_tools,test_chat_agent_loop}.py    16 tests
 ### warptalk-web
 
 ```text
-src/app/(app)/[workspaceSlug]/settings/plugins/page.tsx   marketplace, installed row, detail drawer,
+src/app/(app)/settings/plugins/page.tsx                   personal plugin route
+src/app/(app)/[workspaceSlug]/settings/plugins/page.tsx   legacy redirect to /settings/plugins
+src/components/assistant/plugins/plugins-page.tsx         marketplace, installed row, detail drawer,
                                                           disconnect/remove actions, search empty state
 src/app/(app)/[workspaceSlug]/settings/page.tsx           allowAnyPlugins workspace switch
 src/hooks/use-assistant.ts                                useAssistantPlugins, useInstallAssistantPlugin,
@@ -121,7 +124,7 @@ scripts/check-plugin-{marketplace-contract,confirmation-surfaces}.mjs
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `plugins` | `plugin_key` UNIQUE, `required_scopes_json`, `tools_json`, `is_active` | catalog is **data**, not code; seeds `google_workspace` (id `7f8f66db-...f38b1`) with 3 tools |
+| `plugins` | `plugin_key` UNIQUE, `required_scopes_json`, `tools_json`, `is_active` | catalog is **data**, not code; seeds `google_workspace` (id `7f8f66db-...f38b1`) and the seed-patch migration brings the local row to the four-tool `Google Drive & Calendar` catalog |
 | `plugin_installations` | `user_id`, `plugin_id`, `status`, `installed_at`, `disabled_at` | personal scope; status `not_installed` / `installed` / `disabled` |
 | `plugin_connections` | `user_id`, `plugin_id`, `provider_account_id`, `provider_email`, `encrypted_access_token`, `encrypted_refresh_token`, `token_expires_at`, `scopes_json`, `status` | status `not_connected` / `connected` / `revoked` / `expired` |
 | `plugin_tool_audits` | `workspace_id`, `user_id`, `conversation_id`, `assistant_message_id`, `plugin_key`, `tool_name`, `input_summary`, `result_status`, `provider_resource_ref` | written on success **and** on every rejected attempt |
@@ -254,7 +257,7 @@ Tracked as T036-T048 in `tasks.md`. Land the remaining work in this order so eve
 ### 10.1 Prep the E2E lane
 
 - **T044 - Align local redirect/docs.** Local browser OAuth through compose/gateway uses `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`. `5108` is the AssistantService direct port and should only be used for direct-service debugging. Update `manual-e2e.md`, this plan, and local run notes so Google Cloud, Gateway, and `Plugins:GoogleWorkspace:OAuth:RedirectUri` agree.
-- **T036 - Manual E2E.** Run this last, after T038/T039, so the walkthrough exercises the review-ready path. Docker/Postgres and the WT-565 migrations are ready locally; the only remaining step is the browser OAuth walkthrough with the configured Google credentials.
+- **T036 - Manual E2E.** Run this last, after T038/T039, so the walkthrough exercises the review-ready path. Docker/Postgres and the WT-565 migrations are ready locally; browser OAuth has connected successfully once through the gateway callback; the remaining proof is the provider-tool walkthrough: Drive search, Drive get-file, Calendar confirmation/write, account isolation, and workspace policy gating.
 
 ### 10.2 Close the security gap reviewers will ask about
 
@@ -298,18 +301,251 @@ Tracked as T036-T048 in `tasks.md`. Land the remaining work in this order so eve
 - **T047 - Re-run web checks** **Done 2026-08-25:** `npm run typecheck`, plugin marketplace contract, and confirmation-surface contract pass.
 - **T048 - Manual E2E and evidence capture**: run `manual-e2e.md` through gateway `:5200`, record the exact config values used, and update T036 with pass/fail notes.
 
+### 10.7 Continuation gaps to close before merge
+
+The remaining work is no longer about the base plugin platform. It is about closing the
+demo-visible recovery paths and making the three-repo change set reviewable. Implement these as
+T049-T056 in `tasks.md`, in this order.
+
+#### Gap A - In-chat reconnect action for expired personal plugins
+
+**Decision:** implement in this WT-565 scope. The original spec already says that when WarpBot
+needs a Google Drive or Calendar tool and no personal connection exists, WarpBot must show a
+connect CTA instead of fabricating an answer. The current code still degrades to a generic
+`connect_plugin` action and the frontend has no card to render inside the chat.
+
+When WarpBot tries to use a personal plugin and the caller's provider connection is `expired`,
+`revoked`, or `not_connected`, the recovery path must appear inside the WarpBot chat window. The
+user should not have to discover Personal Settings -> Plugins after the model has already hit a
+tool failure.
+
+**Target UX**
+
+- Render a compact action card inside the assistant response, matching the shape of the existing
+  confirmation card and the ChatGPT plugin recovery pattern:
+  - plugin icon + plugin label, e.g. `Google Drive & Calendar`
+  - body copy based on connection state:
+    - `expired`: "Your Google Drive & Calendar connection has expired. Reconnect it before WarpBot can use it for this request."
+    - `revoked`: "Reconnect Google Drive & Calendar before WarpBot can use it for this request."
+    - `not_connected`: "Connect Google Drive & Calendar before WarpBot can use it for this request."
+  - secondary action: `Not now`
+  - primary action: `Reconnect` or `Connect`
+- `Not now` dismisses the card locally and does not mutate backend state.
+- `Reconnect` calls the existing connect-url endpoint and opens the provider OAuth URL. The chat
+  should show a small "Finish connecting in your browser" notice while the OAuth tab is open.
+
+**Backend/API contract**
+
+- Keep plugin install/connection personal. Workspace settings still only gate usage through
+  `AllowAnyPlugins`.
+- Extend MCP execution failure payloads so `connection_required` carries enough structured data
+  for the AI worker and frontend to render the action card without guessing:
+  - `pluginKey`
+  - `pluginLabel`
+  - `connectionStatus` (`not_connected`, `expired`, `revoked`)
+  - optional `connectedAccountEmail`
+  - optional `message`
+- Preserve `connection_required` as the error code so existing clients keep degrading safely.
+- Add the metadata directly to `McpToolExecutionResult` rather than hiding it in `data`, because
+  `data` is provider output and is absent on expected failures.
+- Populate the metadata in `McpToolOrchestrator` for:
+  - no connection row -> `not_connected`
+  - existing row with `expired` or `revoked`
+  - refresh failure that permanently expires the row
+- Do not attach reconnect metadata to `permission_denied`, especially workspace
+  `AllowAnyPlugins=false`; policy-blocked usage is not fixed by Google OAuth.
+- If the OAuth callback cannot produce a refreshable connection, do not report `connected`.
+  Callback should return the persisted status (`expired`) and the chat card can explain that the
+  provider did not issue long-lived access.
+
+**AI worker contract**
+
+- Map MCP `connection_required` into a `userAction` instead of plain prose:
+  - `type: "plugin_connection_required"`
+  - `pluginKey`
+  - `pluginLabel`
+  - `connectionStatus`
+  - optional `connectedAccountEmail`
+  - `message`
+- Keep backward compatibility: if the backend returns an older `connection_required` payload with
+  no plugin metadata, AI may fall back to the old generic connect message.
+- Do not fabricate an answer from model knowledge when a requested provider-backed tool is blocked
+  by connection state.
+- Keep the action metadata similar to `confirm_write` so the same chat rendering pipeline can carry
+  both "confirm a write" and "reconnect a plugin".
+
+**Frontend implementation plan**
+
+- Add a reusable `PluginConnectionActionCard` component near the existing assistant action-card
+  surfaces.
+- Wire the card in both WarpBot surfaces:
+  - global chatbot
+  - room chat
+- On primary action:
+  - call `usePluginConnectUrl({ pluginKey })`
+  - open the returned URL with `window.open(url, "_blank", "noopener,noreferrer")`
+  - refetch plugin catalog/status after the user returns or after a short polling window
+- The card must not depend on a workspace-scoped plugins page. Personal plugin management remains
+  `/settings/plugins`; the chat card is the contextual recovery path.
+- Reuse the existing connect-url hook/service. Do not add a separate reconnect endpoint; reconnect
+  is the same OAuth connect flow after a personal connection has become expired/revoked.
+
+**Tests and contracts**
+
+- Backend tests:
+  - `connection_required` includes plugin label and connection status for `expired`
+  - `connection_required` includes `not_connected` when no user connection exists
+  - workspace `AllowAnyPlugins=false` still returns `permission_denied`, not reconnect UI metadata
+- AI tests:
+  - expired connection maps to `plugin_connection_required`
+  - missing connection maps to `plugin_connection_required`
+  - provider connection failures do not produce a fake natural-language answer
+- Web contracts:
+  - global chatbot renders the plugin connection card
+  - room chat renders the same card
+  - card primary action calls the connect-url hook
+  - card has no workspace-settings route dependency
+
+**Manual E2E**
+
+1. Force `google_workspace` connection to `expired`.
+2. Ask WarpBot to search Drive.
+3. Verify the in-chat reconnect card appears.
+4. Click `Not now`; verify no backend state changes.
+5. Ask again and click `Reconnect`; verify the Google OAuth URL opens.
+6. Complete OAuth.
+7. Verify plugin status becomes `connected`.
+8. Retry Drive search and Drive get-file.
+9. Repeat the reconnect card check in room chat.
+
+#### Gap B - Final manual E2E evidence
+
+**Decision:** keep T036/T048 open until the remaining live evidence is captured after Gap A lands.
+The 2026-08-27 gateway smoke on a rebuilt AssistantService runtime image proved tool discovery,
+Drive search, Drive get-file bounded content, Drive get-file unsupported refusal, pre-write
+Calendar confirmation, reconnect metadata, account isolation, and workspace policy gating. The
+ticket is still not fully closed because confirmed Calendar write is currently blocked by Google
+Calendar provider reason `accessNotConfigured`, and the final user-visible WarpBot/browser
+walkthrough still needs to be captured.
+
+Manual E2E must capture:
+
+- plugin catalog loads from Personal `/settings/plugins`;
+- Google OAuth callback returns to the app, not raw JSON;
+- Drive search works from WarpBot;
+- Drive get-file works or returns the bounded unsupported/too-large response; gateway evidence now
+  covers both a `text/plain` content read and unsupported file refusals;
+- Calendar create shows confirmation before provider write; gateway evidence confirms no event is
+  written before confirmation;
+- Calendar event exists only after confirmation;
+- account B in the same workspace does not inherit account A's install/connection;
+- `AllowAnyPlugins=false` hides plugin tools and does not render a reconnect card;
+- expired/revoked/not-connected plugin renders the new in-chat action card in both global and room
+  chat.
+
+#### Gap C - Docker/runtime stability
+
+**Decision:** make this a verification gate, not feature code. Docker is running again and the
+compose stack is usable. Frontend and AI images have built, and AssistantService local Release
+publish can be packaged into a runtime smoke image that boots in compose. The standard
+AssistantService Docker build remains open because the compose build's container `dotnet restore`
+step still lacks a clean result when the BuildKit cache is unseeded. A direct SDK container restore
+with the host NuGet cache mounted succeeds, so the Linux project graph itself is valid. A verbose
+minimal Docker restore harness showed slow NuGet downloads rather than an MSBuild deadlock, timing
+out after 180s while still progressing. The Dockerfile now moves `Directory.Build.props` and lock
+files into the restore layer, ignores `.tmp/`, suppresses first-time workload/telemetry/audit work,
+and uses BuildKit package/cache mounts plus `--disable-parallel --ignore-failed-sources`. A
+container-only EF design-time package exclusion would reduce the graph but conflicts with the
+checked-in lock files, so it is not part of this plan.
+
+Required runtime checks:
+
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet`
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml build assistant-service frontend`
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
+- `docker compose build assistant` in the AI worktree, or the equivalent CI image build
+- smoke the AI assistant image with the existing ignored env file; remove the smoke container after
+  boot to avoid duplicate Redis consumers
+- verify `warptalk-postgres` is healthy and AssistantService sees WorkspaceService at
+  `http://workspace-service:50056`
+
+#### Gap D - Review hygiene and repo split
+
+**Decision:** keep unrelated cleanup out of WT-565 commits. The infrastructure checkout currently
+contains database/ERD/Qdrant changes that are not part of plugin work. Before PR/merge, split or
+stash unrelated infra files and keep only WT-565 config/docs changes.
+
+Commit grouping:
+
+1. **Backend:** OAuth/revoke/refresh/confirmation/get-file/reconnect metadata, migrations, backend
+   tests, WT-565 docs.
+2. **AI:** plugin mention routing plus `plugin_connection_required` user action tests.
+3. **Web:** personal Plugins route/sidebar/resource tiles plus in-chat reconnect cards/contracts.
+4. **Infra:** compose/env examples required for WT-565 only, especially source roots, Data
+   Protection key ring, gateway redirect, and WorkspaceService gRPC URL.
+
+#### Gap E - Quality gates
+
+Run these before marking T036/T048 complete:
+
+- Backend:
+  - `dotnet test assistant/tests/WarpTalk.AssistantService.Tests/WarpTalk.AssistantService.Tests.csproj --filter Plugins`
+  - meeting assistant-step parity tests if confirmation payload code changes
+  - `git diff --check`
+- AI:
+  - `python -m pytest tests/test_mcp_tools.py tests/test_chat_agent_loop.py tests/test_chat_templates.py -q`
+  - build `assistant` Docker target
+- Web:
+  - `npm run typecheck`
+  - `node scripts/check-plugin-marketplace-contract.mjs`
+  - `node scripts/check-plugin-confirmation-surfaces.mjs`
+  - add or extend a contract script for plugin connection action cards
+  - Docker `next build` through infra compose
+- Runtime:
+  - gateway API smoke for plugin catalog/tools/execute
+  - browser/manual E2E from `manual-e2e.md`
+
+### 10.8 Gaps closed while re-verifying before commit (T057-T059)
+
+Re-reading the working tree against this document on 2026-08-28 found real, already-written and
+partly-tested code that this document had not caught up to. Named as tasks in `tasks.md` Phase
+11; summarized here because they touch the authorization chain (section 7) and the data model
+(section 5-6).
+
+- **T057** closes the actual root cause under T053: `GoogleWorkspaceMcpToolGateway` mapped every
+  Google 403 to `missing_scope`. `accessNotConfigured` (the Calendar API not enabled on the
+  Google Cloud project) is not a scope problem and telling the user to reconnect cannot fix it.
+  The gateway now reads `error.errors[].reason` and only routes a genuine
+  `insufficientPermissions`/`ACCESS_TOKEN_SCOPE_INSUFFICIENT` reason to `missing_scope`; anything
+  else 403 becomes `provider_unavailable` carrying the provider's reason.
+- **T058** extends section 7 gate 5's reconnect metadata (added for the refresh-failure path by
+  T049) to the `connection == null` case, so a user who never connected also gets a renderable
+  in-chat action card instead of a bare `connection_required`. It also changes the OAuth callback
+  endpoint (section 8.1 step 3) from returning JSON to a 302 redirect to `/settings/plugins` -
+  Google puts the end user's own browser on that URL, so JSON was never a valid response for a
+  human - and adds best-effort provider-side token revocation on disconnect
+  (`IPluginOAuthClient.RevokeTokenAsync`).
+- **T059** adds `resourceKey`/`resourceLabel`/`resourceAvatarUrl` to `McpToolDescriptorDto`
+  (migration `20260826130000_add_plugin_tool_resource_groups.sql`) so one OAuth connection can
+  render as multiple catalog tiles (Drive vs Calendar) - data-driven, no frontend
+  provider-specific branching - and adds a `"plugin"` `AssistantMentionDto.entityType` so an
+  installed-and-connected plugin is `@mention`-able in the global WarpBot widget. Deliberately
+  scoped to the global widget only: room chat (`chat-panel.tsx`) has no `@mention` picker at all
+  for any entity type, so there is no parity gap to close.
+
 ## 11. Local run / E2E prerequisites
 
 1. Google Cloud -> OAuth 2.0 Client (Web application), authorized redirect URI `http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`, scopes `drive.readonly` + `calendar.events`.
    - This URI is already registered for local E2E through compose/gateway.
    - `http://localhost:5108/...` is only for direct AssistantService debugging and should not be used for the normal compose walkthrough.
-2. Supply secrets **outside** git (`dotnet user-secrets` in `WarpTalk.AssistantService.API`, or env):
+2. Supply secrets **outside** git (`dotnet user-secrets` in `WarpTalk.AssistantService.API`, or env). For the local compose lane they are stored in ignored infrastructure `.env` values:
    - `Plugins:GoogleWorkspace:OAuth:ClientId`
    - `Plugins:GoogleWorkspace:OAuth:ClientSecret`
    - `Plugins:GoogleWorkspace:OAuth:RedirectUri=http://localhost:5200/api/v1/assistant/plugins/google_workspace/oauth/callback`
-3. Postgres up, then apply `assistant/database/migrations/20260823090000_add_mcp_plugin_tables.sql`.
-4. Run WorkspaceService (gRPC `:50056`, for `AllowAnyPlugins`), AssistantService (`:5108`), the `warptalk-ai` chat worker with `ASSISTANT_CHAT_ASSISTANT_SERVICE_URL=http://localhost:5108`, and `warptalk-web`.
-5. Walk `manual-e2e.md`. The Google consent step must be performed by a human.
+3. For compose-based local work, set `BACKEND_SOURCE_ROOT=../_worktrees/wt-565-backend` and `FRONTEND_SOURCE_ROOT=../_worktrees/wt-565-web` in the ignored infrastructure `.env` so the containers build the WT-565 worktrees.
+4. Postgres up, then apply `assistant/database/migrations/20260823090000_add_mcp_plugin_tables.sql` and the later plugin seed/confirmation-token migrations.
+5. Run WorkspaceService (gRPC `:50056`, for `AllowAnyPlugins`), AssistantService (`:5108` behind gateway `:5200`), the `warptalk-ai` chat worker with `ASSISTANT_CHAT_ASSISTANT_SERVICE_URL=http://assistant-service:8080` in compose or `http://localhost:5108` when running directly, and `warptalk-web`. In compose, AssistantService must receive `GrpcSettings__WorkspaceServiceUrl=http://workspace-service:50056`; `localhost:50056` only works when AssistantService itself is running directly on the host.
+6. Walk `manual-e2e.md`. The Google consent step must be performed by a human.
 
 ## 12. Merge & rollout
 

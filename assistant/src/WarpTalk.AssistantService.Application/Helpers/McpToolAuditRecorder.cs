@@ -36,4 +36,17 @@ internal static class McpToolAuditRecorder
 
         return Result.Success(McpToolExecutionResultMapper.ToFailure(errorCode, message, confirmationToken));
     }
+
+    public static async Task<Result<McpToolExecutionResult>> RecordFailureAsync(
+        IUnitOfWork unitOfWork,
+        Guid userId,
+        Guid pluginId,
+        McpToolExecutionRequest request,
+        McpToolExecutionResult result,
+        CancellationToken ct)
+    {
+        await RecordAsync(unitOfWork, userId, pluginId, request, result.ErrorCode ?? "failed", null, ct);
+
+        return Result.Success(result);
+    }
 }

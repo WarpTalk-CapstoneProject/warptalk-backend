@@ -33,6 +33,7 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
+    builder.Configuration.RequirePublicBaseUrl(builder.Environment, "AppBaseUrl");
     var keyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
     var dataProtection = builder.Services
         .AddDataProtection()

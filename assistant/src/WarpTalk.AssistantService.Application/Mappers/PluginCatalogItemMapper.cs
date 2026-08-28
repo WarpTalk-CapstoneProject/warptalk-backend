@@ -13,6 +13,9 @@ internal static class PluginCatalogItemMapper
     {
         var installationStatus = installation?.Status ?? PluginConstants.InstallationStatus.NotInstalled;
         var connectionStatus = connection?.Status ?? PluginConstants.ConnectionStatus.NotConnected;
+        var grantedScopes = connection == null
+            ? Array.Empty<string>()
+            : PluginScopeMapper.FromJson(connection.ScopesJson);
 
         return new PluginCatalogItemDto(
             plugin.Key,
@@ -23,6 +26,7 @@ internal static class PluginCatalogItemMapper
             installationStatus,
             connectionStatus,
             connection?.ProviderEmail,
-            plugin.Tools);
+            plugin.Tools,
+            grantedScopes);
     }
 }

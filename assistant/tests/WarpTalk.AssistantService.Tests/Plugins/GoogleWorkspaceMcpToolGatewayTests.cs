@@ -106,6 +106,95 @@ public class GoogleWorkspaceMcpToolGatewayTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_MapsForbiddenInsufficientScopeToMissingScope()
+    {
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["error"] = new JsonObject
+                    {
+                        ["errors"] = new JsonArray
+                        {
+                            new JsonObject { ["reason"] = "insufficientPermissions" },
+                        },
+                    },
+                }),
+            }));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions
+            {
+                DriveFilesEndpoint = "https://google.test/drive/v3/files",
+            }));
+
+        var result = await sut.ExecuteAsync(
+            GoogleWorkspaceDefinition(),
+            DriveSearchTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                PluginConstants.GoogleWorkspace,
+                "google_drive_search",
+                new JsonObject { ["query"] = "roadmap" },
+                null,
+                null,
+                null));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.MissingScope, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MapsForbiddenProviderConfigurationFailureToProviderUnavailable()
+    {
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["error"] = new JsonObject
+                    {
+                        ["errors"] = new JsonArray
+                        {
+                            new JsonObject { ["reason"] = "accessNotConfigured" },
+                        },
+                    },
+                }),
+            }));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions
+            {
+                DriveFilesEndpoint = "https://google.test/drive/v3/files",
+            }));
+
+        var result = await sut.ExecuteAsync(
+            GoogleWorkspaceDefinition(),
+            DriveSearchTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                PluginConstants.GoogleWorkspace,
+                "google_drive_search",
+                new JsonObject { ["query"] = "roadmap" },
+                null,
+                null,
+                null));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.ErrorCode);
+        Assert.Equal("Google Workspace provider rejected the request (accessNotConfigured).", result.Message);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_GetDriveFile_ExportsGoogleDocAndReturnsSanitizedBoundedContent()
     {
         var requests = new List<HttpRequestMessage>();
