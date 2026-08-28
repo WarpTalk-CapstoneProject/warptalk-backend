@@ -21,7 +21,7 @@ COPY assistant/src/WarpTalk.AssistantService.API/WarpTalk.AssistantService.API.c
 COPY assistant/src/WarpTalk.AssistantService.API/packages.lock.json assistant/src/WarpTalk.AssistantService.API/
 RUN --mount=type=cache,target=/root/.nuget/packages \
     --mount=type=cache,target=/root/.local/share/NuGet/v3-cache \
-    dotnet restore assistant/src/WarpTalk.AssistantService.API/WarpTalk.AssistantService.API.csproj --locked-mode --disable-parallel --ignore-failed-sources /p:NuGetAudit=false
+    dotnet restore assistant/src/WarpTalk.AssistantService.API/WarpTalk.AssistantService.API.csproj --locked-mode --ignore-failed-sources /p:NuGetAudit=false
 COPY . .
 WORKDIR /src/assistant/src/WarpTalk.AssistantService.API
 RUN dotnet publish -c Release -o /app/publish --no-restore /p:UseAppHost=false
