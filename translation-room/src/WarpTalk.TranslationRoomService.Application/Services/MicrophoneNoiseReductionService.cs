@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -37,6 +38,28 @@ public class MicrophoneNoiseReductionService : IMicrophoneNoiseReductionService
         new(StringComparer.OrdinalIgnoreCase) { Off, "near_field", "far_field" };
 
     private const string Off = "off";
+
+    /// <summary>
+    /// Which denoiser the client says is carrying the load. Bounded for the same reason Modes is:
+    /// this reaches a log field that somebody will later group by, and a free-text value makes
+    /// that grouping meaningless.
+    /// </summary>
+    private static readonly HashSet<string> Processors =
+        new(StringComparer.OrdinalIgnoreCase) { "krisp", "browser" };
+
+    /// <summary>
+    /// Enough for any real failure message the client sends, short enough that a participant
+    /// cannot use a diagnostics endpoint to write arbitrary volume into the service log.
+    /// </summary>
+    private const int MaxReasonChars = 300;
+
+    /// <summary>
+    /// Separate from the mode key above, and NOT read by the AI side. Nothing consumes this; it
+    /// exists so a live meeting can be inspected while it is happening, next to the mode key its
+    /// name deliberately resembles.
+    /// </summary>
+    private static string ReportKeyFor(Guid roomId, Guid userId) =>
+        $"translationRoom:{roomId}:participant:{userId.ToString().ToLowerInvariant()}:noise_suppression";
 
     /// <summary>
     /// Long enough to outlive any meeting, short enough that abandoned rooms do not accumulate
@@ -136,5 +159,84 @@ public class MicrophoneNoiseReductionService : IMicrophoneNoiseReductionService
         // session.update on the live socket when it differs, so the change reaches the pipeline on
         // its own within seconds — and the route payload is not where this lives.
         return Result.Success(normalized);
+    }
+
+    public async Task<Result<bool>> ReportClientSuppressionAsync(
+        Guid roomId, Guid userId, ReportNoiseSuppressionDto report, CancellationToken ct = default)
+    {
+        if (report == null)
+        {
+            return Result.Failure<bool>("A report is required.", ErrorCodes.ValidationError);
+        }
+
+        var processor = (report.Processor ?? string.Empty).Trim().ToLowerInvariant();
+        if (!Processors.Contains(processor))
+        {
+            return Result.Failure<bool>(
+                "Processor must be one of: krisp, browser.", ErrorCodes.ValidationError);
+        }
+
+        // Membership, for the same reason SetAsync checks it: this says something about a meeting,
+        // and an endpoint that writes a log line for any room id on request is a log nobody can
+        // trust afterwards.
+        var participant = await _participants.GetByRoomAndUserAsync(roomId, userId, ct);
+        if (participant == null)
+        {
+            return Result.Failure<bool>(
+                AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
+        }
+
+        // BOUNDED BEFORE IT IS LOGGED. This is free text from a browser, and it is the one field
+        // here that an attacker controls the length of. Structured logging passes it as a
+        // parameter rather than a format string, so the risk is volume rather than injection —
+        // but an unbounded string repeated once per participant per track change is still how a
+        // log sink fills up.
+        var reason = report.Reason?.Trim();
+        if (!string.IsNullOrEmpty(reason) && reason.Length > MaxReasonChars)
+        {
+            reason = reason[..MaxReasonChars];
+        }
+
+        if (report.Enabled)
+        {
+            // Information, and worth having even though it is the good case: "it worked for
+            // everyone except this one person" is a different problem from "it has never worked",
+            // and only the successes can tell those two apart.
+            _logger.LogInformation(
+                "Client noise suppression ACTIVE via {Processor} for {UserId} in room {RoomId}.",
+                processor, userId, roomId);
+        }
+        else
+        {
+            // Warning, not Error. The microphone is fine — the web client restores the browser's
+            // own suppression before it reports, deliberately — so this is a downgrade, and it
+            // should read like one. It is still the line somebody should be able to alert on:
+            // every participant reporting it means the LiveKit project is not entitled at all,
+            // which no amount of reloading will fix.
+            _logger.LogWarning(
+                "Client noise suppression DEGRADED to {Processor} for {UserId} in room {RoomId}: {Reason}",
+                processor, userId, roomId, reason ?? "no reason given");
+        }
+
+        try
+        {
+            await _redis.StringSetAsync(
+                ReportKeyFor(roomId, userId),
+                report.Enabled ? processor : $"degraded:{processor}",
+                Ttl);
+        }
+        catch (Exception ex)
+        {
+            // Swallowed on purpose, and this is the one place in this service where that is right.
+            // The log line above has already been written, which is the whole point of the
+            // endpoint; the Redis copy only exists so a live meeting can be inspected with
+            // redis-cli. Failing the request would report a diagnostics problem to a participant
+            // as though their microphone were broken.
+            _logger.LogWarning(
+                ex, "Could not record the noise suppression report for {UserId} in room {RoomId}.",
+                userId, roomId);
+        }
+
+        return Result.Success(report.Enabled);
     }
 }
