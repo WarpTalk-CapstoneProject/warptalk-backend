@@ -135,7 +135,11 @@ public class AuthService : IAuthService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred during registration. Email: {Email}", request.Email);
-            return Result.Failure<RegisterResponse>("An unexpected error occurred during registration.", ErrorCodes.InternalServerError);
+            return Result.Failure<RegisterResponse>(
+                InfrastructureFailure.IsDependencyUnreachable(ex)
+                    ? AuthConstants.ErrorServiceUnavailable
+                    : "An unexpected error occurred during registration.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
         }
     }
 
@@ -190,8 +194,18 @@ public class AuthService : IAuthService
         }
         catch (Exception ex)
         {
+            // WT-596 — a login that could not be ANSWERED is not a login that was refused.
+            //
+            // This catch returned INTERNAL_SERVER_ERROR for everything and the controller shipped
+            // it as 400, so the 30-31/08 Postgres outage reached every browser as "Bad Request":
+            // unpageable for alerting, and it sent triage to LoginRequestValidator, which had not
+            // even run on the requests that land here.
             _logger.LogError(ex, "Error occurred during login. Email: {Email}", request.Email);
-            return Result.Failure<AuthResponse>("An unexpected error occurred during login.", ErrorCodes.InternalServerError);
+            return Result.Failure<AuthResponse>(
+                InfrastructureFailure.IsDependencyUnreachable(ex)
+                    ? AuthConstants.ErrorServiceUnavailable
+                    : "An unexpected error occurred during login.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
         }
     }
 
@@ -209,69 +223,128 @@ public class AuthService : IAuthService
             if (user.EmailVerified)
                 return Result.Failure("Email is already verified", ErrorCodes.InvalidState);
 
-            // 1. Check rate limit window (Max 5 requests per 15 minutes)
-            var windowKey = $"resend:window:{userId}";
-            var attemptsString = await _cache.GetStringAsync(windowKey, ct);
+            return await SendVerificationEmailWithLimitsAsync(user, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while resending verification email. UserId: {UserId}", userId);
+            return Result.Failure(
+                InfrastructureFailure.IsDependencyUnreachable(ex)
+                    ? AuthConstants.ErrorServiceUnavailable
+                    : "An unexpected error occurred while resending verification email.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
+        }
+    }
 
-            int attemptsCount = 0;
-            DateTime expiryTime = DateTime.UtcNow.AddMinutes(15);
+    /// <inheritdoc />
+    public async Task<Result> ResendVerificationByEmailAsync(string email, CancellationToken ct = default)
+    {
+        try
+        {
+            var normalized = email.ToLowerInvariant().Trim();
+            var user = await _userRepository.GetByEmailWithRolesAsync(normalized, ct);
 
-            if (!string.IsNullOrEmpty(attemptsString))
+            // Every ineligible case answers exactly like the eligible one. An address with no
+            // account, an account already verified, and a disabled account must be
+            // indistinguishable here, or the endpoint becomes an account-existence oracle for
+            // anyone who can POST to it.
+            if (user is null
+                || user.DeletedAt is not null
+                || user.EmailVerified
+                || UserStatusHelper.GetAccountStatus(user) == AccountStatus.DISABLED)
             {
-                var parts = attemptsString.Split('|');
-                if (parts.Length == 2 && int.TryParse(parts[0], out var count) && DateTime.TryParse(parts[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedExpiry))
-                {
-                    attemptsCount = count;
-                    expiryTime = parsedExpiry;
-                }
-                else if (parts.Length == 1 && int.TryParse(parts[0], out var countOnly))
-                {
-                    attemptsCount = countOnly;
-                }
+                return Result.Success();
             }
 
-            if (attemptsCount >= 5)
+            var sent = await SendVerificationEmailWithLimitsAsync(user, ct);
+            if (!sent.IsSuccess)
             {
-                return Result.Failure(AuthConstants.ErrorRateLimitExceeded, ErrorCodes.RateLimitExceeded);
+                // A cooldown or window rejection is real, and it is also a fact about whether this
+                // address has an account — so it is logged and swallowed rather than returned.
+                _logger.LogInformation(
+                    "Anonymous verification resend was rate limited. UserId: {UserId}, Reason: {Reason}",
+                    user.Id,
+                    sent.ErrorCode);
             }
-
-            // 2. Check 60-second cooldown
-            var cooldownKey = $"resend:cooldown:{userId}";
-            var cooldownString = await _cache.GetStringAsync(cooldownKey, ct);
-            if (!string.IsNullOrEmpty(cooldownString))
-            {
-                return Result.Failure(AuthConstants.ErrorCooldownActive, ErrorCodes.CooldownActive);
-            }
-
-            // 3. Set cooldown and update attempts in cache
-            var cooldownOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(60) };
-            await _cache.SetStringAsync(cooldownKey, "1", cooldownOptions, ct);
-
-            var remainingTtl = expiryTime - DateTime.UtcNow;
-            if (remainingTtl < TimeSpan.Zero)
-            {
-                remainingTtl = TimeSpan.FromSeconds(1);
-            }
-
-            var windowOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = remainingTtl };
-            var nextAttemptsString = $"{attemptsCount + 1}|{expiryTime:O}";
-            await _cache.SetStringAsync(windowKey, nextAttemptsString, windowOptions, ct);
-
-            var verificationToken = TokenHashing.GenerateToken();
-            user.EmailVerificationTokenHash = TokenHashing.Hash(verificationToken);
-            user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
-                _authSettings.VerificationTokenLifetimeMinutes);
-            _userRepository.Update(user);
-            await _unitOfWork.SaveChangesAsync(ct);
-            await _authEmailSender.SendVerificationEmailAsync(user, verificationToken, ct);
 
             return Result.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error occurred while resending verification email. UserId: {UserId}", userId);
-            return Result.Failure("An unexpected error occurred while resending verification email.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, "Error occurred while resending verification email by address.");
+            return Result.Failure(
+                InfrastructureFailure.IsDependencyUnreachable(ex)
+                    ? AuthConstants.ErrorServiceUnavailable
+                    : "An unexpected error occurred while resending verification email.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
         }
+    }
+
+    /// <summary>
+    /// Mints a fresh verification token and mails it, behind the 60-second cooldown and the
+    /// 5-per-15-minutes window. Shared by both resend paths so an anonymous caller cannot get a
+    /// looser limit than a signed-in one.
+    /// </summary>
+    private async Task<Result> SendVerificationEmailWithLimitsAsync(User user, CancellationToken ct)
+    {
+        var userId = user.Id;
+        // 1. Check rate limit window (Max 5 requests per 15 minutes)
+        var windowKey = $"resend:window:{userId}";
+        var attemptsString = await _cache.GetStringAsync(windowKey, ct);
+
+        int attemptsCount = 0;
+        DateTime expiryTime = DateTime.UtcNow.AddMinutes(15);
+
+        if (!string.IsNullOrEmpty(attemptsString))
+        {
+            var parts = attemptsString.Split('|');
+            if (parts.Length == 2 && int.TryParse(parts[0], out var count) && DateTime.TryParse(parts[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedExpiry))
+            {
+                attemptsCount = count;
+                expiryTime = parsedExpiry;
+            }
+            else if (parts.Length == 1 && int.TryParse(parts[0], out var countOnly))
+            {
+                attemptsCount = countOnly;
+            }
+        }
+
+        if (attemptsCount >= 5)
+        {
+            return Result.Failure(AuthConstants.ErrorRateLimitExceeded, ErrorCodes.RateLimitExceeded);
+        }
+
+        // 2. Check 60-second cooldown
+        var cooldownKey = $"resend:cooldown:{userId}";
+        var cooldownString = await _cache.GetStringAsync(cooldownKey, ct);
+        if (!string.IsNullOrEmpty(cooldownString))
+        {
+            return Result.Failure(AuthConstants.ErrorCooldownActive, ErrorCodes.CooldownActive);
+        }
+
+        // 3. Set cooldown and update attempts in cache
+        var cooldownOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(60) };
+        await _cache.SetStringAsync(cooldownKey, "1", cooldownOptions, ct);
+
+        var remainingTtl = expiryTime - DateTime.UtcNow;
+        if (remainingTtl < TimeSpan.Zero)
+        {
+            remainingTtl = TimeSpan.FromSeconds(1);
+        }
+
+        var windowOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = remainingTtl };
+        var nextAttemptsString = $"{attemptsCount + 1}|{expiryTime:O}";
+        await _cache.SetStringAsync(windowKey, nextAttemptsString, windowOptions, ct);
+
+        var verificationToken = TokenHashing.GenerateToken();
+        user.EmailVerificationTokenHash = TokenHashing.Hash(verificationToken);
+        user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
+            _authSettings.VerificationTokenLifetimeMinutes);
+        _userRepository.Update(user);
+        await _unitOfWork.SaveChangesAsync(ct);
+        await _authEmailSender.SendVerificationEmailAsync(user, verificationToken, ct);
+
+        return Result.Success();
     }
 
     public async Task<Result<AuthResponse>> RegisterInvitedAsync(RegisterInvitedRequest request, CancellationToken ct = default)
@@ -352,7 +425,11 @@ public class AuthService : IAuthService
             {
                 // Ignore rollback errors
             }
-            return Result.Failure<AuthResponse>("An unexpected error occurred during registration.", ErrorCodes.InternalServerError);
+            return Result.Failure<AuthResponse>(
+                InfrastructureFailure.IsDependencyUnreachable(ex)
+                    ? AuthConstants.ErrorServiceUnavailable
+                    : "An unexpected error occurred during registration.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
         }
     }
 
