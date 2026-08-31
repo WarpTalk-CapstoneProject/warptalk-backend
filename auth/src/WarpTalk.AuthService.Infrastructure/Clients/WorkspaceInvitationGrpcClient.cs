@@ -36,12 +36,12 @@ public class WorkspaceInvitationGrpcClient : IWorkspaceInvitationClient
         catch (RpcException ex)
         {
             _logger.LogError(ex, "gRPC VerifyInvitationToken RpcException. Status: {Status}", ex.Status);
-            return new VerifyInvitationResult(false, null, null, null, null, null, null, $"gRPC error: {ex.Status.Detail}");
+            return new VerifyInvitationResult(false, null, null, null, null, null, null, $"gRPC error: {ex.Status.Detail}", Unreachable: true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "gRPC VerifyInvitationToken failed.");
-            return new VerifyInvitationResult(false, null, null, null, null, null, null, "Failed to connect to workspace service.");
+            return new VerifyInvitationResult(false, null, null, null, null, null, null, "Failed to connect to workspace service.", Unreachable: true);
         }
     }
 
@@ -63,12 +63,12 @@ public class WorkspaceInvitationGrpcClient : IWorkspaceInvitationClient
         catch (RpcException ex)
         {
             _logger.LogError(ex, "gRPC AcceptInvitation RpcException. Status: {Status}", ex.Status);
-            return new AcceptInvitationResult(false, $"gRPC error: {ex.Status.Detail}");
+            return new AcceptInvitationResult(false, $"gRPC error: {ex.Status.Detail}", Unreachable: true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "gRPC AcceptInvitation failed.");
-            return new AcceptInvitationResult(false, "Failed to connect to workspace service.");
+            return new AcceptInvitationResult(false, "Failed to connect to workspace service.", Unreachable: true);
         }
     }
 }

@@ -149,9 +149,9 @@ public class GlossaryBulkImportTests
     }
 
     /// <summary>
-    /// The dedupe key separates the pair rather than concatenating it. Without a separator
-    /// ("voice","clone") and ("voicec","lone") produce the same key, and one of two unrelated terms
-    /// is dropped as a duplicate — a data-loss bug that only shows up on real vocabulary.
+    /// Two different terms stay two terms. ("voice","clone") and ("voicec","lone") were the shape
+    /// that collided when the key concatenated the pair without a separator; the key is the source
+    /// term alone now, and these two sources differ, so both still land.
     /// </summary>
     [Fact]
     public async Task BulkImportTermsAsync_DoesNotTreatAShiftedPairAsADuplicate()
@@ -231,6 +231,67 @@ public class GlossaryBulkImportTests
         Assert.True(result.IsSuccess);
         Assert.Equal(0, result.Value!.Imported);
         Assert.Equal(1, glossary.TermCount);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// WT-601 — the file names one term twice with two different translations.
+    ///
+    /// This is what a 30-row spreadsheet import came back as HTTP 500 for. The dedupe key was
+    /// (source, target), so both rows passed it; the database's unique index is
+    /// (glossary_id, source_term), so the second INSERT was refused, the DbUpdateException fell
+    /// into the catch-all, and the reader was told "Something went wrong on the server".
+    ///
+    /// A glossary answers "how is this term translated", so a second answer for the same term is a
+    /// duplicate whatever it says — skipped, counted, and named in the errors.
+    /// </summary>
+    [Fact]
+    public async Task BulkImportTermsAsync_SkipsASecondTranslationOfTheSameTerm()
+    {
+        var glossary = StubGlossary();
+        StubExistingTerms();
+
+        var result = await _service.BulkImportTermsAsync(
+            glossary.Id,
+            new BulkImportGlossaryTermsDto(new[]
+            {
+                Term("clearance", "phép"),
+                Term("clearance", "giấy phép"),
+            }));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, result.Value!.Imported);
+        Assert.Equal(1, result.Value.Skipped);
+        Assert.Single(result.Value.Errors);
+        Assert.Contains("clearance", result.Value.Errors[0]);
+        Assert.Equal(1, glossary.TermCount);
+    }
+
+    /// <summary>
+    /// The stored side of the same rule: re-importing a term that is already here with a different
+    /// translation is a skip, and the message names the translation already in place so the reader
+    /// knows what to edit.
+    /// </summary>
+    [Fact]
+    public async Task BulkImportTermsAsync_SkipsATermStoredWithADifferentTranslation()
+    {
+        var glossary = StubGlossary(termCount: 1);
+        StubExistingTerms(new GlossaryTerm
+        {
+            Id = Guid.NewGuid(),
+            GlossaryId = glossary.Id,
+            SourceTerm = "clearance",
+            TargetTerm = "phép",
+        });
+
+        var result = await _service.BulkImportTermsAsync(
+            glossary.Id,
+            new BulkImportGlossaryTermsDto(new[] { Term("clearance", "giấy phép") }));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, result.Value!.Imported);
+        Assert.Equal(1, result.Value.Skipped);
+        Assert.Contains("phép", result.Value.Errors[0]);
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 }

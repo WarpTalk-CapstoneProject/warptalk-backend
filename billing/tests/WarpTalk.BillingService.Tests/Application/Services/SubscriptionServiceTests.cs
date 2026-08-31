@@ -25,6 +25,7 @@ public class SubscriptionServiceTests
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IStripePaymentService> _mockStripePaymentService;
     private readonly Mock<IAiServiceStateStore> _mockAiServiceStateStore;
+    private readonly Mock<IBillingMessagePublisher> _mockMessagePublisher;
     private readonly SubscriptionService _subscriptionService;
 
     public SubscriptionServiceTests()
@@ -35,6 +36,7 @@ public class SubscriptionServiceTests
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockStripePaymentService = new Mock<IStripePaymentService>();
         _mockAiServiceStateStore = new Mock<IAiServiceStateStore>();
+        _mockMessagePublisher = new Mock<IBillingMessagePublisher>();
 
         var mockPaymentRepo = new Mock<IPaymentRepository>();
         var mockInvoiceRepo = new Mock<IInvoiceRepository>();
@@ -48,7 +50,7 @@ public class SubscriptionServiceTests
         _subscriptionService = new SubscriptionService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<SubscriptionService>>().Object,
-            new Mock<IBillingMessagePublisher>().Object,
+            _mockMessagePublisher.Object,
             _mockStripePaymentService.Object,
             CreatePricingConfigService(),
             new Mock<IWorkspaceClient>().Object,
@@ -179,6 +181,44 @@ public class SubscriptionServiceTests
         subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Cancelled);
         subscription.IsActive.Should().BeTrue(); // Still has access until period_end
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
+    }
+
+    /// <summary>
+    /// WT-599 — one cancellation, one notification.
+    ///
+    /// Cancelling leaves IsActive true so the workspace keeps the period it paid for, which means
+    /// the lookup finds the SAME row on every later call. Nothing refused the repeat: it
+    /// re-stamped the row, called Stripe again and published another "Subscription Updated" to the
+    /// owner's bell. Repeat it a dozen times over a workspace's life and the bell is a column of
+    /// identical entries, which is the screenshot on this ticket.
+    /// </summary>
+    [Fact]
+    public async Task CancelSubscriptionAsync_OnAnAlreadyCancelledSubscription_DoesNothingAndNotifiesNobody()
+    {
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            Status = SubscriptionConstants.SubscriptionStatuses.Cancelled,
+            IsActive = true,
+            AutoRenew = false,
+        };
+
+        _mockSubRepo
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default))
+            .ReturnsAsync(subscription);
+
+        var result = await _subscriptionService.CancelSubscriptionAsync(Guid.NewGuid(), "again");
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionConflict);
+
+        _mockSubRepo.Verify(r => r.Update(It.IsAny<Subscription>()), Times.Never);
+        _mockStripePaymentService.Verify(
+            s => s.CancelSubscriptionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _mockMessagePublisher.Verify(
+            p => p.PublishAsync(It.IsAny<string>(), It.IsAny<It.IsAnyType>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]
