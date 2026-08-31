@@ -355,7 +355,12 @@ public class AuthService : IAuthService
             var inviteResult = await _workspaceInvitationClient.VerifyInvitationTokenAsync(request.Token, ct);
             if (!inviteResult.IsValid)
             {
-                return Result.Failure<AuthResponse>(inviteResult.ErrorMessage ?? "Invalid invitation token.", ErrorCodes.ValidationError);
+                // WT-596: a workspace service we could not reach has not rejected this invitation.
+                return Result.Failure<AuthResponse>(
+                    inviteResult.Unreachable
+                        ? AuthConstants.ErrorServiceUnavailable
+                        : inviteResult.ErrorMessage ?? "Invalid invitation token.",
+                    inviteResult.Unreachable ? ErrorCodes.ServiceUnavailable : ErrorCodes.ValidationError);
             }
 
             var email = inviteResult.Email!.ToLowerInvariant().Trim();
@@ -404,7 +409,14 @@ public class AuthService : IAuthService
             if (!acceptResult.Success)
             {
                 await _unitOfWork.RollbackTransactionAsync(ct);
-                return Result.Failure<AuthResponse>(acceptResult.ErrorMessage ?? "Failed to join workspace.", ErrorCodes.Forbidden);
+                // Forbidden is right for "you already belong to another Enterprise workspace" and
+                // wrong for "the workspace service did not answer" — and only one of those is
+                // worth the caller retrying. WT-596.
+                return Result.Failure<AuthResponse>(
+                    acceptResult.Unreachable
+                        ? AuthConstants.ErrorServiceUnavailable
+                        : acceptResult.ErrorMessage ?? "Failed to join workspace.",
+                    acceptResult.Unreachable ? ErrorCodes.ServiceUnavailable : ErrorCodes.Forbidden);
             }
 
             // 6. Commit Transaction
