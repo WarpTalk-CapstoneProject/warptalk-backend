@@ -40,4 +40,14 @@ public static class TranscriptMapper
         );
     }
 
+    public static TranscriptPauseWindowDto ToDto(this TranscriptPauseWindow entity)
+    {
+        return new TranscriptPauseWindowDto(
+            entity.Id,
+            entity.TranslationRoomId,
+            entity.StartedAt,
+            entity.EndedAt
+        );
+    }
+
 }

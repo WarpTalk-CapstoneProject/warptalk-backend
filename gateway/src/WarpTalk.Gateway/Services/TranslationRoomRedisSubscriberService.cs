@@ -88,6 +88,26 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("TranslationStopped", payload.RoomId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranslationStopped to room {RoomId}", payload.RoomId);
                 }
+                // WT-605: TranscriptService publishes this from TranscriptRecordingService.PauseAsync.
+                // Deliberately a NEW command/event, not a reuse of "TranslationStopped" above —
+                // that one means the AI workers stopped translating and dubbing; this one means
+                // only the written-down transcript stopped growing, while translation, dubbing,
+                // subtitles and LiveKit keep running exactly as before. Reusing the same event
+                // would tell clients to treat the two as the same thing, which they are not.
+                else if (payload.Command == "TranscriptPaused" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranscriptPaused", payload.RoomId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranscriptPaused to room {RoomId}", payload.RoomId);
+                }
+                // The other half of the Pause/Resume Transcript switch. TranscriptService publishes
+                // this from TranscriptRecordingService.ResumeAsync.
+                else if (payload.Command == "TranscriptResumed" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranscriptResumed", payload.RoomId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranscriptResumed to room {RoomId}", payload.RoomId);
+                }
                 // The waiting-room counterpart of RoomStarted/RoomEnded above.
                 // TranslationRoomParticipantService publishes this from AdmitParticipantAsync —
                 // the host approves over REST, so TranslationRoomHub.AdmitWaitingParticipant never

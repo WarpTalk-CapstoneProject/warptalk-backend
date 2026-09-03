@@ -313,6 +313,16 @@ public class TranscriptRedisConsumerService : BackgroundService
             return true;
         }
 
+        // WT-605: Pause Transcript. Translation/dubbing keep running through a pause, so this
+        // segment's translate:results/tts:results will still show up later — recording its id
+        // here is what lets those two handlers recognise the coming "segment not found" as
+        // intentional rather than late-arriving.
+        if (await IsRoomTranscriptPausedAsync(roomId, cancellationToken))
+        {
+            await MarkSegmentSkippedForPauseAsync(roomId, segmentId, cancellationToken);
+            return true;
+        }
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -559,6 +569,18 @@ public class TranscriptRedisConsumerService : BackgroundService
             var segment = await unitOfWork.TranscriptSegments.GetByIdAsync(segmentId, cancellationToken);
             if (segment == null)
             {
+                // WT-605: this is the expected shape for EVERY segment spoken while the
+                // transcript was paused, not a rare race — translation keeps running through a
+                // pause, so its result always arrives even though ProcessSttMessageAsync above
+                // deliberately never wrote the segment it belongs to. Ack rather than retry, or
+                // this dead-letters exactly like the __MEETING_END__ sentinel did (see
+                // warptalk-ai/shared/control_markers.py).
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var pauseRoomId)
+                    && await WasSegmentSkippedForPauseAsync(pauseRoomId, segmentId, cancellationToken))
+                {
+                    return true;
+                }
+
                 _logger.LogWarning("Segment {SegmentId} not found for translation", segmentId);
                 return false; // Retry later — the STT segment message may not have landed yet
             }
@@ -696,6 +718,16 @@ public class TranscriptRedisConsumerService : BackgroundService
 
             if (currentLink == null)
             {
+                // WT-605: same reasoning as ProcessTranslateMessageAsync's segment-not-found
+                // branch — a segment spoken during a transcript pause never gets a link, but TTS
+                // (dubbing) keeps producing audio for it regardless, so this message still
+                // arrives. Ack rather than retry-then-dead-letter.
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var pauseRoomId)
+                    && await WasSegmentSkippedForPauseAsync(pauseRoomId, segmentId, cancellationToken))
+                {
+                    return true;
+                }
+
                 _logger.LogWarning("No current translation link for segment {SegmentId}/{TargetLang} — deferring audio_dubbings write", segmentId, targetLang);
                 return false; // Retry later
             }
@@ -773,6 +805,81 @@ public class TranscriptRedisConsumerService : BackgroundService
     /// the audio that made it. The wire format is built for this too — see the `optional` on
     /// save_transcript in translation_room.proto.
     /// </summary>
+    // WT-605: Pause Transcript. A room key, not a per-segment one — this room's own gate is
+    // asked once per STT message and refreshed on every Pause/Resume, so it must be read fresh
+    // rather than cached for hours the way ShouldPersistRoomAsync's static setting is above.
+    private static string TranscriptPausedSegmentsKey(Guid roomId) => $"translationRoom:{roomId}:transcript_paused_segments";
+
+    // Comfortably longer than MaxDeliveryAttempts × the retry/recovery cadence
+    // (TranscriptConsumerPollingPolicy: 1-minute pending-claim idle, 5 attempts before
+    // dead-lettering — a few minutes worst case), so a translate:results/tts:results message
+    // that is slow to arrive still finds its segment_id recorded here. Self-cleaning: nothing
+    // has to remember to clear it on resume.
+    private static readonly TimeSpan TranscriptPausedSegmentTtl = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// WT-605: is this room's transcript currently paused (an open TranscriptPauseWindow)?
+    ///
+    /// Fails open toward KEEPING the transcript, same posture as <see cref="ShouldPersistRoomAsync"/>
+    /// below and for the same reason — a room this call cannot reach should not silently start
+    /// discarding a transcript nobody asked to pause.
+    /// </summary>
+    private async Task<bool> IsRoomTranscriptPausedAsync(Guid roomId, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var active = await unitOfWork.TranscriptPauseWindows.GetActiveWindowByRoomIdAsync(roomId, ct);
+            return active != null;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not read transcript-pause state for room {RoomId}; persisting this segment", roomId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// WT-605: record that <paramref name="segmentId"/> was deliberately never persisted because
+    /// the room was paused, so <see cref="WasSegmentSkippedForPauseAsync"/> can tell
+    /// ProcessTranslateMessageAsync/ProcessTtsMessageAsync "this is not late, it was skipped on
+    /// purpose" instead of letting them retry it into the dead-letter stream.
+    /// </summary>
+    private async Task MarkSegmentSkippedForPauseAsync(Guid roomId, Guid segmentId, CancellationToken ct)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            var key = TranscriptPausedSegmentsKey(roomId);
+            await db.SetAddAsync(key, segmentId.ToString());
+            await db.KeyExpireAsync(key, TranscriptPausedSegmentTtl);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not record segment {SegmentId} as pause-skipped for room {RoomId}", segmentId, roomId);
+        }
+    }
+
+    /// <summary>
+    /// WT-605: fails open toward the OLD behaviour (retry) on a Redis error — a lookup failure
+    /// here must never be mistaken for "this was intentionally skipped", or a genuinely late
+    /// segment would be silently dropped instead of retried.
+    /// </summary>
+    private async Task<bool> WasSegmentSkippedForPauseAsync(Guid roomId, Guid segmentId, CancellationToken ct)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            return await db.SetContainsAsync(TranscriptPausedSegmentsKey(roomId), segmentId.ToString());
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not check pause-skip state for segment {SegmentId} in room {RoomId}", segmentId, roomId);
+            return false;
+        }
+    }
+
     private async Task<bool> ShouldPersistRoomAsync(Guid roomId, CancellationToken ct)
     {
         if (_roomRetentionCache.TryGetValue(roomId, out var cached) &&
