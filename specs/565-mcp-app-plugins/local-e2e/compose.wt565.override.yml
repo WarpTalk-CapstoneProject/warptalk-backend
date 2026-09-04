@@ -15,6 +15,9 @@ services:
     image: warptalk-infrastructure-assistant-service:latest
     environment:
       DataProtection__KeyRingPath: /var/lib/warptalk/keys
+      # The main infra checkout's compose may predate the fix that adds this; without it the
+      # container resolves the workspace policy gRPC at localhost and every tool list is empty.
+      GrpcSettings__WorkspaceServiceUrl: http://workspace-service:50056
     volumes:
       - assistant-data-protection-keys:/var/lib/warptalk/keys
   migrator:
