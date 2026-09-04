@@ -596,6 +596,7 @@
       "warptalk.assistantservice.infrastructure": {
         "type": "Project",
         "dependencies": {
+          "Microsoft.IdentityModel.JsonWebTokens": "[8.17.0, )",
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.1, )",
           "StackExchange.Redis": "[3.0.17, )",
           "WarpTalk.AssistantService.Application": "[1.0.0, )",

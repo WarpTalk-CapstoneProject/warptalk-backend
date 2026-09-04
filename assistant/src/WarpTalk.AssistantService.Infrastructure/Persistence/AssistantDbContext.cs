@@ -114,6 +114,10 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.OAuthRegistrationEndpoint).HasMaxLength(1000).HasColumnName("oauth_registration_endpoint");
             entity.Property(e => e.OAuthClientId).HasMaxLength(500).HasColumnName("oauth_client_id");
             entity.Property(e => e.OAuthClientSecretEncrypted).HasColumnName("oauth_client_secret_encrypted");
+            entity.Property(e => e.OAuthClientSource).HasMaxLength(20).HasDefaultValue("unresolved").HasColumnName("oauth_client_source");
+            entity.Property(e => e.OAuthCimdSupported).HasColumnName("oauth_cimd_supported");
+            entity.Property(e => e.OAuthIssParameterSupported).HasColumnName("oauth_iss_parameter_supported");
+            entity.Property(e => e.OAuthTokenEndpointAuthMethod).HasMaxLength(40).HasColumnName("oauth_token_endpoint_auth_method");
             entity.Property(e => e.ToolsSyncedAt).HasColumnName("tools_synced_at");
             entity.Property(e => e.ToolsManifestHash).HasMaxLength(128).HasColumnName("tools_manifest_hash");
             entity.Property(e => e.IsActive).HasDefaultValue(true).HasColumnName("is_active");

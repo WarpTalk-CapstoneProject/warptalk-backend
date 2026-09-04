@@ -23,6 +23,7 @@ internal static class PluginDefinitionMapper
             plugin.AvatarUrl,
             requiredScopes,
             tools,
-            plugin.Kind);
+            plugin.Kind,
+            plugin.McpServerUrl);
     }
 }

@@ -1,4 +1,5 @@
 using System.Web;
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Helpers;
@@ -17,17 +18,23 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     private readonly IPluginProviderResolver _providerResolver;
     private readonly IPluginOAuthStateProtector _stateProtector;
     private readonly IPluginCredentialProtector _credentialProtector;
+    private readonly ILogger<PluginConnectionService> _logger;
+    private readonly IMcpClientProvisioner _mcpClientProvisioner;
 
     public PluginConnectionService(
         IUnitOfWork unitOfWork,
         IPluginProviderResolver providerResolver,
         IPluginOAuthStateProtector stateProtector,
-        IPluginCredentialProtector credentialProtector)
+        IPluginCredentialProtector credentialProtector,
+        ILogger<PluginConnectionService> logger,
+        IMcpClientProvisioner mcpClientProvisioner)
     {
         _unitOfWork = unitOfWork;
         _providerResolver = providerResolver;
         _stateProtector = stateProtector;
         _credentialProtector = credentialProtector;
+        _logger = logger;
+        _mcpClientProvisioner = mcpClientProvisioner;
     }
 
     /// <summary>
@@ -52,9 +59,22 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!installed)
             return Result.Failure<PluginConnectUrlDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
+        // For an MCP-backed row this is where discovery runs and the registration ladder settles
+        // on a client identity, because everything the authorization URL needs - endpoints, client
+        // id, negotiated auth method - comes out of it. A native row passes straight through.
+        var provisioned = await _mcpClientProvisioner.ProvisionAsync(plugin, ct);
+        if (!provisioned.IsSuccess)
+            return Result.Failure<PluginConnectUrlDto>(provisioned.Error!, provisioned.ErrorCode);
+
         var scopes = PluginScopeMapper.FromJson(plugin.RequiredScopesJson);
-        var state = _stateProtector.Protect(new PluginOAuthStateDto(userId, pluginKey));
-        var url = OAuthClientFor(plugin).BuildAuthorizationUrl(plugin, scopes, state);
+        var oauthClient = OAuthClientFor(plugin);
+
+        // Prepare, then seal, then build: the provider produces the secrets that must round-trip
+        // (a PKCE verifier), those go inside the sealed state, and only then can a URL carrying
+        // that state be assembled.
+        var flowState = oauthClient.PrepareState(plugin, new PluginOAuthStateDto(userId, pluginKey));
+        var state = _stateProtector.Protect(flowState);
+        var url = oauthClient.BuildAuthorizationUrl(plugin, scopes, state, flowState);
         return Result.Success(new PluginConnectUrlDto(url));
     }
 
@@ -64,18 +84,89 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         string state,
         CancellationToken ct = default)
     {
-        PluginOAuthStateDto oauthState;
+        var unprotected = UnprotectState(state);
+        if (!unprotected.IsSuccess)
+            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+
+        var oauthState = unprotected.Value!;
+
+        // A per-plugin callback path carries the key twice, so the two must agree: a mismatch means
+        // the state does not belong to the URL it arrived on.
+        if (!string.Equals(oauthState.PluginKey, pluginKey, StringComparison.Ordinal))
+            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
+
+        return await CompleteCallbackAsync(oauthState, code, ct);
+    }
+
+    public async Task<Result<PluginConnectionStatusDto>> CompleteMcpOAuthCallbackAsync(
+        string code,
+        string state,
+        string? issuer = null,
+        CancellationToken ct = default)
+    {
+        var unprotected = UnprotectState(state);
+        if (!unprotected.IsSuccess)
+            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+
+        // No key in the path to cross-check against - the protected state is the only source, which
+        // is exactly why it is integrity-protected rather than merely opaque.
+        var oauthState = unprotected.Value!;
+
+        var issuerCheck = ValidateIssuer(oauthState, issuer);
+        if (!issuerCheck.IsSuccess)
+            return Result.Failure<PluginConnectionStatusDto>(issuerCheck.Error!, issuerCheck.ErrorCode);
+
+        return await CompleteCallbackAsync(oauthState, code, ct);
+    }
+
+    /// <summary>
+    /// RFC 9207: an <c>iss</c> that came back must match the issuer recorded before the redirect.
+    /// </summary>
+    /// <remarks>
+    /// Compared by simple string equality, deliberately: RFC 3986 normalisation - case folding,
+    /// default-port elision, trailing slashes - is exactly what an attacker would exploit to make
+    /// a different issuer compare equal.
+    /// <para>
+    /// An absent <c>iss</c> is allowed through, because a server that does not implement RFC 9207
+    /// is common and refusing it would break every such provider. The check is a ratchet: it
+    /// protects against a response claiming to be from somewhere else, not against silence.
+    /// </para>
+    /// </remarks>
+    private static Result ValidateIssuer(PluginOAuthStateDto oauthState, string? issuer)
+    {
+        if (string.IsNullOrWhiteSpace(issuer)) return Result.Success();
+        if (string.IsNullOrWhiteSpace(oauthState.Issuer)) return Result.Success();
+
+        return string.Equals(issuer, oauthState.Issuer, StringComparison.Ordinal)
+            ? Result.Success()
+            : Result.Failure(
+                "The authorization response came from a different issuer than the one this flow started with.",
+                PluginConstants.ErrorCodes.PermissionDenied);
+    }
+
+    /// <summary>
+    /// State is attacker-reachable input: it comes back through the user's browser. Unprotecting it
+    /// is the trust boundary, so failures collapse to one indistinguishable error rather than
+    /// telling a prober which part it got wrong.
+    /// </summary>
+    private Result<PluginOAuthStateDto> UnprotectState(string state)
+    {
         try
         {
-            oauthState = _stateProtector.Unprotect(HttpUtility.UrlDecode(state));
+            return Result.Success(_stateProtector.Unprotect(HttpUtility.UrlDecode(state)));
         }
         catch
         {
-            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
+            return Result.Failure<PluginOAuthStateDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
         }
+    }
 
-        if (!string.Equals(oauthState.PluginKey, pluginKey, StringComparison.Ordinal))
-            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
+    private async Task<Result<PluginConnectionStatusDto>> CompleteCallbackAsync(
+        PluginOAuthStateDto oauthState,
+        string code,
+        CancellationToken ct)
+    {
+        var pluginKey = oauthState.PluginKey;
 
         var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
@@ -90,7 +181,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!installed)
             return Result.Failure<PluginConnectionStatusDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
-        var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, ct);
+        var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, ct);
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == oauthState.UserId && c.PluginId == plugin.Id, ct: ct);
         var now = DateTime.UtcNow;
@@ -144,6 +235,8 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
         connection.TokenRotatedAt = now;
 
+        await SyncToolManifestAsync(plugin, connection, now, ct);
+
         await _unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success(new PluginConnectionStatusDto(
@@ -151,6 +244,53 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             connection.Status,
             connection.ProviderEmail,
             token.GrantedScopes));
+    }
+
+    /// <summary>
+    /// Refreshes the cached tool set for an MCP-backed row, using the connection just established.
+    /// </summary>
+    /// <remarks>
+    /// This is the step that turns a catalog row into working tools: <c>tools_json</c> is authored
+    /// by us for a native row but is a cache of <c>tools/list</c> for an MCP one, and nothing else
+    /// populates it. Until it runs, a connected plugin shows zero tools.
+    /// <para>
+    /// A failure here does not fail the connect. The grant is real and stored; the tool list is
+    /// recoverable by reconnecting, and throwing away a working connection over a momentarily
+    /// unreachable server would be a much worse trade.
+    /// </para>
+    /// <para>
+    /// Deliberately not gated by workspace policy - connecting is personal and workspace-independent.
+    /// <c>AllowAnyPlugins</c> is enforced where a user is actually in a workspace, on both the list
+    /// and execute paths in <c>McpToolOrchestrator</c>.
+    /// </para>
+    /// </remarks>
+    private async Task SyncToolManifestAsync(
+        Plugin plugin,
+        PluginConnection connection,
+        DateTime now,
+        CancellationToken ct)
+    {
+        if (!string.Equals(plugin.Kind, PluginConstants.PluginKind.Mcp, StringComparison.Ordinal)) return;
+
+        try
+        {
+            var definition = PluginDefinitionMapper.ToDefinition(plugin);
+            var tools = await _providerResolver.ResolveGateway(plugin.Kind)
+                .ListToolsAsync(definition, connection, ct);
+
+            plugin.ToolsJson = JsonSerializer.Serialize(tools);
+            plugin.ToolsSyncedAt = now;
+            plugin.UpdatedAt = now;
+            _unitOfWork.PluginRepository.Update(plugin);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(
+                e,
+                "Could not refresh the tool manifest for plugin {PluginKey}; the connection stands and "
+                    + "the tool list will refresh on the next reconnect.",
+                plugin.PluginKey);
+        }
     }
 
     public async Task<Result<PluginConnectionStatusDto>> GetStatusAsync(string pluginKey, Guid userId, CancellationToken ct = default)

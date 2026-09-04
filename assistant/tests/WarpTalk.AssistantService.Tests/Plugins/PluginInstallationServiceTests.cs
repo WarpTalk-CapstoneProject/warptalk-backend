@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using NSubstitute;
+using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
@@ -151,7 +152,7 @@ public class PluginInstallationServiceTests
 
     private PluginInstallationService CreateSut()
     {
-        return new PluginInstallationService(_unitOfWork);
+        return new PluginInstallationService(_unitOfWork, Substitute.For<IPluginCredentialProtector>());
     }
 
     private static Plugin GoogleWorkspacePlugin()

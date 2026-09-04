@@ -17,13 +17,17 @@ ALTER TABLE assistant.plugins
     ADD COLUMN IF NOT EXISTS oauth_token_endpoint VARCHAR(1000) NULL,
     ADD COLUMN IF NOT EXISTS oauth_revoke_endpoint VARCHAR(1000) NULL,
     ADD COLUMN IF NOT EXISTS oauth_registration_endpoint VARCHAR(1000) NULL,
-    -- Credentials from Dynamic Client Registration (RFC 7591). The secret is protected with the
-    -- same IPluginCredentialProtector purpose used for user tokens - never stored in plaintext.
+    -- Client credentials, however the row obtained them: supplied by an operator for a
+    -- pre-registered client, or returned by Dynamic Client Registration (RFC 7591). See
+    -- oauth_client_source, added in 20260903120000. The secret is protected with the same
+    -- IPluginCredentialProtector purpose used for user tokens - never stored in plaintext.
     ADD COLUMN IF NOT EXISTS oauth_client_id VARCHAR(500) NULL,
     ADD COLUMN IF NOT EXISTS oauth_client_secret_encrypted TEXT NULL,
     -- tools_json is authored by us for 'native' rows, but is a *cache* of tools/list for 'mcp'
-    -- rows. The hash lets us notice a server changing its tool set behind our back, which clears
-    -- any admin approval that downgraded a tool to read-only.
+    -- rows. The hash lets us notice a server changing its tool set behind our back, which is
+    -- recorded as an audit event. It gates nothing: plugin tool use is gated by the workspace
+    -- owner's AllowAnyPlugins flag and by the per-write confirmation token, and there is no
+    -- per-tool approval in this product.
     ADD COLUMN IF NOT EXISTS tools_synced_at TIMESTAMPTZ NULL,
     ADD COLUMN IF NOT EXISTS tools_manifest_hash VARCHAR(128) NULL;
 

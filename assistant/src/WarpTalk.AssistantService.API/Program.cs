@@ -18,6 +18,7 @@ using WarpTalk.AssistantService.Infrastructure.Mcp;
 using WarpTalk.AssistantService.Infrastructure.OAuth;
 using WarpTalk.AssistantService.Infrastructure.Plugins;
 using WarpTalk.AssistantService.Infrastructure.Security;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using WarpTalk.Shared.Protos;
@@ -86,11 +87,40 @@ try
     builder.Services.Configure<GoogleWorkspaceOAuthOptions>(
         builder.Configuration.GetSection("Plugins:GoogleWorkspace:OAuth"));
     builder.Services.AddHttpClient<GoogleWorkspaceOAuthClient>();
+    builder.Services.AddHttpClient<McpToolGateway>();
+    builder.Services.AddKeyedScoped<IMcpToolGateway>(
+        PluginConstants.PluginKind.Mcp,
+        (sp, _) => sp.GetRequiredService<McpToolGateway>());
+    builder.Services.AddHttpClient<McpOAuthClient>();
+    builder.Services.AddKeyedScoped<IPluginOAuthClient>(
+        PluginConstants.PluginKind.Mcp,
+        (sp, _) => sp.GetRequiredService<McpOAuthClient>());
     builder.Services.AddKeyedScoped<IPluginOAuthClient>(
         PluginConstants.PluginKind.Native,
         (sp, _) => sp.GetRequiredService<GoogleWorkspaceOAuthClient>());
     builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
     builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
+
+    // MCP client registration ladder (WT-602). Registration order below IS the spec's priority
+    // order - MCP Authorization 2026-07-28 requires walking pre-registered, then Client ID
+    // Metadata Documents, then Dynamic Client Registration, in that order. Do not reorder these
+    // without re-reading that requirement; McpClientRegistrationResolver trusts DI order and
+    // performs no ordering of its own.
+    builder.Services.Configure<McpClientOptions>(builder.Configuration.GetSection("Plugins:Mcp:Client"));
+    builder.Services.AddHttpClient<IMcpAuthorizationServerDiscovery, McpAuthorizationServerDiscovery>();
+    builder.Services.AddScoped<IMcpClientRegistrar, PreregisteredClientRegistrar>();
+    builder.Services.AddScoped<IMcpClientRegistrar, CimdClientRegistrar>();
+    builder.Services.AddHttpClient<DynamicClientRegistrar>();
+    builder.Services.AddScoped<IMcpClientRegistrar>(
+        sp => sp.GetRequiredService<DynamicClientRegistrar>());
+    builder.Services.AddScoped<IMcpClientRegistrationResolver, McpClientRegistrationResolver>();
+    // Singleton: the signing keys are loaded once from configuration and the ECDsa handles are
+    // reused, so a per-request store would re-import PEM material on every call.
+    builder.Services.AddSingleton<ConfigurationMcpClientSigningKeyStore>();
+    builder.Services.AddSingleton<IMcpClientSigningKeyStore>(
+        sp => sp.GetRequiredService<ConfigurationMcpClientSigningKeyStore>());
+    builder.Services.AddScoped<IMcpClientMetadataProvider, McpClientMetadataProvider>();
+    builder.Services.AddScoped<IMcpClientProvisioner, McpClientProvisioner>();
     builder.Services.AddScoped<IMcpConfirmationTokenProtector, DataProtectionMcpConfirmationTokenProtector>();
     builder.Services.AddScoped<IAssistantNotifier, AssistantNotifier>();
     builder.Services.AddScoped<IAssistantChatRequestPublisher, RedisAssistantChatRequestPublisher>();
@@ -124,7 +154,9 @@ try
         options =>
         {
             options.TokenValidationParameters.NameClaimType = "email";
-            options.TokenValidationParameters.RoleClaimType = "role";
+            // Roles arrive under ClaimTypes.Role (the auth service issues them that way), so the
+            // default RoleClaimType is the one that matches; forcing the short "role" type left
+            // every role check in this service unable to see the caller's roles.
 
             options.Events = new JwtBearerEvents
             {
@@ -170,6 +202,10 @@ try
     {
         options.AddPolicy("default", policy => policy.RequireAuthenticatedUser());
     });
+
+    // POST /plugins/catalog writes the global catalog, so it takes the platform system-admin gate
+    // shared with auth/billing/notification (role 'admin'), not the workspace 'Admin' role.
+    builder.Services.AddWarpTalkSystemAdminAuthorization();
 
     builder.Services.AddSignalR();
 

@@ -19,6 +19,40 @@ public static class PluginConstants
         public const string Mcp = "mcp";
     }
 
+    /// <summary>
+    /// Which rung of the MCP client-registration ladder a plugin row settled on. MCP Authorization
+    /// 2026-07-28 fixes the priority order - pre-registered, then Client ID Metadata Documents,
+    /// then Dynamic Client Registration - so a client walks all three rather than picking one.
+    /// Persisting the outcome is what keeps the ladder from re-deriving a settled answer.
+    /// </summary>
+    public static class OAuthClientSource
+    {
+        /// <summary>Discovery has not run yet; the ladder chooses on first connect.</summary>
+        public const string Unresolved = "unresolved";
+
+        /// <summary>An operator supplied the client id (and possibly a secret) at install time.</summary>
+        public const string Preregistered = "preregistered";
+
+        /// <summary>The client is identified by our published metadata document URL.</summary>
+        public const string Cimd = "cimd";
+
+        /// <summary>Credentials came from RFC 7591 dynamic registration. Deprecated by the spec.</summary>
+        public const string Dcr = "dcr";
+    }
+
+    /// <summary>
+    /// Token-endpoint authentication methods this client can negotiate. Shared-secret methods are
+    /// unavailable to a CIMD client - the metadata document is public - so the CIMD path offers
+    /// only these two, strongest first.
+    /// </summary>
+    public static class TokenEndpointAuthMethod
+    {
+        public const string PrivateKeyJwt = "private_key_jwt";
+        public const string None = "none";
+        public const string ClientSecretPost = "client_secret_post";
+        public const string ClientSecretBasic = "client_secret_basic";
+    }
+
     public static class InstallationStatus
     {
         public const string NotInstalled = "not_installed";
@@ -51,5 +85,14 @@ public static class PluginConstants
         public const string ProviderUnavailable = "provider_unavailable";
         public const string UnknownPlugin = "unknown_plugin";
         public const string UnknownTool = "unknown_tool";
+
+        /// <summary>
+        /// Every rung of the client-registration ladder was exhausted: the row has no
+        /// pre-registered client, and the authorization server advertises neither Client ID
+        /// Metadata Document support nor a registration endpoint. Actionable by an operator
+        /// (register an app and supply the client id), so it must reach the user as a card
+        /// rather than as an exception.
+        /// </summary>
+        public const string ClientRegistrationUnsupported = "client_registration_unsupported";
     }
 }

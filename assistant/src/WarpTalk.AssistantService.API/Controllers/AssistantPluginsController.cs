@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AssistantService.API.Controllers;
@@ -36,6 +37,33 @@ public class AssistantPluginsController : ControllerBase
         var result = await _installationService.ListCatalogAsync(CurrentUserId, ct);
         if (!result.IsSuccess) return BadRequest(result.Error);
         return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Adds an MCP-backed app to the catalog.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes "the catalog is data, not code" real: the row appears in every user's
+    /// plugin list immediately, with no deploy and no restart. Discovery and the client-registration
+    /// ladder run on the first connect, so most servers need nothing beyond a key, a label and a URL.
+    /// <para>
+    /// Operator-scoped. It writes to a global catalog rather than to anything personal, so it is
+    /// deliberately not reachable by an ordinary signed-in user the way install and connect are.
+    /// </para>
+    /// </remarks>
+    [HttpPost("catalog")]
+    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> CreateMcpPlugin(
+        [FromBody] CreateMcpPluginRequest request,
+        CancellationToken ct)
+    {
+        var result = await _installationService.CreateMcpPluginAsync(request, CurrentUserId, ct);
+        if (!result.IsSuccess)
+            return BadRequest(new { error = result.Error, errorCode = result.ErrorCode });
+
+        return CreatedAtAction(nameof(ListCatalog), new { }, result.Value);
     }
 
     [HttpPost("{pluginKey}/install")]
@@ -105,6 +133,35 @@ public class AssistantPluginsController : ControllerBase
     /// for a human. The plugins page re-fetches connection status on load, so it reflects the
     /// outcome without any query-string contract between this endpoint and the frontend.
     /// </remarks>
+    /// <remarks>
+    /// Every <c>kind='mcp'</c> plugin shares this one redirect URI. A Client ID Metadata Document
+    /// has to enumerate its redirect URIs and the authorization server matches them exactly, so a
+    /// per-plugin path would mean re-publishing that document - which servers cache for up to a
+    /// week - every time a catalog row is added. That would defeat the whole point of adding an MCP
+    /// app being an insert rather than a deploy.
+    /// <para>
+    /// The literal <c>mcp</c> segment wins over the <c>{pluginKey}</c> route below by ASP.NET's
+    /// precedence rules, so a plugin may not be keyed <c>mcp</c>.
+    /// </para>
+    /// </remarks>
+    [HttpGet("mcp/oauth/callback")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status302Found)]
+    public async Task<IActionResult> McpOAuthCallback(
+        [FromQuery] string? code,
+        [FromQuery] string? state,
+        [FromQuery] string? error,
+        [FromQuery] string? iss,
+        CancellationToken ct)
+    {
+        var pluginsPageUrl = $"{_appBaseUrl}/settings/plugins";
+
+        if (string.IsNullOrWhiteSpace(error) && !string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(state))
+            await _connectionService.CompleteMcpOAuthCallbackAsync(code, state, iss, ct);
+
+        return Redirect(pluginsPageUrl);
+    }
+
     [HttpGet("{pluginKey}/oauth/callback")]
     [AllowAnonymous]
     [ProducesResponseType(StatusCodes.Status302Found)]

@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
@@ -29,6 +30,10 @@ public class PluginConnectionServiceTests
         _unitOfWork.PluginInstallationRepository.Returns(_installationRepository);
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
+        // A provider that carries nothing extra through the round trip returns the state unchanged;
+        // without this the substitute hands back null and the state never matches.
+        _oauthClient.PrepareState(Arg.Any<Plugin>(), Arg.Any<PluginOAuthStateDto>())
+            .Returns(call => call.Arg<PluginOAuthStateDto>());
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => $"protected:{call.Arg<string>()}");
         _credentialProtector.Unprotect(Arg.Any<string>())
             .Returns(call => call.Arg<string>().Replace("protected:", "", StringComparison.Ordinal));
@@ -56,7 +61,8 @@ public class PluginConnectionServiceTests
             .BuildAuthorizationUrl(
                 Arg.Any<Plugin>(),
                 Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<string>());
+                Arg.Any<string>(),
+                Arg.Any<PluginOAuthStateDto>());
     }
 
     [Fact]
@@ -79,7 +85,8 @@ public class PluginConnectionServiceTests
                 plugin,
                 Arg.Is<IReadOnlyList<string>>(scopes =>
                     scopes.Contains("https://www.googleapis.com/auth/drive.readonly")),
-                "state-token")
+                "state-token",
+                Arg.Any<PluginOAuthStateDto>())
             .Returns("https://accounts.google.test/oauth");
 
         var result = await CreateSut().GetConnectUrlAsync(PluginConstants.GoogleWorkspace, UserId);
@@ -108,7 +115,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((PluginConnection?)null);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -157,7 +164,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(expiredConnection);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -186,7 +193,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((PluginConnection?)null);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -232,7 +239,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(expiredConnection);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -264,7 +271,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(connected);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -559,7 +566,9 @@ public class PluginConnectionServiceTests
             _unitOfWork,
             new TestPluginProviderResolver(oauthClient: _oauthClient),
             _stateProtector,
-            _credentialProtector);
+            _credentialProtector,
+            NullLogger<PluginConnectionService>.Instance,
+            new TestMcpClientProvisioner());
     }
 
     private static Plugin GoogleWorkspacePlugin()

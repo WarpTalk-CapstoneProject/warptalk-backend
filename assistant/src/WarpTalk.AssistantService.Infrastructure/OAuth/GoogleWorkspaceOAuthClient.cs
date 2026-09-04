@@ -36,7 +36,17 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         _options = options.Value;
     }
 
-    public string BuildAuthorizationUrl(Plugin plugin, IReadOnlyList<string> scopes, string state)
+    /// <summary>
+    /// Google's flow carries nothing beyond the identity already in the state: this client is a
+    /// confidential client with a fixed redirect URI, so there is no PKCE verifier to remember.
+    /// </summary>
+    public PluginOAuthStateDto PrepareState(Plugin plugin, PluginOAuthStateDto state) => state;
+
+    public string BuildAuthorizationUrl(
+        Plugin plugin,
+        IReadOnlyList<string> scopes,
+        string state,
+        PluginOAuthStateDto flowState)
     {
         if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
             throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
@@ -56,6 +66,7 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
     public async Task<PluginOAuthTokenDto> ExchangeCodeAsync(
         Plugin plugin,
         string code,
+        PluginOAuthStateDto flowState,
         CancellationToken ct = default)
     {
         if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))

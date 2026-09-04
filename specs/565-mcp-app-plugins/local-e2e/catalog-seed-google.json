@@ -1,0 +1,101 @@
+[
+  {
+    "pluginKey": "gmail",
+    "label": "Gmail",
+    "description": "Search and read mail, and draft replies, in the connected Gmail account.",
+    "mcpServerUrl": "https://gmailmcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.compose"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_drive",
+    "label": "Google Drive",
+    "description": "Search, read and organise files in Google Drive.",
+    "mcpServerUrl": "https://drivemcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_docs",
+    "label": "Google Docs",
+    "description": "Read and edit Google Docs documents.",
+    "mcpServerUrl": "https://docsmcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/documents"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_sheets",
+    "label": "Google Sheets",
+    "description": "Read and update Google Sheets spreadsheets.",
+    "mcpServerUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_slides",
+    "label": "Google Slides",
+    "description": "Read and edit Google Slides presentations.",
+    "mcpServerUrl": "https://slidesmcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/presentations.readonly",
+      "https://www.googleapis.com/auth/presentations"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_calendar",
+    "label": "Google Calendar",
+    "description": "List calendars, events and free/busy times in Google Calendar.",
+    "mcpServerUrl": "https://calendarmcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
+      "https://www.googleapis.com/auth/calendar.events.readonly"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_chat",
+    "label": "Google Chat",
+    "description": "Read spaces and messages, and post messages, in Google Chat.",
+    "mcpServerUrl": "https://chatmcp.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "https://www.googleapis.com/auth/chat.memberships.readonly",
+      "https://www.googleapis.com/auth/chat.messages.readonly",
+      "https://www.googleapis.com/auth/chat.messages.create",
+      "https://www.googleapis.com/auth/chat.users.readstate"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  },
+  {
+    "pluginKey": "google_contacts",
+    "label": "Google Contacts",
+    "description": "Look up people and contacts through the Google People API.",
+    "mcpServerUrl": "https://people.googleapis.com/mcp/v1",
+    "requiredScopes": [
+      "https://www.googleapis.com/auth/directory.readonly",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/contacts.readonly"
+    ],
+    "oauth": { "clientId": "${GOOGLE_WORKSPACE_CLIENT_ID}", "clientSecret": "${GOOGLE_WORKSPACE_CLIENT_SECRET}" }
+  }
+]

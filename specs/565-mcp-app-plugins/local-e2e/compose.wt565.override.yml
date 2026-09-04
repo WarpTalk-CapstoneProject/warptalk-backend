@@ -1,0 +1,25 @@
+# Local-only override for the WT-565/WT-602 manual E2E.
+# - frontend builds from the WT-565 web worktree instead of ../warptalk-web
+# - assistant-service is never docker-built (image comes from a host-side publish, see T055)
+#   and keeps its DataProtection key ring on a named volume: every MCP client secret, DCR
+#   secret and user token in assistant.plugins / plugin_connections is encrypted with that ring,
+#   so a container recreated without it can never decrypt what the previous one wrote.
+# - migrator is a no-op: the main backend checkout is on refactor/wt-603 and carries a meeting
+#   migration that must not be applied to this DB; assistant migrations were applied by hand.
+services:
+  frontend:
+    build:
+      context: ../_worktrees/wt-565-web
+  assistant-service:
+    build: !reset null
+    image: warptalk-infrastructure-assistant-service:latest
+    environment:
+      DataProtection__KeyRingPath: /var/lib/warptalk/keys
+    volumes:
+      - assistant-data-protection-keys:/var/lib/warptalk/keys
+  migrator:
+    entrypoint: ["sh", "-c", "echo 'migrator skipped (WT-565 local override)'"]
+    command: []
+
+volumes:
+  assistant-data-protection-keys:

@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
@@ -40,6 +41,10 @@ public class McpToolOrchestratorTests
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
+        // A provider that carries nothing extra through the round trip returns the state unchanged;
+        // without this the substitute hands back null and the state never matches.
+        _oauthClient.PrepareState(Arg.Any<Plugin>(), Arg.Any<PluginOAuthStateDto>())
+            .Returns(call => call.Arg<PluginOAuthStateDto>());
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => $"protected:{call.Arg<string>()}");
         _credentialProtector.Unprotect(Arg.Any<string>())
             .Returns(call => call.Arg<string>().Replace("protected:", "", StringComparison.Ordinal));
@@ -722,7 +727,9 @@ public class McpToolOrchestratorTests
                 _unitOfWork,
                 new TestPluginProviderResolver(oauthClient: _oauthClient),
                 _stateProtector,
-                _credentialProtector),
+                _credentialProtector,
+                NullLogger<PluginConnectionService>.Instance,
+                new TestMcpClientProvisioner()),
             _confirmationTokenService);
     }
 
@@ -890,6 +897,90 @@ public class McpToolOrchestratorTests
             IsActive = true,
             RequiredScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",
             ToolsJson = toolsJson,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+    }
+
+    // ---- T062A: the workspace gate must cover the MCP path too --------------------------------
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_ReturnsNoTools_ForAConnectedMcpPlugin_WhenWorkspaceDisallowsPlugins()
+    {
+        // The existing policy tests only ever exercised a native row, so nothing caught a kind='mcp'
+        // path that routed around McpToolOrchestrator. The gate lives here, above the gateway, and
+        // McpToolGateway plugs in below it - which only holds while execution keeps coming through.
+        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var sut = CreateSut();
+
+        var result = await sut.ListAvailableToolsAsync(UserId, WorkspaceId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(result.Value!);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RefusesAnMcpTool_WhenWorkspaceDisallowsPlugins()
+    {
+        var plugin = McpPlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await sutOrDefault().ExecuteAsync(UserId, Request("remote_search"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value.ErrorCode);
+
+        // The refusal has to happen before anything reaches the remote server.
+        await _gateway.DidNotReceive().ExecuteAsync(
+            Arg.Any<PluginDefinitionDto>(),
+            Arg.Any<McpToolDescriptorDto>(),
+            Arg.Any<PluginConnection>(),
+            Arg.Any<McpToolExecutionRequest>(),
+            Arg.Any<CancellationToken>());
+
+        McpToolOrchestrator sutOrDefault() => CreateSut();
+    }
+
+    /// <summary>
+    /// An installed, connected MCP row whose tools_json has already been synced from tools/list -
+    /// the state a plugin is in right after a successful connect.
+    /// </summary>
+    private static Plugin McpPlugin()
+    {
+        return new Plugin
+        {
+            Id = PluginId,
+            PluginKey = "remote_app",
+            Label = "Remote App",
+            Description = "A real MCP server.",
+            Provider = "remote_app",
+            IsActive = true,
+            Kind = PluginConstants.PluginKind.Mcp,
+            McpServerUrl = "https://mcp.example.test/mcp",
+            OAuthClientSource = PluginConstants.OAuthClientSource.Cimd,
+            RequiredScopesJson = "[]",
+            ToolsJson = """
+                [
+                  {
+                    "name": "remote_search",
+                    "pluginKey": "remote_app",
+                    "label": "Search",
+                    "description": "Search the remote app.",
+                    "effect": "read",
+                    "requiredScopes": [],
+                    "parameters": { "type": "object", "properties": {} }
+                  }
+                ]
+                """,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };

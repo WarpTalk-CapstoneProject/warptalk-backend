@@ -15,7 +15,9 @@ public record PluginDefinitionDto(
     string? AvatarUrl,
     IReadOnlyList<string> RequiredScopes,
     IReadOnlyList<McpToolDescriptorDto> Tools,
-    string Kind = "native");
+    string Kind = "native",
+    /// <summary>Null for a native row, which has no MCP server to talk to.</summary>
+    string? McpServerUrl = null);
 
 public record PluginCatalogItemDto(
     string Key,
@@ -39,7 +41,31 @@ public record PluginConnectionStatusDto(
 
 public record PluginConnectUrlDto(string Url);
 
-public record PluginOAuthStateDto(Guid UserId, string PluginKey);
+/// <summary>
+/// What has to survive the browser round trip between building an authorization URL and handling
+/// the callback.
+/// </summary>
+/// <remarks>
+/// <see cref="CodeVerifier"/> and <see cref="Issuer"/> are null for a <c>native</c> plugin, which
+/// runs a provider-specific flow, and populated for <c>kind='mcp'</c>.
+/// <para>
+/// Carrying the PKCE verifier here rather than in a server-side store is safe because the state is
+/// encrypted, not merely opaque - <c>DataProtectionPluginOAuthStateProtector</c> protects it, so a
+/// verifier in the URL is unreadable to the user agent it passes through. It also means a callback
+/// needs no lookup to be completed, which matters for a redirect that may arrive at a different
+/// replica than the one that started the flow.
+/// </para>
+/// <para>
+/// <see cref="Issuer"/> is recorded for RFC 9207: the issuer that came back in the authorization
+/// response must be compared against the one discovery validated, and comparing it against
+/// anything re-fetched later would defeat the check.
+/// </para>
+/// </remarks>
+public record PluginOAuthStateDto(
+    Guid UserId,
+    string PluginKey,
+    string? CodeVerifier = null,
+    string? Issuer = null);
 
 public record PluginOAuthTokenDto(
     string? ProviderAccountId,

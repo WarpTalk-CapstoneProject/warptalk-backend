@@ -19,6 +19,17 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
     private readonly IPluginCredentialProtector _credentialProtector;
     private readonly GoogleWorkspaceApiOptions _options;
 
+    /// <summary>
+    /// Google's tools are authored by us in the catalog, not discovered: there is no official
+    /// remote MCP server for Drive or Calendar to ask. So this echoes the catalog rather than
+    /// calling out, and connecting a Google account never changes the tool set.
+    /// </summary>
+    public Task<IReadOnlyList<McpToolDescriptorDto>> ListToolsAsync(
+        PluginDefinitionDto plugin,
+        PluginConnection connection,
+        CancellationToken ct = default) =>
+        Task.FromResult(plugin.Tools);
+
     public GoogleWorkspaceMcpToolGateway(
         HttpClient httpClient,
         IPluginCredentialProtector credentialProtector,
