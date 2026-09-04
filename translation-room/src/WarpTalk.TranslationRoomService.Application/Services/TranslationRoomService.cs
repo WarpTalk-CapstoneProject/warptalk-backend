@@ -2465,6 +2465,12 @@ public class TranslationRoomService : ITranslationRoomService
                 current.MuteOnEntry = request.Settings.MuteOnEntry ?? current.MuteOnEntry;
                 current.AutoRecord = request.Settings.AutoRecord ?? current.AutoRecord;
                 current.BreakoutsEnabled = request.Settings.BreakoutsEnabled ?? current.BreakoutsEnabled;
+                // WT-587. No extra state guard here on purpose: the SCHEDULED/WAITING check at the
+                // top of this method (ErrorSettingsLocked) is already exactly the rule this field
+                // needs. A meeting that has started cannot change its mind about being recorded —
+                // turning it on yields a transcript that begins at minute twelve and is silent
+                // about the twelve, and turning it off cannot unwrite what is already committed.
+                current.SaveTranscript = request.Settings.SaveTranscript ?? current.SaveTranscript;
 
                 translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(current);
             }
