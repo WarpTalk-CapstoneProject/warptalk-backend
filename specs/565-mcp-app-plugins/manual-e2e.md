@@ -4,6 +4,13 @@ Use this checklist for T036 after a real Google OAuth client is configured for l
 
 ## Required Local Configuration
 
+- **Never run `docker compose up --build` (or `build`) from the stock infrastructure checkout
+  while testing this feature.** Its build contexts are the main `warptalk-backend` / `warptalk-web`
+  checkouts, whatever branch they happen to be on; on 2026-09-04 such a build silently replaced
+  every WT-565 image (assistant, workspace, gateway, frontend) with builds of another branch, and
+  the symptoms were a 404 on `/api/v1/assistant/mcp/tools` and an empty tool list. Always pass
+  the override below, and rebuild `workspace-service` and `gateway` from it too: both carry
+  WT-565 changes (the `allow_any_plugins` gRPC field; the CIMD metadata route).
 - The infrastructure compose files hardcode `../warptalk-backend` / `../warptalk-web` as build
   contexts and ignore `BACKEND_SOURCE_ROOT` / `FRONTEND_SOURCE_ROOT`. To run the stack from the
   WT-565 worktrees, add the override in `local-e2e/compose.wt565.override.yml` as a third `-f`:
