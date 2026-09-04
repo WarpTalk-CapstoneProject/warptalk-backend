@@ -119,13 +119,6 @@ builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcServi
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
 
-// Polls + Q&A
-builder.Services.AddScoped<IPollsService, PollsService>();
-builder.Services.AddScoped<IQuestionsService, QuestionsService>();
-
-// Breakout rooms (scoped-down)
-builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
-
 // WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
 // authoritative election path).
@@ -140,11 +133,6 @@ builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallba
 // production the meeting-chat-consumers group sat 41 entries behind with zero pending: not
 // stuck, simply never read.
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.MeetingChatAssistantResultConsumerService>();
-
-// Also never registered, and found by the same test: without it a breakout session's end time
-// is a number in a row nobody acts on, so breakout rooms simply never expire. The worker is a
-// guarded ten-second scan that only touches sessions already past due.
-builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.BreakoutExpiryWorker>();
 
 // WT-371 #8: recording's ONLY completion path was LiveKit's egress_ended webhook, and on
 // production that webhook was never configured — so every recording started, ran, uploaded, and

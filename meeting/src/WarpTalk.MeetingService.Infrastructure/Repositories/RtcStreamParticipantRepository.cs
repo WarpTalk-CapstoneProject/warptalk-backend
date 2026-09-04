@@ -4,9 +4,9 @@ using WarpTalk.MeetingService.Infrastructure.Data;
 
 namespace WarpTalk.MeetingService.Infrastructure.Repositories;
 
-public class PollVoteRepository : GenericRepository<PollVote>, IPollVoteRepository
+public class RtcStreamParticipantRepository : GenericRepository<RtcStreamParticipant>, IRtcStreamParticipantRepository
 {
-    public PollVoteRepository(MeetingDbContext context) : base(context)
+    public RtcStreamParticipantRepository(MeetingDbContext context) : base(context)
     {
     }
 }

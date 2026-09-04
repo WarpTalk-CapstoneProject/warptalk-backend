@@ -135,7 +135,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
         if (room == null) return;
 
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.ProviderIdentity == identity);
 
         if (participant != null)
@@ -153,7 +153,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
         if (room == null) return;
 
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.ProviderIdentity == identity);
 
         if (participant != null)
@@ -203,7 +203,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         var trackId = root.GetProperty("track").GetProperty("sid").GetString();
         var kind = root.GetProperty("track").GetProperty("kind").GetString();
 
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.ProviderIdentity == identity);
 
         if (participant == null) return;
@@ -215,7 +215,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         {
             track = new MeetingTrack
             {
-                MeetingParticipantId = participant.Id,
+                RtcStreamParticipantId = participant.Id,
                 ProviderTrackId = trackId ?? string.Empty,
                 MediaType = (kind == "video" ? MediaType.Video : MediaType.Audio).ToString(),
                 PublishedAt = DateTime.UtcNow

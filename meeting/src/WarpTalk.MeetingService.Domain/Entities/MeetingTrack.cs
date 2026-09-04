@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
@@ -7,7 +7,7 @@ public partial class MeetingTrack
 {
     public Guid Id { get; set; }
 
-    public Guid MeetingParticipantId { get; set; }
+    public Guid RtcStreamParticipantId { get; set; }
 
     public string ProviderTrackId { get; set; } = null!;
 
@@ -33,5 +33,5 @@ public partial class MeetingTrack
 
     public DateTime? UnpublishedAt { get; set; }
 
-    public virtual MeetingParticipant MeetingParticipant { get; set; } = null!;
+    public virtual RtcStreamParticipant RtcStreamParticipant { get; set; } = null!;
 }

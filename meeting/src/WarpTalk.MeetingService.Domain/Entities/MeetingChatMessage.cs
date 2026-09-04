@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
@@ -58,5 +58,5 @@ public partial class MeetingChatMessage
 
     public virtual MeetingRoom MeetingRoom { get; set; } = null!;
 
-    public virtual MeetingParticipant? Participant { get; set; }
+    public virtual RtcStreamParticipant? Participant { get; set; }
 }
