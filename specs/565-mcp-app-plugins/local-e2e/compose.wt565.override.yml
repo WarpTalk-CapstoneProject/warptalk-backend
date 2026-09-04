@@ -20,6 +20,15 @@ services:
       GrpcSettings__WorkspaceServiceUrl: http://workspace-service:50056
     volumes:
       - assistant-data-protection-keys:/var/lib/warptalk/keys
+  # These carry WT-565 changes too (AllowAnyPlugins over gRPC; the CIMD metadata route), so
+  # they must be built from the worktree as well - the stock compose builds ../warptalk-backend.
+  workspace-service:
+    build:
+      context: ../_worktrees/wt-565-backend
+  gateway:
+    build:
+      context: ../_worktrees/wt-565-backend
+
   migrator:
     entrypoint: ["sh", "-c", "echo 'migrator skipped (WT-565 local override)'"]
     command: []
