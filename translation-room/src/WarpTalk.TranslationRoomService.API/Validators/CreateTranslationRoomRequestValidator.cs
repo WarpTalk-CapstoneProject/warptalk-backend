@@ -68,5 +68,50 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
             .NotEmpty()
             .When(x => x.Recurrence is not null)
             .WithMessage(RecurrenceMessages.TimeZoneUnknown);
+
+        RuleFor(x => x.ExternalProvider)
+            .Must((request, _) => !HasExternalMeetingMetadata(request) || TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType)))
+            .WithMessage(TranslationRoomConstants.ValidationExternalMeetingRequiresBridgeType);
+
+        RuleFor(x => x.ExternalProvider)
+            .Must(provider => string.IsNullOrWhiteSpace(provider) || string.Equals(provider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal))
+            .WithMessage(TranslationRoomConstants.ValidationExternalProviderUnsupported);
+
+        RuleFor(x => x.ExternalMeetingUrl)
+            .Must(IsHttpsUrl)
+            .When(x => !string.IsNullOrWhiteSpace(x.ExternalMeetingUrl))
+            .WithMessage(TranslationRoomConstants.ValidationExternalMeetingUrlInvalid);
+
+        RuleFor(x => x.ExternalMeetingUrl)
+            .Must(url => IsGoogleMeetUrl(url))
+            .When(x => string.Equals(x.ExternalProvider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(x.ExternalMeetingUrl))
+            .WithMessage(TranslationRoomConstants.ValidationGoogleMeetUrlInvalid);
+
+        RuleFor(x => x.ExternalCalendarEventUrl)
+            .Must(IsHttpsUrl)
+            .When(x => !string.IsNullOrWhiteSpace(x.ExternalCalendarEventUrl))
+            .WithMessage(TranslationRoomConstants.ValidationExternalMeetingUrlInvalid);
+    }
+
+    private static bool HasExternalMeetingMetadata(CreateTranslationRoomRequest request)
+    {
+        return !string.IsNullOrWhiteSpace(request.ExternalProvider) ||
+            !string.IsNullOrWhiteSpace(request.ExternalMeetingUrl) ||
+            !string.IsNullOrWhiteSpace(request.ExternalCalendarEventId) ||
+            !string.IsNullOrWhiteSpace(request.ExternalCalendarEventUrl);
+    }
+
+    private static bool IsHttpsUrl(string? value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal);
+    }
+
+    private static bool IsGoogleMeetUrl(string? value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal) &&
+            string.Equals(uri.Host, "meet.google.com", StringComparison.OrdinalIgnoreCase);
     }
 }

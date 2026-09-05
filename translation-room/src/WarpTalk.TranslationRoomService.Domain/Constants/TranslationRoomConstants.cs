@@ -40,6 +40,8 @@ public static class TranslationRoomConstants
     /// <summary>What the roster and the transcript call the far side of an external call.</summary>
     public const string ExternalBridgeDisplayName = "External Meeting";
 
+    public const string ExternalProviderGoogleMeet = "GOOGLE_MEET";
+
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";
@@ -137,4 +139,8 @@ public static class TranslationRoomConstants
     public const string ValidationInvalidParticipantStatus = "Status must be a valid TranslationRoomParticipantStatus.";
     public const string ValidationInvalidParticipantRole = "Role must be a valid TranslationRoomParticipantRole.";
     public const string ValidationInvalidSortBy = "SortBy must be one of: displayname, status, role, joinedat.";
+    public const string ValidationExternalMeetingRequiresBridgeType = "External meeting metadata is only allowed for external bridge rooms.";
+    public const string ValidationExternalProviderUnsupported = "Unsupported external meeting provider.";
+    public const string ValidationExternalMeetingUrlInvalid = "External meeting URL must be an absolute HTTPS URL.";
+    public const string ValidationGoogleMeetUrlInvalid = "Google Meet URL must use meet.google.com.";
 }

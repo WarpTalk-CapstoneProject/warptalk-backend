@@ -82,7 +82,11 @@ public static class TranslationRoomMapper
             // WT-327: no artifacts on this path; named so the series id below cannot be
             // mistaken for the artifact list.
             Artifacts: null,
-            SeriesId: room.SeriesId
+            SeriesId: room.SeriesId,
+            ExternalProvider: room.ExternalProvider,
+            ExternalMeetingUrl: room.ExternalMeetingUrl,
+            ExternalCalendarEventId: room.ExternalCalendarEventId,
+            ExternalCalendarEventUrl: room.ExternalCalendarEventUrl
         );
     }
 
@@ -105,6 +109,10 @@ public static class TranslationRoomMapper
             TranslationRoomCode = roomCode,
             Status = status,
             TranslationRoomType = roomType,
+            ExternalProvider = request.ExternalProvider,
+            ExternalMeetingUrl = request.ExternalMeetingUrl,
+            ExternalCalendarEventId = request.ExternalCalendarEventId,
+            ExternalCalendarEventUrl = request.ExternalCalendarEventUrl,
             // The type sets the seat count unless the caller asked for a specific one — a
             // Virtual Appointment is 1:1 and a Live Event is not, and neither should silently
             // inherit whatever number a client hardcoded.
@@ -334,7 +342,11 @@ public static class TranslationRoomMapper
             settings,
             participantCount,
             artifacts,
-            room.SeriesId
+            room.SeriesId,
+            ExternalProvider: room.ExternalProvider,
+            ExternalMeetingUrl: room.ExternalMeetingUrl,
+            ExternalCalendarEventId: room.ExternalCalendarEventId,
+            ExternalCalendarEventUrl: room.ExternalCalendarEventUrl
         );
     }
 }

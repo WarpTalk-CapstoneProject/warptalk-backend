@@ -219,6 +219,16 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'GROUP'::character varying")
                 .HasColumnName("translation_room_type");
+            entity.Property(e => e.ExternalProvider)
+                .HasMaxLength(40)
+                .HasColumnName("external_provider");
+            entity.Property(e => e.ExternalMeetingUrl).HasColumnName("external_meeting_url");
+            entity.Property(e => e.ExternalCalendarEventId)
+                .HasMaxLength(255)
+                .HasColumnName("external_calendar_event_id");
+            entity.Property(e => e.ExternalCalendarEventUrl).HasColumnName("external_calendar_event_url");
+            entity.HasIndex(e => new { e.ExternalProvider, e.ExternalCalendarEventId }, "translation_rooms_external_calendar_event_idx")
+                .HasFilter("external_calendar_event_id IS NOT NULL");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");

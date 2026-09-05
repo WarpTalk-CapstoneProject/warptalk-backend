@@ -63,6 +63,7 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
             "google_drive_get_file" => await GetDriveFileAsync(accessToken, request.Arguments, ct),
             "google_calendar_list_events" => await ListCalendarEventsAsync(accessToken, request.Arguments, ct),
             "google_calendar_create_event" => await CreateCalendarEventAsync(accessToken, request.Arguments, ct),
+            "google_calendar_create_meet_event" => await CreateMeetEventAsync(accessToken, request.Arguments, ct),
             _ => Failure(PluginConstants.ErrorCodes.UnknownTool, "Unsupported Google Workspace tool."),
         };
     }
@@ -194,6 +195,70 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         return Success(new JsonObject { ["event"] = json.DeepClone() }, eventId);
     }
 
+    private async Task<McpToolExecutionResult> CreateMeetEventAsync(
+        string accessToken,
+        JsonObject? arguments,
+        CancellationToken ct)
+    {
+        var summary = GetString(arguments, "summary");
+        var start = GetString(arguments, "start");
+        var end = GetString(arguments, "end");
+        if (string.IsNullOrWhiteSpace(summary) || string.IsNullOrWhiteSpace(start) || string.IsNullOrWhiteSpace(end))
+            return Failure(PluginConstants.ErrorCodes.UnknownTool, "Google Meet event requires summary, start, and end.");
+
+        var timeZone = GetString(arguments, "timeZone");
+        var payload = new JsonObject
+        {
+            ["summary"] = summary,
+            ["description"] = GetString(arguments, "description"),
+            ["start"] = CalendarEventDateTime(start, timeZone),
+            ["end"] = CalendarEventDateTime(end, timeZone),
+            ["conferenceData"] = new JsonObject
+            {
+                ["createRequest"] = new JsonObject
+                {
+                    ["requestId"] = Guid.NewGuid().ToString("N"),
+                    ["conferenceSolutionKey"] = new JsonObject { ["type"] = "hangoutsMeet" },
+                },
+            },
+        };
+
+        var attendees = GetStringArray(arguments, "attendees");
+        if (attendees.Count > 0)
+        {
+            payload["attendees"] = new JsonArray(attendees
+                .Select(email => new JsonObject { ["email"] = email })
+                .Cast<JsonNode?>()
+                .ToArray());
+        }
+
+        using var request = AuthorizedRequest(HttpMethod.Post, CalendarEventsWithConferenceEndpoint("primary"), accessToken);
+        request.Content = JsonContent.Create(payload);
+
+        var response = await _httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+            return await ProviderFailureAsync(response, ct);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct)
+            ?? new JsonObject();
+        var eventId = json["id"]?.GetValue<string>();
+        var meetLink = ExtractMeetLink(json);
+        var data = new JsonObject
+        {
+            ["provider"] = "google_meet",
+            ["eventId"] = eventId,
+            ["summary"] = json["summary"]?.DeepClone(),
+            ["start"] = json["start"]?["dateTime"]?.DeepClone(),
+            ["end"] = json["end"]?["dateTime"]?.DeepClone(),
+            ["meetLink"] = meetLink,
+            ["calendarEventLink"] = json["htmlLink"]?.DeepClone(),
+            ["meetLinkStatus"] = string.IsNullOrWhiteSpace(meetLink) ? "pending" : "success",
+            ["event"] = json.DeepClone(),
+        };
+
+        return Success(data, eventId);
+    }
+
     private static HttpRequestMessage AuthorizedRequest(HttpMethod method, string url, string accessToken)
     {
         var request = new HttpRequestMessage(method, url);
@@ -260,6 +325,39 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         return string.Format(_options.CalendarEventsEndpointFormat, HttpUtility.UrlEncode(calendarId));
     }
 
+    private string CalendarEventsWithConferenceEndpoint(string calendarId)
+    {
+        var endpoint = CalendarEventsEndpoint(calendarId);
+        var querySeparator = endpoint.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+        return $"{endpoint}{querySeparator}conferenceDataVersion=1";
+    }
+
+    private static JsonObject CalendarEventDateTime(string dateTime, string? timeZone)
+    {
+        var value = new JsonObject { ["dateTime"] = dateTime };
+        if (!string.IsNullOrWhiteSpace(timeZone))
+            value["timeZone"] = timeZone;
+
+        return value;
+    }
+
+    private static string? ExtractMeetLink(JsonObject json)
+    {
+        var hangoutLink = json["hangoutLink"]?.GetValue<string>();
+        if (!string.IsNullOrWhiteSpace(hangoutLink))
+            return hangoutLink;
+
+        var entryPoints = json["conferenceData"]?["entryPoints"] as JsonArray;
+        if (entryPoints == null)
+            return null;
+
+        return entryPoints
+            .OfType<JsonObject>()
+            .Where(entryPoint => string.Equals(entryPoint["entryPointType"]?.GetValue<string>(), "video", StringComparison.Ordinal))
+            .Select(entryPoint => entryPoint["uri"]?.GetValue<string>())
+            .FirstOrDefault(uri => !string.IsNullOrWhiteSpace(uri));
+    }
+
     private static string EscapeDriveQuery(string value)
     {
         return value.Replace("\\", "\\\\", StringComparison.Ordinal)
@@ -292,6 +390,18 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         {
             return null;
         }
+    }
+
+    private static IReadOnlyList<string> GetStringArray(JsonObject? arguments, string name)
+    {
+        if (arguments == null || !arguments.TryGetPropertyValue(name, out var value) || value is not JsonArray values)
+            return [];
+
+        return values
+            .Select(item => item?.GetValue<string>())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item!)
+            .ToArray();
     }
 
     private static long? GetLong(JsonObject json, string name)
