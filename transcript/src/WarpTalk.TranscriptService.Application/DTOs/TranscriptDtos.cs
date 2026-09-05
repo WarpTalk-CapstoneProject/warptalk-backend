@@ -91,3 +91,15 @@ public record TranscriptLanguageCoverageDto(
 
 /// <summary>Body of POST .../translations/backfill.</summary>
 public record BackfillTranscriptLanguageRequest(string TargetLanguage);
+
+/// <summary>
+/// WT-605. One [Pause Transcript, Resume Transcript] window — display metadata for the
+/// transcript panel's "Transcript paused · HH:MM–HH:MM" divider. <see cref="EndedAt"/> is null
+/// while the transcript is currently paused for this room.
+/// </summary>
+public record TranscriptPauseWindowDto(
+    Guid Id,
+    Guid TranslationRoomId,
+    DateTime StartedAt,
+    DateTime? EndedAt
+);
