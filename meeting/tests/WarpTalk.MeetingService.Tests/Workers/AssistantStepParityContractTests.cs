@@ -38,6 +38,7 @@ public sealed class AssistantStepParityContractTests
     [InlineData("tool_call_started")]
     [InlineData("tool_call_completed")]
     [InlineData("reasoning")]
+    [InlineData("question")]
     [InlineData("completed")]
     [InlineData("failed")]
     public void BothConsumers_ActOnTheSameResultTypes(string resultType)
@@ -100,6 +101,16 @@ public sealed class AssistantStepParityContractTests
         var meeting = File.ReadAllText(FindSourceFile(MeetingConsumer));
 
         Assert.Contains("BroadcastAssistantToolCallCompletedAsync(", meeting, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MeetingConsumer_BroadcastsAssistantQuestions()
+    {
+        var meeting = File.ReadAllText(FindSourceFile(MeetingConsumer));
+
+        Assert.Contains("BroadcastAssistantQuestionAsync(", meeting, StringComparison.Ordinal);
+        Assert.Contains("\"ChatAssistantQuestion\"", File.ReadAllText(FindSourceFile(
+            "meeting/src/WarpTalk.MeetingService.API/Services/MeetingChatNotifier.cs")), StringComparison.Ordinal);
     }
 
     /// <summary>

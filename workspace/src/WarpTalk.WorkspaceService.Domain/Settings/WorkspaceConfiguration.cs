@@ -88,6 +88,9 @@ public class WorkspaceConfiguration
     // 6. Content Filtering
     public bool IsProfanityFilterEnabled { get; set; } = false;
 
+    /// <summary>Workspace policy for invoking account-scoped MCP plugins in WarpBot.</summary>
+    public bool AllowAnyPlugins { get; set; } = true;
+
     private static AiUsagePolicyConfiguration NormalizeAiUsagePolicy(AiUsagePolicyConfiguration? value)
     {
         return value == null

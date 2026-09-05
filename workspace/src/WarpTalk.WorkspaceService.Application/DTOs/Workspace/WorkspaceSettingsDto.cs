@@ -32,6 +32,7 @@ public record WorkspaceSettingsDto(
     int? MaxActiveRoomsCeiling = null,
     /// <summary>Provenance of the ceiling — <c>plan:enterprise</c>, <c>platform_default</c>, … Null with the ceiling.</summary>
     string? MaxActiveRoomsCeilingSource = null,
+    bool AllowAnyPlugins = true,
     /// <summary>
     /// How many target languages this workspace's plan permits IN ONE MEETING. WT-500.
     ///
@@ -68,7 +69,8 @@ public record WorkspaceSettingsPatchRequest(
     bool? AllowExternalCollaboration = null,
     bool? RequireVerifiedDomainForInternal = null,
     AiUsagePolicyPatchDto? AiUsagePolicy = null,
-    bool? IsProfanityFilterEnabled = null
+    bool? IsProfanityFilterEnabled = null,
+    bool? AllowAnyPlugins = null
 );
 
 public record AiUsagePolicyPatchDto(

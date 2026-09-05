@@ -67,4 +67,7 @@ public interface IMeetingChatNotifier
     /// </summary>
     Task BroadcastAssistantReasoningAsync(
         Guid roomId, Guid requestId, string title, string body, CancellationToken ct = default);
+
+    Task BroadcastAssistantQuestionAsync(
+        Guid roomId, Guid requestId, string questionsJson, CancellationToken ct = default);
 }
