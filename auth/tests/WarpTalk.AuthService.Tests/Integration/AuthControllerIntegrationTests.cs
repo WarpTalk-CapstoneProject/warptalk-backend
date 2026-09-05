@@ -53,7 +53,7 @@ public class AuthControllerIntegrationTests : BaseIntegrationTest
     }
 
     [Fact]
-    public async Task RegisterInvited_EmailAlreadyExists_ReturnsBadRequest()
+    public async Task RegisterInvited_EmailAlreadyExists_ReturnsConflict()
     {
         // Arrange
         var token = "validtoken_exists";
@@ -107,11 +107,15 @@ public class AuthControllerIntegrationTests : BaseIntegrationTest
         var response = await Client.PostAsJsonAsync("/api/v1/auth/register-invited", request);
 
         // Assert
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // WT-596: 409, not 400. The request is well formed and the server understood it — the
+        // address is simply taken, which is a conflict with existing state rather than a mistake
+        // in what was sent. This asserted 400 only because AuthController answered 400 for
+        // everything it had not enumerated, which is the bug the ticket is about.
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
     }
 
     [Fact]
-    public async Task RegisterInvited_WorkspaceServiceAcceptFails_RollsBackUserAndReturnsBadRequest()
+    public async Task RegisterInvited_WorkspaceServiceRefusesAccept_RollsBackUserAndReturnsForbidden()
     {
         // Arrange
         var token = "validtoken_rollback";
@@ -132,9 +136,48 @@ public class AuthControllerIntegrationTests : BaseIntegrationTest
         var response = await Client.PostAsJsonAsync("/api/v1/auth/register-invited", request);
 
         // Assert
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // WT-596: the workspace service looked at this and said no, so 403 — the answer is known
+        // and retrying changes nothing. Contrast the test below, where it never answered at all.
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 
         // Verify that user was NOT created in DB (Transaction rolled back)
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
+            var dbUser = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+            Assert.Null(dbUser);
+        }
+    }
+
+    /// <summary>
+    /// WT-596 — the workspace service never answered, which is not the same as refusing.
+    ///
+    /// WorkspaceInvitationGrpcClient turns an unreachable peer into
+    /// <c>AcceptInvitationResult(false, "Failed to connect to workspace service.")</c>, which read
+    /// exactly like a rejected invitation one layer up. With every unmapped code answering 400,
+    /// and now with Forbidden answering 403, an outage of one service would come back to the
+    /// browser as a verdict on the user's invitation — the same shape of lie the login 400 was.
+    /// </summary>
+    [Fact]
+    public async Task RegisterInvited_WorkspaceServiceUnreachable_ReturnsServiceUnavailable()
+    {
+        var token = "validtoken_unreachable";
+        var email = "unreachable_member@company.com";
+
+        MockWorkspaceInvitationClient.VerifyInvitationTokenAsync(token, Arg.Any<CancellationToken>())
+            .Returns(new VerifyInvitationResult(
+                true, email, Guid.NewGuid(), "Company Workspace", Guid.NewGuid(), "Member", "Internal", null));
+
+        MockWorkspaceInvitationClient.AcceptInvitationAsync(token, Arg.Any<Guid>(), email, Arg.Any<CancellationToken>())
+            .Returns(new AcceptInvitationResult(false, "Failed to connect to workspace service.", Unreachable: true));
+
+        var request = new RegisterInvitedRequest(token, "SecurePassword123", "Unreachable User");
+
+        var response = await Client.PostAsJsonAsync("/api/v1/auth/register-invited", request);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        // The rollback still has to happen: a half-made account is worse than none.
         using (var scope = Factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();

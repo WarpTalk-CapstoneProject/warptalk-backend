@@ -20,6 +20,16 @@ public static class AuthConstants
     public const string ErrorGoogleEmailMismatch = "Google account email does not match the active user profile.";
     public const string ErrorUnlinkGoogleNoPassword = "Cannot unlink Google account without a local password set.";
 
+    /// <summary>
+    /// WT-596: shown when a dependency (database, cache) could not be reached.
+    ///
+    /// Worded as OUR problem and as retryable, because it is both. "An unexpected error occurred
+    /// during login" was rendered straight into the toast beside a 400, which reads as a rejected
+    /// credential — the one thing it never is.
+    /// </summary>
+    public const string ErrorServiceUnavailable =
+        "WarpTalk is temporarily unavailable. This is not a problem with your details — please try again in a moment.";
+
     // Auth Settings Defaults
     public const int DefaultMaxFailedAttempts = 5;
     public const int DefaultLockoutDurationMinutes = 15;

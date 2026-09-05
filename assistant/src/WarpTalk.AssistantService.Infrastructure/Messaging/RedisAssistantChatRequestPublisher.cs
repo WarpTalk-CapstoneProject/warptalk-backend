@@ -15,7 +15,7 @@ namespace WarpTalk.AssistantService.Infrastructure.Messaging;
 /// ChatAssistantWorker consumes. Field names match ChatRequestMessage.from_redis() in
 /// warptalk-ai/shared/schemas.py exactly.
 /// </summary>
-public sealed class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
+public class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
 {
     private const string StreamName = "assistant:chat_requests";
 

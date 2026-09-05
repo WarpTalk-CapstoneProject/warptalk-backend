@@ -45,7 +45,8 @@ public static class TranslationRoomMapper
             settings.MuteOnEntry,
             settings.AutoRecord,
             settings.BreakoutsEnabled,
-            settings.ParticipantsCanStartTranslation);
+            settings.ParticipantsCanStartTranslation,
+            settings.SaveTranscript);
     }
 
     /// <summary>
@@ -298,6 +299,10 @@ public static class TranslationRoomMapper
             // No meeting-type default: WT-371 wants host-only unless a host says otherwise, and
             // seeding it per type would put the looser stance back where nobody chose it.
             ParticipantsCanStartTranslation = requested?.ParticipantsCanStartTranslation ?? false,
+            // WT-587: likewise no per-type default. A meeting type says how a room is RUN; whether
+            // the organisation keeps a record of it is not something a room template should decide
+            // quietly, and the one direction that loses data has to be asked for out loud.
+            SaveTranscript = requested?.SaveTranscript ?? true,
         };
     }
 

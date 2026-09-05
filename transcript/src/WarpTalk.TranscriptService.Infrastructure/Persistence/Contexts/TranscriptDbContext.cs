@@ -40,6 +40,8 @@ public partial class TranscriptDbContext : DbContext
 
     public virtual DbSet<AudioDubbing> AudioDubbings { get; set; }
 
+    public virtual DbSet<TranscriptPauseWindow> TranscriptPauseWindows { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -568,6 +570,30 @@ public partial class TranscriptDbContext : DbContext
                 .HasForeignKey(d => d.PreviousAudioDubbingId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("audio_dubbings_previous_dubbing_id_fkey");
+        });
+
+        modelBuilder.Entity<TranscriptPauseWindow>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("transcript_pause_windows_pkey");
+
+            entity.ToTable("transcript_pause_windows", "transcript");
+
+            entity.HasIndex(e => new { e.TranslationRoomId, e.EndedAt }, "transcript_pause_windows_room_active_idx");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId)
+                .HasComment("External TranslationRoomService room id. No physical FK.")
+                .HasColumnName("translation_room_id");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.EndedAt).HasColumnName("ended_at");
+            entity.Property(e => e.PausedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("paused_by");
+            entity.Property(e => e.ResumedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("resumed_by");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
         });
 
         OnModelCreatingPartial(modelBuilder);

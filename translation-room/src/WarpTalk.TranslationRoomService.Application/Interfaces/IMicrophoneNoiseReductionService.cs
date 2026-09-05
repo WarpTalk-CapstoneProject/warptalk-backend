@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 
 namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 
@@ -54,4 +55,25 @@ public interface IMicrophoneNoiseReductionService
     /// parameter, so the endpoint cannot be used to reconfigure somebody else's microphone.
     /// </summary>
     Task<Result<string>> SetAsync(Guid roomId, Guid userId, string mode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Record what the CLIENT's own denoiser ended up doing. An observation, not a setting.
+    ///
+    /// This is about a DIFFERENT denoiser from the two methods above it, and they are deliberately
+    /// on the same service because from a participant's point of view they are one question: is
+    /// anything cleaning up my microphone. Above is the provider-side pass at the STT session;
+    /// this is Krisp, in the browser, before the audio is ever published.
+    ///
+    /// It exists because that second one fails SILENTLY. Attaching the processor succeeds;
+    /// enabling it asks the LiveKit project whether it is entitled, and livekit-client calls that
+    /// path un-awaited and un-caught, so a denial rejects nothing and the toggle sits there lit
+    /// over a filter that is not running. The web client checks by hand and reports the answer
+    /// here, so the question "is noise suppression actually working in production" has an answer
+    /// in the service log instead of only in one participant's browser console.
+    ///
+    /// Nothing downstream reads what this writes. It is diagnostics, and a failure to record it
+    /// must never be allowed to affect the meeting — see the implementation.
+    /// </summary>
+    Task<Result<bool>> ReportClientSuppressionAsync(
+        Guid roomId, Guid userId, ReportNoiseSuppressionDto report, CancellationToken ct = default);
 }
