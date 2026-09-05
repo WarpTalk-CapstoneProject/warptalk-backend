@@ -2,7 +2,7 @@ using System;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
 
-public partial class MeetingInvitation
+public partial class RtcSessionRevocation
 {
     public Guid Id { get; set; }
 

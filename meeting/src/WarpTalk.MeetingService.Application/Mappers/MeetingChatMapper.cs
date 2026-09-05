@@ -36,7 +36,7 @@ public static class MeetingChatMapper
         Guid roomId,
         Guid workspaceId,
         Guid userId,
-        MeetingParticipant? participant)
+        RtcStreamParticipant? participant)
     {
         return new MeetingChatMessage
         {
@@ -68,7 +68,7 @@ public static class MeetingChatMapper
         Guid roomId,
         Guid workspaceId,
         Guid userId,
-        MeetingParticipant? participant,
+        RtcStreamParticipant? participant,
         string fileUrl,
         string fileName,
         long fileSizeBytes,

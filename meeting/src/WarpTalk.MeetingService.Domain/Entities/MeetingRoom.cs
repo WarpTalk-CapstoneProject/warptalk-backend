@@ -41,7 +41,7 @@ public partial class MeetingRoom
 
     public virtual ICollection<MeetingChatMessage> MeetingChatMessages { get; set; } = new List<MeetingChatMessage>();
 
-    public virtual ICollection<MeetingParticipant> MeetingParticipants { get; set; } = new List<MeetingParticipant>();
+    public virtual ICollection<RtcStreamParticipant> RtcStreamParticipants { get; set; } = new List<RtcStreamParticipant>();
 
-    public virtual ICollection<MeetingInvitation> MeetingInvitations { get; set; } = new List<MeetingInvitation>();
+    public virtual ICollection<RtcSessionRevocation> RtcSessionRevocations { get; set; } = new List<RtcSessionRevocation>();
 }

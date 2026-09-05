@@ -10,16 +10,14 @@ namespace WarpTalk.MeetingService.Tests.TestHelpers;
 
 /// <summary>
 /// Minimal in-memory IGenericRepository&lt;T&gt; test double, backed by a plain List&lt;T&gt;.
-/// Lets PollsService/QuestionsService tests exercise realistic CRUD flows (create → list,
-/// re-vote replacing prior votes, toggle-upvote, etc.) across several entity types without
-/// hand-writing a Moq setup per method per test.
+/// Supports repository-backed service tests without hand-writing every CRUD setup.
 /// </summary>
 public class FakeGenericRepository<T> : IGenericRepository<T> where T : class
 {
     public List<T> Items { get; } = new();
 
     public Task<T?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
-        throw new NotSupportedException("Not used by Polls/Q&A services under test.");
+        throw new NotSupportedException("Not used by the service under test.");
 
     public Task<IReadOnlyList<T>> GetAllAsync(string includeProperties = "", CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<T>>(Items.ToList());

@@ -128,7 +128,7 @@ public class MeetingRoomService : IMeetingRoomService
                 }
             }
 
-            // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)
+            // 3. Enforce Authorization (RtcSessionRevocation, Expiration & Dynamic Workspace)
             bool isHost = roomDetails.HostId == userIdString;
             bool isAuthorized = isHost;
             Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
@@ -141,10 +141,10 @@ public class MeetingRoomService : IMeetingRoomService
             // for the caller's existing participant row when the room IS locked, to avoid an
             // extra DB round-trip on the (common) non-locked path — step 4 below falls back to
             // its own query when this stays null.
-            MeetingParticipant? existingParticipant = null;
+            RtcStreamParticipant? existingParticipant = null;
             if (meetingRoom.IsLocked)
             {
-                existingParticipant = await _unitOfWork.MeetingParticipantRepository
+                existingParticipant = await _unitOfWork.RtcStreamParticipantRepository
                     .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
                 bool isExistingActiveParticipant = existingParticipant != null && existingParticipant.IsActive && !existingParticipant.LeftAt.HasValue;
                 if (!isHost && !isExistingActiveParticipant)
@@ -156,8 +156,8 @@ public class MeetingRoomService : IMeetingRoomService
 
             if (!isHost)
             {
-                // Check MeetingInvitation Table first (for explicit invites & external guests)
-                var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+                // Check RtcSessionRevocation Table first (for explicit invites & external guests)
+                var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
                 var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
 
                 if (explicitInvite != null)
@@ -204,12 +204,12 @@ public class MeetingRoomService : IMeetingRoomService
 
             // 4. Register or Update Participant
             var providerIdentity = userIdString;
-            var participant = existingParticipant ?? await _unitOfWork.MeetingParticipantRepository
+            var participant = existingParticipant ?? await _unitOfWork.RtcStreamParticipantRepository
                 .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
 
             if (participant == null)
             {
-                participant = new MeetingParticipant
+                participant = new RtcStreamParticipant
                 {
                     Id = Guid.CreateVersion7(),
                     MeetingRoomId = meetingRoom.Id,
@@ -220,7 +220,7 @@ public class MeetingRoomService : IMeetingRoomService
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow
                 };
-                await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
+                await _unitOfWork.RtcStreamParticipantRepository.AddAsync(participant);
                 await _unitOfWork.SaveChangesAsync();
             }
             else
@@ -230,7 +230,7 @@ public class MeetingRoomService : IMeetingRoomService
                     participant.IsActive = true;
                     participant.JoinedAt = DateTime.UtcNow;
                     participant.LeftAt = null;
-                    _unitOfWork.MeetingParticipantRepository.Update(participant);
+                    _unitOfWork.RtcStreamParticipantRepository.Update(participant);
                     await _unitOfWork.SaveChangesAsync();
                 }
             }
@@ -331,7 +331,7 @@ public class MeetingRoomService : IMeetingRoomService
             {
                 participant.DisplayName = participantName;
                 participant.UpdatedAt = DateTime.UtcNow;
-                _unitOfWork.MeetingParticipantRepository.Update(participant);
+                _unitOfWork.RtcStreamParticipantRepository.Update(participant);
                 await _unitOfWork.SaveChangesAsync();
             }
 
@@ -608,7 +608,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // 3. Revoke Invitation
-        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+        var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -619,7 +619,7 @@ public class MeetingRoomService : IMeetingRoomService
         else
         {
             // Create a revoked invitation to prevent future joins
-            invitation = new MeetingInvitation
+            invitation = new RtcSessionRevocation
             {
                 MeetingRoomId = meetingRoom.Id,
                 InviteeUserId = participantUserId,
@@ -630,14 +630,14 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // 4. Update Participant state
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);
 
         if (participant != null)
         {
             participant.IsActive = false;
             participant.LeftAt = DateTime.UtcNow;
-            _unitOfWork.MeetingParticipantRepository.Update(participant);
+            _unitOfWork.RtcStreamParticipantRepository.Update(participant);
         }
 
         await _unitOfWork.SaveChangesAsync();
@@ -679,7 +679,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // Verify new host is an active participant
-        var newHostParticipant = await _unitOfWork.MeetingParticipantRepository
+        var newHostParticipant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == newHostUserId && p.IsActive);
 
         if (newHostParticipant == null)
@@ -788,18 +788,18 @@ public class MeetingRoomService : IMeetingRoomService
             return Result.Failure<bool>(rosterKick.Error ?? "Could not remove the participant from the room.", ErrorCodes.InternalServerError);
 
         // Update Participant status
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);
 
         if (participant != null)
         {
             participant.IsActive = false;
             participant.LeftAt = DateTime.UtcNow;
-            _unitOfWork.MeetingParticipantRepository.Update(participant);
+            _unitOfWork.RtcStreamParticipantRepository.Update(participant);
         }
 
         // Revoke Invitation to prevent re-join
-        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+        var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -809,7 +809,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
         else
         {
-            await invitationRepo.AddAsync(new MeetingInvitation
+            await invitationRepo.AddAsync(new RtcSessionRevocation
             {
                 MeetingRoomId = meetingRoom.Id,
                 InviteeUserId = participantUserId,
@@ -1155,7 +1155,7 @@ public class MeetingRoomService : IMeetingRoomService
         if (await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
             return true;
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(
             p => p.MeetingRoomId == meetingRoom.Id
                  && p.UserId == callerUserId
                  && p.DeletedAt == null);

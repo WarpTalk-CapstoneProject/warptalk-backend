@@ -53,7 +53,7 @@ public class MeetingChatHub : Hub
 
         // AUTHORIZATION, RATHER THAN MANUFACTURING THE MEMBERSHIP THAT AUTHORIZES.
         //
-        // This used to create a MeetingParticipant row for whoever asked, with no check at all,
+        // This used to create a RtcStreamParticipant row for whoever asked, with no check at all,
         // and then add them to the group. MeetingChatService gates reading and sending on
         // `room.CreatedBy == userId || participant != null` — so the hub was minting exactly the
         // record those gates look for. Any authenticated user who knew a translation room id
@@ -64,7 +64,7 @@ public class MeetingChatHub : Hub
         // room lock (MeetingRoomService.JoinMeetingAsync, step 3, before it registers anyone).
         // The hub only subscribes a connection to a room it can already see the caller belongs to,
         // and mutates nothing.
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId);
 
         if (room.CreatedBy != userId && participant == null)

@@ -29,7 +29,7 @@ public static class MeetingHistoryMapper
         };
     }
 
-    public static MeetingParticipantDto ToParticipantDto(this MeetingParticipant participant)
+    public static MeetingParticipantDto ToParticipantDto(this RtcStreamParticipant participant)
     {
         return new MeetingParticipantDto
         {

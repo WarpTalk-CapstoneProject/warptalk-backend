@@ -30,13 +30,13 @@ public sealed class MeetingChatHubJoinTests
 
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<IMeetingRoomRepository> _rooms = new();
-    private readonly Mock<IMeetingParticipantRepository> _participants = new();
+    private readonly Mock<IRtcStreamParticipantRepository> _participants = new();
     private readonly Mock<IGroupManager> _groups = new();
 
     private MeetingChatHub CreateHub(bool authenticated = true)
     {
         _unitOfWork.Setup(u => u.MeetingRoomRepository).Returns(_rooms.Object);
-        _unitOfWork.Setup(u => u.MeetingParticipantRepository).Returns(_participants.Object);
+        _unitOfWork.Setup(u => u.RtcStreamParticipantRepository).Returns(_participants.Object);
 
         var identity = authenticated
             ? new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, UserId.ToString())], "test")
@@ -74,11 +74,11 @@ public sealed class MeetingChatHubJoinTests
 
     private void ParticipantExists(bool exists) =>
         _participants.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(exists
-                ? new MeetingParticipant { MeetingRoomId = MeetingRoomId, UserId = UserId }
+                ? new RtcStreamParticipant { MeetingRoomId = MeetingRoomId, UserId = UserId }
                 : null);
 
     // ── it must not manufacture the membership that authorizes ──────────────
@@ -96,7 +96,7 @@ public sealed class MeetingChatHubJoinTests
         // The heart of it: creating this row is what let a stranger pass MeetingChatService's
         // own authorization afterwards.
         _participants.Verify(p => p.AddAsync(
-            It.IsAny<MeetingParticipant>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<RtcStreamParticipant>(), It.IsAny<CancellationToken>()), Times.Never);
         _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
         _groups.Verify(g => g.AddToGroupAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -145,7 +145,7 @@ public sealed class MeetingChatHubJoinTests
 
         await hub.JoinMeetingRoom(TranslationRoomId);
 
-        _participants.Verify(p => p.Update(It.IsAny<MeetingParticipant>()), Times.Never);
+        _participants.Verify(p => p.Update(It.IsAny<RtcStreamParticipant>()), Times.Never);
         _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
