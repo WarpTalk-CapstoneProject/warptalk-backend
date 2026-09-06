@@ -2,6 +2,13 @@ namespace WarpTalk.TranslationRoomService.Domain.Constants;
 
 public static class TranslationRoomConstants
 {
+    /// <summary>
+    /// The stream warptalk-ai's SummaryTemplateWorker consumes. Renaming either side silently is
+    /// how a request ends up with no consumer and no reply — which is why this lives here rather
+    /// than as a private const in each of the two places that publish to it.
+    /// </summary>
+    public const string SummaryRequestStream = "assistant:summary_requests";
+
     // Terminal Statuses
     public static readonly string[] TerminalStatuses = new[]
     {
