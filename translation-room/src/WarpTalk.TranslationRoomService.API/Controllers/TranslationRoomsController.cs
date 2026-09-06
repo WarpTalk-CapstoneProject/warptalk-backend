@@ -373,6 +373,33 @@ public class TranslationRoomsController : ControllerBase
     }
 
     /// <summary>
+    /// Every document the caller's visible meetings produced, newest meeting first.
+    ///
+    /// A sibling of <c>history</c>, not a flag on it: that route returns meetings carrying their
+    /// outputs, this one returns the outputs themselves, and the two page and order differently
+    /// because they count different things. Minutes are included here and cannot be in
+    /// <c>history</c> — they are not artifacts and live in their own table.
+    /// </summary>
+    [HttpGet("documents")]
+    public async Task<IActionResult> GetMeetingDocuments([FromQuery] GetMeetingDocumentsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetMeetingDocumentsAsync(request, userId.Value, User.GetEmail(), ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    /// <summary>
     /// WT-333 — UC 25. The caller's own meetings in one workspace, past and upcoming together.
     ///
     /// Separate action rather than a <c>?scope=mine</c> flag on <c>history</c> because the two
