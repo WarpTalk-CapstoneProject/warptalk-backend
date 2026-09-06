@@ -118,7 +118,43 @@ public record MeetingDocumentDto(
     /// </summary>
     bool RoomHasMinutes = false,
     /// <summary>Whether this caller hosts the meeting — only the chair may draw up minutes.</summary>
-    bool IsHost = false);
+    bool IsHost = false,
+    /// <summary>
+    /// Whether offering "draw up the minutes" on this meeting would produce a document with a body.
+    ///
+    /// Drawing up minutes is irreversible — it consumes a number from the workspace's yearly
+    /// sequence — and 161 of production's 275 summaries carry <c>insufficientData</c> because
+    /// nobody spoke in the meeting. Offering the action there hands the secretary a numbered,
+    /// signable document containing an attendance list and nothing else, which is precisely the
+    /// "I pressed it and nothing came out" report. False means the button must not be offered;
+    /// <see cref="MinutesUnavailableReason"/> says what to show instead.
+    /// </summary>
+    bool CanDraftMinutes = false,
+    /// <summary>
+    /// Why <see cref="CanDraftMinutes"/> is false, or null when it is true. One of
+    /// <see cref="MinutesUnavailableReasons"/> — a code rather than a sentence, so the wording
+    /// stays with the UI that has to say it in the reader's language.
+    /// </summary>
+    string? MinutesUnavailableReason = null);
+
+/// <summary>Why a meeting cannot have minutes drawn up right now.</summary>
+public static class MinutesUnavailableReasons
+{
+    /// <summary>The meeting is still running, or was cancelled before it ran.</summary>
+    public const string MeetingNotEnded = "MEETING_NOT_ENDED";
+
+    /// <summary>Minutes already exist; the action is "open", not "draw up".</summary>
+    public const string AlreadyDrafted = "ALREADY_DRAFTED";
+
+    /// <summary>Only the meeting's chair may draw up its minutes.</summary>
+    public const string NotTheChair = "NOT_THE_CHAIR";
+
+    /// <summary>
+    /// Nothing was said, so there are no proceedings to record. The honest and by far the most
+    /// common case — see <c>MeetingMinutesDrafter.WouldProduceContent</c>.
+    /// </summary>
+    public const string NothingToRecord = "NOTHING_TO_RECORD";
+}
 
 public record MeetingDocumentsResponse(
     List<MeetingDocumentDto> Documents,

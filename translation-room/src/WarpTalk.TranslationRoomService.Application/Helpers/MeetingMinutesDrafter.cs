@@ -208,6 +208,22 @@ public static class MeetingMinutesDrafter
         };
     }
 
+    /// <summary>
+    /// Whether drawing up minutes from this summary would actually put anything in the body.
+    ///
+    /// Asked BEFORE offering the action, because drawing up minutes is not reversible: it consumes
+    /// a minutes number from the workspace's yearly sequence, and the document it produces cannot
+    /// be un-numbered. Offering that on a meeting nobody spoke in gives the secretary a numbered,
+    /// signable document with an attendance list and no proceedings — which is what "I pressed it
+    /// and nothing came out" actually was. In production 161 of 275 summaries carry
+    /// <c>insufficientData</c>, so this is the majority case, not an edge one.
+    ///
+    /// Delegates to <see cref="BuildSections"/> rather than restating its rule, so the answer here
+    /// can never disagree with what the draft would really contain.
+    /// </summary>
+    public static bool WouldProduceContent(string? summaryJson) =>
+        BuildSections(summaryJson).Count > 0;
+
     private static List<MinutesSection> BuildSections(
         string? summaryJson, IReadOnlyCollection<MeetingActionItem>? carriedOver = null)
     {

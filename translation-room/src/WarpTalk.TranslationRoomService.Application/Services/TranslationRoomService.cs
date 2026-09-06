@@ -2858,6 +2858,27 @@ public class TranslationRoomService : ITranslationRoomService
                     .ToListAsync(ct))
                 .ToHashSet();
 
+            // Whether a meeting has enough of a summary for its minutes to have a body.
+            //
+            // The summary bodies ARE fetched, unlike every other body on this read, and the cost is
+            // bounded and small: at most one summary per room on the page, and an insufficient one
+            // is ~210 bytes. The alternative — pattern-matching `insufficientData` in SQL — would be
+            // a second, brittle copy of a rule that already exists, and the whole point of asking is
+            // to agree exactly with what the draft would contain.
+            var summaryType = ArtifactType.SUMMARY_EXPORT.ToString();
+            var roomsWithUsableSummary = (await _unitOfWork.TranslationRoomArtifactRepository
+                    .Query()
+                    .Where(a => roomIds.Contains(a.TranslationRoomId)
+                        && a.DeletedAt == null
+                        && a.ArtifactType == summaryType)
+                    .Select(a => new { a.TranslationRoomId, a.Content, a.CreatedAt })
+                    .ToListAsync(ct))
+                .GroupBy(a => a.TranslationRoomId)
+                .Where(g => MeetingMinutesDrafter.WouldProduceContent(
+                    g.OrderByDescending(a => a.CreatedAt).First().Content))
+                .Select(g => g.Key)
+                .ToHashSet();
+
             var documents = new List<MeetingDocumentDto>(rows.Count);
             foreach (var row in rows)
             {
@@ -2868,6 +2889,12 @@ public class TranslationRoomService : ITranslationRoomService
                     room.Settings,
                     participantUserIdsByRoom.GetValueOrDefault(room.Id)?.Contains(userId) == true,
                     userId);
+
+                var minutesUnavailableReason = ResolveMinutesUnavailableReason(
+                    room,
+                    userId,
+                    roomsWithMinutes.Contains(room.Id),
+                    roomsWithUsableSummary.Contains(room.Id));
 
                 documents.Add(new MeetingDocumentDto(
                     row.Id,
@@ -2889,7 +2916,9 @@ public class TranslationRoomService : ITranslationRoomService
                     row.MinutesNo,
                     row.MinutesVersion,
                     roomsWithMinutes.Contains(room.Id),
-                    room.HostId == userId));
+                    room.HostId == userId,
+                    minutesUnavailableReason is null,
+                    minutesUnavailableReason));
             }
 
             return Result.Success(new MeetingDocumentsResponse(documents, total, page, pageSize));
@@ -2900,6 +2929,34 @@ public class TranslationRoomService : ITranslationRoomService
             return Result.Failure<MeetingDocumentsResponse>(
                 "An unexpected error occurred while loading meeting documents.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// Why this caller cannot draw up minutes for this meeting, or null when they can.
+    ///
+    /// Checked in the order the reader would ask it: is there a finished meeting at all, does it
+    /// already have minutes, am I the chair, and is there anything to write down. The last one is
+    /// the case that made the existing button feel broken — it is not a failure, it is a meeting
+    /// in which nobody spoke, and it is the majority of this workspace's meetings.
+    ///
+    /// Mirrors <c>MeetingMinutesService.CreateDraftAsync</c>'s own gates so the grid never offers
+    /// an action the endpoint would refuse; CreateDraftAsync remains the authority and still
+    /// enforces every one of them.
+    /// </summary>
+    private static string? ResolveMinutesUnavailableReason(
+        TranslationRoom room,
+        Guid userId,
+        bool alreadyHasMinutes,
+        bool hasUsableSummary)
+    {
+        if (!string.Equals(room.Status, "ENDED", StringComparison.Ordinal))
+            return MinutesUnavailableReasons.MeetingNotEnded;
+
+        if (alreadyHasMinutes) return MinutesUnavailableReasons.AlreadyDrafted;
+        if (room.HostId != userId) return MinutesUnavailableReasons.NotTheChair;
+        if (!hasUsableSummary) return MinutesUnavailableReasons.NothingToRecord;
+
+        return null;
     }
 
     /// <summary>

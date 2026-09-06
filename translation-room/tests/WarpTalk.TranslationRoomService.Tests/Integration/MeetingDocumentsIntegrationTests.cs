@@ -32,6 +32,12 @@ public class MeetingDocumentsIntegrationTests : BaseIntegrationTest
     private const string SummaryJson =
         "{\"summary\":\"Quarterly review\",\"decisions\":[\"Ship on Friday\"],\"actionItems\":[]}";
 
+    /// <summary>Byte for byte what the summary worker writes when nobody spoke.</summary>
+    private const string InsufficientSummaryJson =
+        "{\"summary\":\"The AI assistant could not generate a summary for this meeting "
+        + "(no transcript content was available or generation did not complete in time).\","
+        + "\"decisions\":[],\"actionItems\":[],\"insufficientData\":true}";
+
     [Fact]
     public async Task Documents_UnionsArtifactsAndMinutes_AndPagesOverTheUnion()
     {
@@ -93,6 +99,61 @@ public class MeetingDocumentsIntegrationTests : BaseIntegrationTest
             .Should().OnlyContain(d => d.RoomHasMinutes);
         documents.Where(d => d.TranslationRoomId == withoutMinutes)
             .Should().OnlyContain(d => !d.RoomHasMinutes);
+    }
+
+    [Fact]
+    public async Task Documents_DoNotOfferMinutesForAMeetingNobodySpokeIn()
+    {
+        var host = Guid.NewGuid();
+        var silent = await CreateRoomAsync(host);
+
+        // Exactly what the summary worker writes when there was no speech — and what 161 of
+        // production's 275 summaries contain. Minutes drawn from it would carry an attendance list
+        // and no proceedings, which is the "I pressed it and nothing came out" report.
+        await SeedArtifactAsync(silent, "SUMMARY_EXPORT", "json", InsufficientSummaryJson);
+        // Ended, so "there is no finished meeting yet" cannot be the answer and the emptiness of
+        // the summary is the only thing left to refuse on.
+        await EndRoomAsync(silent);
+
+        var document = (await GetDocumentsAsync(host)).Documents.Single();
+
+        document.CanDraftMinutes.Should().BeFalse(
+            "drawing up minutes consumes a number from the workspace's yearly sequence and cannot be undone");
+        document.MinutesUnavailableReason.Should().Be(MinutesUnavailableReasons.NothingToRecord);
+    }
+
+    [Fact]
+    public async Task Documents_SayWhyMinutesAreUnavailable_InTheOrderAReaderWouldAsk()
+    {
+        var host = Guid.NewGuid();
+        var participant = Guid.NewGuid();
+
+        var roomId = await CreateRoomAsync(host);
+        await JoinAsync(roomId, participant);
+        await SeedArtifactAsync(roomId, "SUMMARY_EXPORT", "json", SummaryJson);
+
+        // A room created through the API is not ENDED, so that answer outranks every other one —
+        // there is no meeting to write up yet.
+        (await GetDocumentsAsync(host)).Documents.Single()
+            .MinutesUnavailableReason.Should().Be(MinutesUnavailableReasons.MeetingNotEnded);
+
+        await EndRoomAsync(roomId);
+
+        var asHost = (await GetDocumentsAsync(host)).Documents.Single();
+        asHost.CanDraftMinutes.Should().BeTrue("the meeting ended and its summary has a body");
+        asHost.MinutesUnavailableReason.Should().BeNull();
+
+        // Same meeting, same summary — only the chair may draw up its minutes.
+        var asParticipant = (await GetDocumentsAsync(participant)).Documents.Single();
+        asParticipant.CanDraftMinutes.Should().BeFalse();
+        asParticipant.MinutesUnavailableReason.Should().Be(MinutesUnavailableReasons.NotTheChair);
+
+        await SeedMinutesAsync(roomId, host, "BB-2026-0009");
+
+        // Once minutes exist the action is "open", not "draw up" — and CreateDraftAsync is
+        // idempotent, so offering it again would be an offer to do nothing.
+        (await GetDocumentsAsync(host)).Documents
+            .Should().OnlyContain(d => d.MinutesUnavailableReason == MinutesUnavailableReasons.AlreadyDrafted);
     }
 
     [Fact]
@@ -293,6 +354,20 @@ public class MeetingDocumentsIntegrationTests : BaseIntegrationTest
         db.MeetingMinutes.Add(minutes);
         await db.SaveChangesAsync();
         return minutes.Id;
+    }
+
+    /// <summary>
+    /// Ended in the database rather than through <c>/end</c>: the endpoint drives LiveKit and the
+    /// finalizer, neither of which exists here, and the only thing under test is the status.
+    /// </summary>
+    private async Task EndRoomAsync(Guid roomId)
+    {
+        using var scope = CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+        var room = await db.TranslationRooms.FindAsync(roomId);
+        room!.Status = "ENDED";
+        room.EndedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
     }
 
     private async Task<string> ReadRoomCodeAsync(Guid roomId)
