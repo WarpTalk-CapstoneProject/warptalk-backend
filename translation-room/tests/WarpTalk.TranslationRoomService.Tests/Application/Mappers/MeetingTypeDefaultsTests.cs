@@ -152,6 +152,30 @@ public class MeetingTypeDefaultsTests
     }
 
     [Fact]
+    public void ToEntity_And_Response_ShouldPreserveExternalGoogleMeetMetadata()
+    {
+        var request = Request(TranslationRoomTypes.ExternalBridge) with
+        {
+            ExternalProvider = TranslationRoomConstants.ExternalProviderGoogleMeet,
+            ExternalMeetingUrl = "https://meet.google.com/abc-defg-hij",
+            ExternalCalendarEventId = "calendar-event-1",
+            ExternalCalendarEventUrl = "https://calendar.google.com/calendar/event?eid=calendar-event-1",
+        };
+
+        var room = Build(request);
+        var dto = room.ToResponseDto(participantCount: 2);
+
+        room.ExternalProvider.Should().Be(TranslationRoomConstants.ExternalProviderGoogleMeet);
+        room.ExternalMeetingUrl.Should().Be("https://meet.google.com/abc-defg-hij");
+        room.ExternalCalendarEventId.Should().Be("calendar-event-1");
+        room.ExternalCalendarEventUrl.Should().Be("https://calendar.google.com/calendar/event?eid=calendar-event-1");
+        dto.ExternalProvider.Should().Be(TranslationRoomConstants.ExternalProviderGoogleMeet);
+        dto.ExternalMeetingUrl.Should().Be("https://meet.google.com/abc-defg-hij");
+        dto.ExternalCalendarEventId.Should().Be("calendar-event-1");
+        dto.ExternalCalendarEventUrl.Should().Be("https://calendar.google.com/calendar/event?eid=calendar-event-1");
+    }
+
+    [Fact]
     public void ReadSettings_ShouldReadTheSnakeCaseBlobTheServiceWrites()
     {
         // Regression: the response record is PascalCase with no [JsonPropertyName], and

@@ -3139,7 +3139,11 @@ public class TranslationRoomService : ITranslationRoomService
             room.IsHostedBy(userId),
             room.SeriesId,
             series,
-            attendedCount
+            attendedCount,
+            room.ExternalProvider,
+            room.ExternalMeetingUrl,
+            room.ExternalCalendarEventId,
+            room.ExternalCalendarEventUrl
         );
     }
 

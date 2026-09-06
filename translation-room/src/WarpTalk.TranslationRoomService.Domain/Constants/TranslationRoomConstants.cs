@@ -40,6 +40,18 @@ public static class TranslationRoomConstants
     /// <summary>What the roster and the transcript call the far side of an external call.</summary>
     public const string ExternalBridgeDisplayName = "External Meeting";
 
+    public const string ExternalProviderGoogleMeet = "GOOGLE_MEET";
+
+    /// <summary>
+    /// The only host a <see cref="ExternalProviderGoogleMeet"/> join link may point at. The
+    /// link is handed to every invitee as the Join button, so an unchecked one turns the room
+    /// into a workspace-wide phishing surface.
+    /// </summary>
+    public const string ExternalProviderGoogleMeetHost = "meet.google.com";
+
+    /// <summary>Longest external calendar event id the column can hold.</summary>
+    public const int ExternalCalendarEventIdMaxLength = 255;
+
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";
@@ -137,4 +149,11 @@ public static class TranslationRoomConstants
     public const string ValidationInvalidParticipantStatus = "Status must be a valid TranslationRoomParticipantStatus.";
     public const string ValidationInvalidParticipantRole = "Role must be a valid TranslationRoomParticipantRole.";
     public const string ValidationInvalidSortBy = "SortBy must be one of: displayname, status, role, joinedat.";
+    public const string ValidationExternalMeetingRequiresBridgeType = "External meeting metadata is only allowed for external bridge rooms.";
+    public const string ValidationExternalProviderUnsupported = "Unsupported external meeting provider.";
+    public const string ValidationExternalMeetingUrlInvalid = "External meeting URL must be an absolute HTTPS URL.";
+    public const string ValidationGoogleMeetUrlInvalid = "Google Meet URL must use meet.google.com.";
+    public const string ValidationExternalProviderRequired = "External meeting metadata requires an external meeting provider.";
+    public const string ValidationExternalMeetingUrlRequired = "An external meeting provider requires an external meeting URL.";
+    public const string ValidationExternalCalendarEventIdTooLong = "External calendar event id must be 255 characters or fewer.";
 }

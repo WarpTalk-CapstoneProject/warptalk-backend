@@ -79,4 +79,171 @@ public class CreateTranslationRoomRequestValidatorTests
         result.ShouldHaveValidationErrorFor(x => x.ScheduledAt)
               .WithErrorMessage(TranslationRoomConstants.ValidationScheduledTimeMustBeFuture);
     }
+
+    [Fact]
+    public void Should_Have_Error_When_External_Metadata_Is_Used_On_Non_Bridge_Room()
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.Event,
+            10,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalProvider: TranslationRoomConstants.ExternalProviderGoogleMeet,
+            ExternalMeetingUrl: "https://meet.google.com/abc-defg-hij");
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.ExternalProvider)
+            .WithErrorMessage(TranslationRoomConstants.ValidationExternalMeetingRequiresBridgeType);
+    }
+
+    [Fact]
+    public void Should_Have_Error_When_An_External_Meeting_Url_Arrives_Without_A_Provider()
+    {
+        // The host allow-list used to hang off the provider, so omitting the provider skipped it
+        // and any HTTPS URL became the room's Join button for every invitee.
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.ExternalBridge,
+            2,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalMeetingUrl: "https://meet-google.attacker.test/abc-defg-hij");
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.ExternalProvider)
+            .WithErrorMessage(TranslationRoomConstants.ValidationExternalProviderRequired);
+    }
+
+    [Fact]
+    public void Should_Have_Error_When_A_Provider_Arrives_Without_A_Meeting_Url()
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.ExternalBridge,
+            2,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalProvider: TranslationRoomConstants.ExternalProviderGoogleMeet);
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.ExternalMeetingUrl)
+            .WithErrorMessage(TranslationRoomConstants.ValidationExternalMeetingUrlRequired);
+    }
+
+    [Theory]
+    [InlineData("http://meet.google.com/abc-defg-hij")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("not-a-url")]
+    public void Should_Have_Error_When_The_External_Meeting_Url_Is_Not_Absolute_Https(string url)
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.ExternalBridge,
+            2,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalProvider: TranslationRoomConstants.ExternalProviderGoogleMeet,
+            ExternalMeetingUrl: url);
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.ExternalMeetingUrl);
+    }
+
+    [Fact]
+    public void Should_Have_Error_When_The_External_Calendar_Event_Id_Exceeds_The_Column()
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.ExternalBridge,
+            2,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalProvider: TranslationRoomConstants.ExternalProviderGoogleMeet,
+            ExternalMeetingUrl: "https://meet.google.com/abc-defg-hij",
+            ExternalCalendarEventId: new string('e', TranslationRoomConstants.ExternalCalendarEventIdMaxLength + 1));
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.ExternalCalendarEventId)
+            .WithErrorMessage(TranslationRoomConstants.ValidationExternalCalendarEventIdTooLong);
+    }
+
+    [Fact]
+    public void Should_Accept_Google_Meet_Metadata_For_External_Bridge_Room()
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.ExternalBridge,
+            2,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalProvider: TranslationRoomConstants.ExternalProviderGoogleMeet,
+            ExternalMeetingUrl: "https://meet.google.com/abc-defg-hij",
+            ExternalCalendarEventId: "calendar-event-1",
+            ExternalCalendarEventUrl: "https://calendar.google.com/calendar/event?eid=calendar-event-1");
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldNotHaveValidationErrorFor(x => x.ExternalProvider);
+        result.ShouldNotHaveValidationErrorFor(x => x.ExternalMeetingUrl);
+        result.ShouldNotHaveValidationErrorFor(x => x.ExternalCalendarEventUrl);
+    }
+
+    [Fact]
+    public void Should_Have_Error_When_Google_Meet_Url_Is_Not_Google_Meet()
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Google Meet",
+            "Description",
+            TranslationRoomTypes.ExternalBridge,
+            2,
+            "vi",
+            new List<string> { "en" },
+            null,
+            DateTime.UtcNow.AddHours(1),
+            null,
+            ExternalProvider: TranslationRoomConstants.ExternalProviderGoogleMeet,
+            ExternalMeetingUrl: "https://example.com/abc-defg-hij");
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.ExternalMeetingUrl)
+            .WithErrorMessage(TranslationRoomConstants.ValidationGoogleMeetUrlInvalid);
+    }
 }
