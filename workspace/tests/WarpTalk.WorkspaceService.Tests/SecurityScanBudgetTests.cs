@@ -58,15 +58,33 @@ public class SecurityScanBudgetTests
     }
 
     [Fact]
-    public void For_ShouldStopGrowingOnceTheWorkerStopsReading()
+    public void For_ShouldKeepGrowingBecauseTheWorkerKeepsReading()
     {
-        // The worker truncates at SECURITY_MAX_ANALYZE_LENGTH before prompting, so past that point
-        // it is doing identical work. A 400 KB PDF must not reserve a consumer for minutes longer
-        // than a 20 KB one for output that will never be generated.
-        var atCap = SecurityScanBudget.For(SecurityScanBudget.MaxAnalysedCharacters);
-        var farPastCap = SecurityScanBudget.For(436_011); // a real Database_Design_Document.pdf
+        // The mirror image of the assertion that used to stand here. It clamped at 20,000 because
+        // the worker truncated there — and budgeting correctly for a scan of the first 6.8% of a
+        // document is not a correct budget; it is a correct budget for the wrong scan. The worker
+        // reads the whole file now, so a large document is entitled to more time than a small one.
+        var small = SecurityScanBudget.For(20_000);
+        var large = SecurityScanBudget.For(436_011); // a real Database_Design_Document.pdf
 
-        Assert.Equal(atCap, farPastCap);
+        Assert.True(
+            large > small,
+            $"a 436k-character document was allowed {large.TotalSeconds:0.#}s, no more than the "
+                + $"{small.TotalSeconds:0.#}s given a 20k one");
+    }
+
+    [Fact]
+    public void For_ShouldCoverTheChunkedScanOfTheFiveSeptemberDocument()
+    {
+        // 293,950 characters: fifteen 20,000-character chunks, three waves at a concurrency of
+        // eight, a wave measured at about 37 seconds in production — roughly 111 seconds of real
+        // work. Under the old clamp this document was allowed 150s for a scan of 20,000 of its
+        // characters, and the moment the worker began reading all of them that stopped being enough.
+        var budget = SecurityScanBudget.For(293_950);
+
+        Assert.True(
+            budget > TimeSpan.FromSeconds(111),
+            $"budget {budget.TotalSeconds:0.#}s would cut off a chunked scan needing about 111s");
     }
 
     [Fact]
@@ -96,11 +114,11 @@ public class SecurityScanBudgetTests
     }
 
     [Fact]
-    public void MaxAnalysedCharacters_ShouldMatchTheWorkerTruncationLimit()
+    public void MaxScannedCharacters_ShouldMatchTheWorkerTotalScanCap()
     {
-        // Mirrors SECURITY_MAX_ANALYZE_LENGTH in warptalk-ai security_worker/scanners.py. If that
-        // is raised without raising this, large documents silently go back to being under-budgeted
-        // — which is this bug returning by a different door.
-        Assert.Equal(20_000, SecurityScanBudget.MaxAnalysedCharacters);
+        // Mirrors SECURITY_MAX_TOTAL_ANALYZE_LENGTH in warptalk-ai security_worker/scanners.py —
+        // the size at which the worker refuses the document outright. Past it the wait would be
+        // spent on an answer that is never coming, so the two constants have to agree.
+        Assert.Equal(400_000, SecurityScanBudget.MaxScannedCharacters);
     }
 }
