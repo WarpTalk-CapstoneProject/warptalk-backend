@@ -73,9 +73,24 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
             .Must((request, _) => !HasExternalMeetingMetadata(request) || TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType)))
             .WithMessage(TranslationRoomConstants.ValidationExternalMeetingRequiresBridgeType);
 
+        // The provider is what every other rule below hangs off, so it cannot be optional. Left
+        // optional, omitting it was a way to skip the host allow-list entirely: the URL then met
+        // only the generic HTTPS rule, and any https://... became the room's Join button.
+        RuleFor(x => x.ExternalProvider)
+            .NotEmpty()
+            .When(HasExternalMeetingMetadata)
+            .WithMessage(TranslationRoomConstants.ValidationExternalProviderRequired);
+
         RuleFor(x => x.ExternalProvider)
             .Must(provider => string.IsNullOrWhiteSpace(provider) || string.Equals(provider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal))
             .WithMessage(TranslationRoomConstants.ValidationExternalProviderUnsupported);
+
+        // A provider with no link is an external-bridge room nobody can reach: the web only
+        // renders the Join affordance when both are present, so it fails silently.
+        RuleFor(x => x.ExternalMeetingUrl)
+            .NotEmpty()
+            .When(x => !string.IsNullOrWhiteSpace(x.ExternalProvider))
+            .WithMessage(TranslationRoomConstants.ValidationExternalMeetingUrlRequired);
 
         RuleFor(x => x.ExternalMeetingUrl)
             .Must(IsHttpsUrl)
@@ -87,6 +102,10 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
             .When(x => string.Equals(x.ExternalProvider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal)
                 && !string.IsNullOrWhiteSpace(x.ExternalMeetingUrl))
             .WithMessage(TranslationRoomConstants.ValidationGoogleMeetUrlInvalid);
+
+        RuleFor(x => x.ExternalCalendarEventId)
+            .MaximumLength(TranslationRoomConstants.ExternalCalendarEventIdMaxLength)
+            .WithMessage(TranslationRoomConstants.ValidationExternalCalendarEventIdTooLong);
 
         RuleFor(x => x.ExternalCalendarEventUrl)
             .Must(IsHttpsUrl)
@@ -112,6 +131,6 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
     {
         return Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
             string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal) &&
-            string.Equals(uri.Host, "meet.google.com", StringComparison.OrdinalIgnoreCase);
+            string.Equals(uri.Host, TranslationRoomConstants.ExternalProviderGoogleMeetHost, StringComparison.OrdinalIgnoreCase);
     }
 }
