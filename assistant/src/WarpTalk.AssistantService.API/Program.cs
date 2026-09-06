@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using Serilog;
@@ -7,11 +8,20 @@ using WarpTalk.AssistantService.API.Hubs;
 using WarpTalk.AssistantService.API.Services;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Services;
+using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.AssistantService.Infrastructure.Persistence;
 using WarpTalk.AssistantService.Infrastructure.Repositories;
+using WarpTalk.AssistantService.Infrastructure.Clients;
 using WarpTalk.AssistantService.Infrastructure.Messaging;
+using WarpTalk.AssistantService.Infrastructure.Mcp;
+using WarpTalk.AssistantService.Infrastructure.OAuth;
+using WarpTalk.AssistantService.Infrastructure.Plugins;
+using WarpTalk.AssistantService.Infrastructure.Security;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.Protos;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -26,6 +36,14 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
+    builder.Configuration.RequirePublicBaseUrl(builder.Environment, "AppBaseUrl");
+    var keyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
+    var dataProtection = builder.Services
+        .AddDataProtection()
+        .SetApplicationName("WarpTalk.AssistantService");
+    if (!string.IsNullOrWhiteSpace(keyRingPath))
+        dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+
     builder.Services.AddWarpTalkObservability(
         builder.Configuration,
         builder.Environment,
@@ -48,8 +66,73 @@ try
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
+    builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
+    builder.Services.AddScoped<IMcpConfirmationTokenService, McpConfirmationTokenService>();
+    builder.Services.AddScoped<PluginConnectionService>();
+    builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());
+    // Same instance behind the narrow refresh slice McpToolOrchestrator depends on.
+    builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
+    builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
+    builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
+    // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
+    // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
+    // has no official remote MCP server for Drive/Calendar.
+    builder.Services.AddScoped<IPluginProviderResolver, PluginProviderResolver>();
+    builder.Services.Configure<GoogleWorkspaceApiOptions>(
+        builder.Configuration.GetSection("Plugins:GoogleWorkspace:Api"));
+    builder.Services.AddHttpClient<GoogleWorkspaceMcpToolGateway>();
+    builder.Services.AddKeyedScoped<IMcpToolGateway>(
+        PluginConstants.PluginKind.Native,
+        (sp, _) => sp.GetRequiredService<GoogleWorkspaceMcpToolGateway>());
+    builder.Services.Configure<GoogleWorkspaceOAuthOptions>(
+        builder.Configuration.GetSection("Plugins:GoogleWorkspace:OAuth"));
+    builder.Services.AddHttpClient<GoogleWorkspaceOAuthClient>();
+    builder.Services.AddHttpClient<McpToolGateway>();
+    builder.Services.AddKeyedScoped<IMcpToolGateway>(
+        PluginConstants.PluginKind.Mcp,
+        (sp, _) => sp.GetRequiredService<McpToolGateway>());
+    builder.Services.AddHttpClient<McpOAuthClient>();
+    builder.Services.AddKeyedScoped<IPluginOAuthClient>(
+        PluginConstants.PluginKind.Mcp,
+        (sp, _) => sp.GetRequiredService<McpOAuthClient>());
+    builder.Services.AddKeyedScoped<IPluginOAuthClient>(
+        PluginConstants.PluginKind.Native,
+        (sp, _) => sp.GetRequiredService<GoogleWorkspaceOAuthClient>());
+    builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
+    builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
+
+    // MCP client registration ladder (WT-602). Registration order below IS the spec's priority
+    // order - MCP Authorization 2026-07-28 requires walking pre-registered, then Client ID
+    // Metadata Documents, then Dynamic Client Registration, in that order. Do not reorder these
+    // without re-reading that requirement; McpClientRegistrationResolver trusts DI order and
+    // performs no ordering of its own.
+    builder.Services.Configure<McpClientOptions>(builder.Configuration.GetSection("Plugins:Mcp:Client"));
+    builder.Services.AddHttpClient<IMcpAuthorizationServerDiscovery, McpAuthorizationServerDiscovery>();
+    builder.Services.AddScoped<IMcpClientRegistrar, PreregisteredClientRegistrar>();
+    builder.Services.AddScoped<IMcpClientRegistrar, CimdClientRegistrar>();
+    builder.Services.AddHttpClient<DynamicClientRegistrar>();
+    builder.Services.AddScoped<IMcpClientRegistrar>(
+        sp => sp.GetRequiredService<DynamicClientRegistrar>());
+    builder.Services.AddScoped<IMcpClientRegistrationResolver, McpClientRegistrationResolver>();
+    // Singleton: the signing keys are loaded once from configuration and the ECDsa handles are
+    // reused, so a per-request store would re-import PEM material on every call.
+    builder.Services.AddSingleton<ConfigurationMcpClientSigningKeyStore>();
+    builder.Services.AddSingleton<IMcpClientSigningKeyStore>(
+        sp => sp.GetRequiredService<ConfigurationMcpClientSigningKeyStore>());
+    builder.Services.AddScoped<IMcpClientMetadataProvider, McpClientMetadataProvider>();
+    builder.Services.AddScoped<IMcpClientProvisioner, McpClientProvisioner>();
+    builder.Services.AddScoped<IMcpConfirmationTokenProtector, DataProtectionMcpConfirmationTokenProtector>();
     builder.Services.AddScoped<IAssistantNotifier, AssistantNotifier>();
     builder.Services.AddScoped<IAssistantChatRequestPublisher, RedisAssistantChatRequestPublisher>();
+
+    builder.Services.AddGrpcClient<WorkspaceService.WorkspaceServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:WorkspaceServiceUrl",
+            "http://localhost:50056");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
     // The OpenAI tool-calling loop runs in ai_assistant_worker (Python) — this service only
     // publishes the chat request (see IAssistantChatRequestPublisher) and consumes the result
@@ -71,7 +154,9 @@ try
         options =>
         {
             options.TokenValidationParameters.NameClaimType = "email";
-            options.TokenValidationParameters.RoleClaimType = "role";
+            // Roles arrive under ClaimTypes.Role (the auth service issues them that way), so the
+            // default RoleClaimType is the one that matches; forcing the short "role" type left
+            // every role check in this service unable to see the caller's roles.
 
             options.Events = new JwtBearerEvents
             {
@@ -117,6 +202,10 @@ try
     {
         options.AddPolicy("default", policy => policy.RequireAuthenticatedUser());
     });
+
+    // POST /plugins/catalog writes the global catalog, so it takes the platform system-admin gate
+    // shared with auth/billing/notification (role 'admin'), not the workspace 'Admin' role.
+    builder.Services.AddWarpTalkSystemAdminAuthorization();
 
     builder.Services.AddSignalR();
 

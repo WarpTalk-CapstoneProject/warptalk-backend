@@ -42,6 +42,17 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     /// </summary>
     private const string ParticipantAdmittedCommand = "ParticipantAdmitted";
 
+    /// <summary>
+    /// WT-572. The relay command TranslationRoomRedisSubscriberService turns into the
+    /// "ParticipantKicked" SignalR event.
+    ///
+    /// "Kick", not "ParticipantKicked" — the command on the wire and the event delivered to the
+    /// browser have different names here, which is why the missing half was easy to miss by
+    /// grepping. See the relay's own branch: it matches Command == "Kick" and sends
+    /// "ParticipantKicked" to the room group.
+    /// </summary>
+    private const string KickCommand = "Kick";
+
     public TranslationRoomParticipantService(
         IUnitOfWork unitOfWork,
         IWorkspaceMemberDirectory workspaceMemberDirectory,
@@ -248,6 +259,44 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     /// unnotified guest can still press Refresh Status, but failing the host's Approve after the
     /// row is already CONNECTED would be strictly worse.
     /// </summary>
+    /// <summary>
+    /// WT-572. Same channel, same envelope shape and same failure posture as
+    /// <see cref="PublishParticipantAdmittedAsync"/> — deliberately, so the two cannot drift.
+    ///
+    /// A relay failure does NOT fail the kick. The roster row is already KICKED, which is what
+    /// stops the rejoin (BR-010), and LiveKit eviction still follows. Failing the host's action
+    /// after the terminal status is written would leave the host believing the person is still in
+    /// the room when the room service says otherwise — the worse of the two disagreements.
+    /// </summary>
+    private async Task PublishParticipantKickedAsync(Guid translationRoomId, Guid? kickedUserId)
+    {
+        if (_redisStateRepository is null || kickedUserId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = KickCommand,
+                RoomId = translationRoomId.ToString(),
+                UserId = kickedUserId.Value.ToString()
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception publishEx)
+        {
+            _logger.LogError(
+                publishEx,
+                "Failed to publish Kick for RoomId: {RoomId}, UserId: {UserId}. The participant is KICKED and "
+                + "cannot rejoin, but their open tab will not be told why it was dropped.",
+                translationRoomId,
+                kickedUserId);
+        }
+    }
+
     private async Task PublishParticipantAdmittedAsync(Guid translationRoomId, Guid? admittedUserId)
     {
         if (_redisStateRepository is null || admittedUserId is null)
@@ -315,6 +364,21 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
 
             _participantRepository.Update(participant);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-572: TELL THE PERSON. Two of the three links already existed.
+            //
+            // The web client has handled "ParticipantKicked" since BR-159 — toast, close the
+            // meeting, replace the route — and the Gateway relay has turned a "Kick" command into
+            // that event for just as long. Nothing ever published the command, so the chain ran
+            // dead from its first link and the kicked participant stayed in the room: still on
+            // LiveKit, still receiving transcript, and only stopped when they tried to send a chat
+            // message, because chat is the one surface that re-reads the roster per action.
+            //
+            // The eviction itself is not this method's job and already works — MeetingRoomService
+            // calls LiveKit RemoveParticipant right after this, via gRPC. But a client that is
+            // dropped from LiveKit without being told WHY has no reason not to reconnect, and the
+            // meeting page reconnects on principle. This event is what makes the removal stick.
+            await PublishParticipantKickedAsync(translationRoomId, participant.UserId);
 
             return Result.Success();
         }

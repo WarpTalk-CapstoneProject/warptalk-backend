@@ -151,6 +151,8 @@ public class GlossariesController : ControllerBase
         {
             "NOT_FOUND" => NotFound(error),
             "BAD_REQUEST" => BadRequest(error),
+            // WT-601: a duplicate term is the caller's to fix, and 500 told them it was ours.
+            "CONFLICT" => Conflict(error),
             "UNAUTHORIZED" => StatusCode(403, error),
             _ => StatusCode(500, error)
         };

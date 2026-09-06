@@ -1,6 +1,8 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -288,5 +290,145 @@ public class MicrophoneNoiseReductionTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    // ── the client's own denoiser, reported back ─────────────────────────────────────────────
+    //
+    // A different denoiser from everything above: Krisp, running in the participant's browser,
+    // before the audio is ever published. It is here because it fails SILENTLY — enabling it asks
+    // the LiveKit project whether it is entitled and livekit-client never awaits the answer — so
+    // until this existed, "is noise suppression working in production" had no answer outside one
+    // participant's browser console.
+
+    private (MicrophoneNoiseReductionService Service, RecordingLogger Log) WithLog()
+    {
+        var log = new RecordingLogger();
+        return (new MicrophoneNoiseReductionService(_participants.Object, _redis.Object, log), log);
+    }
+
+    [Fact]
+    public async Task AWorkingFilterIsRecordedToo()
+    {
+        // Not only the failures. "It worked for everyone except this one person" and "it has never
+        // worked for anybody" are different problems, and only the successes separate them.
+        IsAParticipant(GuestId);
+        var (service, log) = WithLog();
+
+        var result = await service.ReportClientSuppressionAsync(
+            RoomId, GuestId, new ReportNoiseSuppressionDto(true, "krisp", null));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value);
+        Assert.Contains(log.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("ACTIVE"));
+        _redis.Verify(
+            r => r.StringSetAsync(ReportKeyFor(GuestId), "krisp", It.IsAny<TimeSpan?>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ADegradedFilterIsAWarningAndNotAnError()
+    {
+        // The microphone is fine — the web client restores the browser's own suppression BEFORE it
+        // reports. This is a downgrade, and an Error level would page somebody for working audio.
+        // It still has to be a level an alert can key on: every participant reporting it means the
+        // LiveKit project is not entitled at all, which no amount of reloading will fix.
+        IsAParticipant(GuestId);
+        var (service, log) = WithLog();
+
+        var result = await service.ReportClientSuppressionAsync(
+            RoomId,
+            GuestId,
+            new ReportNoiseSuppressionDto(false, "browser", "Krisp attached but did not enable"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value);
+        Assert.Contains(log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("DEGRADED"));
+        Assert.DoesNotContain(log.Entries, e => e.Level == LogLevel.Error);
+        _redis.Verify(
+            r => r.StringSetAsync(ReportKeyFor(GuestId), "degraded:browser", It.IsAny<TimeSpan?>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task AnUnboundedReasonCannotFillTheServiceLog()
+    {
+        // The one field an attacker controls the length of. Structured logging passes it as a
+        // parameter rather than a format string, so the risk is volume, not injection — and volume
+        // is enough when a client can post this on every track change.
+        IsAParticipant(GuestId);
+        var (service, log) = WithLog();
+
+        await service.ReportClientSuppressionAsync(
+            RoomId, GuestId, new ReportNoiseSuppressionDto(false, "browser", new string('x', 5000)));
+
+        var warning = Assert.Single(log.Entries, e => e.Level == LogLevel.Warning);
+        Assert.DoesNotContain(new string('x', 400), warning.Message);
+    }
+
+    [Fact]
+    public async Task AnUnknownProcessorIsRefusedRatherThanLogged()
+    {
+        // This value is what somebody will group a dashboard by. Free text makes the grouping
+        // meaningless, so it is refused at the edge like the mode strings above.
+        IsAParticipant(GuestId);
+
+        var result = await _service.ReportClientSuppressionAsync(
+            RoomId, GuestId, new ReportNoiseSuppressionDto(true, "something-else", null));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SomebodyNotInTheMeetingCannotWriteIntoItsLog()
+    {
+        // An endpoint that writes a log line for any room id on request is a log nobody can trust.
+        var result = await _service.ReportClientSuppressionAsync(
+            RoomId, StrangerId, new ReportNoiseSuppressionDto(false, "browser", "nope"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ARedisFailureDoesNotFailTheReport()
+    {
+        // The opposite rule from SetAsync above, deliberately. There the write IS the feature; here
+        // the log line is, and it has already happened. Failing would report a diagnostics problem
+        // to a participant as though their microphone were broken.
+        IsAParticipant(GuestId);
+        _redis.Setup(r => r.StringSetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan?>()))
+            .ThrowsAsync(new InvalidOperationException("redis is down"));
+        var (service, log) = WithLog();
+
+        var result = await service.ReportClientSuppressionAsync(
+            RoomId, GuestId, new ReportNoiseSuppressionDto(true, "krisp", null));
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(log.Entries, e => e.Message.Contains("ACTIVE"));
+    }
+
+    private static string ReportKeyFor(Guid userId) =>
+        $"translationRoom:{RoomId}:participant:{userId.ToString().ToLowerInvariant()}:noise_suppression";
+
+    /// <summary>
+    /// A real ILogger rather than a Moq expression. What these tests assert is the LEVEL and the
+    /// text, and the Moq incantation for that is unreadable enough to hide a mistake in.
+    /// </summary>
+    private sealed class RecordingLogger : ILogger<MicrophoneNoiseReductionService>
+    {
+        public readonly List<(LogLevel Level, string Message)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }

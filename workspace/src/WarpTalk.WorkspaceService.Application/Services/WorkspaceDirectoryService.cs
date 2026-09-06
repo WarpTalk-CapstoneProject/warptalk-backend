@@ -376,7 +376,8 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             // applies for documents.
             config.AiUsagePolicy?.AllowExternalLlm ?? true,
             config.AiUsagePolicy?.UseGlobalGlossary ?? true,
-            config.AllowedTargetLanguages?.ToArray() ?? Array.Empty<string>()));
+            config.AllowedTargetLanguages?.ToArray() ?? Array.Empty<string>(),
+            config.AllowAnyPlugins));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(

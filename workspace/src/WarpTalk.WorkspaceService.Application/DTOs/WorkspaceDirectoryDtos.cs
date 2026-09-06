@@ -39,7 +39,8 @@ public record WorkspaceSettingsSnapshotDto(
     /// WT-466: the workspace's allowed-language whitelist. EMPTY MEANS UNRESTRICTED — the same
     /// reading <c>ValidateMeetingCreationAsync</c> gives it — never "no language permitted".
     /// </summary>
-    IReadOnlyList<string> AllowedTargetLanguages
+    IReadOnlyList<string> AllowedTargetLanguages,
+    bool AllowAnyPlugins = true
 );
 
 public record WorkspacePreflightDto(

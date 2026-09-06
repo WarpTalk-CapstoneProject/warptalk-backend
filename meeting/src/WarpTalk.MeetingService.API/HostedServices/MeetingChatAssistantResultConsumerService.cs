@@ -254,6 +254,16 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             return;
         }
 
+        if (resultType == "question")
+        {
+            await notifier.BroadcastAssistantQuestionAsync(
+                groupRoomId,
+                request.Id,
+                fields.GetValueOrDefault("tool_calls_json", ""),
+                ct);
+            return;
+        }
+
         // `tool_call_completed` belongs with these and was missing, which is the whole of the
         // reported defect. OpenAI's HOSTED web search never enters the worker's dispatch loop, so
         // no function call is ever dispatched for it — the worker publishes the step by hand off

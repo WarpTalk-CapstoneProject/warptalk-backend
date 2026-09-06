@@ -65,7 +65,8 @@ public static class WorkspaceMapper
             config.RequireVerifiedDomainForInternal,
             config.AiUsagePolicy?.ToDto(),
             config.IsProfanityFilterEnabled,
-            config.InvitationExpiryDays
+            config.InvitationExpiryDays,
+            AllowAnyPlugins: config.AllowAnyPlugins
         );
     }
 
@@ -84,7 +85,8 @@ public static class WorkspaceMapper
             RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
             AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration(),
             IsProfanityFilterEnabled = dto.IsProfanityFilterEnabled,
-            InvitationExpiryDays = dto.InvitationExpiryDays
+            InvitationExpiryDays = dto.InvitationExpiryDays,
+            AllowAnyPlugins = dto.AllowAnyPlugins
         };
     }
 
@@ -104,7 +106,8 @@ public static class WorkspaceMapper
             AiUsagePolicy = patch.AiUsagePolicy == null
                 ? current.AiUsagePolicy
                 : ApplyPatch(current.AiUsagePolicy, patch.AiUsagePolicy),
-            IsProfanityFilterEnabled = patch.IsProfanityFilterEnabled ?? current.IsProfanityFilterEnabled
+            IsProfanityFilterEnabled = patch.IsProfanityFilterEnabled ?? current.IsProfanityFilterEnabled,
+            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins
         };
     }
 

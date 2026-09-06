@@ -29,4 +29,12 @@ public record VerifyEmailRequest(string Token);
 
 public record ForgotPasswordRequest(string Email);
 
+/// <summary>
+/// WT-597: asks for a fresh verification link by address, with no session.
+///
+/// Shaped exactly like <see cref="ForgotPasswordRequest"/> and answered exactly like it — 204
+/// whatever the address turns out to be — because they leak the same thing if they are not.
+/// </summary>
+public record ResendVerificationRequest(string Email);
+
 public record ResetPasswordRequest(string Token, string NewPassword);

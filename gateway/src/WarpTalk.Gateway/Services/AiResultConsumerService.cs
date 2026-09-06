@@ -49,6 +49,15 @@ public sealed class AiResultConsumerService : BackgroundService
     // translationRoomId → CancellationTokenSource (for stopping consumers when translationRoom ends)
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _translationRoomCts = new();
 
+    /// <summary>
+    /// "{translationRoomId}:{speakerId}" → the speaker's display name. WT-534.
+    ///
+    /// A name does not change during a meeting, so the Redis read happens once per speaker per
+    /// room rather than once per sentence. Same unbounded-per-room shape as _roomPolicyCache
+    /// above, and bounded in practice by rooms × participants.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _speakerNameCache = new();
+
     public AiResultConsumerService(
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
@@ -233,6 +242,49 @@ public sealed class AiResultConsumerService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Whether this failure is a consumer group that no longer exists — and if so, put it back.
+    /// </summary>
+    /// <remarks>
+    /// WT-387. EnsureConsumerGroupWithRetryAsync runs ONCE, before each consume loop starts. A
+    /// consumer group lives inside its stream, so deleting the stream deletes the group with it,
+    /// and from then on every XREADGROUP answers NOGROUP. That landed in the loop's generic catch,
+    /// which logged and slept — forever. The pipeline was dead for the life of the process while
+    /// the service went on reporting healthy, which is exactly the report: live transcript stops
+    /// mid-meeting and never resumes.
+    ///
+    /// Two things delete a stream, and BOTH are in production today:
+    ///
+    ///   * REDIS_STREAM_TTL_SECONDS=3600, added as the mitigation for this very incident. Any
+    ///     stream that goes quiet for an hour expires, which makes this reachable on an ordinary
+    ///     idle night rather than only under memory pressure.
+    ///   * maxmemory-policy allkeys-lru, which is what deleted live meetings' streams on
+    ///     2026-08-14 to make room (see deploy/production/app.compose.yml).
+    ///
+    /// Recreating is safe and cheap: EnsureConsumerGroupAsync passes createStream:true and
+    /// swallows BUSYGROUP, so it is a no-op when the group is already there. Messages published
+    /// while the stream did not exist are genuinely gone — nothing can recover those — but the
+    /// consumer resumes instead of staying dead until somebody restarts the gateway.
+    /// </remarks>
+    private async Task<bool> TryRestoreConsumerGroupAsync(Exception ex, string streamKey, CancellationToken ct)
+    {
+        // Matched on the message: StackExchange.Redis surfaces this as a RedisServerException
+        // whose text begins "NOGROUP No such key '…' or consumer group '…'", and there is no
+        // typed error to test instead.
+        if (ex is not RedisServerException || !ex.Message.Contains("NOGROUP", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            ex,
+            "Consumer group {Group} on {Stream} has vanished — the stream was deleted (TTL expiry or eviction). "
+            + "Recreating it; messages published while it was gone are lost.",
+            ConsumerGroupName, streamKey);
+
+        return await EnsureConsumerGroupWithRetryAsync(streamKey, ct);
+    }
+
     // ── STT Results → TranscriptSegmentReceived ──────────────
 
     private async Task ConsumeSTTResultsAsync(CancellationToken ct)
@@ -263,10 +315,21 @@ public sealed class AiResultConsumerService : BackgroundService
                         originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
                     }
 
+                    var speakerId = RedisStreamService.GetField(entry, "speaker_id") ?? "";
+
                     var segment = new TranscriptSegmentDto(
                         SegmentId: Guid.TryParse(RedisStreamService.GetField(entry, "segment_id"), out var sid) ? sid : Guid.NewGuid(),
-                        SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
-                        SpeakerName: RedisStreamService.GetField(entry, "speaker_id") ?? "Unknown",
+                        SpeakerId: Guid.TryParse(speakerId, out var spk) ? spk : Guid.Empty,
+                        // WT-534: a name, when one is known. This field carried the speaker's UUID
+                        // — the id, put in the field called Name — so the live transcript had no
+                        // name in it at all. The web client guards against printing a UUID at
+                        // somebody, so every line whose speaker was not already in the reader's
+                        // roster rendered as the literal word "Speaker", and a reader watching a
+                        // rejoin saw attribution they could not trust. The SAVED transcript never
+                        // had this problem: TranscriptRedisConsumerService resolves the name over
+                        // auth gRPC before it writes the row, so the two copies of the same
+                        // meeting disagreed about who spoke.
+                        SpeakerName: await ResolveSpeakerNameAsync(translationRoomId, speakerId),
                         OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
@@ -288,10 +351,57 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming STT results");
                 await Task.Delay(1000, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// The speaker's display name for the live transcript, falling back to their id. WT-534.
+    /// </summary>
+    /// <remarks>
+    /// Read from <c>meeting:{roomId}:speaker_names</c>, the hash the AI ingress worker fills as it
+    /// meets each speaker (WT-529) from the <c>name</c> claim on their LiveKit token. Redis rather
+    /// than auth gRPC because this runs once per sentence spoken in every live meeting, and the
+    /// ingress worker has already paid for the lookup.
+    ///
+    /// The id is the fallback, not "Unknown": it is what this field carried before, so nothing
+    /// that reads it regresses, and the web client already refuses to print a UUID as a name —
+    /// it shows "Speaker" instead, which is honest. Inventing a name here would not be.
+    /// </remarks>
+    private async Task<string> ResolveSpeakerNameAsync(string translationRoomId, string speakerId)
+    {
+        if (string.IsNullOrEmpty(speakerId)) return "Unknown";
+
+        var cacheKey = $"{translationRoomId}:{speakerId}";
+        if (_speakerNameCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        try
+        {
+            var name = await _streamService.GetHashFieldAsync(
+                $"meeting:{translationRoomId}:speaker_names", speakerId);
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                _speakerNameCache[cacheKey] = name;
+                return name;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Best-effort by design. A transcript line with a weaker name is worth delivering;
+            // one that never arrives because Redis hiccuped is not.
+            _logger.LogDebug(ex, "Speaker name lookup failed for {SpeakerId} in room {RoomId}",
+                speakerId, translationRoomId);
+        }
+
+        // Deliberately NOT cached: the ingress worker writes the hash as it meets each speaker,
+        // so a miss here is usually "not yet", and caching it would freeze the id in place for
+        // the rest of the meeting.
+        return speakerId;
     }
 
     // ── Translation Results → TranslationTextReceived ────────
@@ -349,6 +459,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming Translation results");
                 await Task.Delay(2000, ct);
             }
@@ -411,6 +523,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming TTS results");
                 await Task.Delay(1000, ct);
             }
@@ -484,6 +598,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming voice clone state");
                 await Task.Delay(1000, ct);
             }
@@ -570,6 +686,8 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
                 _logger.LogError(ex, "Error consuming AI Assistant results");
                 await Task.Delay(2000, ct);
             }

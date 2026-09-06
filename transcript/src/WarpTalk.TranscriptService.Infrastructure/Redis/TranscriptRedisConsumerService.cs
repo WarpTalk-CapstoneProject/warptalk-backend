@@ -37,6 +37,18 @@ public class TranscriptRedisConsumerService : BackgroundService
     private readonly Dictionary<Guid, (bool AllowExternalLlm, DateTime CachedAt)> _workspacePolicyCache = new();
     private static readonly TimeSpan WorkspacePolicyCacheDuration = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// WT-587: roomId → whether that room is to be written down, and when we last asked.
+    ///
+    /// Cached for hours rather than minutes because, unlike the workspace policy above, this
+    /// answer CANNOT change while the meeting runs: UpdateTranslationRoomSettingsAsync refuses
+    /// every settings edit once a room leaves SCHEDULED/WAITING. Re-asking per utterance would be
+    /// one gRPC round trip per sentence per meeting to learn a value that is fixed for the
+    /// meeting's whole life.
+    /// </summary>
+    private readonly Dictionary<Guid, (bool SaveTranscript, DateTime CachedAt)> _roomRetentionCache = new();
+    private static readonly TimeSpan RoomRetentionCacheDuration = TimeSpan.FromHours(4);
+
     public TranscriptRedisConsumerService(
         IConnectionMultiplexer redis,
         ILogger<TranscriptRedisConsumerService> logger,
@@ -289,6 +301,28 @@ public class TranscriptRedisConsumerService : BackgroundService
             return true;
         }
 
+        // WT-587: an ephemeral meeting stops here — captions and translation have already
+        // happened elsewhere, and this is the step that would have written the room down.
+        //
+        // return TRUE, not false. False is "I could not handle this, try me again", which after a
+        // bounded number of attempts dead-letters the message and raises an alert. Declining to
+        // record a meeting nobody asked to have recorded is a success, and a dead-letter dashboard
+        // full of deliberate behaviour is how a real broken consumer gets missed.
+        if (!await ShouldPersistRoomAsync(roomId, cancellationToken))
+        {
+            return true;
+        }
+
+        // WT-605: Pause Transcript. Translation/dubbing keep running through a pause, so this
+        // segment's translate:results/tts:results will still show up later — recording its id
+        // here is what lets those two handlers recognise the coming "segment not found" as
+        // intentional rather than late-arriving.
+        if (await IsRoomTranscriptPausedAsync(roomId, cancellationToken))
+        {
+            await MarkSegmentSkippedForPauseAsync(roomId, segmentId, cancellationToken);
+            return true;
+        }
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -511,6 +545,21 @@ public class TranscriptRedisConsumerService : BackgroundService
             return true; // flush/empty messages carry no translation to persist
         }
 
+        // WT-587: the same gate, and it is NOT optional here just because the STT half already
+        // ran. In an ephemeral room no segment row was written, so the "Verify Segment Exists"
+        // check below finds nothing and returns false — which is the retry-then-dead-letter path.
+        // Every translated sentence of every ephemeral meeting would land in the dead-letter
+        // stream and be reported as a broken consumer.
+        //
+        // The room id is on the wire even though nothing else on this path uses it: every
+        // *ResultMessage.to_redis() in warptalk-ai/shared/schemas.py carries meeting_id. When it
+        // cannot be resolved we fall through and persist, exactly as this method did before.
+        if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var translationRoomId)
+            && !await ShouldPersistRoomAsync(translationRoomId, cancellationToken))
+        {
+            return true;
+        }
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -520,6 +569,18 @@ public class TranscriptRedisConsumerService : BackgroundService
             var segment = await unitOfWork.TranscriptSegments.GetByIdAsync(segmentId, cancellationToken);
             if (segment == null)
             {
+                // WT-605: this is the expected shape for EVERY segment spoken while the
+                // transcript was paused, not a rare race — translation keeps running through a
+                // pause, so its result always arrives even though ProcessSttMessageAsync above
+                // deliberately never wrote the segment it belongs to. Ack rather than retry, or
+                // this dead-letters exactly like the __MEETING_END__ sentinel did (see
+                // warptalk-ai/shared/control_markers.py).
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var pauseRoomId)
+                    && await WasSegmentSkippedForPauseAsync(pauseRoomId, segmentId, cancellationToken))
+                {
+                    return true;
+                }
+
                 _logger.LogWarning("Segment {SegmentId} not found for translation", segmentId);
                 return false; // Retry later — the STT segment message may not have landed yet
             }
@@ -657,6 +718,16 @@ public class TranscriptRedisConsumerService : BackgroundService
 
             if (currentLink == null)
             {
+                // WT-605: same reasoning as ProcessTranslateMessageAsync's segment-not-found
+                // branch — a segment spoken during a transcript pause never gets a link, but TTS
+                // (dubbing) keeps producing audio for it regardless, so this message still
+                // arrives. Ack rather than retry-then-dead-letter.
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var pauseRoomId)
+                    && await WasSegmentSkippedForPauseAsync(pauseRoomId, segmentId, cancellationToken))
+                {
+                    return true;
+                }
+
                 _logger.LogWarning("No current translation link for segment {SegmentId}/{TargetLang} — deferring audio_dubbings write", segmentId, targetLang);
                 return false; // Retry later
             }
@@ -718,6 +789,136 @@ public class TranscriptRedisConsumerService : BackgroundService
     /// WorkspaceService outage degrades to today's behavior rather than blocking every
     /// transcript segment from being embedded.
     /// </summary>
+    /// <summary>
+    /// WT-587: whether this room's meeting is to leave a written record.
+    ///
+    /// THE ONLY GATE ON PERSISTENCE, and deliberately the only one. The caption lane never read
+    /// the database — the Gateway broadcasts stt:results straight over SignalR under its own
+    /// consumer group — so live captions, live translation and the dubbed voice all keep working
+    /// for an ephemeral room. This consumer group is the one thing that turned "somebody switched
+    /// captions on" into "this conversation is now on disk forever", and it ran unconditionally.
+    ///
+    /// FAILS OPEN, TOWARDS KEEPING THE TRANSCRIPT. A room we cannot ask about is persisted, and
+    /// an older TranslationRoomService that does not send the field at all is persisted. Both
+    /// directions of this decision are irreversible in one sense and not the other: a transcript
+    /// wrongly kept can be deleted afterwards, while a transcript wrongly discarded is gone with
+    /// the audio that made it. The wire format is built for this too — see the `optional` on
+    /// save_transcript in translation_room.proto.
+    /// </summary>
+    // WT-605: Pause Transcript. A room key, not a per-segment one — this room's own gate is
+    // asked once per STT message and refreshed on every Pause/Resume, so it must be read fresh
+    // rather than cached for hours the way ShouldPersistRoomAsync's static setting is above.
+    private static string TranscriptPausedSegmentsKey(Guid roomId) => $"translationRoom:{roomId}:transcript_paused_segments";
+
+    // Comfortably longer than MaxDeliveryAttempts × the retry/recovery cadence
+    // (TranscriptConsumerPollingPolicy: 1-minute pending-claim idle, 5 attempts before
+    // dead-lettering — a few minutes worst case), so a translate:results/tts:results message
+    // that is slow to arrive still finds its segment_id recorded here. Self-cleaning: nothing
+    // has to remember to clear it on resume.
+    private static readonly TimeSpan TranscriptPausedSegmentTtl = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// WT-605: is this room's transcript currently paused (an open TranscriptPauseWindow)?
+    ///
+    /// Fails open toward KEEPING the transcript, same posture as <see cref="ShouldPersistRoomAsync"/>
+    /// below and for the same reason — a room this call cannot reach should not silently start
+    /// discarding a transcript nobody asked to pause.
+    /// </summary>
+    private async Task<bool> IsRoomTranscriptPausedAsync(Guid roomId, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var active = await unitOfWork.TranscriptPauseWindows.GetActiveWindowByRoomIdAsync(roomId, ct);
+            return active != null;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not read transcript-pause state for room {RoomId}; persisting this segment", roomId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// WT-605: record that <paramref name="segmentId"/> was deliberately never persisted because
+    /// the room was paused, so <see cref="WasSegmentSkippedForPauseAsync"/> can tell
+    /// ProcessTranslateMessageAsync/ProcessTtsMessageAsync "this is not late, it was skipped on
+    /// purpose" instead of letting them retry it into the dead-letter stream.
+    /// </summary>
+    private async Task MarkSegmentSkippedForPauseAsync(Guid roomId, Guid segmentId, CancellationToken ct)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            var key = TranscriptPausedSegmentsKey(roomId);
+            await db.SetAddAsync(key, segmentId.ToString());
+            await db.KeyExpireAsync(key, TranscriptPausedSegmentTtl);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not record segment {SegmentId} as pause-skipped for room {RoomId}", segmentId, roomId);
+        }
+    }
+
+    /// <summary>
+    /// WT-605: fails open toward the OLD behaviour (retry) on a Redis error — a lookup failure
+    /// here must never be mistaken for "this was intentionally skipped", or a genuinely late
+    /// segment would be silently dropped instead of retried.
+    /// </summary>
+    private async Task<bool> WasSegmentSkippedForPauseAsync(Guid roomId, Guid segmentId, CancellationToken ct)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            return await db.SetContainsAsync(TranscriptPausedSegmentsKey(roomId), segmentId.ToString());
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not check pause-skip state for segment {SegmentId} in room {RoomId}", segmentId, roomId);
+            return false;
+        }
+    }
+
+    private async Task<bool> ShouldPersistRoomAsync(Guid roomId, CancellationToken ct)
+    {
+        if (_roomRetentionCache.TryGetValue(roomId, out var cached) &&
+            DateTime.UtcNow - cached.CachedAt < RoomRetentionCacheDuration)
+        {
+            return cached.SaveTranscript;
+        }
+
+        bool saveTranscript;
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var roomClient = scope.ServiceProvider
+                .GetRequiredService<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
+
+            var room = await roomClient.GetTranslationRoomByIdAsync(
+                new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomId.ToString() },
+                cancellationToken: ct);
+
+            // HasSaveTranscript, not the value alone. Absent means the responder predates this
+            // field, and proto3 would hand us `false` for it — an instruction to stop recording
+            // every meeting in the system, issued by nobody.
+            saveTranscript = !room.HasSaveTranscript || room.SaveTranscript;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not read the transcript-retention setting for room {RoomId}; persisting this meeting. "
+                + "Keeping a transcript that was meant to be ephemeral is recoverable by deleting it; "
+                + "discarding one that was meant to be kept is not.",
+                roomId);
+            saveTranscript = true;
+        }
+
+        _roomRetentionCache[roomId] = (saveTranscript, DateTime.UtcNow);
+        return saveTranscript;
+    }
+
     private async Task<bool> ResolveAllowExternalLlmAsync(
         Guid workspaceId, WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient, CancellationToken ct)
     {

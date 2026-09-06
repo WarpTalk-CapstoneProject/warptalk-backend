@@ -18,7 +18,11 @@ public record RoomSettingsRequest(
     bool? MuteOnEntry = null,
     bool? AutoRecord = null,
     bool? BreakoutsEnabled = null,
-    bool? ParticipantsCanStartTranslation = null
+    bool? ParticipantsCanStartTranslation = null,
+    // WT-587: false makes this an ephemeral meeting — captions and translation still run, nothing
+    // is written to transcript_segments. Null (the default) leaves it alone, which for a new room
+    // means TranslationRoomSettings' own TRUE.
+    bool? SaveTranscript = null
 );
 
 public record RoomSettingsResponse(
@@ -27,7 +31,11 @@ public record RoomSettingsResponse(
     bool MuteOnEntry,
     bool AutoRecord,
     bool BreakoutsEnabled,
-    bool ParticipantsCanStartTranslation
+    bool ParticipantsCanStartTranslation,
+    // WT-587. Trailing with a default so every existing positional construction site — and every
+    // client reading this record — is unaffected, and so an older caller cannot accidentally
+    // report a room as ephemeral by omission.
+    bool SaveTranscript = true
 );
 
 public record UpdateRoomSettingsRequest(
@@ -122,7 +130,11 @@ public record CreateTranslationRoomRequest(
     // WT-327: present means "this is a recurring booking, not a single meeting". Mutually
     // exclusive with ScheduledAt — the recurrence rule owns every occurrence's time, so a
     // second, contradictory time on the same request is rejected rather than silently ignored.
-    RecurrenceRequest? Recurrence = null
+    RecurrenceRequest? Recurrence = null,
+    string? ExternalProvider = null,
+    string? ExternalMeetingUrl = null,
+    string? ExternalCalendarEventId = null,
+    string? ExternalCalendarEventUrl = null
 );
 
 /// <summary>WT-327: what creating a recurring booking returns.</summary>
@@ -202,7 +214,11 @@ public record TranslationRoomDto(
     /// "0/100" however many people attended it. Trailing and defaulted so every existing
     /// positional construction site still compiles.
     /// </summary>
-    int AttendedCount = 0
+    int AttendedCount = 0,
+    string? ExternalProvider = null,
+    string? ExternalMeetingUrl = null,
+    string? ExternalCalendarEventId = null,
+    string? ExternalCalendarEventUrl = null
 );
 
 public record TranslationRoomListItemDto(
@@ -238,7 +254,11 @@ public record TranslationRoomListItemDto(
     /// ParticipantCount is live occupancy and is 0 for every finished meeting, which is why an
     /// ended room showed "0/100" no matter how many attended.
     /// </summary>
-    int AttendedCount = 0
+    int AttendedCount = 0,
+    string? ExternalProvider = null,
+    string? ExternalMeetingUrl = null,
+    string? ExternalCalendarEventId = null,
+    string? ExternalCalendarEventUrl = null
 );
 
 /// <summary>

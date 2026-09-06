@@ -31,7 +31,31 @@ public record WorkspaceSettingsDto(
     /// </summary>
     int? MaxActiveRoomsCeiling = null,
     /// <summary>Provenance of the ceiling — <c>plan:enterprise</c>, <c>platform_default</c>, … Null with the ceiling.</summary>
-    string? MaxActiveRoomsCeilingSource = null
+    string? MaxActiveRoomsCeilingSource = null,
+    bool AllowAnyPlugins = true,
+    /// <summary>
+    /// How many target languages this workspace's plan permits IN ONE MEETING. WT-500.
+    ///
+    /// Not a cap on <see cref="AllowedTargetLanguages"/>, and deliberately not turned into one:
+    /// the allowlist says which languages a meeting may choose FROM, and the plan says how many it
+    /// may choose AT ONCE. A workspace permitting six and running three-language meetings is a
+    /// coherent configuration, so clamping the list would take away something nobody was misusing.
+    ///
+    /// What was wrong is that the quota was invisible until it fired. It is enforced at meeting
+    /// creation (WorkspaceDirectoryService.ValidatePlanLanguageQuota), so an owner who enabled six
+    /// languages here got no warning at all and then a refusal at the point of creating a meeting —
+    /// with nothing on the settings screen connecting the two. That is the same defect
+    /// MaxActiveRoomsCeiling above was added to fix, one field across.
+    ///
+    /// Resolved through <c>Limit</c>, NOT <c>SelfServiceLimit</c>, because that is the function
+    /// meeting creation calls. Reporting a ceiling stricter than the one actually applied would be
+    /// a new version of the same lie.
+    ///
+    /// Null when no plan quota is in force — cold start, or no live subscription.
+    /// </summary>
+    int? MaxLanguagesCeiling = null,
+    /// <summary>Provenance of the language ceiling. Null with the ceiling.</summary>
+    string? MaxLanguagesCeilingSource = null
 );
 
 public record WorkspaceSettingsPatchRequest(
@@ -45,7 +69,8 @@ public record WorkspaceSettingsPatchRequest(
     bool? AllowExternalCollaboration = null,
     bool? RequireVerifiedDomainForInternal = null,
     AiUsagePolicyPatchDto? AiUsagePolicy = null,
-    bool? IsProfanityFilterEnabled = null
+    bool? IsProfanityFilterEnabled = null,
+    bool? AllowAnyPlugins = null
 );
 
 public record AiUsagePolicyPatchDto(

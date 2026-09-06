@@ -45,7 +45,8 @@ public static class TranslationRoomMapper
             settings.MuteOnEntry,
             settings.AutoRecord,
             settings.BreakoutsEnabled,
-            settings.ParticipantsCanStartTranslation);
+            settings.ParticipantsCanStartTranslation,
+            settings.SaveTranscript);
     }
 
     /// <summary>
@@ -81,7 +82,11 @@ public static class TranslationRoomMapper
             // WT-327: no artifacts on this path; named so the series id below cannot be
             // mistaken for the artifact list.
             Artifacts: null,
-            SeriesId: room.SeriesId
+            SeriesId: room.SeriesId,
+            ExternalProvider: room.ExternalProvider,
+            ExternalMeetingUrl: room.ExternalMeetingUrl,
+            ExternalCalendarEventId: room.ExternalCalendarEventId,
+            ExternalCalendarEventUrl: room.ExternalCalendarEventUrl
         );
     }
 
@@ -104,6 +109,10 @@ public static class TranslationRoomMapper
             TranslationRoomCode = roomCode,
             Status = status,
             TranslationRoomType = roomType,
+            ExternalProvider = request.ExternalProvider,
+            ExternalMeetingUrl = request.ExternalMeetingUrl,
+            ExternalCalendarEventId = request.ExternalCalendarEventId,
+            ExternalCalendarEventUrl = request.ExternalCalendarEventUrl,
             // The type sets the seat count unless the caller asked for a specific one — a
             // Virtual Appointment is 1:1 and a Live Event is not, and neither should silently
             // inherit whatever number a client hardcoded.
@@ -298,6 +307,10 @@ public static class TranslationRoomMapper
             // No meeting-type default: WT-371 wants host-only unless a host says otherwise, and
             // seeding it per type would put the looser stance back where nobody chose it.
             ParticipantsCanStartTranslation = requested?.ParticipantsCanStartTranslation ?? false,
+            // WT-587: likewise no per-type default. A meeting type says how a room is RUN; whether
+            // the organisation keeps a record of it is not something a room template should decide
+            // quietly, and the one direction that loses data has to be asked for out loud.
+            SaveTranscript = requested?.SaveTranscript ?? true,
         };
     }
 
@@ -329,7 +342,11 @@ public static class TranslationRoomMapper
             settings,
             participantCount,
             artifacts,
-            room.SeriesId
+            room.SeriesId,
+            ExternalProvider: room.ExternalProvider,
+            ExternalMeetingUrl: room.ExternalMeetingUrl,
+            ExternalCalendarEventId: room.ExternalCalendarEventId,
+            ExternalCalendarEventUrl: room.ExternalCalendarEventUrl
         );
     }
 }

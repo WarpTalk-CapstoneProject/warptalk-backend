@@ -157,6 +157,13 @@ public class GlossaryService : IGlossaryService
 
             return Result.Success();
         }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            _logger.LogWarning(ex, "Duplicate term rejected for glossary {GlossaryId}", glossaryId);
+            return Result.Failure(
+                "That term is already in this glossary. Edit the existing entry to change its translation.",
+                "CONFLICT");
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error adding term to glossary {GlossaryId}", glossaryId);
@@ -178,9 +185,11 @@ public class GlossaryService : IGlossaryService
     /// either — "100 imported" when 60 were written is how somebody comes to believe a term exists
     /// that does not. Both numbers go back to the caller.
     ///
-    /// The dedupe key is (SourceTerm, TargetTerm), case-insensitive, and it checks the incoming
-    /// batch as well as the stored rows: a spreadsheet with the same pair twice must not become two
-    /// rows just because neither existed when the request arrived.
+    /// The dedupe key is SourceTerm, case-insensitive, and it checks the incoming batch as well as
+    /// the stored rows: a spreadsheet naming the same term twice must not become two rows just
+    /// because neither existed when the request arrived. WT-601 — the key has to be the one the
+    /// unique index uses (glossary_id, source_term), or the rows this check lets through are
+    /// refused by Postgres instead, and a duplicate row arrives as a 500.
     ///
     /// Embedding requests are published AFTER the commit, one per written term, and a failure to
     /// publish does not fail the import — the terms are saved and the indexer is a follower.
@@ -200,9 +209,25 @@ public class GlossaryService : IGlossaryService
             var existing = await _unitOfWork.GlossaryTerms.FindAsync(
                 t => t.GlossaryId == glossaryId, cancellationToken);
 
+            // WT-601: the key is the SOURCE TERM, because that is what the database enforces.
+            //
+            // This was keyed on (source, target), which let two rows with the same term and
+            // different translations both pass — and then
+            // `glossary_terms_glossary_id_source_term_idx`, a UNIQUE index on
+            // (glossary_id, source_term), refused the second one at SaveChangesAsync. The
+            // DbUpdateException fell into the catch-all below, came back as INTERNAL_ERROR, and
+            // the controller answered 500: "Something went wrong on the server" for a file whose
+            // only problem was that it named a word twice.
+            //
+            // A glossary answers "how do we translate this term", so one term cannot have two
+            // answers in it. Two rows for the same term is a duplicate whatever the second
+            // column says, and telling the person which term collided is the whole point.
             var seen = new HashSet<string>(
-                existing.Select(t => $"{t.SourceTerm}{t.TargetTerm}"),
+                existing.Select(t => t.SourceTerm.Trim()),
                 StringComparer.OrdinalIgnoreCase);
+            var storedTargets = existing
+                .GroupBy(t => t.SourceTerm.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().TargetTerm, StringComparer.OrdinalIgnoreCase);
 
             var errors = new List<string>();
             var written = new List<GlossaryTerm>();
@@ -218,12 +243,15 @@ public class GlossaryService : IGlossaryService
                     continue;
                 }
 
-                // The unit separator is the delimiter on purpose: a term may legitimately contain a
-                // comma, a pipe or a colon, and any of those as a key separator would collide two
-                // distinct pairs into one.
-                if (!seen.Add($"{source}{target}"))
+                if (!seen.Add(source))
                 {
-                    errors.Add($"'{source}' → '{target}': already in this glossary.");
+                    // Named apart, because they are two different things to fix: one is a file
+                    // that repeats itself, the other is a re-import of terms already here.
+                    errors.Add(storedTargets.TryGetValue(source, out var storedTarget)
+                        ? (string.Equals(storedTarget?.Trim(), target, StringComparison.OrdinalIgnoreCase)
+                            ? $"'{source}': already in this glossary."
+                            : $"'{source}': already in this glossary as '{storedTarget}'. Edit the existing term to change it.")
+                        : $"'{source}': listed more than once in this file. Only the first was imported.");
                     continue;
                 }
 
@@ -249,6 +277,23 @@ public class GlossaryService : IGlossaryService
                 Imported: written.Count,
                 Skipped: dto.Terms.Count - written.Count,
                 Errors: errors));
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            // The check above should have caught every duplicate. Reaching here means a row was
+            // written between reading the glossary and saving, which is a fact about the file and
+            // the caller can act on it — unlike the 500 this used to become.
+            _logger.LogWarning(ex, "Duplicate term rejected while importing into glossary {GlossaryId}", glossaryId);
+            return Result.Failure<BulkImportGlossaryTermsResultDto>(
+                "One of these terms is already in this glossary. Nothing was imported — remove the duplicate and try again.",
+                "CONFLICT");
+        }
+        catch (Exception ex) when (PersistenceConflict.IsValueTooLong(ex))
+        {
+            _logger.LogWarning(ex, "Over-long value rejected while importing into glossary {GlossaryId}", glossaryId);
+            return Result.Failure<BulkImportGlossaryTermsResultDto>(
+                "A cell in this file is longer than the column allows. Terms and translations are limited to 200 characters, and Field to 50.",
+                "BAD_REQUEST");
         }
         catch (Exception ex)
         {

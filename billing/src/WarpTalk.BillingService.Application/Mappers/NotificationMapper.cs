@@ -35,12 +35,27 @@ public static class NotificationMapper
             Id = Guid.NewGuid().ToString(),
             UserId = userId.ToString(),
             Type = BillingMessageConstants.Notifications.Types.SubscriptionChanged,
-            Title = BillingMessageConstants.Notifications.Titles.SubscriptionUpdated,
+            Title = SubscriptionTitleFor(action),
             Content = string.Format(BillingMessageConstants.Notifications.Templates.SubscriptionChangedContent, action, planName),
             PayloadJson = "{}",
             CreatedAt = DateTime.UtcNow.ToString("O")
         };
     }
+
+    /// <summary>
+    /// WT-599: the title says which of the three things happened.
+    ///
+    /// Unknown actions keep the generic title rather than inventing one — a new action added
+    /// without a title here should read as vague, not as the wrong event.
+    /// </summary>
+    private static string SubscriptionTitleFor(string action) => action switch
+    {
+        BillingMessageConstants.Notifications.ActionCreated =>
+            BillingMessageConstants.Notifications.Titles.SubscriptionStarted,
+        BillingMessageConstants.Notifications.ActionCancelled =>
+            BillingMessageConstants.Notifications.Titles.SubscriptionCancelled,
+        _ => BillingMessageConstants.Notifications.Titles.SubscriptionUpdated,
+    };
 
     public static RealtimeNotificationMessage ToPlanChangedMessage(string action, string planName, string? details)
     {

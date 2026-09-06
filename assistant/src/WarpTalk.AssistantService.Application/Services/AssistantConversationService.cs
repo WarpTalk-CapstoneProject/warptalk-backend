@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Entities;
@@ -129,138 +129,14 @@ public class AssistantConversationService : IAssistantConversationService
             .Append(new ChatTurnDto("user", userMessage.Content))
             .ToList();
 
-        var pageContextJson = SerializePageContext(request.PageContext, conversation.WorkspaceId);
-        var mentionsJson = SerializeMentions(request.Mentions, conversation.WorkspaceId);
-        var attachmentsJson = SerializeAttachments(request.Attachments);
+        var pageContextJson = AssistantConversationPayloadSerializer.SerializePageContext(request.PageContext, conversation.WorkspaceId);
+        var mentionsJson = AssistantConversationPayloadSerializer.SerializeMentions(request.Mentions, conversation.WorkspaceId);
+        var attachmentsJson = AssistantConversationPayloadSerializer.SerializeAttachments(request.Attachments);
 
         await _chatRequestPublisher.PublishAsync(
             assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, attachmentsJson, ct);
 
         return Result.Success(new SendAssistantMessageResponse(userMessage.Id, assistantMessage.Id));
-    }
-
-    /// <summary>
-    /// WT-474: the attachments for this turn, validated before they leave this service.
-    ///
-    /// This is the one field of the request that can be megabytes long, and the only one a caller
-    /// can fill with arbitrary bytes, so the limits are enforced here rather than trusted to the
-    /// browser. The worker enforces them again — the browser's copy is a courtesy to the user,
-    /// these two are what protect the system.
-    ///
-    /// Bad entries are DROPPED, not rejected: the user's question is still a question, and failing
-    /// the whole message because one attachment was the wrong type loses the text they typed. If
-    /// nothing survives, the turn proceeds as a plain text message.
-    ///
-    /// ONLY `data:` URLs. An http(s) URL would make the worker fetch a caller-supplied address,
-    /// which is a request-forgery primitive rather than a feature.
-    ///
-    /// The accepted types mirror the worker's whitelist. Letting anything else through would reach
-    /// OpenAI as a confusing 400, or be silently ignored — and a user whose attachment was quietly
-    /// dropped reads the answer as the model lying.
-    /// </summary>
-    private static string? SerializeAttachments(List<AssistantAttachmentDto>? attachments)
-    {
-        if (attachments == null || attachments.Count == 0) return null;
-
-        var accepted = attachments
-            .Where(attachment => !string.IsNullOrWhiteSpace(attachment.DataUrl))
-            .Where(attachment => attachment.DataUrl.StartsWith("data:", StringComparison.Ordinal))
-            .Where(attachment => attachment.DataUrl.Length <= MaxAttachmentDataUrlChars)
-            .Where(attachment => IsSupportedAttachment(attachment.DataUrl))
-            .Take(MaxAttachmentsPerTurn)
-            .Select(attachment => new
-            {
-                dataUrl = attachment.DataUrl,
-                name = attachment.Name ?? "",
-                mimeType = attachment.MimeType ?? "",
-            })
-            .ToList();
-
-        return accepted.Count == 0 ? null : JsonSerializer.Serialize(accepted);
-    }
-
-    /// <summary>
-    /// Reads the type off the DATA URL, never off the caller's MimeType field — the two can
-    /// disagree, and the bytes are the only side that decides how OpenAI reads them.
-    /// </summary>
-    private static bool IsSupportedAttachment(string dataUrl)
-    {
-        var semicolon = dataUrl.IndexOf(';', StringComparison.Ordinal);
-        if (semicolon <= 5) return false;
-
-        var mime = dataUrl[5..semicolon];
-        return mime.StartsWith("image/", StringComparison.Ordinal)
-            || SupportedDocumentMimeTypes.Contains(mime);
-    }
-
-    /// <summary>Mirrors ai_assistant_worker.chat_worker.DOCUMENT_MIME_TYPES.</summary>
-    private static readonly HashSet<string> SupportedDocumentMimeTypes = new(StringComparer.Ordinal)
-    {
-        "application/pdf",
-        "text/plain",
-        "text/markdown",
-        "text/csv",
-        "application/json",
-    };
-
-    /// <summary>At most four attachments in one question; past that it is a document set, not a hint.</summary>
-    private const int MaxAttachmentsPerTurn = 4;
-
-    /// <summary>~7MB of base64, a little over 5MB of file. Larger is likelier to be refused by the model than answered.</summary>
-    private const int MaxAttachmentDataUrlChars = 7_000_000;
-
-    /// <summary>
-    /// Serializes the frontend's ambient page-context hint for the Python worker, scoping it
-    /// to the conversation's own workspace — a client can't smuggle in ambient context from a
-    /// workspace it isn't even chatting in. This is the .NET-side authority check; anything the
-    /// assistant needs beyond this thin snapshot is fetched by a tool using the caller's own
-    /// bearer token, not from this payload.
-    /// </summary>
-    private static string? SerializePageContext(AssistantPageContextDto? pageContext, Guid conversationWorkspaceId)
-    {
-        if (pageContext == null || string.IsNullOrWhiteSpace(pageContext.PageType))
-            return null;
-
-        if (!string.IsNullOrEmpty(pageContext.WorkspaceId)
-            && Guid.TryParse(pageContext.WorkspaceId, out var contextWorkspaceId)
-            && contextWorkspaceId != conversationWorkspaceId)
-        {
-            return null;
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            pageType = pageContext.PageType,
-            entityId = pageContext.EntityId,
-            workspaceId = conversationWorkspaceId.ToString(),
-            snapshot = pageContext.Snapshot,
-        });
-    }
-
-    /// <summary>
-    /// Serializes the frontend's explicit @mentions for the Python worker, stamping the
-    /// conversation's own workspace id onto every entry — mirrors SerializePageContext's
-    /// authority check so a mention can't claim to belong to a workspace this conversation
-    /// isn't even in. Entries missing EntityType/EntityId are dropped rather than failing
-    /// the whole request.
-    /// </summary>
-    private static string? SerializeMentions(List<AssistantMentionDto>? mentions, Guid conversationWorkspaceId)
-    {
-        if (mentions == null || mentions.Count == 0)
-            return null;
-
-        var sanitized = mentions
-            .Where(m => !string.IsNullOrWhiteSpace(m.EntityType) && !string.IsNullOrWhiteSpace(m.EntityId))
-            .Select(m => new
-            {
-                entityType = m.EntityType,
-                entityId = m.EntityId,
-                label = m.Label,
-                workspaceId = conversationWorkspaceId.ToString(),
-            })
-            .ToList();
-
-        return sanitized.Count == 0 ? null : JsonSerializer.Serialize(sanitized);
     }
 
     public async Task<Result> ArchiveConversationAsync(Guid conversationId, Guid userId, CancellationToken ct = default)

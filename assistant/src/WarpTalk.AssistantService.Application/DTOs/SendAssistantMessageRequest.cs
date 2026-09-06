@@ -18,11 +18,15 @@ public record AssistantPageContextDto(
 );
 
 /// <summary>
-/// An explicit "@mention" the user attached to this message (a room, document, or member
-/// picked from the widget's @ menu) — as opposed to AssistantPageContextDto's ambient,
-/// automatic page context. EntityId is scoped to the conversation's own workspace
+/// An explicit "@mention" the user attached to this message (a room, document, member, or
+/// installed plugin picked from the widget's @ menu) — as opposed to AssistantPageContextDto's
+/// ambient, automatic page context. EntityId is scoped to the conversation's own workspace
 /// server-side (see AssistantConversationService.SerializeMentions); this DTO carries no
 /// workspace id of its own so a client can't smuggle one in from elsewhere.
+///
+/// EntityType is intentionally unvalidated here - AI worker resolves each kind against the
+/// caller's own permissions (see chat_worker.py's _format_mentions), so an unknown or
+/// inapplicable type just fails to resolve there rather than needing a second allowlist here.
 /// </summary>
 public record AssistantMentionDto(
     [Required] string EntityType,

@@ -64,6 +64,20 @@ message GetTranslationRoomResponse {
   // as "not a bridge" rather than falling back to a permissive default: the failure this guards
   // is minting a second identity into someone else's meeting.
   string translation_room_type = 12;
+  // WT-587: whether this meeting is to be written down at all. TranscriptService's persistence
+  // consumer gates every INSERT on it; false means captions and translation still run and nothing
+  // reaches transcript_segments.
+  //
+  // `optional` — i.e. real field presence — rather than a bare bool, and that is the whole point
+  // of the field's shape. proto3 defaults a bare bool to FALSE, and FALSE here means "discard this
+  // meeting's record". A reader talking to an older server, or holding a stale generated proto,
+  // would have read that default as a deliberate instruction to stop recording every room in the
+  // system, silently and irreversibly. With presence, absent means "this server predates the
+  // field", which the reader answers by persisting — the direction that loses nothing.
+  //
+  // Compare requires_approval above, which has the same proto3 default problem in the harmless
+  // direction and documents a re-fetch instead. Data loss does not get to be a fail-open case.
+  optional bool save_transcript = 13;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

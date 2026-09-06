@@ -268,4 +268,43 @@ public class TranslationRoomAudioRouteController : ControllerBase
 
         return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
     }
+
+    /// <summary>
+    /// The browser reporting what its OWN denoiser ended up doing. An observation, not a setting.
+    ///
+    /// Enhanced noise suppression runs entirely in the participant's browser, and it fails
+    /// silently: enabling it asks the LiveKit project whether it is entitled, and livekit-client
+    /// calls that path un-awaited, so a denial rejects nothing. Until this endpoint existed the
+    /// only record of the answer was a toast and a console.error in one tab — so "is noise
+    /// suppression working in production" could not be answered from the outside at all.
+    ///
+    /// Self-service like the noise-reduction pair above it, and for a stronger reason: the caller
+    /// is the only party that knows this fact.
+    /// </summary>
+    [HttpPost("noise-suppression/report")]
+    public async Task<IActionResult> ReportNoiseSuppression(
+        [FromRoute] Guid roomId,
+        [FromBody] ReportNoiseSuppressionDto dto,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _noiseReduction.ReportClientSuppressionAsync(roomId, userId.Value, dto, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(new { Recorded = true, Enabled = result.Value });
+        }
+
+        if (result.ErrorCode == ErrorCodes.NotFound)
+        {
+            return NotFound(new { Error = result.Error, Code = result.ErrorCode });
+        }
+
+        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+    }
 }
