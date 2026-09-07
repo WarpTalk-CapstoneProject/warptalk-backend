@@ -43,6 +43,7 @@ public class TranslationRoomHubTests
             translationRoomRegistry,
             redisMock.Object,
             AlwaysHost(),
+            AnyLanguage(),
             new NullLogger<TranslationRoomHub>()
         );
 
@@ -547,6 +548,7 @@ public class TranslationRoomHubTests
             new ActiveTranslationRoomRegistry(),
             redisMock.Object,
             AlwaysHost(),
+            AnyLanguage(),
             new NullLogger<TranslationRoomHub>());
 
         var clientsMock = new Mock<IHubCallerClients>();
@@ -578,7 +580,8 @@ public class TranslationRoomHubTests
     /// verdicts exactly as they were; the host-authorization tests pass their own.
     /// </param>
     private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock, Mock<IClientProxy> GroupClientProxyMock) CreateHub(
-        IRoomHostAuthority? hostAuthority = null)
+        IRoomHostAuthority? hostAuthority = null,
+        IRoomLanguagePolicy? languagePolicy = null)
     {
         var connectionManagerMock = new Mock<IConnectionManager>();
         var redisMock = new Mock<IConnectionMultiplexer>();
@@ -600,6 +603,7 @@ public class TranslationRoomHubTests
             translationRoomRegistry,
             redisMock.Object,
             hostAuthority ?? AlwaysHost(),
+            languagePolicy ?? AnyLanguage(),
             new NullLogger<TranslationRoomHub>());
 
         var clientsMock = new Mock<IHubCallerClients>();
@@ -621,6 +625,65 @@ public class TranslationRoomHubTests
 
         return (hub, dbMock, clientsMock, clientProxyMock, groupsMock, groupClientProxyMock);
     }
+
+    // ── Workspace language policy ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// The rule the web pickers have enforced alone since WT-497. An external guest is not a member
+    /// of the room's workspace, so GET /workspaces/{id}/settings answers 403, the client reads the
+    /// missing list as "unrestricted", and every language WarpTalk knows is offered — and accepted.
+    /// The refusal has to live on the side that writes the value.
+    /// </summary>
+    [Theory]
+    [InlineData("SetSpeakLanguage")]
+    [InlineData("SetListenLanguage")]
+    public async Task SetLanguage_ShouldRefuse_WhenWorkspacePolicyExcludesIt(string method)
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub(languagePolicy: NoLanguage());
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-lang-refused");
+        var roomId = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<HubException>(() => InvokeSetLanguage(hub, method, roomId, "ja"));
+
+        // Refused means NOT WRITTEN. A throw after the hash was set would leave STT and the audio
+        // mesh on the forbidden language while the client showed an error.
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                It.IsAny<RedisKey>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<When>(),
+                It.IsAny<CommandFlags>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData("SetSpeakLanguage")]
+    [InlineData("SetListenLanguage")]
+    public async Task SetLanguage_ShouldProceed_WhenWorkspacePolicyPermitsIt(string method)
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub(languagePolicy: AnyLanguage());
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-lang-allowed");
+        var roomId = Guid.NewGuid();
+
+        await InvokeSetLanguage(hub, method, roomId, "vi");
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                It.IsAny<RedisKey>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<When>(),
+                It.IsAny<CommandFlags>()),
+            Times.Once);
+    }
+
+    private static Task InvokeSetLanguage(TranslationRoomHub hub, string method, Guid roomId, string language) => method switch
+    {
+        "SetSpeakLanguage" => hub.SetSpeakLanguage(roomId, language),
+        "SetListenLanguage" => hub.SetListenLanguage(roomId, language),
+        _ => throw new ArgumentOutOfRangeException(nameof(method), method, null),
+    };
 
     // ── Host authorization ────────────────────────────────────────────────────────
     //
@@ -728,6 +791,28 @@ public class TranslationRoomHubTests
         var mock = new Mock<IRoomHostAuthority>();
         mock.Setup(a => a.HasHostAuthorityAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        return mock.Object;
+    }
+
+    /// <summary>
+    /// "The workspace permits everything" — an empty allowedTargetLanguages, which is the state
+    /// every workspace that never set a policy is in. The permissive default keeps every
+    /// pre-existing language test in this file asserting exactly what it did before.
+    /// </summary>
+    private static IRoomLanguagePolicy AnyLanguage()
+    {
+        var mock = new Mock<IRoomLanguagePolicy>();
+        mock.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        return mock.Object;
+    }
+
+    /// <summary>A workspace whose policy excludes whatever is asked for.</summary>
+    private static IRoomLanguagePolicy NoLanguage()
+    {
+        var mock = new Mock<IRoomLanguagePolicy>();
+        mock.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
         return mock.Object;
     }
 

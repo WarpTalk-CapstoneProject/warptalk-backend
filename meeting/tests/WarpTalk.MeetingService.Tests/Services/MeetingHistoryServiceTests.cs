@@ -18,7 +18,7 @@ public class MeetingHistoryServiceTests
 {
     private readonly Mock<IUnitOfWork> _unitOfWorkMock;
     private readonly Mock<IMeetingRoomRepository> _roomRepoMock;
-    private readonly Mock<IMeetingParticipantRepository> _participantRepoMock;
+    private readonly Mock<IRtcStreamParticipantRepository> _participantRepoMock;
     private readonly Mock<IMeetingChatMessageRepository> _chatMessageRepoMock;
     private readonly MeetingHistoryService _sut;
 
@@ -29,11 +29,11 @@ public class MeetingHistoryServiceTests
     {
         _unitOfWorkMock = new Mock<IUnitOfWork>();
         _roomRepoMock = new Mock<IMeetingRoomRepository>();
-        _participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        _participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         _chatMessageRepoMock = new Mock<IMeetingChatMessageRepository>();
 
         _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(_roomRepoMock.Object);
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(_participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(_participantRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatMessageRepository).Returns(_chatMessageRepoMock.Object);
 
         _sut = new MeetingHistoryService(_unitOfWorkMock.Object);
@@ -49,7 +49,7 @@ public class MeetingHistoryServiceTests
         CreatedBy = createdBy ?? _userId,
         CreatedAt = DateTime.UtcNow.AddHours(-1),
         EndedAt = DateTime.UtcNow,
-        MeetingParticipants = new List<MeetingParticipant>()
+        RtcStreamParticipants = new List<RtcStreamParticipant>()
     };
 
     // --- GetMeetingRoomDetail Tests ---
@@ -74,7 +74,7 @@ public class MeetingHistoryServiceTests
             .ReturnsAsync(CreateRoom(createdBy: Guid.NewGuid()));
 
         _participantRepoMock.Setup(p => p.AnyAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var result = await _sut.GetMeetingRoomDetailAsync(_roomId, otherUserId);
@@ -91,8 +91,8 @@ public class MeetingHistoryServiceTests
             .ReturnsAsync(room);
 
         _participantRepoMock.Setup(p => p.FindAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<MeetingParticipant>());
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RtcStreamParticipant>());
 
         _chatMessageRepoMock.Setup(r => r.FindAsync(
                 It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -115,16 +115,16 @@ public class MeetingHistoryServiceTests
             .ReturnsAsync(room);
 
         _participantRepoMock.Setup(p => p.AnyAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
-        var participants = new List<MeetingParticipant>
+        var participants = new List<RtcStreamParticipant>
         {
             new() { Id = Guid.NewGuid(), MeetingRoomId = _roomId, UserId = _userId, ProviderIdentity = "test", IsActive = true }
         };
 
         _participantRepoMock.Setup(p => p.FindAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(participants);
 
         _chatMessageRepoMock.Setup(r => r.FindAsync(

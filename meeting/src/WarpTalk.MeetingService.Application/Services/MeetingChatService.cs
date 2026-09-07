@@ -45,7 +45,7 @@ public class MeetingChatService : IMeetingChatService
         if (room == null)
             return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isParticipant = participant != null;
 
         if (room.CreatedBy != userId && !isParticipant)
@@ -81,7 +81,7 @@ public class MeetingChatService : IMeetingChatService
         if (room == null)
             return Result.Failure<MeetingChatMessageDto>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
 
         if (room.CreatedBy != userId && !isActiveParticipant)
@@ -198,7 +198,7 @@ public class MeetingChatService : IMeetingChatService
         if (room == null)
             return Result.Failure<MeetingChatTranslationDto>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
 
         if (room.CreatedBy != userId && !isActiveParticipant)
@@ -330,7 +330,7 @@ public class MeetingChatService : IMeetingChatService
         if (room == null)
             return Result.Failure<MeetingChatMessageDto>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
 
         if (room.CreatedBy != userId && !isActiveParticipant)
@@ -378,7 +378,7 @@ public class MeetingChatService : IMeetingChatService
         if (room == null)
             return Result.Failure<MeetingChatFileDownloadResult>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isParticipant = participant != null;
 
         if (room.CreatedBy != userId && !isParticipant)
