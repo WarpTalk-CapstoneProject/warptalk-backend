@@ -67,6 +67,9 @@ try
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
     builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
+    // The operator-side lifecycle of a catalog row. Separate from the installation service because
+    // it writes the global catalog rather than one user's own rows, and is gated accordingly.
+    builder.Services.AddScoped<IPluginCatalogAdminService, PluginCatalogAdminService>();
     builder.Services.AddScoped<IMcpConfirmationTokenService, McpConfirmationTokenService>();
     builder.Services.AddScoped<PluginConnectionService>();
     builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());

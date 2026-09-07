@@ -27,6 +27,40 @@ public static class PluginConstants
     }
 
     /// <summary>
+    /// Plugin keys that a catalog row may not use, because a literal route segment of the same
+    /// name sits beside a <c>{pluginKey}</c> route under <c>api/v1/assistant/plugins</c> and
+    /// ASP.NET gives the literal precedence. A row with one of these keys is not rejected by
+    /// routing - it is silently unreachable, which is the worse failure.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><c>mcp</c> - the shared MCP OAuth callback, <c>plugins/mcp/oauth/callback</c>. It
+    /// shadows <c>plugins/{pluginKey}/oauth/callback</c>, so a row keyed <c>mcp</c> would break the
+    /// callback for every MCP plugin at once. Enforced in the database as well, by
+    /// <c>plugins_plugin_key_not_reserved</c> since 20260903120000.</item>
+    /// <item><c>catalog</c> - the admin surface, <c>plugins/catalog/{pluginKey}</c>. Its literal
+    /// first segment outranks the <c>{pluginKey}</c> of <c>plugins/{pluginKey}/connection</c> and
+    /// <c>plugins/{pluginKey}/connect-url</c>, so for a row keyed <c>catalog</c> every user-facing
+    /// two-segment call would be answered by an admin endpoint - a 403 where a connection status
+    /// belongs. Not yet in the database constraint; see the note below.</item>
+    /// </list>
+    /// <para>
+    /// The database check currently names only <c>mcp</c>. Extending it to <c>catalog</c> needs a
+    /// migration, so until one lands this list is the only guard, and it binds only the write paths
+    /// that consult it.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlyList<string> ReservedPluginKeys = ["mcp", "catalog"];
+
+    /// <summary>
+    /// True when <paramref name="pluginKey"/> collides with a literal route segment and must not be
+    /// stored as a catalog row's key. Case-insensitive: ASP.NET route matching is.
+    /// </summary>
+    public static bool IsReservedPluginKey(string? pluginKey) =>
+        pluginKey is not null
+        && ReservedPluginKeys.Contains(pluginKey.Trim(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Which integration path serves a plugin. This is the dispatch key that lets one catalog hold
     /// both hand-written providers and real MCP servers, so adding an MCP-backed app is an INSERT
     /// rather than a deploy.
@@ -106,6 +140,29 @@ public static class PluginConstants
         public const string ProviderUnavailable = "provider_unavailable";
         public const string UnknownPlugin = "unknown_plugin";
         public const string UnknownTool = "unknown_tool";
+
+        /// <summary>
+        /// A catalog edit was rejected before it reached the database: a blank label, a
+        /// non-https MCP server URL, an <c>mcp_server_url</c> on a native row. Distinct from
+        /// <see cref="InvalidToolManifest"/> so an operator UI can put the message next to the
+        /// field it belongs to.
+        /// </summary>
+        public const string InvalidCatalogUpdate = "invalid_catalog_update";
+
+        /// <summary>
+        /// A submitted tool manifest does not satisfy the tool contract. Every such failure is
+        /// caught here rather than at chat time, where a malformed manifest shows up only as
+        /// WarpBot quietly declining to use a tool.
+        /// </summary>
+        public const string InvalidToolManifest = "invalid_tool_manifest";
+
+        /// <summary>
+        /// A hard delete was refused because installations or connections still reference the row.
+        /// <c>plugin_connections_plugin_id_fkey</c> is <c>ON DELETE RESTRICT</c>, so letting the
+        /// delete through would surface as a database exception rather than an answer; refusing it
+        /// here is the same outcome said in words an operator can act on.
+        /// </summary>
+        public const string PluginInUse = "plugin_in_use";
 
         /// <summary>
         /// Every rung of the client-registration ladder was exhausted: the row has no
