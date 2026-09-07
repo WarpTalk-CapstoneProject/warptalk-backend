@@ -33,8 +33,9 @@ public class PluginInstallationService : IPluginInstallationService
         CancellationToken ct = default)
     {
         // Null when the caller names no workspace, which is the plugins settings page's own case
-        // and leaves every row unblocked - exactly the behaviour that predates WT-646.
-        var gate = await _workspacePluginGuard.ResolveAsync(workspaceId, ct);
+        // and leaves every row unblocked - exactly the behaviour that predates WT-646. One check
+        // for the whole list: the workspace's answer is the same for every row.
+        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
 
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.IsActive, ct: ct);
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(i => i.UserId == userId, ct: ct);
@@ -51,11 +52,10 @@ public class PluginInstallationService : IPluginInstallationService
                 var installation = installations.FirstOrDefault(i => i.PluginId == plugin.Id);
                 var connection = connections.FirstOrDefault(c =>
                     string.Equals(c.Provider, plugin.Provider, StringComparison.Ordinal));
-                // Reported, not filtered out. A user whose workspace has just narrowed its
-                // allowlist under an already-installed, already-connected plugin has to be able to
-                // see that row to disconnect it; dropping it from the catalog would leave them
-                // holding an OAuth grant with no way to revoke it from this product.
-                var permitted = gate.Permits(plugin.PluginKey);
+                // Reported, not filtered out. A user in a workspace that has just turned plugins
+                // off under an already-installed, already-connected plugin has to be able to see
+                // that row to disconnect it; dropping it from the catalog would leave them holding
+                // an OAuth grant with no way to revoke it from this product.
                 return PluginCatalogItemMapper.ToCatalogItem(
                     definition,
                     installation,
@@ -78,9 +78,8 @@ public class PluginInstallationService : IPluginInstallationService
             return Result.Failure<PluginCatalogItemDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
         // After the catalog lookup so an unknown key still reads as unknown rather than as
-        // forbidden, and before anything is written: this is where the allowlist and
-        // allow_member_plugin_install both apply.
-        var permitted = await _workspacePluginGuard.CanInstallAsync(workspaceId, userId, plugin.PluginKey, ct);
+        // forbidden, and before anything is written.
+        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginCatalogItemDto>(permitted.Error!, permitted.ErrorCode);
 

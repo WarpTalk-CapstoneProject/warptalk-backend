@@ -32,8 +32,7 @@ public class PluginInstallationServiceTests
     // older than the ticket reports: no allowlist, plugins permitted, member installs permitted.
     // That is what every workspace in the product looks like today, so leaving it alone is how the
     // pre-WT-646 tests keep asserting pre-WT-646 behaviour.
-    private WorkspacePluginPolicySnapshot _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
-    private string _callerRole = WorkspaceRoleConstants.Owner;
+    private bool _workspaceAllowsPlugins = true;
 
     public PluginInstallationServiceTests()
     {
@@ -305,7 +304,7 @@ public class PluginInstallationServiceTests
         // The personal plugins page's own call. It names no workspace, so no workspace policy
         // applies and nothing is blocked - which is exactly how this behaved before WT-646.
         ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin());
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().ListCatalogAsync(UserId);
 
@@ -317,102 +316,54 @@ public class PluginInstallationServiceTests
     public async Task ListCatalogAsync_ReportsBlockedRowsRatherThanHidingThem()
     {
         // What happens to a user who installed and connected google_calendar and whose admin has
-        // since narrowed the allowlist to Drive: the row stays, so they can still see and revoke a
-        // live Google grant, and it says why it is blocked.
+        // since turned plugins off for the workspace: the rows stay, so they can still see and
+        // revoke a live Google grant, and each says why it is blocked.
         ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin());
         _installationRepository.FindAsync(
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns([Installation(PluginId), Installation(CalendarPluginId)]);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowedKeys: GoogleDriveKey);
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().ListCatalogAsync(UserId, WorkspaceId);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, result.Value!.Count);
-        Assert.Null(Assert.Single(result.Value, item => item.Key == GoogleDriveKey).WorkspacePolicyBlockReason);
+        Assert.All(result.Value, item =>
+            Assert.Equal(PluginConstants.WorkspacePolicyMessages.PluginsDisabled, item.WorkspacePolicyBlockReason));
 
-        var calendar = Assert.Single(result.Value, item => item.Key == GoogleCalendarKey);
-        Assert.Equal(PluginConstants.WorkspacePolicyMessages.NotOnAllowlist, calendar.WorkspacePolicyBlockReason);
         // Still reported as installed. The rows are untouched; the block is a verdict, not a
         // rewrite of what the user has.
+        var calendar = Assert.Single(result.Value, item => item.Key == GoogleCalendarKey);
         Assert.Equal(PluginConstants.InstallationStatus.Installed, calendar.InstallationStatus);
     }
 
     [Fact]
-    public async Task ListCatalogAsync_BlocksEveryRow_WhenTheAllowlistIsEmpty()
+    public async Task ListCatalogAsync_BlocksNothing_WhenTheWorkspaceAllowsPlugins()
     {
         ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin());
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = true;
 
         var result = await CreateSut().ListCatalogAsync(UserId, WorkspaceId);
 
         Assert.True(result.IsSuccess);
-        Assert.All(result.Value!, item =>
-            Assert.Equal(PluginConstants.WorkspacePolicyMessages.NotOnAllowlist, item.WorkspacePolicyBlockReason));
-    }
-
-    [Theory]
-    [InlineData(true, null)]
-    [InlineData(false, PluginConstants.WorkspacePolicyMessages.PluginsDisabled)]
-    public async Task ListCatalogAsync_FallsBackToAllowAnyPlugins_AgainstAWorkspacePeerOlderThanWT646(
-        bool allowAnyPlugins,
-        string? expectedBlockReason)
-    {
-        // No plugin_policy message on the wire, so no allowlist and allow_any_plugins is the whole
-        // answer - the state of every workspace in the product on the day this shipped.
-        ConfigureCatalog(GoogleDrivePlugin());
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins);
-
-        var result = await CreateSut().ListCatalogAsync(UserId, WorkspaceId);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(expectedBlockReason, Assert.Single(result.Value!).WorkspacePolicyBlockReason);
+        Assert.All(result.Value!, item => Assert.Null(item.WorkspacePolicyBlockReason));
     }
 
     [Fact]
     public async Task InstallAsync_RefusesAPluginTheWorkspaceDoesNotAllow_AndWritesNothing()
     {
         ConfigureInstallablePlugin(GoogleCalendarPlugin());
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowedKeys: GoogleDriveKey);
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().InstallAsync(GoogleCalendarKey, UserId, WorkspaceId);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.WorkspacePluginNotAllowed, result.ErrorCode);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
         await _installationRepository.DidNotReceive()
             .AddAsync(Arg.Any<PluginInstallation>(), Arg.Any<CancellationToken>());
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task InstallAsync_RefusesAMember_WhenTheWorkspaceConfinesInstallationToAdmins()
-    {
-        ConfigureInstallablePlugin(GoogleDrivePlugin());
-        _workspacePolicy = TestWorkspacePluginPolicy.MembersMayNotInstall();
-        _callerRole = "Member";
-
-        var result = await CreateSut().InstallAsync(GoogleDriveKey, UserId, WorkspaceId);
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.WorkspaceInstallRequiresAdmin, result.ErrorCode);
-        await _installationRepository.DidNotReceive()
-            .AddAsync(Arg.Any<PluginInstallation>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task InstallAsync_AllowsAnAdmin_WhenTheWorkspaceConfinesInstallationToAdmins()
-    {
-        ConfigureInstallablePlugin(GoogleDrivePlugin());
-        _workspacePolicy = TestWorkspacePluginPolicy.MembersMayNotInstall();
-        _callerRole = WorkspaceRoleConstants.Admin;
-
-        var result = await CreateSut().InstallAsync(GoogleDriveKey, UserId, WorkspaceId);
-
-        Assert.True(result.IsSuccess);
-        await _installationRepository.Received(1)
-            .AddAsync(Arg.Any<PluginInstallation>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -425,7 +376,7 @@ public class PluginInstallationServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((Plugin?)null);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().InstallAsync("no_such_plugin", UserId, WorkspaceId);
 
@@ -449,7 +400,7 @@ public class PluginInstallationServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(installation);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().DisableAsync(GoogleDriveKey, UserId);
 
@@ -542,7 +493,7 @@ public class PluginInstallationServiceTests
         return new PluginInstallationService(
             _unitOfWork,
             Substitute.For<IPluginCredentialProtector>(),
-            TestWorkspacePluginPolicy.Guard(_workspacePolicy, _callerRole));
+            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
     }
 
     private static Plugin GoogleDrivePlugin()

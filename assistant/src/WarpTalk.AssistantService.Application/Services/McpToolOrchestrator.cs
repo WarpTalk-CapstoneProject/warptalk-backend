@@ -33,11 +33,14 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
 
     public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(Guid userId, Guid? workspaceId, CancellationToken ct = default)
     {
-        // One resolve for the whole list. The policy is then applied per plugin key rather than
-        // once for the request, because an allowlist admits some plugins and refuses others -
-        // the workspace-wide switch was the only thing that could ever answer for all of them.
-        var gate = await _workspacePluginGuard.ResolveAsync(workspaceId, ct);
-        if (gate.PermitsNothing)
+        // Answered for the whole list at once: the workspace either permits plugins here or it
+        // does not, so there is nothing to decide per plugin.
+        //
+        // An empty list, not a refusal. This is what WarpBot may reach for in this conversation,
+        // so in a workspace with plugins off the model never learns the tools exist and never
+        // proposes an action that would be refused downstream.
+        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        if (!permitted.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
@@ -47,11 +50,7 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         var plugins = await _unitOfWork.PluginRepository.FindAsync(
             p => installedPluginIds.Contains(p.Id) && p.IsActive, ct: ct);
 
-        // Filtered, not refused. This list is what WarpBot may reach for in this conversation, so
-        // a plugin the workspace does not permit simply is not offered - the model never learns
-        // the tool exists and so never proposes an action that would be refused downstream.
         var tools = plugins
-            .Where(plugin => gate.Permits(plugin.PluginKey).IsSuccess)
             .Select(PluginDefinitionMapper.ToDefinition)
             .SelectMany(plugin => plugin.Tools)
             .ToList();
@@ -71,12 +70,12 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (tool == null)
             return Result.Failure<McpToolExecutionResult>("Unknown MCP tool.", PluginConstants.ErrorCodes.UnknownTool);
 
-        // The last gate a plugin that fell off the allowlist has to pass. Installation and
-        // connection rows are deliberately left alone when an admin narrows the policy - see
-        // PluginInstallationService.ListCatalogAsync - so this is what actually stops the tool
-        // running, and it is checked on every call rather than at install time because the policy
-        // can change between the two.
-        var policyCheck = await _workspacePluginGuard.CanUseAsync(request.WorkspaceId, plugin.Key, ct);
+        // The last gate a plugin in a workspace that has turned plugins off has to pass.
+        // Installation and connection rows are deliberately left alone when an admin tightens the
+        // policy - see PluginInstallationService.ListCatalogAsync - so this is what actually stops
+        // the tool running, and it is checked on every call rather than at install time because
+        // the policy can change between the two.
+        var policyCheck = await _workspacePluginGuard.CanUsePluginsAsync(request.WorkspaceId, ct);
         if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,

@@ -18,7 +18,7 @@ public class WorkspacePluginPolicyGrpcClient : IWorkspacePluginPolicyClient
         _logger = logger;
     }
 
-    public async Task<WorkspacePluginPolicySnapshot> GetPluginPolicyAsync(Guid workspaceId, CancellationToken ct = default)
+    public async Task<bool> AllowsPluginUsageAsync(Guid workspaceId, CancellationToken ct = default)
     {
         try
         {
@@ -26,42 +26,20 @@ public class WorkspacePluginPolicyGrpcClient : IWorkspacePluginPolicyClient
                 new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
                 cancellationToken: ct);
 
-            // PluginPolicy is absent when the workspace service predates WT-646. That is not a
-            // workspace with an empty policy — it is a workspace that has no opinion beyond
-            // AllowAnyPlugins, and the defaults below are chosen so it behaves exactly as it did
-            // before this field existed: no allowlist, members may install, no approval gate.
-            // Reading the message's zero values instead would tell every caller that a
-            // perfectly ordinary workspace forbids member installs.
-            var pluginPolicy = response.PluginPolicy;
-            if (pluginPolicy is null)
-            {
-                return new WorkspacePluginPolicySnapshot(
-                    AllowAnyPlugins: response.AllowAnyPlugins,
-                    AllowedPluginKeys: null,
-                    AllowMemberPluginInstall: true,
-                    RequirePluginApproval: false);
-            }
-
-            return new WorkspacePluginPolicySnapshot(
-                AllowAnyPlugins: response.AllowAnyPlugins,
-                // Null, not an empty list, when no allowlist is configured — the two mean opposite
-                // things downstream and allowlist_enforced is the only thing that separates them,
-                // proto3 repeated fields having no presence of their own.
-                AllowedPluginKeys: pluginPolicy.AllowlistEnforced
-                    ? pluginPolicy.AllowedPluginKeys.ToList()
-                    : null,
-                AllowMemberPluginInstall: pluginPolicy.AllowMemberPluginInstall,
-                RequirePluginApproval: pluginPolicy.RequirePluginApproval);
+            return response.AllowAnyPlugins;
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {
             _logger.LogWarning(ex, "Workspace {WorkspaceId} was not found while checking plugin policy.", workspaceId);
-            return WorkspacePluginPolicySnapshot.Denied;
+            return false;
         }
         catch (RpcException ex)
         {
+            // Denied, not permitted. A workspace whose policy could not be read is not a workspace
+            // that permits everything, and failing open here would turn any workspace-service
+            // outage into a product-wide lifting of plugin restrictions.
             _logger.LogWarning(ex, "Workspace plugin policy check failed for workspace {WorkspaceId}.", workspaceId);
-            return WorkspacePluginPolicySnapshot.Denied;
+            return false;
         }
     }
 }
