@@ -61,10 +61,7 @@ public class WorkspacesController : ControllerBase
         "aiUsagePolicy",
         "isProfanityFilterEnabled",
         "invitationExpiryDays",
-        "allowAnyPlugins",
-        "allowedPluginKeys",
-        "allowMemberPluginInstall",
-        "requirePluginApproval"
+        "allowAnyPlugins"
     };
 
     public WorkspacesController(IWorkspaceService workspaceService)

@@ -18,13 +18,6 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
-    // Plugin policy (WT-646)
-    //
-    // A ceiling on the allowlist, not a product limit anybody is expected to reach. It exists so a
-    // settings document cannot be used to push an unbounded array into the workspace's settings
-    // JSON, which every read of the workspace deserializes.
-    public const int MaxWorkspaceAllowedPluginKeys = 100;
-
 
     // Error Messages
     public static class Errors
@@ -60,8 +53,6 @@ public static class WorkspaceConstants
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
         public const string RequireVerifiedDomainIsDerived = "Whether internal members must use a verified domain is decided by the workspace's verified domains, not set directly. Add a verified domain to require one, or revoke every verified domain to stop requiring one.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
-        public const string AllowedPluginKeyBlank = "A plugin key in the allowlist cannot be empty. Remove the entry, or replace it with a plugin key.";
-        public const string AllowedPluginKeysTooMany = "A workspace can allowlist at most 100 plugin keys.";
 
         /// <summary>
         /// PATCH /workspaces/{id}/settings rejecting a key it will not write. Format arg is the

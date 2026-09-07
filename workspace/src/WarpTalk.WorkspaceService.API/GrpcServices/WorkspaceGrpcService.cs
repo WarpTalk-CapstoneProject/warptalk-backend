@@ -197,25 +197,9 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             IsProfanityFilterEnabled = settings.IsProfanityFilterEnabled,
             AllowExternalLlm = settings.AllowExternalLlm,
             UseGlobalGlossary = settings.UseGlobalGlossary,
-            AllowAnyPlugins = settings.AllowAnyPlugins,
-            // WT-646. Always populated by this build, so its ABSENCE on the wire tells a caller it
-            // is talking to a workspace service older than WT-646 and should fall back to
-            // AllowAnyPlugins alone. allowlist_enforced carries the null-versus-empty distinction
-            // that a proto3 repeated field cannot: a workspace with no allowlist configured sends
-            // false and an empty list, which is not the same as a workspace that allowlisted
-            // nothing.
-            PluginPolicy = new WorkspacePluginPolicy
-            {
-                AllowlistEnforced = settings.AllowedPluginKeys is not null,
-                AllowMemberPluginInstall = settings.AllowMemberPluginInstall,
-                RequirePluginApproval = settings.RequirePluginApproval
-            }
+            AllowAnyPlugins = settings.AllowAnyPlugins
         };
         response.AllowedTargetLanguages.AddRange(settings.AllowedTargetLanguages);
-        if (settings.AllowedPluginKeys is not null)
-        {
-            response.PluginPolicy.AllowedPluginKeys.AddRange(settings.AllowedPluginKeys);
-        }
         return response;
     }
 
