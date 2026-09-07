@@ -203,10 +203,16 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
     /// telemetry and calling them that would make the next reader look for a degradation they
     /// would not find — but they need the same silent acceptance, or every one of them logs a
     /// rejected transition per route.
+    ///
+    /// voice_clone_ready belongs here rather than beside voice_clone_recovered: it announces that
+    /// a clone now exists, and it arrives with a speakerId the processor cannot narrow to a single
+    /// route, so accepting it as a transition would move every route in the room. See the member's
+    /// own documentation.
     /// </summary>
     private bool IsInformationalEvent(AudioRoutingEventType eventType)
     {
-        return eventType == AudioRoutingEventType.final_chunk_processed;
+        return eventType == AudioRoutingEventType.final_chunk_processed ||
+               eventType == AudioRoutingEventType.voice_clone_ready;
     }
 
     private bool IsHighFrequencyTelemetryEvent(AudioRoutingEventType eventType)
