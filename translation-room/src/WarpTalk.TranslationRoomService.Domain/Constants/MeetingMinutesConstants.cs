@@ -19,4 +19,6 @@ public static class MeetingMinutesConstants
         "This minutes document could not be read. Edit and save it before exporting.";
     public const string ErrorNumberCollision =
         "Another minutes document took that number a moment ago. Try again.";
+    public const string ErrorRevisionAlreadyOpen =
+        "Somebody else has just opened a revision of these minutes. Reload to see it.";
 }

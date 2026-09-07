@@ -18,8 +18,11 @@ public interface IMeetingMinutesRepository : IGenericRepository<MeetingMinutes>
     /// <summary>
     /// How many minutes a workspace has already numbered in a given year, so the next one can be
     /// <c>BB-{year}-{count + 1}</c>. Two callers racing produce the same number and the unique
-    /// index on (workspace_id, minutes_no) rejects the loser — which is the intended outcome, not
-    /// a flaw in the count: a duplicated minutes number is worse than a retry.
+    /// index on (workspace_id, minutes_no, version) rejects the loser — which is the intended
+    /// outcome, not a flaw in the count: a duplicated minutes number is worse than a retry.
+    ///
+    /// Counts DOCUMENTS, not rows: a revision keeps the number of the document it revises, so
+    /// counting its row too would skip the next number and leave a gap in the register.
     /// </summary>
     Task<int> CountForWorkspaceYearAsync(Guid workspaceId, int year, CancellationToken ct = default);
 }

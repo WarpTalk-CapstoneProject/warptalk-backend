@@ -417,7 +417,12 @@ public partial class TranslationRoomDbContext : DbContext
 
             entity.ToTable("meeting_minutes", "translation_room");
 
-            entity.HasIndex(e => new { e.WorkspaceId, e.MinutesNo }, "meeting_minutes_workspace_no_idx")
+            // Mirrors 20260906090000_minutes_number_is_unique_per_version.sql, which replaced the
+            // old (workspace_id, minutes_no) index. `version` is in the key because a revision
+            // keeps the number of the document it revises; a new document is always version 1, so
+            // two chains still cannot claim one number and the allocation race still collides here.
+            entity.HasIndex(e => new { e.WorkspaceId, e.MinutesNo, e.Version },
+                    "meeting_minutes_workspace_no_version_idx")
                 .IsUnique();
 
             entity.HasIndex(e => e.TranslationRoomId, "meeting_minutes_one_current_per_room_idx")

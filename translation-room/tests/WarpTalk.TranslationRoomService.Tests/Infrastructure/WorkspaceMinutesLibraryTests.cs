@@ -285,31 +285,48 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
     /// <summary>
     /// A superseded version is one meeting's paper trail, not a second library row.
     ///
-    /// The superseded row here carries a DIFFERENT MinutesNo, which is not what a real revision
-    /// does — ReviseAsync deliberately keeps the number ("a revision of BB-2026-0007 is still
-    /// BB-2026-0007"). That shape cannot be seeded, because meeting_minutes_workspace_no_idx is
-    /// UNIQUE on (workspace_id, minutes_no) and rejects the second row. The number is irrelevant
-    /// to what this test asserts, so it varies it rather than asserting a shape the schema
-    /// currently forbids; the collision itself is a separate defect in ReviseAsync.
+    /// The superseded row carries the SAME MinutesNo as the current one, which is what a real
+    /// revision produces — ReviseAsync deliberately keeps the number ("a revision of BB-2026-0007
+    /// is still BB-2026-0007"). That shape used to be unseedable, because
+    /// meeting_minutes_workspace_no_idx was UNIQUE on (workspace_id, minutes_no) and rejected the
+    /// second row; this test varied the number to work around it. The index is now keyed on
+    /// (workspace_id, minutes_no, version), so the real shape is the one asserted here — which
+    /// matters, because "only the current version" is exactly the claim a shared number tests.
     /// </summary>
     [Fact]
     public async Task List_ShowsOnlyTheCurrentVersion()
     {
-        var current = await SeedMeetingWithMinutesAsync(
+        // The helper seeds version 1 holding the head pointer. A revision moves that pointer on, so
+        // the row it seeded becomes the SUPERSEDED one and the head becomes version 2 — the order
+        // ReviseAsync actually writes, rather than a superseded v2 sitting behind a current v1.
+        var superseded = await SeedMeetingWithMinutesAsync(
             "Board meeting", "{}", DateTime.UtcNow.AddDays(-4));
+
+        // Surrendered before the new head is inserted, and as its own statement: both rows would
+        // otherwise claim `is_current`, and meeting_minutes_one_current_per_room_idx will not have
+        // two — EF is free to order an INSERT ahead of an UPDATE within one batch, and here it does.
+        //
+        // Written through the database rather than by assigning to `superseded`, because the seed
+        // helper clears the change tracker before returning: the entity in hand is detached, so a
+        // property set on it produces no UPDATE at all.
+        await _dbContext.Set<MeetingMinutes>()
+            .Where(m => m.Id == superseded.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.IsCurrent, false));
 
         _dbContext.Set<MeetingMinutes>().Add(new MeetingMinutes
         {
             Id = Guid.CreateVersion7(),
-            TranslationRoomId = current.TranslationRoomId,
+            TranslationRoomId = superseded.TranslationRoomId,
             WorkspaceId = WorkspaceId,
-            MinutesNo = $"{current.MinutesNo}-PRIOR",
+            // Same number, as a real revision keeps it.
+            MinutesNo = superseded.MinutesNo,
             Status = MeetingMinutesConstants.StatusApproved,
             // 2, not 0: Version is mapped HasDefaultValue(1), so EF omits the column for the CLR
-            // default and Postgres writes 1 — colliding with the current row on
-            // meeting_minutes_room_version_idx rather than seeding a prior version.
+            // default and Postgres writes 1 — colliding with the seeded row on
+            // meeting_minutes_room_version_idx rather than seeding a later version.
             Version = 2,
-            IsCurrent = false,
+            IsCurrent = true,
+            PreviousMinutesId = superseded.Id,
             EditCountVsDraft = 0,
             Content = "{}",
             CreatedAt = DateTime.UtcNow,

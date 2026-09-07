@@ -12,6 +12,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Authorization;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Authorization;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Constants;
@@ -191,7 +192,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
         var items = rows
             .Select(row => new WorkspaceMinutesItemDto(
-                MapToDto(row.Minutes, NameOf),
+                row.Minutes.ToDto(NameOf),
                 row.RoomTitle,
                 row.RoomCode,
                 row.RoomHostId,
@@ -419,6 +420,10 @@ public class MeetingMinutesService : IMeetingMinutesService
             WorkspaceId = approved.WorkspaceId,
             // Same number, new version. A revision of BB-2026-0007 is still BB-2026-0007 —
             // renumbering it would break every reference anybody had already written down.
+            //
+            // This is what meeting_minutes_workspace_no_version_idx exists to admit. Under the
+            // index it replaced, UNIQUE (workspace_id, minutes_no), the insert below raised 23505
+            // on every call and an approved minutes could never be corrected at all.
             MinutesNo = approved.MinutesNo,
             Status = MeetingMinutesConstants.StatusDraft,
             Version = approved.Version + 1,
@@ -436,7 +441,24 @@ public class MeetingMinutesService : IMeetingMinutesService
         };
 
         await _unitOfWork.MeetingMinutesRepository.AddAsync(revision, ct);
-        await _unitOfWork.SaveChangesAsync(ct);
+
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Two people opened a revision of the same approved minutes at once. Both read v1,
+            // both computed v2, and meeting_minutes_room_version_idx rejected the loser — the same
+            // arrangement CreateDraftAsync relies on, and for the same reason: the alternative is
+            // two rival v2 drafts of one record, with the second silently discarding the first
+            // person's edits when it takes the head pointer.
+            _logger.LogWarning(
+                "Concurrent revision of minutes {MinutesNo} for room {RoomId}",
+                approved.MinutesNo, roomId);
+            return Result.Failure<MeetingMinutesDto>(
+                MeetingMinutesConstants.ErrorRevisionAlreadyOpen, ErrorCodes.Conflict);
+        }
 
         _logger.LogInformation(
             "Opened revision v{Version} of minutes {MinutesNo}", revision.Version, revision.MinutesNo);
@@ -723,45 +745,18 @@ public class MeetingMinutesService : IMeetingMinutesService
         return $"BB-{year}-{used + 1:D4}";
     }
 
+    /// <summary>
+    /// Loads what the shaping needs and hands it to <see cref="MeetingMinutesMapper"/>. The read
+    /// is the service's job; the shape of the DTO is not, and lived here only because the roster
+    /// lookup made the mapping look asynchronous.
+    /// </summary>
     private async Task<MeetingMinutesDto> ToDtoAsync(MeetingMinutes minutes, CancellationToken ct)
     {
         var participants = await _unitOfWork.TranslationRoomParticipantRepository
             .GetByRoomIdAsync(minutes.TranslationRoomId, ct);
 
-        return MapToDto(minutes, participantId => participantId == null
+        return minutes.ToDto(participantId => participantId == null
             ? null
             : participants?.FirstOrDefault(p => p.Id == participantId)?.DisplayName);
     }
-
-    /// <summary>
-    /// The row as the web reads it, given a way to name a participant.
-    ///
-    /// The name lookup is a parameter rather than a query because the two callers resolve it
-    /// differently and must not each restate the mapping: the single-document read asks for one
-    /// room's roster, and the library read batches every room on the page into one query. Sharing
-    /// the projection is what keeps a minutes document from describing itself one way in the
-    /// library and another way when opened.
-    /// </summary>
-    private static MeetingMinutesDto MapToDto(MeetingMinutes minutes, Func<Guid?, string?> nameOf)
-        => new(
-            minutes.Id,
-            minutes.TranslationRoomId,
-            minutes.MinutesNo,
-            minutes.Status,
-            minutes.Version,
-            minutes.IsCurrent,
-            minutes.PreviousMinutesId,
-            minutes.BasedOnTranscriptVersion,
-            minutes.DraftedByEngine,
-            minutes.DraftedAt,
-            minutes.SecretaryParticipantId,
-            nameOf(minutes.SecretaryParticipantId),
-            minutes.SecretarySignedAt,
-            minutes.ChairParticipantId,
-            nameOf(minutes.ChairParticipantId),
-            minutes.ChairApprovedAt,
-            minutes.EditCountVsDraft,
-            minutes.Content,
-            minutes.CreatedAt,
-            minutes.UpdatedAt);
 }
