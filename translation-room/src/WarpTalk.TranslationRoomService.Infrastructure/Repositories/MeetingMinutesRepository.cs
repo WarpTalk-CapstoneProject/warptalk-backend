@@ -5,6 +5,7 @@ using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -48,5 +49,23 @@ public class MeetingMinutesRepository : GenericRepository<MeetingMinutes>, IMeet
             .CountAsync(
                 m => m.WorkspaceId == workspaceId && m.Version == 1 && m.CreatedAt.Year == year,
                 ct);
+    }
+
+    /// <inheritdoc />
+    public Expression<Func<MeetingMinutes, bool>> MatchesSearch(string search)
+    {
+        var term = (search ?? string.Empty).Trim().ToLowerInvariant();
+
+        // jsonb_extract_path_text is how a title stored inside jsonb becomes something lower()
+        // can be applied to at all — lower(jsonb) does not exist, which is why this clause could
+        // not simply be written out in the service alongside the others.
+        //
+        // A row whose content has no meetingTitle yields SQL NULL here; NULL LIKE '%x%' is NULL,
+        // so it fails the clause instead of matching everything. That is the behaviour wanted: a
+        // document with no recorded title is not found by title.
+        return minutes =>
+            minutes.MinutesNo.ToLower().Contains(term)
+            || PostgresJsonFunctions.JsonbExtractPathText(minutes.Content, "meetingTitle")!.ToLower().Contains(term)
+            || minutes.TranslationRoom.TranslationRoomCode.ToLower().Contains(term);
     }
 }

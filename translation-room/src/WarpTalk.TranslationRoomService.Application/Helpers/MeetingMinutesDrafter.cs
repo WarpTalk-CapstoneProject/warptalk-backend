@@ -100,6 +100,43 @@ public static class MeetingMinutesDrafter
     }
 
     /// <summary>
+    /// The meeting title carried inside a content document, for the <c>meeting_title</c> column.
+    ///
+    /// That column is a projection of this value, so it is read back out of the JSON rather than
+    /// taken from the room: the secretary can retitle the document in their editor, and the column
+    /// has to follow what they wrote, not what the room is called.
+    ///
+    /// Returns null for absent, blank, or unparseable content. Null means "not recorded" and a
+    /// reader falls back to the room title for display — it never means the meeting had no name.
+    /// Trimmed and clamped to the column's 255, so a title longer than the column cannot fail the
+    /// write of an otherwise valid document.
+    /// </summary>
+    public static string? TitleFrom(string? contentJson)
+    {
+        if (string.IsNullOrWhiteSpace(contentJson)) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(contentJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            if (!doc.RootElement.TryGetProperty("meetingTitle", out var title)) return null;
+            if (title.ValueKind != JsonValueKind.String) return null;
+
+            var text = title.GetString()?.Trim();
+            if (string.IsNullOrEmpty(text)) return null;
+
+            return text.Length > 255 ? text[..255] : text;
+        }
+        catch (JsonException)
+        {
+            // Content that will not parse still saves — UpdateContentAsync stores what the client
+            // sent. Losing the title projection is the right failure here; refusing the write
+            // would lose the document.
+            return null;
+        }
+    }
+
+    /// <summary>
     /// How many items differ between two versions of the content, for
     /// <c>MeetingMinutes.EditCountVsDraft</c>. Deliberately coarse: the reader is being told
     /// "a person changed this much", not given a diff.

@@ -1,5 +1,6 @@
 using System;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 
 namespace WarpTalk.TranslationRoomService.Application.Mappers;
@@ -25,6 +26,14 @@ public static class MeetingMinutesMapper
             minutes.Id,
             minutes.TranslationRoomId,
             minutes.MinutesNo,
+            // Read out of the document body rather than stored beside it. Underneath, a biên bản
+            // is identified by its number and nothing else — this is a display name, so it is
+            // derived on the way out and never becomes a second thing that can disagree with the
+            // document it names.
+            //
+            // Costs one small parse per row. The row already carries its whole Content over the
+            // wire, so the parse is cheaper than the serialisation happening around it.
+            MeetingMinutesDrafter.TitleFrom(minutes.Content),
             minutes.Status,
             minutes.Version,
             minutes.IsCurrent,

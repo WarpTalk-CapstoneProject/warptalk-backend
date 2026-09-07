@@ -48,6 +48,15 @@ public partial class TranslationRoomDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // A built-in Postgres function made visible to LINQ. Not a schema object and not business
+        // logic: it adds nothing to the database and maps one-to-one onto SQL that already exists
+        // there. See PostgresJsonFunctions for why the minutes library needs it.
+        modelBuilder
+            .HasDbFunction(typeof(PostgresJsonFunctions)
+                .GetMethod(nameof(PostgresJsonFunctions.JsonbExtractPathText))!)
+            .HasName("jsonb_extract_path_text")
+            .IsBuiltIn();
+
         modelBuilder
             .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
             .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
