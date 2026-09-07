@@ -27,6 +27,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     private const int MaxUrlLength = 1000;
     private const int MaxCategoryLength = 50;
     private const int MaxClientIdLength = 500;
+    private const int DefaultAuditPageSize = 50;
     private const int MaxAuditPageSize = 200;
 
     public PluginCatalogAdminService(IUnitOfWork unitOfWork, IPluginCredentialProtector credentialProtector)
@@ -371,11 +372,14 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         var plugin = await FindAsync(pluginKey, ct);
         if (plugin is null) return UnknownPlugin<PluginToolAuditPageDto>(pluginKey);
 
-        // Clamped rather than rejected: a paging parameter out of range is a caller bug worth
-        // absorbing, and an unbounded pageSize is a denial-of-service knob on a table with no
-        // retention policy.
+        // Normalised rather than rejected: a paging parameter out of range is a caller bug worth
+        // absorbing, and an unbounded pageSize is a denial-of-service knob on a table that has no
+        // retention policy. Done here rather than in the controller so there is one answer to
+        // "what does pageSize=0 mean" instead of two that can drift apart.
         var page = query.Page < 1 ? 1 : query.Page;
-        var pageSize = Math.Clamp(query.PageSize, 1, MaxAuditPageSize);
+        var pageSize = query.PageSize < 1
+            ? DefaultAuditPageSize
+            : Math.Min(query.PageSize, MaxAuditPageSize);
         var outcome = string.IsNullOrWhiteSpace(query.Outcome) ? null : query.Outcome.Trim();
 
         var (audits, totalCount) = await _unitOfWork.PluginToolAuditRepository.ListForPluginAsync(

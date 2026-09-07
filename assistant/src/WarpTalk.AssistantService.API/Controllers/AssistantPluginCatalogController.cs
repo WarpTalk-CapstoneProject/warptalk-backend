@@ -215,11 +215,9 @@ public class AssistantPluginCatalogController : ControllerBase
         [FromQuery] int pageSize,
         CancellationToken ct)
     {
-        var query = new PluginToolAuditQueryDto(
-            userId,
-            outcome,
-            page <= 0 ? 1 : page,
-            pageSize <= 0 ? 50 : pageSize);
+        // Passed through unnormalised on purpose: the service owns what an out-of-range page means,
+        // so a missing query parameter arriving here as 0 and an explicit 0 get the same answer.
+        var query = new PluginToolAuditQueryDto(userId, outcome, page, pageSize);
 
         var result = await _catalogAdminService.ListAuditsAsync(pluginKey, query, ct);
         return ToResponse(result);
