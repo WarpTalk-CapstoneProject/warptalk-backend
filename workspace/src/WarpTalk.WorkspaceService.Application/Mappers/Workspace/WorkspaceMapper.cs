@@ -66,7 +66,9 @@ public static class WorkspaceMapper
             config.AiUsagePolicy?.ToDto(),
             config.IsProfanityFilterEnabled,
             config.InvitationExpiryDays,
-            AllowAnyPlugins: config.AllowAnyPlugins
+            AllowAnyPlugins: config.AllowAnyPlugins,
+            MinutesClassification: config.MinutesClassification,
+            MinutesTemplate: config.MinutesTemplate
         );
     }
 
@@ -86,7 +88,9 @@ public static class WorkspaceMapper
             AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration(),
             IsProfanityFilterEnabled = dto.IsProfanityFilterEnabled,
             InvitationExpiryDays = dto.InvitationExpiryDays,
-            AllowAnyPlugins = dto.AllowAnyPlugins
+            AllowAnyPlugins = dto.AllowAnyPlugins,
+            MinutesClassification = dto.MinutesClassification,
+            MinutesTemplate = dto.MinutesTemplate
         };
     }
 
@@ -107,7 +111,9 @@ public static class WorkspaceMapper
                 ? current.AiUsagePolicy
                 : ApplyPatch(current.AiUsagePolicy, patch.AiUsagePolicy),
             IsProfanityFilterEnabled = patch.IsProfanityFilterEnabled ?? current.IsProfanityFilterEnabled,
-            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins
+            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins,
+            MinutesClassification = patch.MinutesClassification ?? current.MinutesClassification,
+            MinutesTemplate = patch.MinutesTemplate ?? current.MinutesTemplate
         };
     }
 

@@ -60,6 +60,26 @@ public static class WorkspaceSettingsValidator
             errors["verifiedDomains"] = [WorkspaceConstants.Errors.VerifiedDomainsRequired];
         }
 
+        // Absent is valid, an unrecognised value is not. The two are different requests: a client
+        // that omits the field is asking for whatever the workspace already has, while one that
+        // sends "secret" or "VN-ND30" is asking for a posture or a house style this product does
+        // not have, and quietly rewriting that to the default would tell the caller its choice was
+        // saved. Both settings end up printed on a document with legal weight, so the failure has
+        // to be visible at the moment of saving rather than discovered on an exported biên bản.
+        //
+        // Ordinal, case-sensitive: see the note in WorkspaceConstants on why one spelling.
+        if (!string.IsNullOrWhiteSpace(settings.MinutesClassification)
+            && !WorkspaceConstants.AllowedMinutesClassifications.Contains(settings.MinutesClassification, StringComparer.Ordinal))
+        {
+            errors["minutesClassification"] = [WorkspaceConstants.Errors.MinutesClassificationInvalid];
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.MinutesTemplate)
+            && !WorkspaceConstants.AllowedMinutesTemplates.Contains(settings.MinutesTemplate, StringComparer.Ordinal))
+        {
+            errors["minutesTemplate"] = [WorkspaceConstants.Errors.MinutesTemplateInvalid];
+        }
+
         return new WorkspaceSettingsValidationResult(errors);
     }
 }

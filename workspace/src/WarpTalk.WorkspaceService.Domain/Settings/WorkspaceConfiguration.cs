@@ -61,6 +61,35 @@ public class WorkspaceConfiguration
     }
 
 
+    // 3. Minutes Policy Block
+    //
+    // Both setters fall back to the default instead of storing what they were handed, the way
+    // ArtifactRetentionDays above does. WorkspaceSettingsValidator already refuses an unknown
+    // value at the API, so this is not that check repeated — it is the one that catches JSON the
+    // validator never saw: every workspace row written before WT-643 has no key here at all, and
+    // the settings column is jsonb that a migration or a console has always been able to edit
+    // directly. The document writer switches on these strings, so the invariant it needs is that
+    // reading the configuration can only ever yield one of the enumerated values.
+
+    private string _minutesClassification = WorkspaceConstants.DefaultMinutesClassification;
+    private string _minutesTemplate = WorkspaceConstants.DefaultMinutesTemplate;
+
+    public string MinutesClassification
+    {
+        get => _minutesClassification;
+        set => _minutesClassification = WorkspaceConstants.AllowedMinutesClassifications.Contains(value)
+            ? value
+            : WorkspaceConstants.DefaultMinutesClassification;
+    }
+
+    public string MinutesTemplate
+    {
+        get => _minutesTemplate;
+        set => _minutesTemplate = WorkspaceConstants.AllowedMinutesTemplates.Contains(value)
+            ? value
+            : WorkspaceConstants.DefaultMinutesTemplate;
+    }
+
     // 4. Enterprise & External Collaboration
 
     /// <summary>

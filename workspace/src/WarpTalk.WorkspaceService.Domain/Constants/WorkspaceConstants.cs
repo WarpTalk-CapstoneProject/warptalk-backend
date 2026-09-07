@@ -18,6 +18,57 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
+    // Minutes Policy Block
+    //
+    // The two facts the policy block printed on the face of a biên bản has nowhere else to read
+    // from. Retention is already WorkspaceArtifactRetentionDays, the letterhead is the workspace
+    // name and logo, circulation is the room's artifactAccess, and provenance is the minutes
+    // record itself — those four the document can look up. Classification and template could not,
+    // so the block either omitted them or the writer would have had to invent them, and inventing
+    // a classification on a document with legal weight is the one thing MeetingMinutesDocxWriter
+    // exists to refuse.
+    //
+    // Both are spelled EXACTLY as listed and compared ordinally. A settings document is read,
+    // modified and written back whole, so a client echoes these strings unchanged; accepting
+    // "internal" as well as "Internal" would put two spellings of one value in the database and
+    // hand the document writer a value it has to guess about.
+
+    /// <summary>The default. A workspace's records are its own until someone says otherwise, and
+    /// the safe direction to be wrong in is the closed one — a document wrongly marked Internal
+    /// is awkward, a document wrongly marked Public is a disclosure.</summary>
+    public const string MinutesClassificationInternal = "Internal";
+    public const string MinutesClassificationConfidential = "Confidential";
+    public const string MinutesClassificationPublic = "Public";
+    public const string DefaultMinutesClassification = MinutesClassificationInternal;
+
+    public static readonly IReadOnlyList<string> AllowedMinutesClassifications =
+    [
+        MinutesClassificationInternal,
+        MinutesClassificationConfidential,
+        MinutesClassificationPublic
+    ];
+
+    /// <summary>
+    /// Vietnamese practice under Nghị định 30/2020 — A4, 20/20/30/20mm margins, Times New Roman 13,
+    /// Roman-numeral headings. The default, because it is the shape MeetingMinutesDocxWriter
+    /// already produces: a workspace that has never opened this setting must keep exporting the
+    /// document it has been exporting all along, and defaulting to the other template would
+    /// silently restyle every existing workspace's minutes on the day this shipped.
+    /// </summary>
+    public const string MinutesTemplateVietnamNd30 = "vn-nd30";
+
+    /// <summary>A4, 25.4mm margins, sans 11pt, decimal clause numbering. Not a replacement for
+    /// <see cref="MinutesTemplateVietnamNd30"/> and not a translation of it — a second
+    /// presentation of the same record, for workspaces that do not file under Nghị định 30.</summary>
+    public const string MinutesTemplateGlobalEnglish = "global-en";
+    public const string DefaultMinutesTemplate = MinutesTemplateVietnamNd30;
+
+    public static readonly IReadOnlyList<string> AllowedMinutesTemplates =
+    [
+        MinutesTemplateVietnamNd30,
+        MinutesTemplateGlobalEnglish
+    ];
+
 
     // Error Messages
     public static class Errors
@@ -47,6 +98,12 @@ public static class WorkspaceConstants
         public const string InvalidSettingsPayload = "Invalid settings payload.";
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
         public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 1 and 3650.";
+
+        // Both name the accepted spellings rather than saying "invalid value". The caller is a
+        // settings form that has to put a specific string back, and a message that does not say
+        // which strings are accepted leaves it guessing at the casing.
+        public const string MinutesClassificationInvalid = "Minutes classification must be Internal, Confidential, or Public.";
+        public const string MinutesTemplateInvalid = "Minutes template must be vn-nd30 or global-en.";
         public const string VerifiedDomainsRequired = "Verified domains are required when internal members must use verified domains.";
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";

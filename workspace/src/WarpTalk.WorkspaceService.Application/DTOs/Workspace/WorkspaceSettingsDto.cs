@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 
@@ -55,7 +56,42 @@ public record WorkspaceSettingsDto(
     /// </summary>
     int? MaxLanguagesCeiling = null,
     /// <summary>Provenance of the language ceiling. Null with the ceiling.</summary>
-    string? MaxLanguagesCeilingSource = null
+    string? MaxLanguagesCeilingSource = null,
+    /// <summary>
+    /// The classification new minutes in this workspace open at — <c>Internal</c>,
+    /// <c>Confidential</c> or <c>Public</c>. WT-643.
+    ///
+    /// It exists because the policy block printed on the face of a biên bản had nowhere to read a
+    /// classification from, and MeetingMinutesDocxWriter will not print one it cannot back. The
+    /// choices were to leave the line off every document, or to let the writer decide — and a
+    /// document generator that decides for itself how sensitive a record is has invented the one
+    /// fact on the page that governs who may be shown it.
+    ///
+    /// A workspace-level default, not a per-document label: this is where a workspace states the
+    /// posture its meetings start from, and overriding a single document is a separate question
+    /// this field deliberately does not answer.
+    ///
+    /// Defaults to Internal rather than to nothing. Unlike the block's other lines, whose absence
+    /// is honest — no signer, so no signer line — a classification the workspace never chose is
+    /// still a real posture, and the closed one is the safe direction to be wrong in.
+    /// </summary>
+    string MinutesClassification = WorkspaceConstants.DefaultMinutesClassification,
+    /// <summary>
+    /// Which of the two presentation templates this workspace's minutes open in and export as —
+    /// <c>vn-nd30</c> (Nghị định 30/2020 conventions) or <c>global-en</c>. WT-643.
+    ///
+    /// Neither template replaces the other and neither is a translation of the other: they are two
+    /// presentations of the same stored record, and the workspace picks which one its documents
+    /// are filed as. Storing the choice here rather than per document is what makes a workspace's
+    /// minutes look like each other — a filing convention is a property of the organisation, not
+    /// of a meeting.
+    ///
+    /// Defaults to vn-nd30 because that is the document this system already writes. A workspace
+    /// that has never opened this setting is not asking for a new house style, so the default has
+    /// to be the status quo; defaulting to global-en would have restyled every existing
+    /// workspace's minutes the day the setting appeared, without anyone choosing it.
+    /// </summary>
+    string MinutesTemplate = WorkspaceConstants.DefaultMinutesTemplate
 );
 
 public record WorkspaceSettingsPatchRequest(
@@ -70,7 +106,11 @@ public record WorkspaceSettingsPatchRequest(
     bool? RequireVerifiedDomainForInternal = null,
     AiUsagePolicyPatchDto? AiUsagePolicy = null,
     bool? IsProfanityFilterEnabled = null,
-    bool? AllowAnyPlugins = null
+    bool? AllowAnyPlugins = null,
+    /// <summary>Null leaves the stored classification alone; it does not reset it to the default.</summary>
+    string? MinutesClassification = null,
+    /// <summary>Null leaves the stored template alone; it does not reset it to the default.</summary>
+    string? MinutesTemplate = null
 );
 
 public record AiUsagePolicyPatchDto(
