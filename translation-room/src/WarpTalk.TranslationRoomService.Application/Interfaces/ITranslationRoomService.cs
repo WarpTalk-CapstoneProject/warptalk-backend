@@ -216,6 +216,16 @@ public interface ITranslationRoomService
     /// </summary>
     Task<Result<TranslationRoomHistoryResponse>> GetMyMeetingsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Every document the caller's visible meetings produced — transcripts, AI summaries,
+    /// recordings and minutes — as one ordered, paged list.
+    ///
+    /// The document-shaped read of the same data <see cref="GetTranslationRoomHistoryAsync"/>
+    /// returns meeting-shaped. Separate because minutes are not artifacts and live in their own
+    /// table: only the server can order and count across both.
+    /// </summary>
+    Task<Result<MeetingDocumentsResponse>> GetMeetingDocumentsAsync(GetMeetingDocumentsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
     Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackStateDto>> GetFeedbackStateAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackDto>> SubmitFeedbackAsync(Guid translationRoomId, Guid userId, SubmitTranslationRoomFeedbackRequest request, string? userEmail = null, CancellationToken ct = default);

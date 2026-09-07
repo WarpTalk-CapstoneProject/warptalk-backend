@@ -2691,6 +2691,313 @@ public class TranslationRoomService : ITranslationRoomService
         return new TranslationRoomHistoryResponse(rooms, total, page, pageSize);
     }
 
+    /// <summary>
+    /// One page of DOCUMENTS — transcripts, AI summaries, recordings and minutes together — across
+    /// every meeting this caller may see.
+    ///
+    /// The archive next door answers "what meetings did we hold?"; this answers "where is that
+    /// transcript?". Same rows, different unit, and the difference matters because minutes and
+    /// artifacts live in two tables: a client that paged them separately and merged the pages would
+    /// get both the order and the total wrong, and would be wrong in a way nothing on screen shows.
+    /// The union is therefore done in SQL, ordered once and paged once.
+    ///
+    /// Authorization is REUSED, never restated: <see cref="BuildListableRoomsQueryAsync"/> decides
+    /// which meetings are visible and the documents are joined onto it, so a document can never be
+    /// listed for a meeting the caller could not open. Whether the caller may read a BODY is the
+    /// stricter question, and it is answered by the same predicate the download endpoint uses.
+    /// </summary>
+    public async Task<Result<MeetingDocumentsResponse>> GetMeetingDocumentsAsync(
+        GetMeetingDocumentsRequest request,
+        Guid userId,
+        string? userEmail = null,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var page = Math.Max(1, request.Page);
+            var pageSize = Math.Clamp(request.PageSize, 1, 100);
+
+            var listable = (await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct))
+                .Where(r => r.DeletedAt == null && r.IsActive);
+
+            if (request.WorkspaceId.HasValue && request.WorkspaceId.Value != Guid.Empty)
+            {
+                var scopedWorkspaceId = request.WorkspaceId.Value;
+                listable = listable.Where(r => r.WorkspaceId == scopedWorkspaceId);
+            }
+
+            // Searched against the MEETING, matching ApplyRoomFilters word for word. A document has
+            // no title of its own — `translation_room_artifacts` has no title column at all — so
+            // the meeting's identity is the only thing there is to search.
+            if (!string.IsNullOrWhiteSpace(request.Search))
+            {
+                var search = request.Search.Trim().ToLowerInvariant();
+                listable = listable.Where(r =>
+                    r.Title.ToLower().Contains(search) ||
+                    r.TranslationRoomCode.ToLower().Contains(search) ||
+                    (r.Description != null && r.Description.ToLower().Contains(search)));
+            }
+
+            var wanted = ParseMeetingDocumentTypes(request.Type);
+            if (wanted.Count == 0)
+            {
+                return Result.Success(
+                    new MeetingDocumentsResponse(new List<MeetingDocumentDto>(), 0, page, pageSize));
+            }
+
+            IQueryable<MeetingDocumentRow>? combined = null;
+
+            var storedArtifactTypes = wanted
+                .Where(MeetingDocumentTypes.ArtifactBacked.Contains)
+                .Select(MeetingDocumentTypes.StoredArtifactTypeOf)
+                .ToList();
+
+            if (storedArtifactTypes.Count > 0)
+            {
+                combined =
+                    from a in _unitOfWork.TranslationRoomArtifactRepository.Query()
+                    join r in listable on a.TranslationRoomId equals r.Id
+                    where a.DeletedAt == null && storedArtifactTypes.Contains(a.ArtifactType)
+                    select new MeetingDocumentRow
+                    {
+                        Id = a.Id,
+                        Type = a.ArtifactType,
+                        Status = a.Status,
+                        TranslationRoomId = a.TranslationRoomId,
+                        CreatedAt = a.CreatedAt,
+                        UpdatedAt = a.UpdatedAt,
+                        FileFormat = a.FileFormat,
+                        FileSizeBytes = a.FileSizeBytes,
+                        ConsentRequired = a.ConsentRequired,
+                        MinutesNo = null,
+                        MinutesVersion = null,
+                        MeetingSortAt = r.EndedAt ?? r.StartedAt ?? r.CreatedAt
+                    };
+            }
+
+            if (wanted.Contains(MeetingDocumentTypes.Minutes))
+            {
+                // IsCurrent only. Minutes are versioned — a revision supersedes rather than
+                // replaces — and listing every superseded version would put four cards on the grid
+                // for one document that has been corrected three times.
+                var minutes =
+                    from m in _unitOfWork.MeetingMinutesRepository.Query()
+                    join r in listable on m.TranslationRoomId equals r.Id
+                    where m.IsCurrent
+                    select new MeetingDocumentRow
+                    {
+                        Id = m.Id,
+                        Type = MeetingDocumentTypes.Minutes,
+                        Status = m.Status,
+                        TranslationRoomId = m.TranslationRoomId,
+                        CreatedAt = m.CreatedAt,
+                        UpdatedAt = m.UpdatedAt,
+                        FileFormat = null,
+                        FileSizeBytes = null,
+                        ConsentRequired = false,
+                        MinutesNo = m.MinutesNo,
+                        MinutesVersion = m.Version,
+                        MeetingSortAt = r.EndedAt ?? r.StartedAt ?? r.CreatedAt
+                    };
+
+                combined = combined == null ? minutes : combined.Concat(minutes);
+            }
+
+            if (combined == null)
+            {
+                return Result.Success(
+                    new MeetingDocumentsResponse(new List<MeetingDocumentDto>(), 0, page, pageSize));
+            }
+
+            var total = await combined.CountAsync(ct);
+
+            // Ordered by the MEETING's own clock first, so one meeting's four documents sit
+            // together on the grid instead of being interleaved with everything else produced in
+            // the same forty seconds.
+            //
+            // Ordered over a projected CLASS with settable properties, never a positional record:
+            // EF cannot translate an ORDER BY over a positional-record projection and answers 500
+            // to every call when asked to, with mocked tests staying green over it.
+            var rows = await combined
+                .OrderByDescending(d => d.MeetingSortAt)
+                .ThenByDescending(d => d.CreatedAt)
+                .ThenBy(d => d.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(ct);
+
+            if (rows.Count == 0)
+            {
+                return Result.Success(
+                    new MeetingDocumentsResponse(new List<MeetingDocumentDto>(), total, page, pageSize));
+            }
+
+            var roomIds = rows.Select(d => d.TranslationRoomId).Distinct().ToList();
+
+            var rooms = await _unitOfWork.TranslationRoomRepository
+                .Query()
+                .Where(r => roomIds.Contains(r.Id))
+                .ToListAsync(ct);
+            var roomsById = rooms.ToDictionary(r => r.Id);
+
+            var participantUserIdsByRoom = (await _unitOfWork.TranslationRoomParticipantRepository
+                    .Query()
+                    .Where(p => roomIds.Contains(p.TranslationRoomId))
+                    .Select(p => new { p.TranslationRoomId, p.UserId })
+                    .ToListAsync(ct))
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+
+            // Which of the meetings ON THIS PAGE already have minutes — asked once for the page
+            // rather than per card. This is what lets the grid offer "draw up the minutes" on a
+            // finished meeting that has none, which is the entire reason the table is still empty.
+            var roomsWithMinutes = (await _unitOfWork.MeetingMinutesRepository
+                    .Query()
+                    .Where(m => roomIds.Contains(m.TranslationRoomId) && m.IsCurrent)
+                    .Select(m => m.TranslationRoomId)
+                    .ToListAsync(ct))
+                .ToHashSet();
+
+            // Whether a meeting has enough of a summary for its minutes to have a body.
+            //
+            // The summary bodies ARE fetched, unlike every other body on this read, and the cost is
+            // bounded and small: at most one summary per room on the page, and an insufficient one
+            // is ~210 bytes. The alternative — pattern-matching `insufficientData` in SQL — would be
+            // a second, brittle copy of a rule that already exists, and the whole point of asking is
+            // to agree exactly with what the draft would contain.
+            var summaryType = ArtifactType.SUMMARY_EXPORT.ToString();
+            var roomsWithUsableSummary = (await _unitOfWork.TranslationRoomArtifactRepository
+                    .Query()
+                    .Where(a => roomIds.Contains(a.TranslationRoomId)
+                        && a.DeletedAt == null
+                        && a.ArtifactType == summaryType)
+                    .Select(a => new { a.TranslationRoomId, a.Content, a.CreatedAt })
+                    .ToListAsync(ct))
+                .GroupBy(a => a.TranslationRoomId)
+                .Where(g => MeetingMinutesDrafter.WouldProduceContent(
+                    g.OrderByDescending(a => a.CreatedAt).First().Content))
+                .Select(g => g.Key)
+                .ToHashSet();
+
+            var documents = new List<MeetingDocumentDto>(rows.Count);
+            foreach (var row in rows)
+            {
+                if (!roomsById.TryGetValue(row.TranslationRoomId, out var room)) continue;
+
+                var canOpen = ArtifactAccessHelper.HasAccessToRoomArtifacts(
+                    room.HostId,
+                    room.Settings,
+                    participantUserIdsByRoom.GetValueOrDefault(room.Id)?.Contains(userId) == true,
+                    userId);
+
+                var minutesUnavailableReason = ResolveMinutesUnavailableReason(
+                    room,
+                    userId,
+                    roomsWithMinutes.Contains(room.Id),
+                    roomsWithUsableSummary.Contains(room.Id));
+
+                documents.Add(new MeetingDocumentDto(
+                    row.Id,
+                    MeetingDocumentTypes.WireTypeOf(row.Type),
+                    row.Status,
+                    room.Id,
+                    room.WorkspaceId,
+                    room.Title,
+                    room.TranslationRoomCode,
+                    room.Status,
+                    room.EndedAt,
+                    room.SourceLanguage,
+                    row.CreatedAt,
+                    row.UpdatedAt,
+                    row.FileFormat,
+                    row.FileSizeBytes,
+                    row.ConsentRequired,
+                    canOpen,
+                    row.MinutesNo,
+                    row.MinutesVersion,
+                    roomsWithMinutes.Contains(room.Id),
+                    room.HostId == userId,
+                    minutesUnavailableReason is null,
+                    minutesUnavailableReason));
+            }
+
+            return Result.Success(new MeetingDocumentsResponse(documents, total, page, pageSize));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while loading meeting documents. UserId: {UserId}", userId);
+            return Result.Failure<MeetingDocumentsResponse>(
+                "An unexpected error occurred while loading meeting documents.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Why this caller cannot draw up minutes for this meeting, or null when they can.
+    ///
+    /// Checked in the order the reader would ask it: is there a finished meeting at all, does it
+    /// already have minutes, am I the chair, and is there anything to write down. The last one is
+    /// the case that made the existing button feel broken — it is not a failure, it is a meeting
+    /// in which nobody spoke, and it is the majority of this workspace's meetings.
+    ///
+    /// Mirrors <c>MeetingMinutesService.CreateDraftAsync</c>'s own gates so the grid never offers
+    /// an action the endpoint would refuse; CreateDraftAsync remains the authority and still
+    /// enforces every one of them.
+    /// </summary>
+    private static string? ResolveMinutesUnavailableReason(
+        TranslationRoom room,
+        Guid userId,
+        bool alreadyHasMinutes,
+        bool hasUsableSummary)
+    {
+        if (!string.Equals(room.Status, "ENDED", StringComparison.Ordinal))
+            return MinutesUnavailableReasons.MeetingNotEnded;
+
+        if (alreadyHasMinutes) return MinutesUnavailableReasons.AlreadyDrafted;
+        if (room.HostId != userId) return MinutesUnavailableReasons.NotTheChair;
+        if (!hasUsableSummary) return MinutesUnavailableReasons.NothingToRecord;
+
+        return null;
+    }
+
+    /// <summary>
+    /// The requested document types, or all four when nothing was asked for. An unrecognised name
+    /// is DROPPED rather than widening the result: a typo'd filter that silently returns everything
+    /// reads as the filter being broken, which is the harder bug to see.
+    /// </summary>
+    private static HashSet<string> ParseMeetingDocumentTypes(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested))
+            return MeetingDocumentTypes.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return requested
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(MeetingDocumentTypes.All.Contains)
+            .Select(t => t.ToUpperInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The shape both halves of the union project into. A CLASS with settable properties, not a
+    /// record — see the ordering note in <see cref="GetMeetingDocumentsAsync"/>.
+    /// </summary>
+    private sealed class MeetingDocumentRow
+    {
+        public Guid Id { get; set; }
+        public string Type { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public Guid TranslationRoomId { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+        public string? FileFormat { get; set; }
+        public long? FileSizeBytes { get; set; }
+        public bool ConsentRequired { get; set; }
+        public string? MinutesNo { get; set; }
+        public int? MinutesVersion { get; set; }
+
+        /// <summary>The meeting's own clock, so a meeting's documents cluster on the grid.</summary>
+        public DateTime MeetingSortAt { get; set; }
+    }
+
     public async Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try
