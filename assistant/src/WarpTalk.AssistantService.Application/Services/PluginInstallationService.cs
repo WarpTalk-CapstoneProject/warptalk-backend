@@ -140,11 +140,15 @@ public class PluginInstallationService : IPluginInstallationService
         if (string.IsNullOrWhiteSpace(key))
             return Result.Failure<PluginCatalogItemDto>("A plugin key is required.", PluginConstants.ErrorCodes.UnknownPlugin);
 
-        // 'mcp' is the literal segment of the shared OAuth callback route, and ASP.NET gives it
-        // precedence over {pluginKey}. A row keyed 'mcp' would shadow the callback for every MCP
-        // plugin at once. The database rejects it too; catching it here gives a usable message.
-        if (string.Equals(key, PluginConstants.PluginKind.Mcp, StringComparison.OrdinalIgnoreCase))
-            return Result.Failure<PluginCatalogItemDto>("'mcp' is reserved and cannot be a plugin key.", PluginConstants.ErrorCodes.UnknownPlugin);
+        // Some keys collide with a literal route segment sitting beside a {pluginKey} route, and
+        // ASP.NET gives the literal precedence — so the row is not rejected by routing, it is
+        // silently unreachable, which is the worse failure. The list lives in PluginConstants
+        // rather than being spelled out here, so a new literal route can be declared reserved in
+        // one place. The database rejects these too; catching it here gives a usable message.
+        if (PluginConstants.IsReservedPluginKey(key))
+            return Result.Failure<PluginCatalogItemDto>(
+                $"'{key.Trim()}' is reserved and cannot be a plugin key.",
+                PluginConstants.ErrorCodes.UnknownPlugin);
 
         if (string.IsNullOrWhiteSpace(request.McpServerUrl)
             || !Uri.TryCreate(request.McpServerUrl, UriKind.Absolute, out var serverUri)
