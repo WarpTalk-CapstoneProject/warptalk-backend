@@ -20,6 +20,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     private readonly IPluginCredentialProtector _credentialProtector;
     private readonly ILogger<PluginConnectionService> _logger;
     private readonly IMcpClientProvisioner _mcpClientProvisioner;
+    private readonly IWorkspacePluginGuard _workspacePluginGuard;
 
     public PluginConnectionService(
         IUnitOfWork unitOfWork,
@@ -27,7 +28,8 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         IPluginOAuthStateProtector stateProtector,
         IPluginCredentialProtector credentialProtector,
         ILogger<PluginConnectionService> logger,
-        IMcpClientProvisioner mcpClientProvisioner)
+        IMcpClientProvisioner mcpClientProvisioner,
+        IWorkspacePluginGuard workspacePluginGuard)
     {
         _unitOfWork = unitOfWork;
         _providerResolver = providerResolver;
@@ -35,6 +37,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         _credentialProtector = credentialProtector;
         _logger = logger;
         _mcpClientProvisioner = mcpClientProvisioner;
+        _workspacePluginGuard = workspacePluginGuard;
     }
 
     /// <summary>
@@ -44,11 +47,24 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     private IPluginOAuthClient OAuthClientFor(Plugin plugin) =>
         _providerResolver.ResolveOAuthClient(plugin.Kind);
 
-    public async Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(string pluginKey, Guid userId, CancellationToken ct = default)
+    public async Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
+        string pluginKey,
+        Guid userId,
+        Guid? workspaceId = null,
+        CancellationToken ct = default)
     {
         var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
             return Result.Failure<PluginConnectUrlDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
+
+        // WT-646. This, and not the callback below, is where a connect is refused: it is the last
+        // point at which nothing irreversible has happened, and the only one of the two that has a
+        // workspace to judge against. Installation is already gated, so this catches the case the
+        // install gate cannot - a plugin installed while the workspace still permitted it, whose
+        // key an admin has since removed from the allowlist.
+        var permitted = await _workspacePluginGuard.CanUseAsync(workspaceId, plugin.PluginKey, ct);
+        if (!permitted.IsSuccess)
+            return Result.Failure<PluginConnectUrlDto>(permitted.Error!, permitted.ErrorCode);
 
         var installed = await _unitOfWork.PluginInstallationRepository.AnyAsync(
             i => i.UserId == userId
@@ -296,9 +312,14 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     /// unreachable server would be a much worse trade.
     /// </para>
     /// <para>
-    /// Deliberately not gated by workspace policy - connecting is personal and workspace-independent.
-    /// <c>AllowAnyPlugins</c> is enforced where a user is actually in a workspace, on both the list
-    /// and execute paths in <c>McpToolOrchestrator</c>.
+    /// Deliberately not gated by workspace policy, and this stayed true through WT-646, which
+    /// moved the connect-time gate up to <see cref="GetConnectUrlAsync"/>. By the time control
+    /// reaches here the user has already consented at the provider and the grant exists; refusing
+    /// it would strand a real consent rather than prevent one. There is also no workspace to judge
+    /// against - a callback is a browser redirect from the provider and carries no workspace
+    /// context, only the protected state. Workspace policy is enforced where a user is actually in
+    /// a workspace: the catalog and install paths in <c>PluginInstallationService</c>, the
+    /// connect-url path above, and the list and execute paths in <c>McpToolOrchestrator</c>.
     /// </para>
     /// </remarks>
     private async Task SyncToolManifestAsync(
