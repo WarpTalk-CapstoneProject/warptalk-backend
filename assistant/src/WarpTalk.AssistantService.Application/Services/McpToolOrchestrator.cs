@@ -82,9 +82,12 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (installation == null)
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.PluginNotInstalled, "Plugin is not installed.", ct);
 
+        // The grant is the provider's, not the plugin's. The per-tool scope check below is what
+        // still separates the products: a Drive tool needs drive.readonly on this connection
+        // whether the user consented through the Drive tile or the Calendar one.
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == userId
-                && c.PluginId == plugin.Id,
+                && c.Provider == plugin.Provider,
             ct: ct);
 
         if (connection == null || connection.Status != PluginConstants.ConnectionStatus.Connected)

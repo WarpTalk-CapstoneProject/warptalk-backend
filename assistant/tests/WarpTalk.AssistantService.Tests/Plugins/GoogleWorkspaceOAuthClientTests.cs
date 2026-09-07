@@ -11,6 +11,8 @@ namespace WarpTalk.AssistantService.Tests.Plugins;
 
 public class GoogleWorkspaceOAuthClientTests
 {
+    private const string GoogleDriveKey = "google_drive";
+
     [Fact]
     public async Task RefreshAccessTokenAsync_PostsRefreshTokenGrant_AndReturnsNewAccessToken()
     {
@@ -32,7 +34,7 @@ public class GoogleWorkspaceOAuthClientTests
         }));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.Succeeded, refresh.Outcome);
         var token = refresh.Token!;
@@ -65,7 +67,7 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.Succeeded, refresh.Outcome);
         Assert.Equal("fresh-access-token", refresh.Token!.AccessToken);
@@ -84,7 +86,7 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "revoked-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "revoked-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.GrantRejected, refresh.Outcome);
         Assert.Null(refresh.Token);
@@ -97,7 +99,7 @@ public class GoogleWorkspaceOAuthClientTests
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
     }
@@ -112,7 +114,7 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.ProviderRateLimited, refresh.Outcome);
     }
@@ -129,7 +131,7 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
     }
@@ -141,7 +143,7 @@ public class GoogleWorkspaceOAuthClientTests
             throw new HttpRequestException("No such host is known.")));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
     }
@@ -157,7 +159,7 @@ public class GoogleWorkspaceOAuthClientTests
             })));
         var sut = CreateSut(httpClient);
 
-        var refresh = await sut.RefreshAccessTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        var refresh = await sut.RefreshAccessTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(PluginOAuthRefreshOutcome.ProviderUnavailable, refresh.Outcome);
     }
@@ -175,7 +177,7 @@ public class GoogleWorkspaceOAuthClientTests
         }));
         var sut = CreateSut(httpClient);
 
-        await sut.RevokeTokenAsync(GoogleWorkspacePlugin(), "stored-refresh-token");
+        await sut.RevokeTokenAsync(GoogleDrivePlugin(), "stored-refresh-token");
 
         Assert.Equal(HttpMethod.Post, capturedRequest!.Method);
         Assert.Equal("https://oauth2.google.test/revoke", capturedRequest.RequestUri!.ToString());
@@ -195,15 +197,15 @@ public class GoogleWorkspaceOAuthClientTests
             }));
     }
 
-    private static Plugin GoogleWorkspacePlugin()
+    private static Plugin GoogleDrivePlugin()
     {
         return new Plugin
         {
             Id = Guid.NewGuid(),
-            PluginKey = PluginConstants.GoogleWorkspace,
-            Label = "Google Workspace",
-            Description = "Work across Google Drive and Calendar.",
-            Provider = "google",
+            PluginKey = GoogleDriveKey,
+            Label = "Google Drive",
+            Description = "Search your Google Drive and read the contents of a file.",
+            Provider = PluginConstants.Providers.Google,
             IsActive = true,
             RequiredScopesJson = "[]",
             ToolsJson = "[]",

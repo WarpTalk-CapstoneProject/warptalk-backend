@@ -31,8 +31,13 @@ public class PluginInstallationService : IPluginInstallationService
             .Select(plugin =>
             {
                 var definition = PluginDefinitionMapper.ToDefinition(plugin);
+                // Installation is per-plugin; connection is per-provider. The two tiles for Drive
+                // and Calendar are installed independently but share one Google grant, so matching
+                // the connection on plugin id would leave whichever tile did not happen to start
+                // the consent reporting "not connected".
                 var installation = installations.FirstOrDefault(i => i.PluginId == plugin.Id);
-                var connection = connections.FirstOrDefault(c => c.PluginId == plugin.Id);
+                var connection = connections.FirstOrDefault(c =>
+                    string.Equals(c.Provider, plugin.Provider, StringComparison.Ordinal));
                 return PluginCatalogItemMapper.ToCatalogItem(definition, installation, connection);
             })
             .ToList();
@@ -120,6 +125,16 @@ public class PluginInstallationService : IPluginInstallationService
         if (await _unitOfWork.PluginRepository.AnyAsync(p => p.PluginKey == key, ct))
             return Result.Failure<PluginCatalogItemDto>($"A plugin keyed '{key}' already exists.", PluginConstants.ErrorCodes.UnknownPlugin);
 
+        // An MCP row takes its key as its provider (below), and since 20260907101000 the provider
+        // is the identity of a user's OAuth grant. So a row keyed 'google' would not just look
+        // confusing - it would be handed the existing Google connection, complete with its refresh
+        // token, and its tools would run against Google's grant. Colliding with any existing
+        // provider is rejected outright.
+        if (await _unitOfWork.PluginRepository.AnyAsync(p => p.Provider == key, ct))
+            return Result.Failure<PluginCatalogItemDto>(
+                $"'{key}' is already in use as a provider by another plugin; an MCP plugin needs a provider of its own.",
+                PluginConstants.ErrorCodes.UnknownPlugin);
+
         var now = DateTime.UtcNow;
         var plugin = new Plugin
         {
@@ -128,6 +143,9 @@ public class PluginInstallationService : IPluginInstallationService
             Label = request.Label,
             Description = request.Description,
             AvatarUrl = request.AvatarUrl,
+            // Its own provider, taken from its own key. Each MCP server is a separate
+            // authorization server with a separate grant, so keying connections by provider never
+            // merges two MCP plugins - the guard above is what keeps that true.
             Provider = key,
             RequiredScopesJson = JsonSerializer.Serialize(request.RequiredScopes ?? Array.Empty<string>()),
             // Empty until the first connect: for an MCP row this column is a cache of tools/list,

@@ -19,6 +19,10 @@ public class McpToolOrchestratorTests
     private static readonly Guid WorkspaceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid PluginId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
+    // Post-split key. google_workspace was retired by 20260907100000; a fixture still using
+    // it would be testing a row the catalog no longer serves.
+    private const string GoogleDriveKey = "google_drive";
+
     private readonly IMcpToolGateway _gateway = Substitute.For<IMcpToolGateway>();
     private readonly IWorkspacePluginPolicyClient _workspacePolicy = Substitute.For<IWorkspacePluginPolicyClient>();
     private readonly IPluginTokenRefresher _tokenRefresher = Substitute.For<IPluginTokenRefresher>();
@@ -72,7 +76,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RecordsPermissionDenied_WhenWorkspaceDisallowsPersonalPlugins()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -111,7 +115,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_ReturnsReconnectMetadata_WhenNoProviderConnectionExists()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         ConfigureInstalledPlugin(plugin);
         _connectionRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<PluginConnection, bool>>>(),
@@ -124,22 +128,22 @@ public class McpToolOrchestratorTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value.ErrorCode);
-        Assert.Equal(PluginConstants.GoogleWorkspace, result.Value.PluginKey);
-        Assert.Equal("Google Workspace", result.Value.PluginLabel);
+        Assert.Equal(GoogleDriveKey, result.Value.PluginKey);
+        Assert.Equal("Google Drive", result.Value.PluginLabel);
         Assert.Equal(PluginConstants.ConnectionStatus.NotConnected, result.Value.ConnectionStatus);
         Assert.Null(result.Value.ConnectedAccountEmail);
-        Assert.Contains("Connect Google Workspace", result.Value.Message, StringComparison.Ordinal);
+        Assert.Contains("Connect Google Drive", result.Value.Message, StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData(PluginConstants.ConnectionStatus.Expired, "expired@example.test", "has expired")]
-    [InlineData(PluginConstants.ConnectionStatus.Revoked, "revoked@example.test", "Reconnect Google Workspace")]
+    [InlineData(PluginConstants.ConnectionStatus.Revoked, "revoked@example.test", "Reconnect Google Drive")]
     public async Task ExecuteAsync_ReturnsReconnectMetadata_WhenProviderConnectionIsNotConnected(
         string connectionStatus,
         string providerEmail,
         string expectedMessage)
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         ConfigureInstalledConnection(plugin, connectionStatus, providerEmail);
 
         var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
@@ -147,8 +151,8 @@ public class McpToolOrchestratorTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value.ErrorCode);
-        Assert.Equal(PluginConstants.GoogleWorkspace, result.Value.PluginKey);
-        Assert.Equal("Google Workspace", result.Value.PluginLabel);
+        Assert.Equal(GoogleDriveKey, result.Value.PluginKey);
+        Assert.Equal("Google Drive", result.Value.PluginLabel);
         Assert.Equal(connectionStatus, result.Value.ConnectionStatus);
         Assert.Equal(providerEmail, result.Value.ConnectedAccountEmail);
         Assert.Contains(expectedMessage, result.Value.Message, StringComparison.Ordinal);
@@ -164,7 +168,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_UsesPersonalInstallAndConnection_WhenWorkspaceAllowsPlugins()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         ConfigureInstalledConnected(plugin);
         _gateway.ExecuteAsync(
                 Arg.Any<PluginDefinitionDto>(),
@@ -202,7 +206,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RequiresConfirmationBeforeWriteTool()
     {
-        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        var plugin = GoogleDrivePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
         var request = Request("google_calendar_create_event");
         _confirmationTokenService.CreateAsync(UserId, PluginId, request, Arg.Any<CancellationToken>())
@@ -227,7 +231,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RejectsConfirmationTokenForDifferentAction()
     {
-        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        var plugin = GoogleDrivePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
         var replayedRequest = Request(
             "google_calendar_create_event",
@@ -261,7 +265,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RejectsReplayedConfirmationToken()
     {
-        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        var plugin = GoogleDrivePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
         var replayedRequest = Request(
             "google_calendar_create_event",
@@ -294,7 +298,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_ReturnsFreshConfirmationToken_WhenConfirmationTokenExpired()
     {
-        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        var plugin = GoogleDrivePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
         var expiredRequest = Request(
             "google_calendar_create_event",
@@ -330,7 +334,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_AllowsWriteTool_WhenConfirmationTokenMatchesAction()
     {
-        var plugin = GoogleWorkspacePlugin(includeWriteTool: true);
+        var plugin = GoogleDrivePlugin(includeWriteTool: true);
         ConfigureInstalledConnected(plugin);
         var unconfirmed = Request(
             "google_calendar_create_event",
@@ -368,7 +372,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RefreshesExpiredAccessToken_ThenExecutesTool()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _tokenRefresher.RefreshAccessTokenAsync(plugin, connection, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
@@ -402,7 +406,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_DoesNotRefresh_WhenAccessTokenIsStillValid()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
         _gateway.ExecuteAsync(
                 Arg.Any<PluginDefinitionDto>(),
@@ -425,7 +429,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_ReturnsConnectionRequired_WhenExpiredAccessTokenCannotBeRefreshed()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _tokenRefresher.RefreshAccessTokenAsync(plugin, connection, Arg.Any<CancellationToken>())
             .Returns(Result.Failure("Refresh failed.", PluginConstants.ErrorCodes.ConnectionRequired));
@@ -454,7 +458,7 @@ public class McpToolOrchestratorTests
     {
         // The stored expiry can lag reality (clock skew, a grant refreshed elsewhere), so a 401
         // from the provider is the second trigger for a refresh.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
         _tokenRefresher.RefreshAccessTokenAsync(plugin, connection, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
@@ -489,7 +493,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RefreshesAtMostOncePerExecution_WhenRetryIsStillUnauthorized()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _tokenRefresher.RefreshAccessTokenAsync(plugin, connection, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
@@ -529,7 +533,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_MarksConnectionExpired_AndReturnsConnectionRequired_WhenProviderRejectsTheGrant()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.GrantRejected(
@@ -539,8 +543,8 @@ public class McpToolOrchestratorTests
 
         Assert.False(result.Value!.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value.ErrorCode);
-        Assert.Equal(PluginConstants.GoogleWorkspace, result.Value.PluginKey);
-        Assert.Equal("Google Workspace", result.Value.PluginLabel);
+        Assert.Equal(GoogleDriveKey, result.Value.PluginKey);
+        Assert.Equal("Google Drive", result.Value.PluginLabel);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value.ConnectionStatus);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
         await _gateway.DidNotReceive()
@@ -563,7 +567,7 @@ public class McpToolOrchestratorTests
         // A Google 503 is not a verdict on the grant. Before this, it expired the row - and because
         // gate 5 rejects a non-connected row before the refresh code is reached, that was sticky:
         // one blip cost a full browser re-consent.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.ProviderUnavailable(
@@ -585,7 +589,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_LeavesConnectionConnected_AndReturnsProviderRateLimited_WhenRefreshIsThrottled()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.ProviderRateLimited(
@@ -606,7 +610,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_LeavesConnectionConnected_WhenRefreshRequestNeverReachesTheProvider()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns<PluginOAuthRefreshResultDto>(_ => throw new HttpRequestException("No such host is known."));
@@ -624,7 +628,7 @@ public class McpToolOrchestratorTests
     {
         // Regression guard on T037: a connection with no stored refresh token is dead by
         // construction, and must keep ending the connection rather than looking transient.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         connection.EncryptedRefreshToken = null;
 
@@ -643,7 +647,7 @@ public class McpToolOrchestratorTests
         // The gateway 401 said "this access token is stale"; the failed refresh said nothing at all
         // about the grant. Answering connection_required here would push the user through a browser
         // consent to fix a ten-second outage, so the transient code wins.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.ProviderUnavailable(
@@ -671,7 +675,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_StillRefreshesAtMostOnce_WhenAProactiveRefreshFailsTransiently()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(-5));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.ProviderUnavailable(
@@ -696,7 +700,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_KeepsConnectionRequired_WhenReactiveRefreshIsRejectedByTheProvider()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.GrantRejected(
@@ -712,7 +716,7 @@ public class McpToolOrchestratorTests
         var result = await CreateSutWithRealRefresher().ExecuteAsync(UserId, Request("google_drive_search"));
 
         Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value!.ErrorCode);
-        Assert.Equal(PluginConstants.GoogleWorkspace, result.Value.PluginKey);
+        Assert.Equal(GoogleDriveKey, result.Value.PluginKey);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value.ConnectionStatus);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
     }
@@ -755,7 +759,7 @@ public class McpToolOrchestratorTests
     {
         return new McpToolExecutionRequest(
             WorkspaceId,
-            PluginConstants.GoogleWorkspace,
+            GoogleDriveKey,
             toolName,
             arguments,
             Guid.Parse("44444444-4444-4444-4444-444444444444"),
@@ -784,6 +788,7 @@ public class McpToolOrchestratorTests
             Id = Guid.NewGuid(),
             UserId = UserId,
             PluginId = PluginId,
+            Provider = PluginConstants.Providers.Google,
             Status = connectionStatus,
             ProviderEmail = providerEmail,
             EncryptedAccessToken = "protected:access-token",
@@ -829,14 +834,14 @@ public class McpToolOrchestratorTests
             });
     }
 
-    private static Plugin GoogleWorkspacePlugin(bool includeWriteTool = false)
+    private static Plugin GoogleDrivePlugin(bool includeWriteTool = false)
     {
         var toolsJson = includeWriteTool
             ? """
                 [
                   {
                     "name": "google_drive_search",
-                    "pluginKey": "google_workspace",
+                    "pluginKey": "google_drive",
                     "label": "Search Google Drive",
                     "description": "Search files in Google Drive.",
                     "effect": "read",
@@ -851,7 +856,7 @@ public class McpToolOrchestratorTests
                   },
                   {
                     "name": "google_calendar_create_event",
-                    "pluginKey": "google_workspace",
+                    "pluginKey": "google_drive",
                     "label": "Create Google Calendar event",
                     "description": "Create a Google Calendar event.",
                     "effect": "write",
@@ -870,7 +875,7 @@ public class McpToolOrchestratorTests
                 [
                   {
                     "name": "google_drive_search",
-                    "pluginKey": "google_workspace",
+                    "pluginKey": "google_drive",
                     "label": "Search Google Drive",
                     "description": "Search files in Google Drive.",
                     "effect": "read",
@@ -889,10 +894,10 @@ public class McpToolOrchestratorTests
         return new Plugin
         {
             Id = PluginId,
-            PluginKey = PluginConstants.GoogleWorkspace,
-            Label = "Google Workspace",
-            Description = "Work across Google Drive and Calendar.",
-            Provider = "google",
+            PluginKey = GoogleDriveKey,
+            Label = "Google Drive",
+            Description = "Search your Google Drive and read the contents of a file.",
+            Provider = PluginConstants.Providers.Google,
             AvatarUrl = "https://example.test/google.svg",
             IsActive = true,
             RequiredScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",

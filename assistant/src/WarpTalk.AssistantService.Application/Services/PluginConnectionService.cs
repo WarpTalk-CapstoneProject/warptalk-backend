@@ -98,6 +98,24 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         return await CompleteCallbackAsync(oauthState, code, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<Result<PluginConnectionStatusDto>> CompleteProviderOAuthCallbackAsync(
+        string provider,
+        string code,
+        string state,
+        CancellationToken ct = default)
+    {
+        var unprotected = UnprotectState(state);
+        if (!unprotected.IsSuccess)
+            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+
+        // The path names a provider, not a plugin, so the plugin key comes from the sealed state -
+        // the same arrangement the MCP callback uses. What the path still contributes is a
+        // cross-check: the plugin the state names has to belong to the provider whose callback
+        // this is, or a state minted for one provider could be redeemed on another's.
+        return await CompleteCallbackAsync(unprotected.Value!, code, ct, expectedProvider: provider);
+    }
+
     public async Task<Result<PluginConnectionStatusDto>> CompleteMcpOAuthCallbackAsync(
         string code,
         string state,
@@ -164,13 +182,21 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     private async Task<Result<PluginConnectionStatusDto>> CompleteCallbackAsync(
         PluginOAuthStateDto oauthState,
         string code,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? expectedProvider = null)
     {
         var pluginKey = oauthState.PluginKey;
 
         var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
             return Result.Failure<PluginConnectionStatusDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
+
+        // Same shape as the per-plugin route's key cross-check: when the path carries an identity
+        // too, it and the state have to agree. Collapses to the same opaque error, so a prober
+        // cannot tell a wrong provider from a forged state.
+        if (expectedProvider != null
+            && !string.Equals(plugin.Provider, expectedProvider, StringComparison.Ordinal))
+            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
 
         var installed = await _unitOfWork.PluginInstallationRepository.AnyAsync(
             i => i.UserId == oauthState.UserId
@@ -182,8 +208,13 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             return Result.Failure<PluginConnectionStatusDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
         var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, ct);
+
+        // By provider, not by plugin. A user who already consented to Google through Drive and is
+        // now connecting Calendar comes back here with the same grant: this has to find that row
+        // and widen it, not insert a second one that the (user_id, provider) unique constraint
+        // would reject.
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
-            c => c.UserId == oauthState.UserId && c.PluginId == plugin.Id, ct: ct);
+            c => c.UserId == oauthState.UserId && c.Provider == plugin.Provider, ct: ct);
         var now = DateTime.UtcNow;
         var canReuseStoredRefreshToken = connection is
         {
@@ -197,6 +228,12 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             {
                 Id = Guid.NewGuid(),
                 UserId = oauthState.UserId,
+                // Identity. NOT NULL with no database default, so omitting it here fails the
+                // insert at runtime rather than at compile time.
+                Provider = plugin.Provider,
+                // Provenance: which catalog row sent the user to consent. Set once, on the row
+                // that created the connection, and deliberately not rewritten on a later reconnect
+                // through a sibling plugin - "first obtained through" is the only thing it claims.
                 PluginId = plugin.Id,
                 CreatedAt = now,
             };
@@ -299,8 +336,11 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (plugin == null)
             return Result.Failure<PluginConnectionStatusDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
+        // The grant belongs to the provider, so all three Google plugins report the same connection
+        // - which is the point: a user who consented through Drive is connected for Calendar too,
+        // and looking this up by plugin id would tell them otherwise.
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
-            c => c.UserId == userId && c.PluginId == plugin.Id, ct: ct);
+            c => c.UserId == userId && c.Provider == plugin.Provider, ct: ct);
 
         if (connection == null)
             return Result.Success(new PluginConnectionStatusDto(pluginKey, PluginConstants.ConnectionStatus.NotConnected, null, Array.Empty<string>()));
@@ -392,8 +432,14 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (plugin == null)
             return Result.Failure("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
+        // Disconnecting is per-provider, and that is a real behaviour change worth being explicit
+        // about: disconnecting Drive ends the Google grant, so Calendar and Meet go with it.
+        // Google revokes per grant, not per token, so the alternative - dropping only "the Drive
+        // connection" - would leave two rows we believe are healthy pointing at a revoked grant.
+        // Disconnecting one product and keeping the others would need an incremental de-scope,
+        // which Google's revoke endpoint does not offer.
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
-            c => c.UserId == userId && c.PluginId == plugin.Id, ct: ct);
+            c => c.UserId == userId && c.Provider == plugin.Provider, ct: ct);
 
         if (connection == null)
             return Result.Success();

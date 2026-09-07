@@ -16,6 +16,8 @@ public class PluginConnectionServiceTests
     private static readonly Guid UserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid PluginId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
+    private const string GoogleDriveKey = "google_drive";
+
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
@@ -42,7 +44,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task GetConnectUrlAsync_ReturnsPluginNotInstalled_WhenAccountDidNotInstallPlugin()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -53,7 +55,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(false);
 
-        var result = await CreateSut().GetConnectUrlAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().GetConnectUrlAsync(GoogleDriveKey, UserId);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.PluginNotInstalled, result.ErrorCode);
@@ -68,7 +70,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task GetConnectUrlAsync_ReturnsProviderAuthorizationUrl_WhenAccountInstalledPlugin()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -79,7 +81,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(true);
         _stateProtector.Protect(Arg.Is<PluginOAuthStateDto>(state =>
-                state.UserId == UserId && state.PluginKey == PluginConstants.GoogleWorkspace))
+                state.UserId == UserId && state.PluginKey == GoogleDriveKey))
             .Returns("state-token");
         _oauthClient.BuildAuthorizationUrl(
                 plugin,
@@ -89,7 +91,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<PluginOAuthStateDto>())
             .Returns("https://accounts.google.test/oauth");
 
-        var result = await CreateSut().GetConnectUrlAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().GetConnectUrlAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
         Assert.Equal("https://accounts.google.test/oauth", result.Value!.Url);
@@ -98,9 +100,9 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task CompleteOAuthCallbackAsync_StoresEncryptedPersonalConnection()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         _stateProtector.Unprotect("state-token")
-            .Returns(new PluginOAuthStateDto(UserId, PluginConstants.GoogleWorkspace));
+            .Returns(new PluginOAuthStateDto(UserId, GoogleDriveKey));
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -125,7 +127,7 @@ public class PluginConnectionServiceTests
                 DateTime.UtcNow.AddHours(1)));
 
         var result = await CreateSut()
-            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
@@ -147,7 +149,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task CompleteOAuthCallbackAsync_ClearsExpiredStatus_WhenUserReconnects()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var expiredConnection = new PluginConnection
         {
             Id = Guid.NewGuid(),
@@ -174,7 +176,7 @@ public class PluginConnectionServiceTests
                 DateTime.UtcNow.AddHours(1)));
 
         var result = await CreateSut()
-            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
@@ -186,7 +188,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task CompleteOAuthCallbackAsync_MarksExpired_WhenFirstConsentOmitsRefreshToken()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         ConfigureInstalledPlugin(plugin);
         _connectionRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<PluginConnection, bool>>>(),
@@ -203,7 +205,7 @@ public class PluginConnectionServiceTests
                 DateTime.UtcNow.AddHours(1)));
 
         var result = await CreateSut()
-            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value!.Status);
@@ -222,7 +224,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task CompleteOAuthCallbackAsync_KeepsExpired_WhenReconnectOmitsNewRefreshToken()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var expiredConnection = new PluginConnection
         {
             Id = Guid.NewGuid(),
@@ -249,7 +251,7 @@ public class PluginConnectionServiceTests
                 DateTime.UtcNow.AddHours(1)));
 
         var result = await CreateSut()
-            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value!.Status);
@@ -263,7 +265,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task CompleteOAuthCallbackAsync_ReusesStoredRefreshToken_WhenConnectedUserReconsents()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connected = ConnectedConnection();
         ConfigureInstalledPlugin(plugin);
         _connectionRepository.FirstOrDefaultAsync(
@@ -281,7 +283,7 @@ public class PluginConnectionServiceTests
                 DateTime.UtcNow.AddHours(1)));
 
         var result = await CreateSut()
-            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
@@ -293,7 +295,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task RefreshAccessTokenAsync_PersistsNewAccessToken_AndKeepsStoredRefreshToken_WhenProviderOmitsIt()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         var newExpiry = DateTime.UtcNow.AddHours(1);
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
@@ -317,7 +319,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task RefreshAccessTokenAsync_RotatesStoredRefreshToken_WhenProviderReturnsNewOne()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.Succeeded(new PluginOAuthTokenDto(
@@ -339,7 +341,7 @@ public class PluginConnectionServiceTests
     {
         // The rejection that ends a connection is specifically an invalid_grant-shaped one: the
         // provider looked at the stored refresh token and refused it.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.GrantRejected(
@@ -357,7 +359,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task RefreshAccessTokenAsync_LeavesConnectionConnected_WhenProviderIsUnavailable()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.ProviderUnavailable(
@@ -378,7 +380,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task RefreshAccessTokenAsync_LeavesConnectionConnected_WhenProviderRateLimits()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(PluginOAuthRefreshResultMapper.ProviderRateLimited(
@@ -398,7 +400,7 @@ public class PluginConnectionServiceTests
     {
         // A fault the OAuth client did not foresee is not evidence the grant is dead. Degrading to
         // transient keeps an unexpected bug from silently expiring every connection it touches.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _oauthClient.RefreshAccessTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns<PluginOAuthRefreshResultDto>(_ => throw new HttpRequestException("Connection reset."));
@@ -416,7 +418,7 @@ public class PluginConnectionServiceTests
     public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenStoredMaterialWillNotDecrypt()
     {
         // A rotated Data Protection key ring makes the stored refresh token unusable forever.
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _credentialProtector.Unprotect("protected:refresh-token")
             .Returns<string>(_ => throw new InvalidOperationException("The key was not found in the key ring."));
@@ -433,7 +435,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task RefreshAccessTokenAsync_MarksConnectionExpired_WhenNoRefreshTokenStored()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         connection.EncryptedRefreshToken = null;
 
@@ -450,7 +452,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task DisconnectAsync_RevokesRefreshToken_AndClearsStoredCredentials()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -463,7 +465,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(connection);
 
-        var result = await CreateSut().DisconnectAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().DisconnectAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
         await _oauthClient.Received(1).RevokeTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>());
@@ -479,7 +481,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task DisconnectAsync_RevokesAccessToken_WhenNoRefreshTokenExists()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         connection.EncryptedRefreshToken = null;
         _pluginRepository.FirstOrDefaultAsync(
@@ -493,7 +495,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(connection);
 
-        var result = await CreateSut().DisconnectAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().DisconnectAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
         await _oauthClient.Received(1).RevokeTokenAsync(plugin, "stale-access-token", Arg.Any<CancellationToken>());
@@ -504,7 +506,7 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task DisconnectAsync_StillRevokesLocalConnection_WhenProviderRevokeFails()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var connection = ConnectedConnection();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -519,7 +521,7 @@ public class PluginConnectionServiceTests
         _oauthClient.RevokeTokenAsync(plugin, "refresh-token", Arg.Any<CancellationToken>())
             .Returns(_ => throw new HttpRequestException("provider unavailable"));
 
-        var result = await CreateSut().DisconnectAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().DisconnectAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
@@ -548,7 +550,7 @@ public class PluginConnectionServiceTests
     private void ConfigureInstalledPlugin(Plugin plugin)
     {
         _stateProtector.Unprotect("state-token")
-            .Returns(new PluginOAuthStateDto(UserId, PluginConstants.GoogleWorkspace));
+            .Returns(new PluginOAuthStateDto(UserId, GoogleDriveKey));
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -571,15 +573,15 @@ public class PluginConnectionServiceTests
             new TestMcpClientProvisioner());
     }
 
-    private static Plugin GoogleWorkspacePlugin()
+    private static Plugin GoogleDrivePlugin()
     {
         return new Plugin
         {
             Id = PluginId,
-            PluginKey = PluginConstants.GoogleWorkspace,
-            Label = "Google Workspace",
-            Description = "Work across Google Drive and Calendar.",
-            Provider = "google",
+            PluginKey = GoogleDriveKey,
+            Label = "Google Drive",
+            Description = "Search your Google Drive and read the contents of a file.",
+            Provider = PluginConstants.Providers.Google,
             IsActive = true,
             RequiredScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",
             ToolsJson = "[]",

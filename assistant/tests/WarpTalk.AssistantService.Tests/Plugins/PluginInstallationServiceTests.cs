@@ -14,6 +14,8 @@ public class PluginInstallationServiceTests
     private static readonly Guid OtherUserId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid PluginId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
+    private const string GoogleDriveKey = "google_drive";
+
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
@@ -30,7 +32,7 @@ public class PluginInstallationServiceTests
     [Fact]
     public async Task ListCatalogAsync_UsesOnlyCurrentUsersPersonalInstallAndConnection()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         _pluginRepository.FindAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -60,6 +62,7 @@ public class PluginInstallationServiceTests
                     Id = Guid.NewGuid(),
                     UserId = UserId,
                     PluginId = PluginId,
+                    Provider = PluginConstants.Providers.Google,
                     Status = PluginConstants.ConnectionStatus.Connected,
                     ProviderEmail = "user@example.com",
                     // Only Drive was granted at Google's consent screen - the catalog item must
@@ -90,7 +93,7 @@ public class PluginInstallationServiceTests
     [Fact]
     public async Task InstallAsync_AddsPersonalInstallation_WhenPluginIsKnownAndNotInstalled()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -102,7 +105,7 @@ public class PluginInstallationServiceTests
                 Arg.Any<CancellationToken>())
             .Returns((PluginInstallation?)null);
 
-        var result = await CreateSut().InstallAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().InstallAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.InstallationStatus.Installed, result.Value!.InstallationStatus);
@@ -119,7 +122,7 @@ public class PluginInstallationServiceTests
     [Fact]
     public async Task DisableAsync_DisablesOnlyTheCurrentUsersInstallation()
     {
-        var plugin = GoogleWorkspacePlugin();
+        var plugin = GoogleDrivePlugin();
         var installation = new PluginInstallation
         {
             Id = Guid.NewGuid(),
@@ -141,7 +144,7 @@ public class PluginInstallationServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(installation);
 
-        var result = await CreateSut().DisableAsync(PluginConstants.GoogleWorkspace, UserId);
+        var result = await CreateSut().DisableAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.InstallationStatus.Disabled, installation.Status);
@@ -155,15 +158,15 @@ public class PluginInstallationServiceTests
         return new PluginInstallationService(_unitOfWork, Substitute.For<IPluginCredentialProtector>());
     }
 
-    private static Plugin GoogleWorkspacePlugin()
+    private static Plugin GoogleDrivePlugin()
     {
         return new Plugin
         {
             Id = PluginId,
-            PluginKey = PluginConstants.GoogleWorkspace,
-            Label = "Google Workspace",
-            Description = "Work across Google Drive and Calendar.",
-            Provider = "google",
+            PluginKey = GoogleDriveKey,
+            Label = "Google Drive",
+            Description = "Search your Google Drive and read the contents of a file.",
+            Provider = PluginConstants.Providers.Google,
             AvatarUrl = "https://example.test/google.svg",
             IsActive = true,
             RequiredScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",
