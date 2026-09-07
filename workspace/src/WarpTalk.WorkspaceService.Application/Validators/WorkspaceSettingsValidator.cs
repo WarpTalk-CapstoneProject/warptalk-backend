@@ -60,6 +60,32 @@ public static class WorkspaceSettingsValidator
             errors["verifiedDomains"] = [WorkspaceConstants.Errors.VerifiedDomainsRequired];
         }
 
+        // WT-646. Only reached when an allowlist is actually configured: null is "no allowlist,
+        // defer to AllowAnyPlugins", which is every pre-WT-646 workspace and has nothing to check.
+        // An EMPTY list is a configured allowlist permitting nothing — a legitimate, if strict,
+        // policy — so it passes.
+        //
+        // Entries are NOT checked against the plugin catalog. That catalog is AssistantService's
+        // table in AssistantService's database; this service has no read path to it and should not
+        // grow one on the settings-save path, where an assistant outage would then block saving
+        // unrelated workspace settings. A key matching no plugin is accepted and simply matches
+        // nothing at enforcement time. This is a known gap, not an oversight: the settings UI is
+        // where a real catalog check belongs, since it can already list the catalog.
+        if (settings.AllowedPluginKeys is { } allowedPluginKeys)
+        {
+            if (allowedPluginKeys.Count > WorkspaceConstants.MaxWorkspaceAllowedPluginKeys)
+            {
+                errors["allowedPluginKeys"] = [WorkspaceConstants.Errors.AllowedPluginKeysTooMany];
+            }
+            else if (allowedPluginKeys.Any(string.IsNullOrWhiteSpace))
+            {
+                // Refused rather than filtered out. A blank entry means the caller's payload is
+                // not what they think it is, and dropping it would hand back a "saved" allowlist
+                // quietly different from the one they sent.
+                errors["allowedPluginKeys"] = [WorkspaceConstants.Errors.AllowedPluginKeyBlank];
+            }
+        }
+
         return new WorkspaceSettingsValidationResult(errors);
     }
 }

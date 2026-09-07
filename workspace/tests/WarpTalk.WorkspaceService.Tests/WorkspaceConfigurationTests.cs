@@ -166,4 +166,52 @@ public class WorkspaceConfigurationTests
         Assert.NotNull(config.AiUsagePolicy);
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
     }
+
+    /// <summary>
+    /// WT-646. The plugin-policy defaults exist to make this feature invisible to a workspace that
+    /// has not configured it. If any of these three flips, every existing workspace changes
+    /// behaviour on the next deploy.
+    /// </summary>
+    [Fact]
+    public void PluginPolicy_ShouldDefaultToTodaysBehaviour_WhenUnconfigured()
+    {
+        var config = new WorkspaceConfiguration();
+
+        Assert.Null(config.AllowedPluginKeys);        // no allowlist, defer to AllowAnyPlugins
+        Assert.True(config.AllowMemberPluginInstall); // members may install, as they do today
+        Assert.False(config.RequirePluginApproval);   // no approval gate, as today
+    }
+
+    [Fact]
+    public void AllowedPluginKeys_ShouldTrimAndDeduplicateCaseInsensitively_WhenSet()
+    {
+        var config = new WorkspaceConfiguration
+        {
+            AllowedPluginKeys = new List<string> { "notion", " notion ", "NOTION", "google-calendar" }
+        };
+
+        Assert.Equal(new List<string> { "notion", "google-calendar" }, config.AllowedPluginKeys);
+    }
+
+    [Fact]
+    public void AllowedPluginKeys_ShouldStayNull_WhenSetToNull()
+    {
+        // The single most important line in this file. A `?? new List<string>()` anywhere on the
+        // write path turns "no allowlist configured" into "allowlist permitting nothing", which
+        // would silently disable plugins in every workspace that predates WT-646.
+        var config = new WorkspaceConfiguration { AllowedPluginKeys = null };
+
+        Assert.Null(config.AllowedPluginKeys);
+    }
+
+    [Fact]
+    public void AllowedPluginKeys_ShouldStayEmpty_WhenSetToEmptyList()
+    {
+        // The other side of the same distinction: an empty list is a real, deliberate policy and
+        // must not be normalized into null.
+        var config = new WorkspaceConfiguration { AllowedPluginKeys = new List<string>() };
+
+        Assert.NotNull(config.AllowedPluginKeys);
+        Assert.Empty(config.AllowedPluginKeys);
+    }
 }

@@ -118,7 +118,42 @@ message GetWorkspaceSettingsResponse {
   // Workspace policy for invoking account-scoped MCP plugins inside WarpBot conversations.
   // Plugin installations and OAuth tokens remain personal; this only gates usage in a
   // workspace-scoped chat.
+  //
+  // WT-646 did NOT retire this in favour of plugin_policy below. It stays the answer for a
+  // workspace that has configured no allowlist, and it stays the ONLY answer an assistant build
+  // older than WT-646 can see, since that build ignores field 9 entirely.
   bool allow_any_plugins = 8;
+  // WT-646: the rest of the workspace's plugin policy.
+  //
+  // A message rather than three scalars because proto3 gives a message field presence and gives
+  // scalars none. ABSENT means the peer workspace service predates WT-646 and has no opinion —
+  // the caller falls back to allow_any_plugins alone, which is exactly what an older assistant
+  // build does by not knowing this field exists. Three bare scalars would arrive as false/empty
+  // from such a peer and be indistinguishable from a workspace that had deliberately set them to
+  // false/empty, i.e. one that permits nothing.
+  WorkspacePluginPolicy plugin_policy = 9;
+}
+
+// WT-646.
+message WorkspacePluginPolicy {
+  // Whether allowed_plugin_keys is to be read at all.
+  //
+  // proto3 cannot distinguish an unset repeated field from an empty one, and here the two mean
+  // OPPOSITE things: no allowlist configured (defer to allow_any_plugins — every workspace that
+  // predates WT-646) versus an allowlist that permits nothing. This bool carries that
+  // distinction. Read allowed_plugin_keys only when it is true; when it is false the list is
+  // empty and means nothing.
+  bool allowlist_enforced = 1;
+  // The permitted plugin keys. Meaningful only when allowlist_enforced is true.
+  //
+  // NOT validated against the plugin catalog by the workspace service — the catalog is the
+  // assistant's own table, which this service cannot read. A key here may match no plugin.
+  repeated string allowed_plugin_keys = 2;
+  // Whether a plain Member may install a plugin for themselves. False confines installation to
+  // Owner and Admin.
+  bool allow_member_plugin_install = 3;
+  // Whether an installed plugin needs Owner/Admin approval before it may be invoked.
+  bool require_plugin_approval = 4;
 }
 
 message GetWorkspacePreflightRequest {

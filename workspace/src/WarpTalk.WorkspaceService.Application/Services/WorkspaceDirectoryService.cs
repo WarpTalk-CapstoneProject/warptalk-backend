@@ -377,7 +377,14 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             config.AiUsagePolicy?.AllowExternalLlm ?? true,
             config.AiUsagePolicy?.UseGlobalGlossary ?? true,
             config.AllowedTargetLanguages?.ToArray() ?? Array.Empty<string>(),
-            config.AllowAnyPlugins));
+            config.AllowAnyPlugins,
+            // Deliberately not coerced to an empty array the way AllowedTargetLanguages is above.
+            // Empty there means "unrestricted"; empty here would mean "permit nothing", so a null
+            // that became an empty array would silently deny every plugin in every workspace that
+            // never configured an allowlist.
+            config.AllowedPluginKeys?.ToArray(),
+            config.AllowMemberPluginInstall,
+            config.RequirePluginApproval));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(
