@@ -164,7 +164,29 @@ public class TranscriptCorrectionPropagationTests
         public TranscriptCorrection? SavedCorrection { get; set; }
     }
 
-    private static Context Build(IReadOnlyList<SegmentTranslationLink> links)
+    [Fact]
+    public async Task ACorrection_IsRefused_OnceTheHostHasFinalizedIt()
+    {
+        // "Finalize transcript" is the host's lock on the wording, and until now nothing on the
+        // server enforced it. The status was set, the web hid its editor behind
+        // `canCorrect = canEdit && !isFinalized`, and the API went on accepting corrections from
+        // anyone calling it directly — a lock enforced only by the screen that draws it.
+        var context = Build([Link("en")], transcriptStatus: "FINALIZED");
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId,
+            SegmentId,
+            UserId,
+            Correction("STT", "what a person heard"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("BAD_REQUEST", result.ErrorCode);
+        // Refused means NOTHING WAS WRITTEN. A refusal that had already saved the correction would
+        // leave the record edited and the caller told it was not.
+        Assert.Null(context.SavedCorrection);
+    }
+
+    private static Context Build(IReadOnlyList<SegmentTranslationLink> links, string transcriptStatus = "COMPLETED")
     {
         var segment = new TranscriptSegment
         {
@@ -193,7 +215,11 @@ public class TranscriptCorrectionPropagationTests
             Id = TranscriptId,
             TranslationRoomId = RoomId,
             WorkspaceId = WorkspaceId,
-            Status = "FINALIZED",
+            // COMPLETED by default, not FINALIZED. These tests are about what a correction
+            // PROPAGATES to, and a finalized transcript now refuses corrections outright — the
+            // fixture would be asserting propagation through a door the service correctly closes.
+            // The lock itself is pinned by ACorrection_IsRefused_OnceTheHostHasFinalizedIt.
+            Status = transcriptStatus,
             SourceLanguage = "vi",
         });
         unitOfWork.Transcripts.Returns(transcripts);

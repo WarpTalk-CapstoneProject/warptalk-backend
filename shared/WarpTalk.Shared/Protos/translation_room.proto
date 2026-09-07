@@ -78,6 +78,27 @@ message GetTranslationRoomResponse {
   // Compare requires_approval above, which has the same proto3 default problem in the harmless
   // direction and documents a re-fetch instead. Data loss does not get to be a fail-open case.
   optional bool save_transcript = 13;
+  // The host AFTER any transfer — TranslationRoom.EffectiveHostId, not the booker in `hostId`.
+  //
+  // `hostId` above is the raw HostId column and deliberately stays that way: it is what booked the
+  // room and several readers want exactly that. But every HOST-GATED decision in this service asks
+  // `IsHostedBy`, which is EffectiveHostId, so a consumer comparing against `hostId` disagrees with
+  // this service about who the host is the moment a room is handed over. TranscriptService was
+  // doing precisely that in FinalizeTranscriptAsync: after a transfer the new host was refused and
+  // the departed booker could still lock the record.
+  //
+  // Empty from an older server. A reader MUST fall back to `hostId` then rather than treating
+  // "no effective host" as "nobody is the host", which would refuse every host action.
+  string effective_host_id = 14;
+  // WT-480: who this meeting's outputs are shared with — one of ArtifactAccessLevels
+  // (HOST_ONLY, ALL_PARTICIPANTS). TranscriptService needs it because the transcript is one of
+  // the three things the host's Publish control claims to cover, and it was the one that never
+  // consulted the setting.
+  //
+  // Empty means an older server, and the reader must treat that as HOST_ONLY — the same direction
+  // ArtifactAccessHelper.ReadArtifactAccessLevel fails in for an unparseable blob. An
+  // authorization input is not a fail-open case, so absent must never widen access.
+  string artifact_access = 15;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host
