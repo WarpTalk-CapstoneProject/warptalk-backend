@@ -42,12 +42,13 @@ public static class PluginConstants
     /// first segment outranks the <c>{pluginKey}</c> of <c>plugins/{pluginKey}/connection</c> and
     /// <c>plugins/{pluginKey}/connect-url</c>, so for a row keyed <c>catalog</c> every user-facing
     /// two-segment call would be answered by an admin endpoint - a 403 where a connection status
-    /// belongs. Not yet in the database constraint; see the note below.</item>
+    /// belongs. Added to the database constraint by 20260907103000.</item>
     /// </list>
     /// <para>
-    /// The database check currently names only <c>mcp</c>. Extending it to <c>catalog</c> needs a
-    /// migration, so until one lands this list is the only guard, and it binds only the write paths
-    /// that consult it.
+    /// Both names are enforced twice over: here, so an operator gets a sentence rather than a
+    /// constraint-violation stack trace, and in <c>plugins_plugin_key_not_reserved</c>, which is
+    /// the backstop for every write path that does not come through this code - hand-run SQL
+    /// included. Declaring a new literal route reserved means adding it here AND in a migration.
     /// </para>
     /// </remarks>
     public static readonly IReadOnlyList<string> ReservedPluginKeys = ["mcp", "catalog"];
