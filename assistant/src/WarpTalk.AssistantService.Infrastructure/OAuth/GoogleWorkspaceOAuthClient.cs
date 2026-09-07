@@ -57,7 +57,7 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         var query = HttpUtility.ParseQueryString(string.Empty);
-        query["client_id"] = _options.ClientId;
+        query["client_id"] = RequireConfigured(_options.ClientId, "ClientId", "GOOGLE_WORKSPACE_CLIENT_ID");
         query["redirect_uri"] = _options.RedirectUri;
         query["response_type"] = "code";
         query["scope"] = string.Join(" ", IdentityScopes.Concat(scopes).Distinct(StringComparer.Ordinal));
@@ -81,8 +81,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             _options.TokenEndpoint,
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["client_id"] = _options.ClientId,
-                ["client_secret"] = _options.ClientSecret,
+                ["client_id"] = RequireConfigured(_options.ClientId, "ClientId", "GOOGLE_WORKSPACE_CLIENT_ID"),
+                ["client_secret"] = RequireConfigured(_options.ClientSecret, "ClientSecret", "GOOGLE_WORKSPACE_CLIENT_SECRET"),
                 ["code"] = code,
                 ["grant_type"] = "authorization_code",
                 ["redirect_uri"] = _options.RedirectUri,
@@ -201,6 +201,25 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             ct);
         response.EnsureSuccessStatusCode();
     }
+
+    /// <summary>
+    /// The MCP client gets its credentials from the plugin row, so <c>Require</c> there points at
+    /// provisioning. This client gets them from configuration, so the same guard has to point at
+    /// the environment instead - and name the key, because that is the part nobody can guess.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="GoogleWorkspaceOAuthOptions"/> defaults these to <c>""</c>, which binds cleanly
+    /// from an unset variable and produces a request Google answers with "Missing required
+    /// parameter: client_id" - on its own consent page, at the end of a redirect, with nothing in
+    /// our logs. An empty credential is not a configuration, and the flow must not start without
+    /// one.
+    /// </remarks>
+    private static string RequireConfigured(string value, string optionName, string environmentKey) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new InvalidOperationException(
+                $"Google Workspace OAuth is not configured: Plugins__GoogleWorkspace__OAuth__{optionName} is empty. "
+                + $"Set {environmentKey} in the deployment environment.")
+            : value;
 
     /// <summary>
     /// Turns Google's answer into the one distinction the caller needs: is this grant dead, or was

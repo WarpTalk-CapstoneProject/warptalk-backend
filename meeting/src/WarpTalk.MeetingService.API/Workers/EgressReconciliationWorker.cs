@@ -10,7 +10,7 @@ namespace WarpTalk.MeetingService.API.Workers;
 public sealed class EgressReconciliationWorker : BackgroundService
 {
     /// <summary>
-    /// Two minutes, not ten seconds like <see cref="BreakoutExpiryWorker"/>. This is a FALLBACK:
+    /// Two minutes. This is a fallback rather than the primary completion path:
     /// when the webhook works it finds nothing, and when it does not, a recording appearing two
     /// minutes after the meeting rather than instantly is a non-event. Each tick costs one
     /// LiveKit call per in-progress recording, which is almost always zero.

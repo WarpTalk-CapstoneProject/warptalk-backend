@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -147,14 +148,22 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 // Save all generated artifacts into the DB
                 var artifactRepo = _unitOfWork.TranslationRoomArtifactRepository;
 
-                await artifactRepo.AddAsync(transcript, ct);
-                await artifactRepo.AddAsync(summary, ct);
+                await artifactRepo.AddAsync(transcript.Artifact, ct);
+                await artifactRepo.AddAsync(summary.Artifact, ct);
 
                 await _unitOfWork.SaveChangesAsync(ct);
 
                 // Only now, with the summary durably stored, is it worth indexing. Publishing
                 // before the save would index a summary a later rollback erased.
-                await PublishSummaryToKnowledgeAsync(roomId, summary.Content, ct);
+                await PublishSummaryToKnowledgeAsync(roomId, summary.Artifact.Content, ct);
+
+                // The placeholder is saved and the transcript is in hand — so ask for the summary
+                // that never came, sending the transcript rather than waiting for the worker to
+                // find one. See RequestSummaryFromTranscriptAsync.
+                if (summary.TimedOut)
+                {
+                    await RequestSummaryFromTranscriptAsync(roomId, transcript.CitedTranscript, ct);
+                }
 
                 _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
 
@@ -217,7 +226,17 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         }
     }
 
-    private async Task<TranslationRoomArtifact> FinalizeTranscriptAsync(Guid roomId, CancellationToken ct)
+    /// <summary>
+    /// The transcript artifact, plus the same segments rendered for a summariser.
+    ///
+    /// <see cref="CitedTranscript"/> is EMPTY unless the segments came from TranscriptService with
+    /// their timestamps — the cache fallback has no offsets, and a citation that cannot resolve is
+    /// worse than no citation. An empty value means "do not ask for a summary from this", which is
+    /// exactly right on the paths where the transcript itself could not be read.
+    /// </summary>
+    private readonly record struct TranscriptFinalization(TranslationRoomArtifact Artifact, string CitedTranscript);
+
+    private async Task<TranscriptFinalization> FinalizeTranscriptAsync(Guid roomId, CancellationToken ct)
     {
         _logger.LogInformation("Retrieving real meeting transcript via gRPC for room {RoomId}", roomId);
 
@@ -227,7 +246,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             var request = CreateGetTranscriptsRequest(roomId);
             var response = await _transcriptClient.GetTranscriptsByTranslationRoomIdAsync(request, cancellationToken: ct);
 
-            var segmentsList = new List<string>();
+            var segmentsList = new List<FinalizedSegment>();
 
             if (response != null && response.Transcripts.Any())
             {
@@ -240,9 +259,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
             // Reached only when the RPC answered. An empty list here is a real answer — the
             // meeting genuinely produced no speech — and is worth saying plainly.
-            var fullTranscript = FormatTranscriptText(roomId, segmentsList);
+            var fullTranscript = FormatTranscriptText(roomId, ToMarkdownLines(segmentsList));
 
-            return BuildTranscriptArtifact(roomId, fullTranscript);
+            return new TranscriptFinalization(
+                BuildTranscriptArtifact(roomId, fullTranscript),
+                FormatCitedTranscript(segmentsList));
         }
         catch (Exception ex)
         {
@@ -272,7 +293,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                     cachedSegments.Count,
                     roomId);
 
-                return BuildTranscriptArtifact(roomId, FormatTranscriptText(roomId, [.. cachedSegments]));
+                // No cited transcript: the cache holds pre-formatted lines with no offsets, so a
+                // summary drawn from them could not cite anything a reader could jump to.
+                return new TranscriptFinalization(
+                    BuildTranscriptArtifact(roomId, FormatTranscriptText(roomId, [.. cachedSegments])),
+                    string.Empty);
             }
 
             _logger.LogError(
@@ -280,9 +305,101 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 + "Writing an explicit unavailable artifact — the stored segments, if any, are still in TranscriptService and are not lost.",
                 roomId);
 
-            return BuildTranscriptArtifact(roomId, FormatUnavailableTranscriptText(roomId, ex));
+            return new TranscriptFinalization(
+                BuildTranscriptArtifact(roomId, FormatUnavailableTranscriptText(roomId, ex)),
+                string.Empty);
         }
     }
+
+    /// <summary>
+    /// Asks for the summary that never arrived, sending the transcript this finalizer just read.
+    ///
+    /// WHY THIS EXISTS
+    ///     `FinalizeSummaryAsync` waits 90s and, when nothing appears, writes a placeholder and
+    ///     logs that it is KEEPING the Redis key "so a late result is not lost". Nothing has ever
+    ///     read that key back. In production that promise has been empty 157 times — every single
+    ///     insufficient summary — and ten of those meetings had a real transcript, the largest
+    ///     45,094 characters. The key itself is no help after the fact either: it lives in a Redis
+    ///     configured allkeys-lru, and none of the sampled ones still existed.
+    ///
+    /// WHY IT SENDS THE TRANSCRIPT INSTEAD OF A TOKEN
+    ///     `summary_template_worker` normally re-reads the saved transcript over HTTP as the
+    ///     CALLER, using a forwarded bearer token — `RegenerateSummaryAsync` documents that as a
+    ///     deliberate refusal to grant "a privileged bypass that would let a regeneration read
+    ///     more than its requester can". A finalizer has no requester and no token, so the only
+    ///     ways to make it fetch would be to invent a service credential for the AI worker or to
+    ///     call unauthenticated — both of them exactly the bypass that rule forbids.
+    ///
+    ///     It does not need one. This process has just read those same stored segments over the
+    ///     internal gRPC mesh to build the transcript artifact. Sending them grants nobody
+    ///     anything: no HTTP call is made, and no one could read more than they already could.
+    ///
+    /// Best-effort throughout. A meeting whose summary is missing must not have its finalization
+    /// fail as well — the placeholder is already saved, the state transition still has to run, and
+    /// the reader is no worse off than before this existed.
+    /// </summary>
+    private async Task RequestSummaryFromTranscriptAsync(Guid roomId, string citedTranscript, CancellationToken ct)
+    {
+        // Nothing to summarise is the ordinary case here: most meetings that time out are also
+        // meetings nobody spoke in. Asking anyway would spend a model call to be told so.
+        if (string.IsNullOrWhiteSpace(citedTranscript))
+        {
+            _logger.LogInformation(
+                "No summary arrived for room {RoomId} and its transcript is empty, so there is nothing to re-summarise.",
+                roomId);
+            return;
+        }
+
+        try
+        {
+            var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+            if (room == null) return;
+
+            var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+
+            await _redisStateRepo.StreamAddAsync(TranslationRoomConstants.SummaryRequestStream, new Dictionary<string, string>
+            {
+                ["request_id"] = Guid.NewGuid().ToString(),
+                ["room_id"] = roomId.ToString(),
+                ["workspace_id"] = room.WorkspaceId.ToString(),
+                // The default shape. A finalizer cannot know a meeting was really a standup —
+                // that judgement is the host's, and rewriting into another template stays theirs.
+                ["template_key"] = "general",
+                // Deliberately empty: there is no caller to act as, and the worker will not need
+                // one because the transcript travels with the request.
+                ["bearer_token"] = string.Empty,
+                ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
+                ["transcript_text"] = citedTranscript,
+                ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
+            });
+
+            _logger.LogInformation(
+                "Queued a summary for room {RoomId} from the {Chars}-character transcript this finalization read, "
+                + "because none arrived within {Seconds}s.",
+                roomId,
+                citedTranscript.Length,
+                SummaryWaitTimeout.TotalSeconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not queue a summary retry for room {RoomId}", roomId);
+        }
+    }
+
+    /// <summary>The transcript artifact's own rendering — what a person reads.</summary>
+    private static List<string> ToMarkdownLines(IReadOnlyCollection<FinalizedSegment> segments) =>
+        segments
+            .Select(s => $"**[{s.Speaker} ({s.Language.ToUpperInvariant()})]**: {s.Text}")
+            .ToList();
+
+    /// <summary>
+    /// The same segments in the shape the summariser cites against. The rule itself — and the
+    /// reason the offsets are relative — lives in <see cref="CitedTranscriptFormatter"/>, which is
+    /// where it is tested.
+    /// </summary>
+    private static string FormatCitedTranscript(IEnumerable<FinalizedSegment> segments) =>
+        CitedTranscriptFormatter.Format(
+            segments.Select(s => new CitedTranscriptFormatter.Segment(s.StartMs, s.Speaker, s.Text)));
 
     /// <summary>
     /// Every segment of a transcript, in order — paging until the service says there are no more.
@@ -293,11 +410,21 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// at roughly one per utterance. A transcript that silently stops two thirds of the way
     /// through is worse than one that fails, because it looks complete.
     /// </summary>
-    private async Task<List<string>> ReadAllSegmentsAsync(string transcriptId, Guid roomId, CancellationToken ct)
+    /// <summary>
+    /// One stored segment, kept whole rather than pre-formatted.
+    ///
+    /// This used to be flattened straight to a markdown line and the timestamp thrown away. It is
+    /// needed now because the same segments are rendered TWICE, for two readers who need
+    /// different things: the transcript artifact a person reads, and the cited transcript the
+    /// summariser is given when this finalizer has to ask for a summary itself.
+    /// </summary>
+    private readonly record struct FinalizedSegment(int StartMs, string Speaker, string Language, string Text);
+
+    private async Task<List<FinalizedSegment>> ReadAllSegmentsAsync(string transcriptId, Guid roomId, CancellationToken ct)
     {
         const int pageSize = 1000;
 
-        var lines = new List<string>();
+        var lines = new List<FinalizedSegment>();
         var skip = 0;
 
         while (true)
@@ -310,7 +437,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
             foreach (var seg in segmentsRes.Segments.OrderBy(s => s.SequenceOrder))
             {
-                lines.Add($"**[{seg.SpeakerName} ({seg.OriginalLanguage.ToUpper()})]**: {seg.OriginalText}");
+                lines.Add(new FinalizedSegment(
+                    seg.StartTimeMs,
+                    seg.SpeakerName,
+                    seg.OriginalLanguage,
+                    seg.OriginalText));
             }
 
             skip += segmentsRes.Segments.Count;
@@ -361,7 +492,17 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     private static readonly TimeSpan SummaryWaitTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan SummaryPollInterval = TimeSpan.FromSeconds(2);
 
-    private async Task<TranslationRoomArtifact> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
+    /// <summary>
+    /// The summary artifact, and whether it is the placeholder written because nothing arrived.
+    ///
+    /// <see cref="TimedOut"/> is what turns a dead end into a retry. Every one of production's 157
+    /// insufficient summaries was written on this path — the AI worker's own failure strings
+    /// appear zero times — so this flag is the signal that the meeting deserves a second attempt,
+    /// not a rare edge case.
+    /// </summary>
+    private readonly record struct SummaryFinalization(TranslationRoomArtifact Artifact, bool TimedOut);
+
+    private async Task<SummaryFinalization> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
     {
         _logger.LogInformation("Retrieving AI summary from Redis cache for room {RoomId}", roomId);
 
@@ -402,13 +543,17 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                     summaryKey);
             }
 
-            return BuildSummaryArtifact(roomId, content);
+            return new SummaryFinalization(BuildSummaryArtifact(roomId, content), !foundSomething);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to retrieve summary from Redis. Saving an explicit insufficient-data result.");
 
-            return BuildSummaryArtifact(roomId, SummaryContentBuilder.Build(null, null, null));
+            // Also a timeout for the caller's purposes: nothing was read, so a second attempt is
+            // exactly as worthwhile here as when the window simply closed.
+            return new SummaryFinalization(
+                BuildSummaryArtifact(roomId, SummaryContentBuilder.Build(null, null, null)),
+                true);
         }
     }
 
