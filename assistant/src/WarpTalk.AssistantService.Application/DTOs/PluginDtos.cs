@@ -24,10 +24,22 @@ public record PluginDefinitionDto(
     IReadOnlyList<McpToolDescriptorDto> Tools,
     string Kind = "native",
     /// <summary>Null for a native row, which has no MCP server to talk to.</summary>
-    string? McpServerUrl = null);
+    string? McpServerUrl = null,
+    /// <summary>Operator-curated presentation. See the same members on <see cref="PluginCatalogItemDto"/>.</summary>
+    bool IsFeatured = false,
+    int SortOrder = 0,
+    string? Category = null);
 
 public record PluginCatalogItemDto(
     string Key,
+    /// <summary>
+    /// Who the OAuth grant is with. Several rows share one provider - google_drive,
+    /// google_calendar and google_meet are all <c>google</c> - and one grant serves all of them,
+    /// so this is what a client must group by to tell a user that disconnecting one row
+    /// disconnects its siblings. Deriving that grouping from scope URLs instead, as the frontend
+    /// briefly had to, guesses at something the catalog already knows.
+    /// </summary>
+    string Provider,
     string Label,
     string Description,
     string? AvatarUrl,
@@ -54,7 +66,18 @@ public record PluginCatalogItemDto(
     /// tool execution.
     /// </para>
     /// </remarks>
-    string? WorkspacePolicyBlockReason = null);
+    string? WorkspacePolicyBlockReason = null,
+    /// <summary>
+    /// Operator-curated presentation, set from the admin catalog surface. Exposed here because the
+    /// user-facing page is the only place they mean anything: a "Featured" heading rendered over
+    /// the whole catalog, which is what this page did before these existed, stops being true the
+    /// moment the catalog holds more than a handful of rows.
+    /// </summary>
+    bool IsFeatured = false,
+    /// <summary>Ascending. Ties are the client's to break, by label.</summary>
+    int SortOrder = 0,
+    /// <summary>Null on every row today; grouping by it is only worth it once rows carry one.</summary>
+    string? Category = null);
 
 public record InstallPluginRequest();
 

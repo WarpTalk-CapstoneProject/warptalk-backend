@@ -25,6 +25,9 @@ internal static class PluginDefinitionMapper
             requiredScopes,
             tools,
             plugin.Kind,
-            plugin.McpServerUrl);
+            plugin.McpServerUrl,
+            plugin.IsFeatured,
+            plugin.SortOrder,
+            plugin.Category);
     }
 }

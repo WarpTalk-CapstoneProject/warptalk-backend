@@ -20,6 +20,7 @@ internal static class PluginCatalogItemMapper
 
         return new PluginCatalogItemDto(
             plugin.Key,
+            plugin.Provider,
             plugin.Label,
             plugin.Description,
             plugin.AvatarUrl,
@@ -29,6 +30,9 @@ internal static class PluginCatalogItemMapper
             connection?.ProviderEmail,
             plugin.Tools,
             grantedScopes,
-            workspacePolicyBlockReason);
+            workspacePolicyBlockReason,
+            plugin.IsFeatured,
+            plugin.SortOrder,
+            plugin.Category);
     }
 }

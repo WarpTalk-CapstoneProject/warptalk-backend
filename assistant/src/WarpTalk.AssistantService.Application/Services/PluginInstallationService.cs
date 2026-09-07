@@ -211,17 +211,12 @@ public class PluginInstallationService : IPluginInstallationService
         await _unitOfWork.PluginRepository.AddAsync(plugin, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
+        // Through the mapper rather than constructed here: a freshly created row is not installed
+        // and not connected, which is exactly what ToCatalogItem produces from two nulls. Building
+        // the DTO by hand is how this call site silently omitted Provider, IsFeatured, SortOrder
+        // and Category when they were added - a second construction site only ever falls behind
+        // the first.
         var definition = PluginDefinitionMapper.ToDefinition(plugin);
-        return Result.Success(new PluginCatalogItemDto(
-            plugin.PluginKey,
-            plugin.Label,
-            plugin.Description,
-            plugin.AvatarUrl,
-            PluginScopeMapper.FromJson(plugin.RequiredScopesJson),
-            PluginConstants.InstallationStatus.NotInstalled,
-            PluginConstants.ConnectionStatus.NotConnected,
-            null,
-            definition.Tools,
-            Array.Empty<string>()));
+        return Result.Success(PluginCatalogItemMapper.ToCatalogItem(definition, installation: null, connection: null));
     }
 }
