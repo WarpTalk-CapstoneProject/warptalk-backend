@@ -26,9 +26,9 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     private readonly IArtifactUrlSigner _urlSigner;
     private readonly IRedisStateRepository _redisStateRepo;
 
-    // Consumed by warptalk-ai's SummaryTemplateWorker. Renaming either side silently is how
-    // a request ends up with no consumer and no reply.
-    private const string SummaryRequestStream = "assistant:summary_requests";
+    // Moved to TranslationRoomConstants: ArtifactsFinalizer publishes to this stream too, and
+    // two private copies of a stream name is how one of them ends up renamed alone.
+    private const string SummaryRequestStream = TranslationRoomConstants.SummaryRequestStream;
 
     public TranslationRoomArtifactService(
         IUnitOfWork unitOfWork,
