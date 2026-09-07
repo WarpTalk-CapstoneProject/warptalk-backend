@@ -2,8 +2,29 @@ namespace WarpTalk.AssistantService.Domain.Constants;
 
 public static class PluginConstants
 {
-    public const string GoogleWorkspace = "google_workspace";
     public const int ConfirmationTokenLifetimeMinutes = 5;
+
+    /// <summary>
+    /// Who an OAuth grant is with. Several catalog rows can share one provider, so this - not
+    /// <c>plugin_key</c> - is what a connection is keyed by and what a compiled-in gateway or OAuth
+    /// client asserts on.
+    /// </summary>
+    /// <remarks>
+    /// This replaced a <c>GoogleWorkspace = "google_workspace"</c> constant that meant the plugin
+    /// key. 20260907100000 retired that row and split it into google_drive, google_calendar and
+    /// google_meet, so nothing may compare a live plugin key against it any more: all three keys
+    /// would fail the comparison and every Google tool call would be refused. The constant was not
+    /// renamed in place on purpose - a name that still compiles while quietly meaning something
+    /// else is the failure mode worth spending a build break to avoid.
+    /// </remarks>
+    public static class Providers
+    {
+        /// <summary>
+        /// Drive, Calendar and Meet. One consent covers whichever of them the user installs, via
+        /// OAuth incremental authorisation.
+        /// </summary>
+        public const string Google = "google";
+    }
 
     /// <summary>
     /// Which integration path serves a plugin. This is the dispatch key that lets one catalog hold

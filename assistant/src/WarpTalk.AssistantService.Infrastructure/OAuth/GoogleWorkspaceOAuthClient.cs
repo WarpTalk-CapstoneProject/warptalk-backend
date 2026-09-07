@@ -17,11 +17,16 @@ namespace WarpTalk.AssistantService.Infrastructure.OAuth;
 /// keeps a hand-written client instead of going through the generic MCP path.
 /// </summary>
 /// <remarks>
-/// The <c>PluginKey</c> checks in every method are <em>not</em> dispatch - <c>IPluginProviderResolver</c>
+/// The <c>Provider</c> checks in every method are <em>not</em> dispatch - <c>IPluginProviderResolver</c>
 /// does that, keyed on <c>Plugin.Kind</c>. They are invariant assertions, and they must stay: this
 /// client reads its endpoints and client credentials from <c>GoogleWorkspaceOAuthOptions</c>, so if a
 /// second <c>native</c> plugin were ever routed here it would silently send that provider's
 /// authorization code to Google's token endpoint. Failing loudly is the only safe answer.
+/// <para>
+/// They assert on <c>Provider</c> rather than <c>PluginKey</c> because google_drive,
+/// google_calendar and google_meet are three rows served by this one client, and a key comparison
+/// would now reject all three.
+/// </para>
 /// </remarks>
 public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
 {
@@ -48,8 +53,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         string state,
         PluginOAuthStateDto flowState)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         var query = HttpUtility.ParseQueryString(string.Empty);
         query["client_id"] = _options.ClientId;
@@ -69,8 +74,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         PluginOAuthStateDto flowState,
         CancellationToken ct = default)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         var response = await _httpClient.PostAsync(
             _options.TokenEndpoint,
@@ -109,8 +114,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         string refreshToken,
         CancellationToken ct = default)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         if (string.IsNullOrWhiteSpace(refreshToken))
             throw new ArgumentException("A refresh token is required to refresh Google OAuth credentials.", nameof(refreshToken));
@@ -181,8 +186,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         string token,
         CancellationToken ct = default)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         if (string.IsNullOrWhiteSpace(token))
             return;

@@ -162,6 +162,54 @@ public class AssistantPluginsController : ControllerBase
         return Redirect(pluginsPageUrl);
     }
 
+    /// <summary>
+    /// The provider-scoped redirect URI for Google, shared by google_drive, google_calendar and
+    /// google_meet.
+    /// </summary>
+    /// <remarks>
+    /// Splitting google_workspace into three catalog rows would otherwise mean three redirect URIs
+    /// registered in Google Cloud Console, and a console change - by hand, in a place no deploy
+    /// touches - every time a Google product is added. One URI per provider is registered once.
+    /// <para>
+    /// The plugin key rides inside the protected <c>state</c>, exactly as it does for the MCP
+    /// callback above; <c>state</c> was already carrying it, so nothing about the CSRF defence
+    /// changes. The <c>google</c> segment is checked against the provider of the plugin the state
+    /// names, so a state minted for another provider cannot be redeemed here.
+    /// </para>
+    /// <para>
+    /// Both segments are literal, which is what keeps this clear of the <c>{pluginKey}</c> routes
+    /// beside it. <c>{pluginKey}/oauth/callback</c> needs <c>oauth</c> in the middle segment and
+    /// this has <c>google</c> there, so the two can never match the same path and - unlike the
+    /// <c>mcp</c> callback, which forced the <c>plugins_plugin_key_not_reserved</c> constraint -
+    /// this adds no newly reserved plugin key. A future <c>oauth/{provider}/callback</c> written
+    /// with a route parameter instead would shadow a plugin keyed <c>oauth</c> and would need that
+    /// constraint extended first.
+    /// </para>
+    /// </remarks>
+    [HttpGet("oauth/google/callback")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status302Found)]
+    public async Task<IActionResult> GoogleOAuthCallback(
+        [FromQuery] string? code,
+        [FromQuery] string? state,
+        [FromQuery] string? error,
+        CancellationToken ct)
+    {
+        var pluginsPageUrl = $"{_appBaseUrl}/settings/plugins";
+
+        if (string.IsNullOrWhiteSpace(error) && !string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(state))
+            await _connectionService.CompleteProviderOAuthCallbackAsync(
+                PluginConstants.Providers.Google, code, state, ct);
+
+        return Redirect(pluginsPageUrl);
+    }
+
+    /// <remarks>
+    /// Superseded by the provider-scoped callbacks above and kept working deliberately: flows that
+    /// started before the new redirect URI shipped come back here, and the currently deployed
+    /// Google Cloud Console entry still points at this path. Removing it would strand every consent
+    /// in flight at the moment of the deploy.
+    /// </remarks>
     [HttpGet("{pluginKey}/oauth/callback")]
     [AllowAnonymous]
     [ProducesResponseType(StatusCodes.Status302Found)]

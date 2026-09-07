@@ -6,7 +6,43 @@ namespace WarpTalk.AssistantService.Application.Interfaces;
 public interface IPluginConnectionService
 {
     Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(string pluginKey, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Completes a callback that arrived on the legacy per-plugin path,
+    /// <c>{pluginKey}/oauth/callback</c>.
+    /// </summary>
+    /// <remarks>
+    /// Superseded by <see cref="CompleteProviderOAuthCallbackAsync"/> and kept because live grants
+    /// and deployed Google Cloud Console configuration still point at the old path. A flow that
+    /// started before the provider-scoped redirect URI shipped comes back here.
+    /// </remarks>
     Task<Result<PluginConnectionStatusDto>> CompleteOAuthCallbackAsync(string pluginKey, string code, string state, CancellationToken ct = default);
+
+    /// <summary>
+    /// Completes a callback for a <c>native</c> plugin on the provider-scoped redirect URI,
+    /// <c>oauth/{provider}/callback</c>, shared by every catalog row of that provider.
+    /// </summary>
+    /// <remarks>
+    /// google_drive, google_calendar and google_meet are three rows against one Google OAuth
+    /// client. A per-plugin redirect URI would mean three entries in Google Cloud Console and a
+    /// console change every time a Google product is added; one provider-scoped URI is registered
+    /// once.
+    /// <para>
+    /// The plugin key therefore comes from the protected <c>state</c> and nowhere else - the same
+    /// arrangement <see cref="CompleteMcpOAuthCallbackAsync"/> already uses, and the reason
+    /// <c>state</c> is integrity-protected rather than merely opaque.
+    /// </para>
+    /// </remarks>
+    /// <param name="provider">
+    /// The provider segment of the path the response arrived on. Cross-checked against the
+    /// provider of the plugin named in <c>state</c>, so a state minted for one provider cannot be
+    /// redeemed on another's callback.
+    /// </param>
+    Task<Result<PluginConnectionStatusDto>> CompleteProviderOAuthCallbackAsync(
+        string provider,
+        string code,
+        string state,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Completes the callback for a <c>kind='mcp'</c> plugin, which arrives on one fixed redirect

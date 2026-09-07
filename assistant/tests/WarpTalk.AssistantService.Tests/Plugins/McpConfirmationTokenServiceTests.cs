@@ -15,6 +15,8 @@ public class McpConfirmationTokenServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid WorkspaceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    private const string GoogleCalendarKey = "google_calendar";
+
     private static readonly Guid PluginId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
@@ -45,7 +47,7 @@ public class McpConfirmationTokenServiceTests
         Assert.NotNull(payload);
         Assert.Equal(UserId, payload!.UserId);
         Assert.Equal(PluginId, payload.PluginId);
-        Assert.Equal(PluginConstants.GoogleWorkspace, payload.PluginKey);
+        Assert.Equal(GoogleCalendarKey, payload.PluginKey);
         Assert.Equal("google_calendar_create_event", payload.ToolName);
         Assert.InRange(payload.ExpiresAt, startedAt.AddMinutes(4), DateTime.UtcNow.AddMinutes(5));
         await _repository.Received(1).AddAsync(
@@ -145,7 +147,7 @@ public class McpConfirmationTokenServiceTests
         new(_unitOfWork, _protector);
 
     private static McpToolExecutionRequest Request(JsonObject arguments) =>
-        new(WorkspaceId, PluginConstants.GoogleWorkspace, "google_calendar_create_event", arguments, null, null, null);
+        new(WorkspaceId, GoogleCalendarKey, "google_calendar_create_event", arguments, null, null, null);
 
     private static McpToolExecutionRequest RequestWithSameAction(JsonObject arguments) =>
         Request(arguments);

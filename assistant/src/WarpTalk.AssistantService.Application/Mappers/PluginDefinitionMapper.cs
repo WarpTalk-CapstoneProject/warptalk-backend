@@ -18,6 +18,7 @@ internal static class PluginDefinitionMapper
         return new PluginDefinitionDto(
             plugin.Id,
             plugin.PluginKey,
+            plugin.Provider,
             plugin.Label,
             plugin.Description,
             plugin.AvatarUrl,

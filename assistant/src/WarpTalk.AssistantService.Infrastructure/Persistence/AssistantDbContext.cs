@@ -121,6 +121,10 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.ToolsSyncedAt).HasColumnName("tools_synced_at");
             entity.Property(e => e.ToolsManifestHash).HasMaxLength(128).HasColumnName("tools_manifest_hash");
             entity.Property(e => e.IsActive).HasDefaultValue(true).HasColumnName("is_active");
+            entity.Property(e => e.IsFeatured).HasDefaultValue(false).HasColumnName("is_featured");
+            entity.Property(e => e.SortOrder).HasDefaultValue(0).HasColumnName("sort_order");
+            entity.Property(e => e.Category).HasMaxLength(50).HasColumnName("category");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
         });
@@ -148,10 +152,19 @@ public partial class AssistantDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("plugin_connections_pkey");
             entity.ToTable("plugin_connections", "assistant");
-            entity.HasIndex(e => new { e.UserId, e.PluginId }, "plugin_connections_user_plugin_id_key").IsUnique();
+
+            // (user_id, provider), not (user_id, plugin_id): one Google grant serves google_drive,
+            // google_calendar and google_meet. 20260907101000 made the swap in the database.
+            entity.HasIndex(e => new { e.UserId, e.Provider }, "plugin_connections_user_provider_key").IsUnique();
+
+            // Not unique, and not the identity. It exists because the FK below is RESTRICT, and a
+            // RESTRICT check scans this column on every plugin delete.
+            entity.HasIndex(e => e.PluginId, "idx_plugin_connections_plugin_id");
+
             entity.Property(e => e.Id).HasColumnName("id");
             entity.Property(e => e.UserId).HasColumnName("user_id");
             entity.Property(e => e.PluginId).HasColumnName("plugin_id");
+            entity.Property(e => e.Provider).HasMaxLength(100).HasColumnName("provider");
             entity.Property(e => e.ProviderAccountId).HasMaxLength(255).HasColumnName("provider_account_id");
             entity.Property(e => e.ProviderEmail).HasMaxLength(320).HasColumnName("provider_email");
             entity.Property(e => e.Status).HasMaxLength(30).HasColumnName("status");
@@ -166,6 +179,11 @@ public partial class AssistantDbContext : DbContext
             entity.HasOne<Plugin>()
                 .WithMany()
                 .HasForeignKey(e => e.PluginId)
+                // RESTRICT, not the CASCADE this used to be: one connection now outlives any
+                // single catalog row, so cascading from google_drive would destroy the shared
+                // Google refresh token and disconnect Calendar and Meet as well. A row anyone has
+                // connected through is retired with is_active=false, never deleted.
+                .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("plugin_connections_plugin_id_fkey");
         });
 

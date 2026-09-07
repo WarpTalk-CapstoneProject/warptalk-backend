@@ -10,6 +10,13 @@ namespace WarpTalk.AssistantService.Application.DTOs;
 public record PluginDefinitionDto(
     Guid Id,
     string Key,
+    /// <summary>
+    /// Who the OAuth grant is with. Several catalog rows share one provider - google_drive,
+    /// google_calendar and google_meet are all <c>google</c> - and a connection is keyed by this,
+    /// not by <paramref name="Key"/>. It is also what a compiled-in gateway or OAuth client asserts
+    /// on before it sends a user's token anywhere.
+    /// </summary>
+    string Provider,
     string Label,
     string Description,
     string? AvatarUrl,
