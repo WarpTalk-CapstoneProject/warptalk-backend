@@ -44,6 +44,12 @@ public class GatewayRouteCoverageTests
         "/api/v1/translation-room-series/",
         // The one that was missing. Post-meeting artifact download and consent.
         "/api/v1/room-artifacts/",
+        // Missing in the same way, and found by the same reasoning: MeetingMinutesController
+        // mounts at api/v1/rooms/{roomId}/minutes, and no route matched that prefix — so every
+        // read, draft, signature and .docx export of a biên bản was 404'd by the proxy. The
+        // meeting page showed a Minutes panel that could never load, which reads as a feature
+        // that was never finished rather than as a routing table that was never updated.
+        "/api/v1/rooms/",
         "/api/v1/transcripts/",
         "/api/v1/workspaces/",
         "/api/v1/meetings/",
@@ -69,6 +75,35 @@ public class GatewayRouteCoverageTests
             $"No gateway route matches {prefix}. Requests to it are answered 404 by the reverse "
             + "proxy and never reach the service, which from the outside looks like missing data "
             + "rather than missing routing. Add a route to appsettings.json.");
+    }
+
+    /// <summary>
+    /// A workspace's minutes are served by the translation-room service, not the workspace one.
+    ///
+    /// This path sits UNDER a prefix that another cluster already owns, so prefix coverage alone
+    /// cannot catch it: /api/v1/workspaces/{**catch-all} matches it perfectly and forwards it to
+    /// workspace-cluster, which has no such controller. The specific route has to win, which is
+    /// what its lower Order buys — and an Order somebody "tidied" later would move the endpoint to
+    /// a service that answers 404, with the route still present and still looking correct.
+    /// </summary>
+    [Fact]
+    public void WorkspaceMinutesOutrankTheWorkspaceCatchAll()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(AppSettingsPath()));
+        var routes = document.RootElement.GetProperty("ReverseProxy").GetProperty("Routes");
+
+        var minutes = routes.EnumerateObject()
+            .Single(route => route.Value.GetProperty("Match").GetProperty("Path").GetString()
+                == "/api/v1/workspaces/{workspaceId}/minutes");
+        var catchAll = routes.EnumerateObject()
+            .Single(route => route.Value.GetProperty("Match").GetProperty("Path").GetString()
+                == "/api/v1/workspaces/{**catch-all}");
+
+        Assert.Equal("translation-room-cluster", minutes.Value.GetProperty("ClusterId").GetString());
+        Assert.True(
+            minutes.Value.GetProperty("Order").GetInt32() < catchAll.Value.GetProperty("Order").GetInt32(),
+            "The workspace minutes route must outrank the workspaces catch-all, or the request "
+            + "reaches WorkspaceService, which does not serve it.");
     }
 
     /// <summary>

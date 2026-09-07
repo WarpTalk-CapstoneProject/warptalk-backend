@@ -27,6 +27,13 @@ public class MeetingMinutesService : IMeetingMinutesService
     /// <summary>Registered in NotificationValidator in the same commit as this producer.</summary>
     private const string ActionItemAssignedNotificationType = "ACTION_ITEM_ASSIGNED";
 
+    /// <summary>
+    /// The library page's ceiling. Every row carries its whole Content document, so an
+    /// unclamped pageSize is a caller-controlled way to ask for the workspace's entire minutes
+    /// archive in one response.
+    /// </summary>
+    private const int MaxLibraryPageSize = 200;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly IMeetingMinutesDocumentWriter _documentWriter;
@@ -80,6 +87,119 @@ public class MeetingMinutesService : IMeetingMinutesService
         }
 
         return Result.Success(await ToDtoAsync(minutes, ct));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<WorkspaceMinutesResponse>> ListForWorkspaceAsync(
+        Guid workspaceId,
+        GetWorkspaceMinutesRequest request,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
+    {
+        if (workspaceId == Guid.Empty)
+        {
+            return Result.Failure<WorkspaceMinutesResponse>(
+                "A workspace is required to list minutes.", ErrorCodes.ValidationError);
+        }
+
+        var page = request.Page < 1 ? 1 : request.Page;
+        var pageSize = Math.Clamp(request.PageSize, 1, MaxLibraryPageSize);
+
+        // The same predicate GetCurrentAsync applies to ONE room, expressed here as a set. Written
+        // as a subquery rather than as a materialised id list on purpose: a workspace's readable
+        // rooms is unbounded, and pulling every id into memory to send back as an IN clause is the
+        // shape that works in a demo and falls over in a tenant.
+        var readableRoomIds = _unitOfWork.TranslationRoomRepository
+            .Query()
+            .Where(r => r.WorkspaceId == workspaceId && r.DeletedAt == null && r.IsActive)
+            .Where(RoomReadAccess.IsReadableBy(userId, userEmail))
+            .Select(r => r.Id);
+
+        var query = _unitOfWork.MeetingMinutesRepository
+            .Query()
+            .Where(m => m.WorkspaceId == workspaceId
+                && m.IsCurrent
+                && readableRoomIds.Contains(m.TranslationRoomId));
+
+        if (!string.IsNullOrWhiteSpace(request.Status))
+        {
+            var status = request.Status.Trim().ToUpperInvariant();
+            query = query.Where(m => m.Status == status);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Search))
+        {
+            // Case-insensitive substring over the document's IDENTITY — its number and the meeting
+            // it belongs to. Deliberately the same three fields the room history searches, so one
+            // term narrows every kind of record in the library the same way.
+            //
+            // NOT the document body, for two reasons. `content` is a jsonb column, so `lower()`
+            // does not apply to it at all (Postgres answers "function lower(jsonb) does not
+            // exist"), and the room history does not search artifact bodies either — searching
+            // inside minutes while transcripts and summaries beside them matched on title only
+            // would make one kind of record behave unlike the rest of the page for no reason a
+            // reader could see.
+            //
+            // Body search happens in the web, folded for diacritics, over the page it has already
+            // loaded — every row here carries its whole Content, so there is nothing to fetch. The
+            // real answer for the whole archive is one full-text index covering all three kinds,
+            // which is a change to make once rather than three times.
+            var search = request.Search.Trim().ToLowerInvariant();
+            query = query.Where(m =>
+                m.MinutesNo.ToLower().Contains(search)
+                || m.TranslationRoom.Title.ToLower().Contains(search)
+                || m.TranslationRoom.TranslationRoomCode.ToLower().Contains(search));
+        }
+
+        var total = await query.CountAsync(ct);
+
+        // Ordered by the MEETING, not by the document. A minutes row's own CreatedAt is when
+        // somebody pressed "draw up the draft", which can be weeks after the meeting and in a
+        // different order — so ordering by it interleaves last month's meetings among this
+        // week's, and a reader scanning for "the one from Tuesday" cannot find it.
+        var rows = await query
+            .OrderByDescending(m => m.TranslationRoom.EndedAt ?? m.CreatedAt)
+            .ThenByDescending(m => m.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(m => new
+            {
+                Minutes = m,
+                RoomTitle = m.TranslationRoom.Title,
+                RoomCode = m.TranslationRoom.TranslationRoomCode,
+                RoomHostId = m.TranslationRoom.HostId,
+                RoomStatus = m.TranslationRoom.Status,
+                RoomEndedAt = m.TranslationRoom.EndedAt,
+            })
+            .ToListAsync(ct);
+
+        // One roster query for the whole page. ToDtoAsync asks per document, which is correct for
+        // a single read and is a query per row here — the N+1 that turns a 50-row library page
+        // into 51 round trips.
+        var roomIds = rows.Select(row => row.Minutes.TranslationRoomId).Distinct().ToList();
+        var participantNames = await _unitOfWork.TranslationRoomParticipantRepository
+            .Query()
+            .Where(p => roomIds.Contains(p.TranslationRoomId))
+            .Select(p => new { p.Id, p.DisplayName })
+            .ToDictionaryAsync(p => p.Id, p => p.DisplayName, ct);
+
+        string? NameOf(Guid? participantId) =>
+            participantId != null && participantNames.TryGetValue(participantId.Value, out var name)
+                ? name
+                : null;
+
+        var items = rows
+            .Select(row => new WorkspaceMinutesItemDto(
+                MapToDto(row.Minutes, NameOf),
+                row.RoomTitle,
+                row.RoomCode,
+                row.RoomHostId,
+                row.RoomStatus,
+                row.RoomEndedAt))
+            .ToList();
+
+        return Result.Success(new WorkspaceMinutesResponse(items, total, page, pageSize));
     }
 
     public async Task<Result<MeetingMinutesDto>> CreateDraftAsync(
@@ -608,11 +728,22 @@ public class MeetingMinutesService : IMeetingMinutesService
         var participants = await _unitOfWork.TranslationRoomParticipantRepository
             .GetByRoomIdAsync(minutes.TranslationRoomId, ct);
 
-        string? NameOf(Guid? participantId) => participantId == null
+        return MapToDto(minutes, participantId => participantId == null
             ? null
-            : participants?.FirstOrDefault(p => p.Id == participantId)?.DisplayName;
+            : participants?.FirstOrDefault(p => p.Id == participantId)?.DisplayName);
+    }
 
-        return new MeetingMinutesDto(
+    /// <summary>
+    /// The row as the web reads it, given a way to name a participant.
+    ///
+    /// The name lookup is a parameter rather than a query because the two callers resolve it
+    /// differently and must not each restate the mapping: the single-document read asks for one
+    /// room's roster, and the library read batches every room on the page into one query. Sharing
+    /// the projection is what keeps a minutes document from describing itself one way in the
+    /// library and another way when opened.
+    /// </summary>
+    private static MeetingMinutesDto MapToDto(MeetingMinutes minutes, Func<Guid?, string?> nameOf)
+        => new(
             minutes.Id,
             minutes.TranslationRoomId,
             minutes.MinutesNo,
@@ -624,14 +755,13 @@ public class MeetingMinutesService : IMeetingMinutesService
             minutes.DraftedByEngine,
             minutes.DraftedAt,
             minutes.SecretaryParticipantId,
-            NameOf(minutes.SecretaryParticipantId),
+            nameOf(minutes.SecretaryParticipantId),
             minutes.SecretarySignedAt,
             minutes.ChairParticipantId,
-            NameOf(minutes.ChairParticipantId),
+            nameOf(minutes.ChairParticipantId),
             minutes.ChairApprovedAt,
             minutes.EditCountVsDraft,
             minutes.Content,
             minutes.CreatedAt,
             minutes.UpdatedAt);
-    }
 }

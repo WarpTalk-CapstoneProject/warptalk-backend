@@ -29,6 +29,28 @@ public interface IMeetingMinutesService
         Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default);
 
     /// <summary>
+    /// Every current biên bản in one workspace that this caller may read.
+    ///
+    /// The library page's reason to exist: minutes were reachable only at
+    /// <c>rooms/{roomId}/minutes</c>, so finding one meant already knowing which meeting produced
+    /// it. Answering "which meetings have a signed record?" required a call per meeting.
+    ///
+    /// Scoped by <see cref="Domain.Authorization.RoomReadAccess"/> over the rooms, NOT by
+    /// workspace membership — a list is not permission to widen a per-room read, and the two
+    /// answering differently is how a tenant-wide route becomes a leak.
+    ///
+    /// Only <c>IsCurrent</c> rows. A superseded version is part of one meeting's paper trail and
+    /// belongs on that meeting's page; listing every version here would show the same minutes
+    /// several times over, most of them wrong.
+    /// </summary>
+    Task<Result<WorkspaceMinutesResponse>> ListForWorkspaceAsync(
+        Guid workspaceId,
+        GetWorkspaceMinutesRequest request,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Draw up the draft from the meeting's own record. Idempotent while one is still unapproved:
     /// pressing twice returns the document that already exists rather than renumbering the meeting.
     /// </summary>
