@@ -13,27 +13,31 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
 {
     private readonly IPluginProviderResolver _providerResolver;
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IWorkspacePluginPolicyClient _workspacePluginPolicyClient;
+    private readonly IWorkspacePluginGuard _workspacePluginGuard;
     private readonly IPluginTokenRefresher _tokenRefresher;
     private readonly IMcpConfirmationTokenService _confirmationTokenService;
 
     public McpToolOrchestrator(
         IPluginProviderResolver providerResolver,
         IUnitOfWork unitOfWork,
-        IWorkspacePluginPolicyClient workspacePluginPolicyClient,
+        IWorkspacePluginGuard workspacePluginGuard,
         IPluginTokenRefresher tokenRefresher,
         IMcpConfirmationTokenService confirmationTokenService)
     {
         _providerResolver = providerResolver;
         _unitOfWork = unitOfWork;
-        _workspacePluginPolicyClient = workspacePluginPolicyClient;
+        _workspacePluginGuard = workspacePluginGuard;
         _tokenRefresher = tokenRefresher;
         _confirmationTokenService = confirmationTokenService;
     }
 
     public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(Guid userId, Guid? workspaceId, CancellationToken ct = default)
     {
-        if (workspaceId.HasValue && !await _workspacePluginPolicyClient.AllowsPluginUsageAsync(workspaceId.Value, ct))
+        // One resolve for the whole list. The policy is then applied per plugin key rather than
+        // once for the request, because an allowlist admits some plugins and refuses others -
+        // the workspace-wide switch was the only thing that could ever answer for all of them.
+        var gate = await _workspacePluginGuard.ResolveAsync(workspaceId, ct);
+        if (gate.PermitsNothing)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
@@ -43,7 +47,11 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         var plugins = await _unitOfWork.PluginRepository.FindAsync(
             p => installedPluginIds.Contains(p.Id) && p.IsActive, ct: ct);
 
+        // Filtered, not refused. This list is what WarpBot may reach for in this conversation, so
+        // a plugin the workspace does not permit simply is not offered - the model never learns
+        // the tool exists and so never proposes an action that would be refused downstream.
         var tools = plugins
+            .Where(plugin => gate.Permits(plugin.PluginKey).IsSuccess)
             .Select(PluginDefinitionMapper.ToDefinition)
             .SelectMany(plugin => plugin.Tools)
             .ToList();
@@ -63,14 +71,20 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (tool == null)
             return Result.Failure<McpToolExecutionResult>("Unknown MCP tool.", PluginConstants.ErrorCodes.UnknownTool);
 
-        if (request.WorkspaceId.HasValue && !await _workspacePluginPolicyClient.AllowsPluginUsageAsync(request.WorkspaceId.Value, ct))
+        // The last gate a plugin that fell off the allowlist has to pass. Installation and
+        // connection rows are deliberately left alone when an admin narrows the policy - see
+        // PluginInstallationService.ListCatalogAsync - so this is what actually stops the tool
+        // running, and it is checked on every call rather than at install time because the policy
+        // can change between the two.
+        var policyCheck = await _workspacePluginGuard.CanUseAsync(request.WorkspaceId, plugin.Key, ct);
+        if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,
                 userId,
                 plugin.Id,
                 request,
-                PluginConstants.ErrorCodes.PermissionDenied,
-                "Workspace settings do not allow personal plugins in WarpBot.",
+                policyCheck.ErrorCode!,
+                policyCheck.Error!,
                 ct);
 
         var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(

@@ -31,4 +31,27 @@ public interface IPluginToolAuditRepository : IGenericRepository<PluginToolAudit
         int skip,
         int take,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// A newest-first page of one workspace's plugin tool usage. WT-646.
+    /// </summary>
+    /// <remarks>
+    /// Bespoke rather than <see cref="IGenericRepository{T}.FindAsync"/> because this needs an
+    /// ordering and a page, and an audit table grows without bound - a predicate that materialises
+    /// every row a busy workspace ever wrote is not a read path, it is an outage.
+    /// <para>
+    /// Sibling of <see cref="ListForPluginAsync"/>: that one serves the platform admin looking at
+    /// one catalog row across every workspace, this one serves a workspace Owner/Admin looking at
+    /// their own workspace across every plugin. Neither subsumes the other, so both exist.
+    /// </para>
+    /// </remarks>
+    /// <param name="pluginKey">Optional. Narrows to one plugin.</param>
+    /// <param name="userId">Optional. Narrows to one member.</param>
+    Task<IReadOnlyList<PluginToolAudit>> ListForWorkspaceAsync(
+        Guid workspaceId,
+        string? pluginKey,
+        Guid? userId,
+        int skip,
+        int take,
+        CancellationToken ct = default);
 }

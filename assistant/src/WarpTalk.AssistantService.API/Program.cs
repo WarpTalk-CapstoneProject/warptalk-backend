@@ -77,6 +77,12 @@ try
     builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
     builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
     builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
+    builder.Services.AddScoped<IWorkspaceMembershipClient, WorkspaceMembershipGrpcClient>();
+    // WT-646. The single place a workspace's plugin policy is applied - the catalog, install,
+    // connect and execute paths all judge through this rather than reading the snapshot themselves,
+    // so the null-versus-empty allowlist rule exists once.
+    builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
+    builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
     // has no official remote MCP server for Drive/Calendar.

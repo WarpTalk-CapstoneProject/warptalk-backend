@@ -36,7 +36,25 @@ public record PluginCatalogItemDto(
     string ConnectionStatus,
     string? ConnectedAccountEmail,
     IReadOnlyList<McpToolDescriptorDto> Tools,
-    IReadOnlyList<string> GrantedScopes);
+    IReadOnlyList<string> GrantedScopes,
+    /// <summary>
+    /// Why the active workspace's plugin policy refuses this row, or null when nothing refuses it.
+    /// WT-646.
+    /// </summary>
+    /// <remarks>
+    /// Null whenever the catalog was listed without a workspace in context, which is the personal
+    /// plugins page's own case and the default.
+    /// <para>
+    /// A blocked row is REPORTED rather than hidden, and that is the deliberate answer to what
+    /// happens when an admin narrows the allowlist under a user who has already installed and
+    /// connected. Hiding it would leave a live OAuth grant the user can neither see nor revoke;
+    /// deleting the connection would throw away a personal grant on a workspace's say-so, and the
+    /// same grant may be in use in another workspace that still permits it. So the rows stand, the
+    /// user can still disconnect, and the plugin is stopped where it would actually be used - at
+    /// tool execution.
+    /// </para>
+    /// </remarks>
+    string? WorkspacePolicyBlockReason = null);
 
 public record InstallPluginRequest();
 

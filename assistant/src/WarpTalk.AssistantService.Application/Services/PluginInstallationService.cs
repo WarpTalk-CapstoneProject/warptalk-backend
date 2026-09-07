@@ -15,14 +15,27 @@ public class PluginInstallationService : IPluginInstallationService
 
     private readonly IPluginCredentialProtector _credentialProtector;
 
-    public PluginInstallationService(IUnitOfWork unitOfWork, IPluginCredentialProtector credentialProtector)
+    private readonly IWorkspacePluginGuard _workspacePluginGuard;
+
+    public PluginInstallationService(
+        IUnitOfWork unitOfWork,
+        IPluginCredentialProtector credentialProtector,
+        IWorkspacePluginGuard workspacePluginGuard)
     {
         _unitOfWork = unitOfWork;
         _credentialProtector = credentialProtector;
+        _workspacePluginGuard = workspacePluginGuard;
     }
 
-    public async Task<Result<IReadOnlyList<PluginCatalogItemDto>>> ListCatalogAsync(Guid userId, CancellationToken ct = default)
+    public async Task<Result<IReadOnlyList<PluginCatalogItemDto>>> ListCatalogAsync(
+        Guid userId,
+        Guid? workspaceId = null,
+        CancellationToken ct = default)
     {
+        // Null when the caller names no workspace, which is the plugins settings page's own case
+        // and leaves every row unblocked - exactly the behaviour that predates WT-646.
+        var gate = await _workspacePluginGuard.ResolveAsync(workspaceId, ct);
+
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.IsActive, ct: ct);
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(i => i.UserId == userId, ct: ct);
         var connections = await _unitOfWork.PluginConnectionRepository.FindAsync(c => c.UserId == userId, ct: ct);
@@ -38,18 +51,38 @@ public class PluginInstallationService : IPluginInstallationService
                 var installation = installations.FirstOrDefault(i => i.PluginId == plugin.Id);
                 var connection = connections.FirstOrDefault(c =>
                     string.Equals(c.Provider, plugin.Provider, StringComparison.Ordinal));
-                return PluginCatalogItemMapper.ToCatalogItem(definition, installation, connection);
+                // Reported, not filtered out. A user whose workspace has just narrowed its
+                // allowlist under an already-installed, already-connected plugin has to be able to
+                // see that row to disconnect it; dropping it from the catalog would leave them
+                // holding an OAuth grant with no way to revoke it from this product.
+                var permitted = gate.Permits(plugin.PluginKey);
+                return PluginCatalogItemMapper.ToCatalogItem(
+                    definition,
+                    installation,
+                    connection,
+                    permitted.IsSuccess ? null : permitted.Error);
             })
             .ToList();
 
         return Result.Success<IReadOnlyList<PluginCatalogItemDto>>(items);
     }
 
-    public async Task<Result<PluginCatalogItemDto>> InstallAsync(string pluginKey, Guid userId, CancellationToken ct = default)
+    public async Task<Result<PluginCatalogItemDto>> InstallAsync(
+        string pluginKey,
+        Guid userId,
+        Guid? workspaceId = null,
+        CancellationToken ct = default)
     {
         var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
             return Result.Failure<PluginCatalogItemDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
+
+        // After the catalog lookup so an unknown key still reads as unknown rather than as
+        // forbidden, and before anything is written: this is where the allowlist and
+        // allow_member_plugin_install both apply.
+        var permitted = await _workspacePluginGuard.CanInstallAsync(workspaceId, userId, plugin.PluginKey, ct);
+        if (!permitted.IsSuccess)
+            return Result.Failure<PluginCatalogItemDto>(permitted.Error!, permitted.ErrorCode);
 
         var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
             i => i.UserId == userId && i.PluginId == plugin.Id, ct: ct);

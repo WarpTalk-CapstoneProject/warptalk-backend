@@ -5,7 +5,17 @@ namespace WarpTalk.AssistantService.Application.Interfaces;
 
 public interface IPluginConnectionService
 {
-    Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(string pluginKey, Guid userId, CancellationToken ct = default);
+    /// <param name="workspaceId">
+    /// The workspace the connect is being started from, when there is one. WT-646: a plugin the
+    /// workspace's policy excludes is refused here rather than at the callback, which has no
+    /// workspace context and arrives after the user has already consented. Null - the default -
+    /// skips the gate, so a connect made outside any workspace behaves as it did before.
+    /// </param>
+    Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
+        string pluginKey,
+        Guid userId,
+        Guid? workspaceId = null,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Completes a callback that arrived on the legacy per-plugin path,

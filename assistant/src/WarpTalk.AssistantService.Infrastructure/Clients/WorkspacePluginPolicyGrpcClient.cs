@@ -18,17 +18,6 @@ public class WorkspacePluginPolicyGrpcClient : IWorkspacePluginPolicyClient
         _logger = logger;
     }
 
-    public async Task<bool> AllowsPluginUsageAsync(Guid workspaceId, CancellationToken ct = default)
-    {
-        var policy = await GetPluginPolicyAsync(workspaceId, ct);
-
-        // Deliberately still the AllowAnyPlugins answer alone, unchanged by WT-646. This method has
-        // callers (McpToolOrchestrator) whose behaviour must not shift because a workspace now also
-        // carries an allowlist; applying the allowlist is B5's job and needs a plugin key to apply
-        // it to, which this signature does not have.
-        return policy.AllowAnyPlugins;
-    }
-
     public async Task<WorkspacePluginPolicySnapshot> GetPluginPolicyAsync(Guid workspaceId, CancellationToken ct = default)
     {
         try

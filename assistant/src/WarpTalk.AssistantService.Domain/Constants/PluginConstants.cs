@@ -165,6 +165,24 @@ public static class PluginConstants
         public const string PluginInUse = "plugin_in_use";
 
         /// <summary>
+        /// The workspace runs an allowlist and this plugin key is not on it. WT-646.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately not folded into <see cref="PermissionDenied"/>, which stays the code for
+        /// the workspace-wide <c>allow_any_plugins</c> switch. The two refusals need different
+        /// words in front of the user - "your workspace has turned personal plugins off" versus
+        /// "your workspace permits some plugins but not this one" - and only one of them is
+        /// fixable by asking an admin to add a single key.
+        /// </remarks>
+        public const string WorkspacePluginNotAllowed = "workspace_plugin_not_allowed";
+
+        /// <summary>
+        /// The workspace confines plugin installation to Owner and Admin, and the caller is
+        /// neither. WT-646.
+        /// </summary>
+        public const string WorkspaceInstallRequiresAdmin = "workspace_install_requires_admin";
+
+        /// <summary>
         /// Every rung of the client-registration ladder was exhausted: the row has no
         /// pre-registered client, and the authorization server advertises neither Client ID
         /// Metadata Document support nor a registration endpoint. Actionable by an operator
@@ -172,5 +190,17 @@ public static class PluginConstants
         /// rather than as an exception.
         /// </summary>
         public const string ClientRegistrationUnsupported = "client_registration_unsupported";
+    }
+
+    /// <summary>
+    /// Messages for the workspace plugin-policy refusals. WT-646. Shared because the same refusal
+    /// has to read the same whether it surfaces from the catalog, an install, a connect, or a tool
+    /// call.
+    /// </summary>
+    public static class WorkspacePolicyMessages
+    {
+        public const string PluginsDisabled = "Workspace settings do not allow personal plugins in WarpBot.";
+        public const string NotOnAllowlist = "This workspace's plugin policy does not include this plugin.";
+        public const string InstallRequiresAdmin = "Only a workspace Owner or Admin may install plugins in this workspace.";
     }
 }

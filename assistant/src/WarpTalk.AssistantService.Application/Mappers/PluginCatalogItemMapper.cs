@@ -9,7 +9,8 @@ internal static class PluginCatalogItemMapper
     public static PluginCatalogItemDto ToCatalogItem(
         PluginDefinitionDto plugin,
         PluginInstallation? installation,
-        PluginConnection? connection)
+        PluginConnection? connection,
+        string? workspacePolicyBlockReason = null)
     {
         var installationStatus = installation?.Status ?? PluginConstants.InstallationStatus.NotInstalled;
         var connectionStatus = connection?.Status ?? PluginConstants.ConnectionStatus.NotConnected;
@@ -27,6 +28,7 @@ internal static class PluginCatalogItemMapper
             connectionStatus,
             connection?.ProviderEmail,
             plugin.Tools,
-            grantedScopes);
+            grantedScopes,
+            workspacePolicyBlockReason);
     }
 }

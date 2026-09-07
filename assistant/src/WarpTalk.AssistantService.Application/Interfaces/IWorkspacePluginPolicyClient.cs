@@ -45,12 +45,17 @@ public record WorkspacePluginPolicySnapshot(
 
 public interface IWorkspacePluginPolicyClient
 {
-    Task<bool> AllowsPluginUsageAsync(Guid workspaceId, CancellationToken ct = default);
-
     /// <summary>
-    /// The full policy, for callers that need more than the workspace-wide on/off answer
-    /// <see cref="AllowsPluginUsageAsync"/> gives. WT-646 B4 makes this available; enforcement
-    /// against it is B5's job, so nothing calls it yet.
+    /// The workspace's whole plugin policy.
     /// </summary>
+    /// <remarks>
+    /// B4 shipped this alongside an <c>AllowsPluginUsageAsync</c> that answered
+    /// <see cref="WorkspacePluginPolicySnapshot.AllowAnyPlugins"/> alone, because applying the
+    /// allowlist needed a plugin key that signature did not carry. B5 removed it: with an
+    /// allowlist in play, a caller that gates on <c>AllowAnyPlugins</c> alone silently permits
+    /// every plugin the workspace excluded, and a narrow method sitting next to a complete one is
+    /// how that mistake gets made. Judge the result through <see cref="IWorkspacePluginGuard"/>,
+    /// which owns the null-versus-empty rule.
+    /// </remarks>
     Task<WorkspacePluginPolicySnapshot> GetPluginPolicyAsync(Guid workspaceId, CancellationToken ct = default);
 }

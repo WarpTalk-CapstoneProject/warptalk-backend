@@ -29,12 +29,18 @@ public class AssistantPluginsController : ControllerBase
 
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
 
+    /// <param name="workspaceId">
+    /// Optional. The workspace the user is browsing from. WT-646: supplying it makes each row
+    /// carry that workspace's verdict in <c>workspacePolicyBlockReason</c>; omitting it lists the
+    /// catalog with no workspace policy applied, which is what the personal plugins page does.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<PluginCatalogItemDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> ListCatalog(CancellationToken ct)
+    public async Task<IActionResult> ListCatalog([FromQuery] Guid? workspaceId, CancellationToken ct)
     {
-        var result = await _installationService.ListCatalogAsync(CurrentUserId, ct);
+        var result = await _installationService.ListCatalogAsync(CurrentUserId, workspaceId, ct);
         if (!result.IsSuccess) return BadRequest(result.Error);
         return Ok(result.Value);
     }
@@ -70,16 +76,25 @@ public class AssistantPluginsController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogItemDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Install(string pluginKey, CancellationToken ct)
+    [ProducesResponseType(typeof(string), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> Install(string pluginKey, [FromQuery] Guid? workspaceId, CancellationToken ct)
     {
-        var result = await _installationService.InstallAsync(pluginKey, CurrentUserId, ct);
+        var result = await _installationService.InstallAsync(pluginKey, CurrentUserId, workspaceId, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
+            // 403, not 400: the request is well formed and the plugin exists - the workspace's
+            // policy is what refuses it, and the client should say so rather than blame the input.
+            if (IsWorkspacePolicyRefusal(result.ErrorCode)) return StatusCode(StatusCodes.Status403Forbidden, result.Error);
             return BadRequest(result.Error);
         }
         return Ok(result.Value);
     }
+
+    private static bool IsWorkspacePolicyRefusal(string? errorCode) =>
+        errorCode is PluginConstants.ErrorCodes.WorkspacePluginNotAllowed
+            or PluginConstants.ErrorCodes.WorkspaceInstallRequiresAdmin
+            or PluginConstants.ErrorCodes.PermissionDenied;
 
     [HttpDelete("{pluginKey}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -115,13 +130,15 @@ public class AssistantPluginsController : ControllerBase
     [ProducesResponseType(typeof(PluginConnectUrlDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> GetConnectUrl(string pluginKey, CancellationToken ct)
+    [ProducesResponseType(typeof(string), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetConnectUrl(string pluginKey, [FromQuery] Guid? workspaceId, CancellationToken ct)
     {
-        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, ct);
+        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, workspaceId, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
             if (result.ErrorCode == PluginConstants.ErrorCodes.PluginNotInstalled) return Conflict(result.Error);
+            if (IsWorkspacePolicyRefusal(result.ErrorCode)) return StatusCode(StatusCodes.Status403Forbidden, result.Error);
             return BadRequest(result.Error);
         }
         return Ok(result.Value);
