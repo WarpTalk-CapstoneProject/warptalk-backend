@@ -126,6 +126,10 @@ public class VoiceProfileServiceTests
         Assert.Equal(LinhVoiceId, added.EmbeddingRef);
         Assert.Equal(Vi, added.Language);
         Assert.True(added.IsActive);
+        // WT-649: this used to be left null, so the only thing the UI had to show for a library
+        // pick was the Cartesia UUID. The catalogue entry we just validated against carries the
+        // name — keeping it is the whole fix.
+        Assert.Equal("Linh - Soft Presence", added.DisplayName);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
 
         // The client needs the id back out to hand it to SetVoicePreference.
@@ -144,8 +148,28 @@ public class VoiceProfileServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(MinhVoiceId, existing.EmbeddingRef);
+        // Re-pointed at Minh, so a DisplayName still reading "Linh" would be worse than none.
+        Assert.Equal("Minh - Conversational Partner", existing.DisplayName);
         _profiles.Received(1).Update(existing);
         _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldLeaveTheNameNull_WhenTheCatalogHasNoRealNameForTheVoice()
+    {
+        // RedisVoiceCatalogDirectory falls back to `entry.Name ?? entry.Id` when the TTS worker
+        // publishes a voice without a name, so Name is sometimes the UUID itself. Storing that
+        // would move WT-649's bug one layer down and make it look like real data.
+        var userId = Guid.NewGuid();
+        StubCatalog(new VoiceCatalogItemDto(LinhVoiceId, LinhVoiceId, "feminine"));
+        VoiceProfile? added = null;
+        _profiles.When(r => r.Add(Arg.Any<VoiceProfile>())).Do(c => added = c.Arg<VoiceProfile>());
+
+        var result = await _service.SetPreferredVoiceAsync(userId, new SetPreferredVoiceRequest(Vi, LinhVoiceId));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(added);
+        Assert.Null(added!.DisplayName);
     }
 
     [Fact]

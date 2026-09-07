@@ -10,6 +10,7 @@ using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.Shared;
 using Xunit;
 
 namespace WarpTalk.AuthService.Tests;
@@ -150,6 +151,8 @@ public class VoicePreviewTests
         var result = await Preview(CatalogVoiceId);
 
         Assert.False(result.IsSuccess);
+        // The queue could not be reached, which says nothing about the voice.
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
         // Nobody asked for this render, so no answer is coming — waiting the timeout out would
         // only make an immediate "unavailable" look like a slow success.
         await _previews.DidNotReceive().WaitAsync(
@@ -169,6 +172,10 @@ public class VoicePreviewTests
 
         Assert.False(result.IsSuccess);
         Assert.False(string.IsNullOrWhiteSpace(result.Error));
+        // WT-649: this used to be InvalidState, which contradicted the message sitting next to it
+        // and read as "there is something wrong with this voice". Nothing on this path looks at the
+        // profile's state at all — the render simply did not arrive inside RenderTimeout.
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
     }
 
     [Fact]

@@ -65,9 +65,14 @@ public static class ApiMessageConstants
         public const string PasswordMinLength = "Password must be at least 6 characters long.";
         public const string FullNameRequired = "Full name is required.";
         public const string FullNameNotEmpty = "Full name cannot be empty.";
+        public const string FullNameMaxLength = "Full name cannot exceed 150 characters.";
+        public const string EmailMaxLength = "Email cannot exceed 255 characters.";
+        public const string PasswordMaxLength = "Password cannot exceed 128 characters.";
+        public const string NewPasswordMaxLength = "New password cannot exceed 128 characters.";
         public const string RefreshTokenRequired = "Refresh token is required.";
         public const string GoogleIdTokenRequired = "Google ID token is required.";
         public const string PreferredLanguageInvalid = "Preferred language format is invalid.";
+        public const string LanguageTagInvalid = "Language must be a valid language tag, for example en-US.";
         public const string TimezoneInvalid = "Timezone must be a valid IANA identifier.";
         public const string NewPasswordRequired = "New password is required.";
         public const string NewPasswordMinLength = "New password must be at least 6 characters long.";

@@ -164,6 +164,9 @@ public class UpdateUserSettingsRequestValidatorTests
     [InlineData("vi")]
     [InlineData("en-US")]
     [InlineData("ja-JP")]
+    // WT-649: settings used to hold a stricter rule than registration, so a user could sign up
+    // with a script subtag and then never save it again.
+    [InlineData("zh-Hans-CN")]
     public void Validate_ShouldPass_WhenLanguageIsValid(string lang)
     {
         // Arrange
@@ -178,7 +181,10 @@ public class UpdateUserSettingsRequestValidatorTests
 
     [Theory]
     [InlineData("english")]
-    [InlineData("en-US-extra")]
+    // Was "en-US-extra", which this rule now accepts: it is a well-formed language-region-variant
+    // tag, structurally identical to the zh-Hans-CN above, and the two cannot be told apart by
+    // shape. Four subtags is past what BCP-47 allows here, so that is the case to pin instead.
+    [InlineData("en-US-extra-more")]
     [InlineData("12-34")]
     public void Validate_ShouldFail_WhenLanguageIsInvalid(string lang)
     {

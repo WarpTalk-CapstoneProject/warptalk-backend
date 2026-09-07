@@ -55,6 +55,14 @@ public class VoiceProfileService : IVoiceProfileService
     /// </summary>
     private const string LibraryVoiceProvider = "cartesia";
 
+    /// <summary>
+    /// Keep in sync with AuthDbContext: auth.voice_profiles.display_name is varchar(100).
+    ///
+    /// Catalogue names come from the TTS worker via Redis, not from a request, so there is no
+    /// validator standing between them and the column — a truncation here is the only guard.
+    /// </summary>
+    private const int DisplayNameMaxLength = 100;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IVoiceSampleStorage _storage;
     private readonly IVoiceCatalogDirectory _voiceCatalog;
@@ -216,9 +224,13 @@ public class VoiceProfileService : IVoiceProfileService
             {
                 // Said plainly rather than waited out. Nobody asked for this render, so no answer
                 // is coming and holding the request open for the timeout would only look broken.
+                //
+                // ServiceUnavailable, not InvalidState: the queue could not be reached, which says
+                // nothing about the voice. A client that reads the code has to be able to tell
+                // "come back in a minute" apart from "this voice cannot be previewed".
                 return Result.Failure<byte[]>(
                     "Voice previews are unavailable right now.",
-                    ErrorCodes.InvalidState);
+                    ErrorCodes.ServiceUnavailable);
             }
 
             var rendered = await _previewQueue.WaitAsync(voiceId, language, ct);
@@ -227,9 +239,14 @@ public class VoiceProfileService : IVoiceProfileService
                 // A real outcome, not a failure of the render: it may still land, and the next
                 // press of the button is served from the cache instantly. Worded so that trying
                 // again reads as the sensible next step, because it is.
+                //
+                // This branch used to carry InvalidState, which contradicted its own message and
+                // sent WT-649's reporter looking for a broken voice. Nothing here reads
+                // VoiceProfile.Status at all — the only way to arrive is WaitAsync polling out the
+                // 12-second RenderTimeout, so the message was the honest half and the code was not.
                 return Result.Failure<byte[]>(
                     "The preview is taking longer than expected. Try again in a moment.",
-                    ErrorCodes.InvalidState);
+                    ErrorCodes.ServiceUnavailable);
             }
 
             return AsResult(rendered);
@@ -256,6 +273,26 @@ public class VoiceProfileService : IVoiceProfileService
                 preview.Error ?? "The preview could not be rendered.",
                 ErrorCodes.InvalidState);
 
+    /// <summary>
+    /// The name to store for a library voice, or null when the catalogue has nothing worth showing.
+    ///
+    /// Null rather than the id, deliberately. RedisVoiceCatalogDirectory already falls back to
+    /// `entry.Name ?? entry.Id` when the worker publishes a voice without a name, so Name is
+    /// sometimes the UUID itself — persisting that would move WT-649's bug one layer down and make
+    /// it look like real data. A null display name is honest, and the client can say so.
+    /// </summary>
+    private static string? ToDisplayName(VoiceCatalogItemDto voice)
+    {
+        var name = voice.Name?.Trim();
+
+        if (string.IsNullOrEmpty(name) || string.Equals(name, voice.Id, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return name.Length <= DisplayNameMaxLength ? name : name[..DisplayNameMaxLength];
+    }
+
     public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Language))
@@ -269,6 +306,11 @@ public class VoiceProfileService : IVoiceProfileService
 
         try
         {
+            // The catalogue entry we validate against is also the only place a library voice has a
+            // human name, so keep it rather than asking whether it exists and dropping it. Written
+            // to DisplayName below, it is what stops the UI falling back to the Cartesia UUID.
+            string? voiceName = null;
+
             // Reject an id that is not actually on offer for this language. Without this the
             // stored preference would be round-tripped into SetVoicePreference and silently
             // produce the wrong voice — or none — deep inside the TTS worker.
@@ -281,12 +323,15 @@ public class VoiceProfileService : IVoiceProfileService
                         "No voices are available for this language yet.",
                         ErrorCodes.InvalidState);
                 }
-                if (!catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal)))
+                var match = catalog.FirstOrDefault(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
+                if (match is null)
                 {
                     return Result.Failure<VoiceProfileDto?>(
                         "That voice is not offered for this language.",
                         ErrorCodes.ValidationError);
                 }
+
+                voiceName = ToDisplayName(match);
             }
 
             var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
@@ -317,6 +362,8 @@ public class VoiceProfileService : IVoiceProfileService
             if (existing != null)
             {
                 existing.EmbeddingRef = voiceId;
+                // Re-pointed at a different voice, so the old name would now be a lie.
+                existing.DisplayName = voiceName;
                 existing.IsActive = true;
                 existing.Status = "active";
                 existing.UpdatedAt = now;
@@ -330,7 +377,7 @@ public class VoiceProfileService : IVoiceProfileService
             {
                 Id = Guid.NewGuid(),
                 UserId = userId,
-                DisplayName = null,
+                DisplayName = voiceName,
                 Language = language,
                 Provider = LibraryVoiceProvider,
                 EmbeddingRef = voiceId,
