@@ -8,6 +8,7 @@ using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
+using WarpTalk.Shared;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -34,6 +35,11 @@ public class PluginConnectionServiceTests
     private readonly IPluginOAuthClient _oauthClient = Substitute.For<IPluginOAuthClient>();
     private readonly IPluginOAuthStateProtector _stateProtector = Substitute.For<IPluginOAuthStateProtector>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
+
+    // WT-646. Defaults to what a workspace service older than the ticket reports, which is every
+    // workspace in the product today: no allowlist, plugins permitted. Tests that predate the
+    // policy therefore keep asserting the behaviour they always asserted.
+    private WorkspacePluginPolicySnapshot _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
 
     public PluginConnectionServiceTests()
     {
@@ -913,7 +919,8 @@ public class PluginConnectionServiceTests
             _stateProtector,
             _credentialProtector,
             NullLogger<PluginConnectionService>.Instance,
-            new TestMcpClientProvisioner());
+            new TestMcpClientProvisioner(),
+            TestWorkspacePluginPolicy.Guard(_workspacePolicy));
     }
 
     private static Plugin GoogleDrivePlugin()

@@ -6,6 +6,7 @@ using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
+using WarpTalk.Shared;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -26,6 +27,13 @@ public class PluginInstallationServiceTests
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
     private readonly IPluginConnectionRepository _connectionRepository = Substitute.For<IPluginConnectionRepository>();
+
+    // WT-646. The workspace policy every test runs under, defaulting to what a workspace service
+    // older than the ticket reports: no allowlist, plugins permitted, member installs permitted.
+    // That is what every workspace in the product looks like today, so leaving it alone is how the
+    // pre-WT-646 tests keep asserting pre-WT-646 behaviour.
+    private WorkspacePluginPolicySnapshot _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
+    private string _callerRole = WorkspaceRoleConstants.Owner;
 
     public PluginInstallationServiceTests()
     {
@@ -336,7 +344,10 @@ public class PluginInstallationServiceTests
 
     private PluginInstallationService CreateSut()
     {
-        return new PluginInstallationService(_unitOfWork, Substitute.For<IPluginCredentialProtector>());
+        return new PluginInstallationService(
+            _unitOfWork,
+            Substitute.For<IPluginCredentialProtector>(),
+            TestWorkspacePluginPolicy.Guard(_workspacePolicy, _callerRole));
     }
 
     private static Plugin GoogleDrivePlugin()

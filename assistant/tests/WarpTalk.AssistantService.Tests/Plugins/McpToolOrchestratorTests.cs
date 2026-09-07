@@ -27,7 +27,11 @@ public class McpToolOrchestratorTests
     private static readonly Guid CalendarPluginId = Guid.Parse("55555555-5555-5555-5555-555555555555");
 
     private readonly IMcpToolGateway _gateway = Substitute.For<IMcpToolGateway>();
-    private readonly IWorkspacePluginPolicyClient _workspacePolicy = Substitute.For<IWorkspacePluginPolicyClient>();
+    // The workspace's policy, which each test sets, run through the REAL guard rather than a
+    // stubbed verdict. What has to hold is that a given policy - and above all a null allowlist as
+    // against an empty one - reaches the orchestrator's answer intact.
+    private WorkspacePluginPolicySnapshot _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
+    private string _callerRole = WorkspaceRoleConstants.Owner;
     private readonly IPluginTokenRefresher _tokenRefresher = Substitute.For<IPluginTokenRefresher>();
     private readonly IMcpConfirmationTokenService _confirmationTokenService = Substitute.For<IMcpConfirmationTokenService>();
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
@@ -60,8 +64,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ListAvailableToolsAsync_ReturnsNoTools_WhenWorkspaceDisallowsPersonalPlugins()
     {
-        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
-            .Returns(false);
+        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
 
         var sut = CreateSut();
 
@@ -85,8 +88,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
-        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
-            .Returns(false);
+        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
 
         var request = Request("google_drive_search");
         var sut = CreateSut();
@@ -729,14 +731,15 @@ public class McpToolOrchestratorTests
         return new McpToolOrchestrator(
             new TestPluginProviderResolver(_gateway, _oauthClient),
             _unitOfWork,
-            _workspacePolicy,
+            BuildGuard(),
             new PluginConnectionService(
                 _unitOfWork,
                 new TestPluginProviderResolver(oauthClient: _oauthClient),
                 _stateProtector,
                 _credentialProtector,
                 NullLogger<PluginConnectionService>.Instance,
-                new TestMcpClientProvisioner()),
+                new TestMcpClientProvisioner(),
+                BuildGuard()),
             _confirmationTokenService);
     }
 
@@ -745,10 +748,17 @@ public class McpToolOrchestratorTests
         return new McpToolOrchestrator(
             new TestPluginProviderResolver(_gateway),
             _unitOfWork,
-            _workspacePolicy,
+            BuildGuard(),
             _tokenRefresher,
             _confirmationTokenService);
     }
+
+    /// <summary>
+    /// The real guard over whatever policy the test has set. Built per SUT rather than in the
+    /// constructor so a test can set the policy first and still get it applied.
+    /// </summary>
+    private WorkspacePluginGuard BuildGuard() =>
+        TestWorkspacePluginPolicy.Guard(_workspacePolicy, _callerRole);
 
     private McpToolExecutionRequest Request(string toolName)
     {
@@ -821,8 +831,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
-        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
-            .Returns(true);
+        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
         _installationRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<string>(),
@@ -918,8 +927,7 @@ public class McpToolOrchestratorTests
         // The existing policy tests only ever exercised a native row, so nothing caught a kind='mcp'
         // path that routed around McpToolOrchestrator. The gate lives here, above the gateway, and
         // McpToolGateway plugs in below it - which only holds while execution keeps coming through.
-        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
-            .Returns(false);
+        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
 
         var sut = CreateSut();
 
@@ -938,8 +946,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
-        _workspacePolicy.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>())
-            .Returns(false);
+        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
 
         var result = await sutOrDefault().ExecuteAsync(UserId, Request("remote_search"));
 
