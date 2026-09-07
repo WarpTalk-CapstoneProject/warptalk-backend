@@ -79,6 +79,7 @@ try
     // connect and execute paths all judge through this rather than reading the snapshot themselves,
     // so the null-versus-empty allowlist rule exists once.
     builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
+    builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
     // has no official remote MCP server for Drive/Calendar.
