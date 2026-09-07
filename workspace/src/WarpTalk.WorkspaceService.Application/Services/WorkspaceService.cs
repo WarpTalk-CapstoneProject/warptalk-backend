@@ -469,7 +469,23 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var ownerOnlyPolicyChanged = currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
+
+            // The owner-only settings. Everything else on this endpoint is Owner-or-Admin, already
+            // established above; these are the ones an Admin may read but not change.
+            //
+            // WT-646 adds RequirePluginApproval here and NOT the other two plugin fields. The test
+            // is whether an Admin could use the setting to take away a capability the Owner holds,
+            // or to hand themselves one: requiring approval puts an Owner's own plugin installs
+            // behind a gate, and dropping the requirement removes a control the Owner put there.
+            // AllowedPluginKeys and AllowMemberPluginInstall only ever narrow or widen what
+            // MEMBERS get, which is ordinary Admin territory alongside invitations and roles.
+            //
+            // AllowAnyPlugins stays Owner-or-Admin as it has always been. Tightening it is a
+            // separate decision the owner deferred; making it owner-only here would revoke, with
+            // no announcement, a permission every Admin currently has.
+            var ownerOnlyPolicyChanged =
+                currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration
+                || currentConfig.RequirePluginApproval != settings.RequirePluginApproval;
             if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);

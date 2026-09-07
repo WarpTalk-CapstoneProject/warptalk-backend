@@ -40,7 +40,16 @@ public record WorkspaceSettingsSnapshotDto(
     /// reading <c>ValidateMeetingCreationAsync</c> gives it — never "no language permitted".
     /// </summary>
     IReadOnlyList<string> AllowedTargetLanguages,
-    bool AllowAnyPlugins = true
+    bool AllowAnyPlugins = true,
+    /// <summary>
+    /// WT-646. NULL IS NOT AN EMPTY ALLOWLIST — null is "no allowlist configured, defer to
+    /// <see cref="AllowAnyPlugins"/>", empty is "an allowlist permitting nothing". The gRPC
+    /// contract carries the distinction in WorkspacePluginPolicy.allowlist_enforced because
+    /// proto3 repeated fields cannot.
+    /// </summary>
+    IReadOnlyList<string>? AllowedPluginKeys = null,
+    bool AllowMemberPluginInstall = true,
+    bool RequirePluginApproval = false
 );
 
 public record WorkspacePreflightDto(

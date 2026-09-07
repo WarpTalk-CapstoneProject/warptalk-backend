@@ -55,7 +55,39 @@ public record WorkspaceSettingsDto(
     /// </summary>
     int? MaxLanguagesCeiling = null,
     /// <summary>Provenance of the language ceiling. Null with the ceiling.</summary>
-    string? MaxLanguagesCeilingSource = null
+    string? MaxLanguagesCeilingSource = null,
+    /// <summary>
+    /// WT-646: which plugin keys this workspace permits. Owner and Admin may both set it.
+    ///
+    /// NULL IS NOT AN EMPTY ALLOWLIST. Null means no allowlist was ever configured, and the
+    /// decision falls back to <see cref="AllowAnyPlugins"/> — which is what every workspace that
+    /// predates this field looks like, and the only reading under which none of them change
+    /// behaviour. An empty list is a configured allowlist that permits nothing. Collapsing the two
+    /// would turn a backward-compatible addition into a silent workspace-wide plugin outage.
+    ///
+    /// Not validated against the plugin catalog, and deliberately not: the catalog is
+    /// AssistantService's table in AssistantService's database, and this service has no read path
+    /// to it. A key that no plugin claims is therefore accepted here and simply matches nothing
+    /// downstream. Faking the check — hard-coding known keys, or calling out to the assistant on
+    /// the settings-save path — would either go stale on every catalog change or make saving
+    /// workspace settings fail when an unrelated service is down.
+    /// </summary>
+    List<string>? AllowedPluginKeys = null,
+    /// <summary>
+    /// Whether a plain Member may install a plugin for themselves; false confines installation to
+    /// Owner and Admin. Owner and Admin may both set it. True by default, because that is what
+    /// every workspace does today.
+    /// </summary>
+    bool AllowMemberPluginInstall = true,
+    /// <summary>
+    /// Whether an installed plugin needs Owner/Admin approval before it may be invoked.
+    ///
+    /// OWNER-ONLY to change, gated alongside <see cref="AllowExternalCollaboration"/> in
+    /// <c>UpdateWorkspaceSettingsAsync</c> rather than with the other two plugin fields. It is the
+    /// one that can take away a capability an Admin currently has, so an Admin must not be able to
+    /// switch it off — nor, symmetrically, to switch it on and gate the Owner's own installs.
+    /// </summary>
+    bool RequirePluginApproval = false
 );
 
 public record WorkspaceSettingsPatchRequest(
@@ -70,7 +102,18 @@ public record WorkspaceSettingsPatchRequest(
     bool? RequireVerifiedDomainForInternal = null,
     AiUsagePolicyPatchDto? AiUsagePolicy = null,
     bool? IsProfanityFilterEnabled = null,
-    bool? AllowAnyPlugins = null
+    bool? AllowAnyPlugins = null,
+    /// <summary>
+    /// WT-646. Null here means "not supplied by this patch", NOT the DTO's null-means-fall-back-to
+    /// -AllowAnyPlugins. The two readings collide, so this shape cannot express "clear the
+    /// allowlist back to unset" — send the full document to PUT for that. Left as-is rather than
+    /// wrapped in an extra presence type because nothing calls this: the live PATCH endpoint
+    /// merges a raw JsonObject instead (WorkspacesController.PatchWorkspaceSettings), and this
+    /// record and WorkspaceMapper.ApplyPatch are currently unreferenced.
+    /// </summary>
+    List<string>? AllowedPluginKeys = null,
+    bool? AllowMemberPluginInstall = null,
+    bool? RequirePluginApproval = null
 );
 
 public record AiUsagePolicyPatchDto(
