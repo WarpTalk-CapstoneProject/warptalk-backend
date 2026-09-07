@@ -182,14 +182,81 @@ public class GoogleWorkspaceOAuthClientTests
         Assert.Equal("token=stored-refresh-token", capturedBody);
     }
 
-    private static GoogleWorkspaceOAuthClient CreateSut(HttpClient httpClient)
+    [Fact]
+    public void BuildAuthorizationUrl_Throws_WhenClientIdIsNotConfigured()
+    {
+        // The production bug this guards: app.compose.yml passed GOOGLE_WORKSPACE_CLIENT_ID with a
+        // `:-` default and nothing ever defined the variable, so ClientId bound to "" - the option's
+        // own default. The service started healthy and the flow died on Google's consent page with
+        // "Missing required parameter: client_id", which named neither the key nor the service.
+        var sut = CreateSut(new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))), clientId: "");
+        var plugin = GoogleWorkspacePlugin();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => sut.BuildAuthorizationUrl(
+            plugin,
+            [],
+            "opaque-state",
+            new PluginOAuthStateDto(Guid.NewGuid(), PluginConstants.GoogleWorkspace)));
+
+        // The message has to carry the environment key, because that is the part a reader of the
+        // logs cannot derive from anything else.
+        Assert.Contains("GOOGLE_WORKSPACE_CLIENT_ID", ex.Message);
+        Assert.Contains("Plugins__GoogleWorkspace__OAuth__ClientId", ex.Message);
+    }
+
+    [Fact]
+    public void BuildAuthorizationUrl_IncludesClientId_WhenConfigured()
+    {
+        // The guard must not change the URL it was added to.
+        var sut = CreateSut(new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))));
+
+        var url = sut.BuildAuthorizationUrl(
+            GoogleWorkspacePlugin(),
+            ["https://www.googleapis.com/auth/drive.readonly"],
+            "opaque-state",
+            new PluginOAuthStateDto(Guid.NewGuid(), PluginConstants.GoogleWorkspace));
+
+        Assert.Contains("client_id=test-client", url);
+        Assert.Contains("state=opaque-state", url);
+    }
+
+    [Fact]
+    public async Task ExchangeCodeAsync_Throws_WhenClientSecretIsNotConfigured()
+    {
+        // Same misconfiguration, one leg later. Without the guard this reaches Google and comes
+        // back as a bare 401 invalid_client, which reads like a revoked app rather than a missing
+        // deployment variable.
+        var reached = false;
+        var sut = CreateSut(
+            new HttpClient(new StubHttpMessageHandler(_ =>
+            {
+                reached = true;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            })),
+            clientSecret: "");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ExchangeCodeAsync(
+            GoogleWorkspacePlugin(),
+            "authorization-code",
+            new PluginOAuthStateDto(Guid.NewGuid(), PluginConstants.GoogleWorkspace)));
+
+        Assert.Contains("GOOGLE_WORKSPACE_CLIENT_SECRET", ex.Message);
+        Assert.False(reached);
+    }
+
+    private static GoogleWorkspaceOAuthClient CreateSut(
+        HttpClient httpClient,
+        string clientId = "test-client",
+        string clientSecret = "test-secret")
     {
         return new GoogleWorkspaceOAuthClient(
             httpClient,
             Options.Create(new GoogleWorkspaceOAuthOptions
             {
-                ClientId = "test-client",
-                ClientSecret = "test-secret",
+                ClientId = clientId,
+                ClientSecret = clientSecret,
                 TokenEndpoint = "https://oauth2.google.test/token",
                 RevokeEndpoint = "https://oauth2.google.test/revoke",
             }));
