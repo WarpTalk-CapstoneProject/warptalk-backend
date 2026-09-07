@@ -92,9 +92,7 @@ public class AssistantPluginsController : ControllerBase
     }
 
     private static bool IsWorkspacePolicyRefusal(string? errorCode) =>
-        errorCode is PluginConstants.ErrorCodes.WorkspacePluginNotAllowed
-            or PluginConstants.ErrorCodes.WorkspaceInstallRequiresAdmin
-            or PluginConstants.ErrorCodes.PermissionDenied;
+        errorCode is PluginConstants.ErrorCodes.PermissionDenied;
 
     [HttpDelete("{pluginKey}")]
     [ProducesResponseType(StatusCodes.Status200OK)]

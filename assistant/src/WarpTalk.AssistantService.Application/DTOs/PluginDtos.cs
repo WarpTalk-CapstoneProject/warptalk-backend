@@ -58,7 +58,7 @@ public record PluginCatalogItemDto(
     /// plugins page's own case and the default.
     /// <para>
     /// A blocked row is REPORTED rather than hidden, and that is the deliberate answer to what
-    /// happens when an admin narrows the allowlist under a user who has already installed and
+    /// happens when an admin turns plugins off under a user who has already installed and
     /// connected. Hiding it would leave a live OAuth grant the user can neither see nor revoke;
     /// deleting the connection would throw away a personal grant on a workspace's say-so, and the
     /// same grant may be in use in another workspace that still permits it. So the rows stand, the

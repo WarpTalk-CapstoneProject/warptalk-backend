@@ -30,8 +30,7 @@ public class McpToolOrchestratorTests
     // The workspace's policy, which each test sets, run through the REAL guard rather than a
     // stubbed verdict. What has to hold is that a given policy - and above all a null allowlist as
     // against an empty one - reaches the orchestrator's answer intact.
-    private WorkspacePluginPolicySnapshot _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
-    private string _callerRole = WorkspaceRoleConstants.Owner;
+    private bool _workspaceAllowsPlugins = true;
     private readonly IPluginTokenRefresher _tokenRefresher = Substitute.For<IPluginTokenRefresher>();
     private readonly IMcpConfirmationTokenService _confirmationTokenService = Substitute.For<IMcpConfirmationTokenService>();
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
@@ -64,7 +63,7 @@ public class McpToolOrchestratorTests
     [Fact]
     public async Task ListAvailableToolsAsync_ReturnsNoTools_WhenWorkspaceDisallowsPersonalPlugins()
     {
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
+        _workspaceAllowsPlugins = false;
 
         var sut = CreateSut();
 
@@ -88,7 +87,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
+        _workspaceAllowsPlugins = false;
 
         var request = Request("google_drive_search");
         var sut = CreateSut();
@@ -726,54 +725,7 @@ public class McpToolOrchestratorTests
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
     }
 
-    // ---- WT-646: allowlist enforcement ---------------------------------------------------------
-
-    [Fact]
-    public async Task ListAvailableToolsAsync_OffersOnlyTheToolsOfAllowlistedPlugins()
-    {
-        // The allowlist has to be applied per plugin, not once for the request: the workspace-wide
-        // switch was the only thing that could ever answer for every plugin at once.
-        _pluginRepository.FindAsync(
-                Arg.Any<Expression<Func<Plugin, bool>>>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns([GoogleDrivePlugin(), GoogleCalendarPlugin()]);
-        _installationRepository.FindAsync(
-                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns([
-                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
-                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
-            ]);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowedKeys: GoogleDriveKey);
-
-        var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId);
-
-        Assert.True(result.IsSuccess);
-        // WarpBot never learns the Calendar tool exists, so it cannot propose an action that would
-        // be refused a step later.
-        Assert.All(result.Value!, tool => Assert.Equal(GoogleDriveKey, tool.PluginKey));
-        Assert.NotEmpty(result.Value!);
-    }
-
-    [Fact]
-    public async Task ListAvailableToolsAsync_ReturnsNothing_WhenTheAllowlistIsEmpty()
-    {
-        // An empty allowlist is a deliberate "nothing" and answers without loading a single row -
-        // the same short circuit the workspace-wide switch has always had.
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowAnyPlugins: true);
-
-        var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId);
-
-        Assert.True(result.IsSuccess);
-        Assert.Empty(result.Value!);
-        await _installationRepository.DidNotReceive()
-            .FindAsync(
-                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>());
-    }
+    // ---- WT-646: the workspace gate on the tool path -------------------------------------------
 
     [Fact]
     public async Task ListAvailableToolsAsync_IsUnaffectedByPolicy_WhenTheCallNamesNoWorkspace()
@@ -792,7 +744,7 @@ public class McpToolOrchestratorTests
             .Returns([
                 new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
             ]);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().ListAvailableToolsAsync(UserId, workspaceId: null);
 
@@ -800,84 +752,37 @@ public class McpToolOrchestratorTests
         Assert.NotEmpty(result.Value!);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task ListAvailableToolsAsync_FallsBackToAllowAnyPlugins_AgainstAWorkspacePeerOlderThanWT646(
-        bool allowAnyPlugins)
+    [Fact]
+    public async Task ListAvailableToolsAsync_OffersEveryInstalledPluginsTools_WhenTheWorkspaceAllowsPlugins()
     {
         _pluginRepository.FindAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
-            .Returns([GoogleDrivePlugin()]);
+            .Returns([GoogleDrivePlugin(), GoogleCalendarPlugin()]);
         _installationRepository.FindAsync(
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns([
                 new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
             ]);
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins);
+        _workspaceAllowsPlugins = true;
 
         var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(allowAnyPlugins, result.Value!.Count > 0);
+        Assert.Contains(result.Value!, tool => tool.PluginKey == GoogleDriveKey);
+        Assert.Contains(result.Value!, tool => tool.PluginKey == GoogleCalendarKey);
     }
 
     [Fact]
-    public async Task ExecuteAsync_RefusesAPluginThatFellOffTheAllowlist_AndAuditsTheRefusal()
-    {
-        // The already-installed, already-connected case. Nothing deletes the user's rows when an
-        // admin narrows the policy, so this is the gate that actually stops the tool - and it runs
-        // on every call because the policy can change between install and use.
-        var plugin = GoogleDrivePlugin();
-        ConfigureInstalledConnected(plugin);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowedKeys: GoogleCalendarKey);
-
-        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
-
-        Assert.True(result.IsSuccess);
-        Assert.False(result.Value!.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.WorkspacePluginNotAllowed, result.Value.ErrorCode);
-        await _auditRepository.Received(1)
-            .AddAsync(
-                Arg.Is<PluginToolAudit>(audit =>
-                    audit.WorkspaceId == WorkspaceId
-                    && audit.ResultStatus == PluginConstants.ErrorCodes.WorkspacePluginNotAllowed),
-                Arg.Any<CancellationToken>());
-        await _gateway.DidNotReceive()
-            .ExecuteAsync(
-                Arg.Any<PluginDefinitionDto>(),
-                Arg.Any<McpToolDescriptorDto>(),
-                Arg.Any<PluginConnection>(),
-                Arg.Any<McpToolExecutionRequest>(),
-                Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_RefusesEverything_WhenTheAllowlistIsEmpty()
+    public async Task ExecuteAsync_RunsATool_WhenTheWorkspaceAllowsPlugins()
     {
         var plugin = GoogleDrivePlugin();
         ConfigureInstalledConnected(plugin);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowAnyPlugins: true);
-
-        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
-
-        Assert.True(result.IsSuccess);
-        Assert.False(result.Value!.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.WorkspacePluginNotAllowed, result.Value.ErrorCode);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_RunsAnAllowlistedPlugin()
-    {
-        var plugin = GoogleDrivePlugin();
-        ConfigureInstalledConnected(plugin);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(
-            allowAnyPlugins: false,
-            allowedKeys: GoogleDriveKey);
+        _workspaceAllowsPlugins = true;
         _gateway.ExecuteAsync(
                 Arg.Any<PluginDefinitionDto>(),
                 Arg.Any<McpToolDescriptorDto>(),
@@ -890,6 +795,36 @@ public class McpToolOrchestratorTests
 
         Assert.True(result.IsSuccess);
         Assert.True(result.Value!.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RefusesAnInstalledConnectedPlugin_WhenTheWorkspaceHasSinceTurnedPluginsOff()
+    {
+        // The already-installed, already-connected case. Nothing deletes the user's rows when an
+        // admin tightens the policy, so this is the gate that actually stops the tool - and it
+        // runs on every call because the policy can change between install and use.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+        _workspaceAllowsPlugins = false;
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value.ErrorCode);
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit =>
+                    audit.WorkspaceId == WorkspaceId
+                    && audit.ResultStatus == PluginConstants.ErrorCodes.PermissionDenied),
+                Arg.Any<CancellationToken>());
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
     }
 
     private McpToolOrchestrator CreateSutWithRealRefresher()
@@ -924,7 +859,7 @@ public class McpToolOrchestratorTests
     /// constructor so a test can set the policy first and still get it applied.
     /// </summary>
     private WorkspacePluginGuard BuildGuard() =>
-        TestWorkspacePluginPolicy.Guard(_workspacePolicy, _callerRole);
+        TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins);
 
     private McpToolExecutionRequest Request(string toolName)
     {
@@ -997,7 +932,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
+        _workspaceAllowsPlugins = true;
         _installationRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<string>(),
@@ -1093,7 +1028,7 @@ public class McpToolOrchestratorTests
         // The existing policy tests only ever exercised a native row, so nothing caught a kind='mcp'
         // path that routed around McpToolOrchestrator. The gate lives here, above the gateway, and
         // McpToolGateway plugs in below it - which only holds while execution keeps coming through.
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
+        _workspaceAllowsPlugins = false;
 
         var sut = CreateSut();
 
@@ -1112,7 +1047,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
-        _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: false);
+        _workspaceAllowsPlugins = false;
 
         var result = await sutOrDefault().ExecuteAsync(UserId, Request("remote_search"));
 

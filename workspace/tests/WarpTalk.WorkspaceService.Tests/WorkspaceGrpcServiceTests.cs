@@ -179,76 +179,25 @@ public class WorkspaceGrpcServiceTests
     }
 
     /// <summary>
-    /// WT-646. proto3 gives a repeated field no presence of its own, so allowlist_enforced is what
-    /// tells the assistant apart "this workspace configured no allowlist, fall back to
-    /// allow_any_plugins" from "this workspace allowlisted nothing". Every workspace predating
-    /// WT-646 is the former; reading it as the latter would deny every plugin everywhere.
+    /// The whole of a workspace's plugin policy on the wire is this one flag. It is what the
+    /// assistant's guard reads, so it has to survive the mapping in both directions.
     /// </summary>
-    [Fact]
-    public async Task GetWorkspaceSettings_ReportsNoAllowlist_WhenWorkspaceHasNotConfiguredOne()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetWorkspaceSettings_CarriesAllowAnyPlugins(bool allowAnyPlugins)
     {
         _workspaceDirectory
             .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
                 15, true, false, true, true, new[] { "vi" },
-                AllowAnyPlugins: true,
-                AllowedPluginKeys: null)));
+                AllowAnyPlugins: allowAnyPlugins)));
 
         var response = await _service.GetWorkspaceSettings(
             new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
             _context);
 
-        // The message itself is always sent by this build — its absence is how a caller detects a
-        // workspace service older than WT-646.
-        Assert.NotNull(response.PluginPolicy);
-        Assert.False(response.PluginPolicy.AllowlistEnforced);
-        Assert.Empty(response.PluginPolicy.AllowedPluginKeys);
-        Assert.True(response.AllowAnyPlugins);
-        // Defaults that keep an unconfigured workspace behaving as it does today.
-        Assert.True(response.PluginPolicy.AllowMemberPluginInstall);
-        Assert.False(response.PluginPolicy.RequirePluginApproval);
-    }
-
-    [Fact]
-    public async Task GetWorkspaceSettings_ReportsEnforcedAllowlist_WithItsKeys()
-    {
-        _workspaceDirectory
-            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
-                15, true, false, true, true, new[] { "vi" },
-                AllowAnyPlugins: true,
-                AllowedPluginKeys: new[] { "google-calendar", "notion" },
-                AllowMemberPluginInstall: false,
-                RequirePluginApproval: true)));
-
-        var response = await _service.GetWorkspaceSettings(
-            new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
-            _context);
-
-        Assert.True(response.PluginPolicy.AllowlistEnforced);
-        Assert.Equal(new[] { "google-calendar", "notion" }, response.PluginPolicy.AllowedPluginKeys);
-        Assert.False(response.PluginPolicy.AllowMemberPluginInstall);
-        Assert.True(response.PluginPolicy.RequirePluginApproval);
-    }
-
-    [Fact]
-    public async Task GetWorkspaceSettings_ReportsEnforcedEmptyAllowlist_AsPermittingNothing()
-    {
-        _workspaceDirectory
-            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
-                15, true, false, true, true, new[] { "vi" },
-                AllowAnyPlugins: true,
-                AllowedPluginKeys: Array.Empty<string>())));
-
-        var response = await _service.GetWorkspaceSettings(
-            new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
-            _context);
-
-        // Same empty list as the no-allowlist case above, opposite meaning. The flag is the only
-        // thing separating them on the wire.
-        Assert.True(response.PluginPolicy.AllowlistEnforced);
-        Assert.Empty(response.PluginPolicy.AllowedPluginKeys);
+        Assert.Equal(allowAnyPlugins, response.AllowAnyPlugins);
     }
 
     [Fact]

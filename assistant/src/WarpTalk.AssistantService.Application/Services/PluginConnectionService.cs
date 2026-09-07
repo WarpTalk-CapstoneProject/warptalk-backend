@@ -60,9 +60,9 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         // WT-646. This, and not the callback below, is where a connect is refused: it is the last
         // point at which nothing irreversible has happened, and the only one of the two that has a
         // workspace to judge against. Installation is already gated, so this catches the case the
-        // install gate cannot - a plugin installed while the workspace still permitted it, whose
-        // key an admin has since removed from the allowlist.
-        var permitted = await _workspacePluginGuard.CanUseAsync(workspaceId, plugin.PluginKey, ct);
+        // install gate cannot - a plugin installed while the workspace still permitted plugins,
+        // in a workspace that has since turned them off.
+        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginConnectUrlDto>(permitted.Error!, permitted.ErrorCode);
 

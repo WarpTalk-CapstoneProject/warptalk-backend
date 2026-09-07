@@ -66,10 +66,7 @@ public static class WorkspaceMapper
             config.AiUsagePolicy?.ToDto(),
             config.IsProfanityFilterEnabled,
             config.InvitationExpiryDays,
-            AllowAnyPlugins: config.AllowAnyPlugins,
-            AllowedPluginKeys: config.AllowedPluginKeys,
-            AllowMemberPluginInstall: config.AllowMemberPluginInstall,
-            RequirePluginApproval: config.RequirePluginApproval
+            AllowAnyPlugins: config.AllowAnyPlugins
         );
     }
 
@@ -89,14 +86,7 @@ public static class WorkspaceMapper
             AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration(),
             IsProfanityFilterEnabled = dto.IsProfanityFilterEnabled,
             InvitationExpiryDays = dto.InvitationExpiryDays,
-            AllowAnyPlugins = dto.AllowAnyPlugins,
-            // No `?? new List<string>()` here, unlike VerifiedDomains above. Null is a meaning in
-            // this field — "no allowlist configured, defer to AllowAnyPlugins" — and coercing it
-            // to an empty list would rewrite every workspace's policy into "permit nothing" the
-            // first time anyone saved their settings. The setter de-duplicates and trims.
-            AllowedPluginKeys = dto.AllowedPluginKeys,
-            AllowMemberPluginInstall = dto.AllowMemberPluginInstall,
-            RequirePluginApproval = dto.RequirePluginApproval
+            AllowAnyPlugins = dto.AllowAnyPlugins
         };
     }
 
@@ -117,10 +107,7 @@ public static class WorkspaceMapper
                 ? current.AiUsagePolicy
                 : ApplyPatch(current.AiUsagePolicy, patch.AiUsagePolicy),
             IsProfanityFilterEnabled = patch.IsProfanityFilterEnabled ?? current.IsProfanityFilterEnabled,
-            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins,
-            AllowedPluginKeys = patch.AllowedPluginKeys ?? current.AllowedPluginKeys,
-            AllowMemberPluginInstall = patch.AllowMemberPluginInstall ?? current.AllowMemberPluginInstall,
-            RequirePluginApproval = patch.RequirePluginApproval ?? current.RequirePluginApproval
+            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins
         };
     }
 

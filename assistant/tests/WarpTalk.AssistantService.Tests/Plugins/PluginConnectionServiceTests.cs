@@ -39,7 +39,7 @@ public class PluginConnectionServiceTests
     // WT-646. Defaults to what a workspace service older than the ticket reports, which is every
     // workspace in the product today: no allowlist, plugins permitted. Tests that predate the
     // policy therefore keep asserting the behaviour they always asserted.
-    private WorkspacePluginPolicySnapshot _workspacePolicy = TestWorkspacePluginPolicy.LegacyPeer(allowAnyPlugins: true);
+    private bool _workspaceAllowsPlugins = true;
 
     public PluginConnectionServiceTests()
     {
@@ -919,7 +919,7 @@ public class PluginConnectionServiceTests
     public async Task GetConnectUrlAsync_RefusesAPluginTheWorkspaceDoesNotAllow()
     {
         // The case the install gate cannot catch: installed while the workspace still permitted
-        // it, and an admin has since taken the key off the allowlist.
+        // plugins, in a workspace that has since turned them off.
         var plugin = GoogleCalendarPlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -930,12 +930,12 @@ public class PluginConnectionServiceTests
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<CancellationToken>())
             .Returns(true);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist(allowedKeys: GoogleDriveKey);
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().GetConnectUrlAsync(GoogleCalendarKey, UserId, WorkspaceId);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.WorkspacePluginNotAllowed, result.ErrorCode);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
         // Refused before the URL exists, so the user is never sent to a consent screen for a
         // grant this workspace would then refuse to use.
         _oauthClient.DidNotReceive()
@@ -967,7 +967,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<PluginOAuthStateDto>())
             .Returns("https://accounts.google.test/oauth");
         // A policy that would refuse everything, and no workspace to apply it to.
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().GetConnectUrlAsync(GoogleDriveKey, UserId);
 
@@ -1007,7 +1007,7 @@ public class PluginConnectionServiceTests
                 "access-token",
                 "refresh-token",
                 DateTime.UtcNow.AddHours(1)));
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
@@ -1020,7 +1020,8 @@ public class PluginConnectionServiceTests
     public async Task DisconnectAsync_IsNeverGatedByWorkspacePolicy()
     {
         // The counterpart to the catalog reporting a blocked row rather than hiding it: a user
-        // holding a grant their workspace has since excluded must still be able to revoke it.
+        // holding a grant in a workspace that has since turned plugins off must still be able to
+        // revoke it.
         var plugin = GoogleDrivePlugin();
         var connection = new PluginConnection
         {
@@ -1043,7 +1044,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(connection);
-        _workspacePolicy = TestWorkspacePluginPolicy.WithAllowlist();
+        _workspaceAllowsPlugins = false;
 
         var result = await CreateSut().DisconnectAsync(GoogleDriveKey, UserId);
 
@@ -1061,7 +1062,7 @@ public class PluginConnectionServiceTests
             _credentialProtector,
             NullLogger<PluginConnectionService>.Instance,
             new TestMcpClientProvisioner(),
-            TestWorkspacePluginPolicy.Guard(_workspacePolicy));
+            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
     }
 
     private static Plugin GoogleDrivePlugin()

@@ -6,8 +6,8 @@ namespace WarpTalk.AssistantService.Application.Interfaces;
 public interface IPluginInstallationService
 {
     /// <param name="workspaceId">
-    /// The workspace the user is browsing from, when there is one. WT-646: it decides which rows
-    /// carry a <c>WorkspacePolicyBlockReason</c>. Null - the default, and what the personal
+    /// The workspace the user is browsing from, when there is one. WT-646: it decides whether the
+    /// rows carry a <c>WorkspacePolicyBlockReason</c>. Null - the default, and what the personal
     /// plugins page sends - means no workspace policy applies and every row comes back unblocked,
     /// which is exactly how this behaved before the policy existed.
     /// </param>

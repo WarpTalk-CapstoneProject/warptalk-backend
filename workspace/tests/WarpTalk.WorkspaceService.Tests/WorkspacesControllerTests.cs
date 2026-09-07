@@ -463,7 +463,7 @@ public class WorkspacesControllerTests
     }
 
     [Fact]
-    public async Task PatchWorkspaceSettings_ShouldAccept_PluginPolicyKeys()
+    public async Task PatchWorkspaceSettings_ShouldAccept_AllowAnyPlugins()
     {
         var workspaceId = Guid.NewGuid();
         WorkspaceSettingsDto? savedSettings = null;
@@ -479,45 +479,10 @@ public class WorkspacesControllerTests
 
         var result = await _controller.PatchWorkspaceSettings(
             workspaceId,
-            new JsonObject
-            {
-                ["allowedPluginKeys"] = new JsonArray("google-calendar", "notion"),
-                ["allowMemberPluginInstall"] = false,
-                ["requirePluginApproval"] = true
-            },
+            new JsonObject { ["allowAnyPlugins"] = false },
             CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
-        Assert.Equal(new List<string> { "google-calendar", "notion" }, savedSettings?.AllowedPluginKeys);
-        Assert.False(savedSettings?.AllowMemberPluginInstall);
-        Assert.True(savedSettings?.RequirePluginApproval);
-    }
-
-    /// <summary>
-    /// A PATCH that does not mention the allowlist must leave it unset, not empty. The controller
-    /// round-trips the current DTO through JSON, so this is really a check that null survives
-    /// serialization — an empty array here would mean "permit nothing" to the service.
-    /// </summary>
-    [Fact]
-    public async Task PatchWorkspaceSettings_ShouldLeaveAllowedPluginKeysNull_WhenPatchOmitsIt()
-    {
-        var workspaceId = Guid.NewGuid();
-        WorkspaceSettingsDto? savedSettings = null;
-
-        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
-            .Returns(Result.Success(CurrentSettings()));
-        _workspaceService.UpdateWorkspaceSettingsAsync(
-                workspaceId,
-                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
-                _userId,
-                Arg.Any<CancellationToken>())
-            .Returns(Result.Success());
-
-        await _controller.PatchWorkspaceSettings(
-            workspaceId,
-            new JsonObject { ["artifactRetentionDays"] = 60 },
-            CancellationToken.None);
-
-        Assert.Null(savedSettings?.AllowedPluginKeys);
+        Assert.False(savedSettings?.AllowAnyPlugins);
     }
 }

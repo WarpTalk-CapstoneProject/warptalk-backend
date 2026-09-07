@@ -1415,14 +1415,13 @@ public class WorkspaceServiceTests
     }
 
     /// <summary>
-    /// WT-646. The three new plugin settings do not share one permission: AllowedPluginKeys and
-    /// AllowMemberPluginInstall are Owner-or-Admin like the rest of this endpoint, while
-    /// RequirePluginApproval is Owner-only alongside AllowExternalCollaboration — it is the one an
-    /// Admin could use to put the Owner's own installs behind a gate, or to remove a gate the
-    /// Owner put there.
+    /// WT-646. A workspace owner configures exactly one thing about plugins: whether members may
+    /// use them here. It is Owner-or-Admin like the rest of this endpoint, NOT owner-only —
+    /// putting it behind the owner-only gate would revoke, with no announcement, a permission
+    /// every Admin already has.
     /// </summary>
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenAdminSetsAllowedPluginKeys()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenAdminTurnsAllowAnyPluginsOff()
     {
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
@@ -1438,8 +1437,7 @@ public class WorkspaceServiceTests
             "en", "UTC", new List<string>(), true, 5, 30,
             new List<string>(), true, false, null, false)
         {
-            AllowedPluginKeys = new List<string> { "google-calendar", "notion" },
-            AllowMemberPluginInstall = false
+            AllowAnyPlugins = false
         };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
@@ -1456,130 +1454,9 @@ public class WorkspaceServiceTests
         Assert.True(result.IsSuccess);
         await _workspaceRepository.Received(1).UpdateSettingsAsync(
             workspaceId,
-            Arg.Is<WorkspaceConfiguration>(c =>
-                c.AllowedPluginKeys != null
-                && c.AllowedPluginKeys.Count == 2
-                && c.AllowedPluginKeys.Contains("google-calendar")
-                && !c.AllowMemberPluginInstall),
+            Arg.Is<WorkspaceConfiguration>(c => !c.AllowAnyPlugins),
             userId,
             Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminChangesRequirePluginApproval()
-    {
-        var userId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid();
-        var adminRoleId = Guid.NewGuid();
-        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
-        var workspace = new Workspace
-        {
-            Id = workspaceId,
-            AllowExternalCollaboration = true,
-            // RequirePluginApproval absent from the JSON, so the config default (false) stands.
-            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
-        };
-        var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30,
-            new List<string>(), true, false, null, false)
-        {
-            RequirePluginApproval = true
-        };
-
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        _workspaceMemberRepository.FirstOrDefaultAsync(
-                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(admin);
-        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
-
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, result.Error);
-        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
-            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenOwnerChangesRequirePluginApproval()
-    {
-        var userId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid();
-        var ownerRoleId = Guid.NewGuid();
-        var owner = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId };
-        var workspace = new Workspace
-        {
-            Id = workspaceId,
-            AllowExternalCollaboration = true,
-            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
-        };
-        var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30,
-            new List<string>(), true, false, null, false)
-        {
-            RequirePluginApproval = true
-        };
-
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        _workspaceMemberRepository.FirstOrDefaultAsync(
-                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(owner);
-        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
-        _workspaceRepository.UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
-
-        Assert.True(result.IsSuccess);
-        await _workspaceRepository.Received(1).UpdateSettingsAsync(
-            workspaceId,
-            Arg.Is<WorkspaceConfiguration>(c => c.RequirePluginApproval),
-            userId,
-            Arg.Any<CancellationToken>());
-    }
-
-    /// <summary>
-    /// An Admin echoing RequirePluginApproval back unchanged is not "changing" it. The gate
-    /// compares values, not the field's presence, so ordinary read-modify-write by an Admin must
-    /// keep working — the same property the RequireVerifiedDomainForInternal check was written to
-    /// preserve.
-    /// </summary>
-    [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenAdminEchoesRequirePluginApprovalUnchanged()
-    {
-        var userId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid();
-        var adminRoleId = Guid.NewGuid();
-        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
-        var workspace = new Workspace
-        {
-            Id = workspaceId,
-            AllowExternalCollaboration = true,
-            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30,\"RequirePluginApproval\":true}"
-        };
-        var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30,
-            new List<string>(), true, false, null, false)
-        {
-            RequirePluginApproval = true,
-            AllowedPluginKeys = new List<string> { "notion" }
-        };
-
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        _workspaceMemberRepository.FirstOrDefaultAsync(
-                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(admin);
-        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
-        _workspaceRepository.UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
-
-        Assert.True(result.IsSuccess);
     }
 
     [Fact]
