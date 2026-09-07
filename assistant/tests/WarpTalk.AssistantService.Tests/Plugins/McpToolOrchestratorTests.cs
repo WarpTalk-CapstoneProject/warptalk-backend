@@ -22,6 +22,9 @@ public class McpToolOrchestratorTests
     // Post-split key. google_workspace was retired by 20260907100000; a fixture still using
     // it would be testing a row the catalog no longer serves.
     private const string GoogleDriveKey = "google_drive";
+    private const string GoogleCalendarKey = "google_calendar";
+
+    private static readonly Guid CalendarPluginId = Guid.Parse("55555555-5555-5555-5555-555555555555");
 
     private readonly IMcpToolGateway _gateway = Substitute.For<IMcpToolGateway>();
     private readonly IWorkspacePluginPolicyClient _workspacePolicy = Substitute.For<IWorkspacePluginPolicyClient>();
@@ -982,6 +985,159 @@ public class McpToolOrchestratorTests
                     "description": "Search the remote app.",
                     "effect": "read",
                     "requiredScopes": [],
+                    "parameters": { "type": "object", "properties": {} }
+                  }
+                ]
+                """,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+    }
+
+    // ---- WT-646: the grant is the provider's, the scope check is still the plugin's -----------
+
+    [Fact]
+    public async Task ExecuteAsync_ResolvesTheConnectionByProvider_NotByPluginId()
+    {
+        // Calendar was installed second, so the shared Google grant still records google_drive in
+        // its plugin_id. Keyed on plugin id, this lookup would come back empty and the user would
+        // be told to connect an account they are already connected to.
+        var calendar = GoogleCalendarPlugin();
+        var connection = ConfigureGoogleGrant(
+            calendar,
+            """["https://www.googleapis.com/auth/calendar.events"]""");
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "calendar:event", null));
+
+        var result = await CreateSut().ExecuteAsync(UserId, CalendarRequest("google_calendar_list_events"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsSuccess);
+        await _connectionRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<PluginConnection, bool>>>(predicate =>
+                predicate.Compile().Invoke(connection)
+                // Its plugin_id points at Drive, and that must not be what decides the match.
+                && !predicate.Compile().Invoke(new PluginConnection
+                {
+                    UserId = UserId,
+                    PluginId = CalendarPluginId,
+                    Provider = "remote_app",
+                })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReturnsMissingScope_WhenTheSharedGrantOnlyCoversDrive()
+    {
+        // Sharing one grant across three plugins must not share scopes the user never gave. A user
+        // who consented through Drive and then installed Calendar has drive.readonly and nothing
+        // else, so a Calendar tool has to be refused until they reconnect.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureGoogleGrant(calendar, """["https://www.googleapis.com/auth/drive.readonly"]""");
+
+        var result = await CreateSut().ExecuteAsync(UserId, CalendarRequest("google_calendar_list_events"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.MissingScope, result.Value.ErrorCode);
+        await _gateway.DidNotReceive().ExecuteAsync(
+            Arg.Any<PluginDefinitionDto>(),
+            Arg.Any<McpToolDescriptorDto>(),
+            Arg.Any<PluginConnection>(),
+            Arg.Any<McpToolExecutionRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PassesTheProviderThroughToTheGateway()
+    {
+        // The gateway asserts on Provider before it sends a user's token anywhere, so the
+        // definition it receives has to carry the real one rather than an empty default.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureGoogleGrant(calendar, """["https://www.googleapis.com/auth/calendar.events"]""");
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject(), null, null));
+
+        await CreateSut().ExecuteAsync(UserId, CalendarRequest("google_calendar_list_events"));
+
+        await _gateway.Received(1).ExecuteAsync(
+            Arg.Is<PluginDefinitionDto>(definition =>
+                definition.Provider == PluginConstants.Providers.Google
+                && definition.Key == GoogleCalendarKey),
+            Arg.Any<McpToolDescriptorDto>(),
+            Arg.Any<PluginConnection>(),
+            Arg.Any<McpToolExecutionRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    private static McpToolExecutionRequest CalendarRequest(string toolName) =>
+        new(WorkspaceId, GoogleCalendarKey, toolName, new JsonObject(), null, null, null);
+
+    /// <summary>
+    /// An installed Google plugin plus the one Google grant, whose plugin_id points at the Drive
+    /// row that first obtained it.
+    /// </summary>
+    private PluginConnection ConfigureGoogleGrant(Plugin plugin, string scopesJson)
+    {
+        ConfigureInstalledPlugin(plugin);
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = PluginId,
+            Provider = PluginConstants.Providers.Google,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            ProviderEmail = "connected@example.test",
+            EncryptedAccessToken = "protected:access-token",
+            EncryptedRefreshToken = "protected:refresh-token",
+            AccessTokenExpiresAt = DateTime.UtcNow.AddMinutes(30),
+            ScopesJson = scopesJson,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+        return connection;
+    }
+
+    /// <summary>
+    /// The second Google catalog row: a different plugin id and key from google_drive, the same
+    /// provider.
+    /// </summary>
+    private static Plugin GoogleCalendarPlugin()
+    {
+        return new Plugin
+        {
+            Id = CalendarPluginId,
+            PluginKey = GoogleCalendarKey,
+            Label = "Google Calendar",
+            Description = "List events on your Google Calendar and create new ones.",
+            Provider = PluginConstants.Providers.Google,
+            IsActive = true,
+            RequiredScopesJson = """["https://www.googleapis.com/auth/calendar.events"]""",
+            ToolsJson = """
+                [
+                  {
+                    "name": "google_calendar_list_events",
+                    "pluginKey": "google_calendar",
+                    "label": "List Google Calendar events",
+                    "description": "List events on a Google Calendar.",
+                    "effect": "read",
+                    "requiredScopes": ["https://www.googleapis.com/auth/calendar.events"],
                     "parameters": { "type": "object", "properties": {} }
                   }
                 ]

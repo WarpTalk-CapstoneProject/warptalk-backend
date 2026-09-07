@@ -16,7 +16,16 @@ public class PluginConnectionServiceTests
     private static readonly Guid UserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid PluginId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
+    private static readonly Guid CalendarPluginId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+    private static readonly Guid MeetPluginId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+    private static readonly Guid RemotePluginId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+
+    // Three catalog rows, one provider. PluginId above belongs to google_drive, which is the row
+    // these fixtures treat as the one the user first consented through.
     private const string GoogleDriveKey = "google_drive";
+    private const string GoogleCalendarKey = "google_calendar";
+    private const string GoogleMeetKey = "google_meet";
+    private const string RemoteAppKey = "remote_app";
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
@@ -530,13 +539,339 @@ public class PluginConnectionServiceTests
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
+    // ---- WT-646: one grant per provider, one redirect URI per provider ------------------------
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_LooksTheConnectionUpByProvider_NotByPluginId()
+    {
+        // The regression this pins: with the lookup keyed on plugin id, connecting Calendar after
+        // Drive would find nothing, insert a second row, and hit the (user_id, provider) unique
+        // constraint - or, before that constraint existed, quietly split one Google grant in two.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(calendar, ["https://www.googleapis.com/auth/calendar.events"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        await _connectionRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<PluginConnection, bool>>>(predicate =>
+                // The grant obtained through the Drive row is the one Calendar has to find.
+                predicate.Compile().Invoke(new PluginConnection
+                {
+                    UserId = UserId,
+                    PluginId = PluginId,
+                    Provider = PluginConstants.Providers.Google,
+                })
+                // A different provider's grant is not it.
+                && !predicate.Compile().Invoke(new PluginConnection
+                {
+                    UserId = UserId,
+                    PluginId = CalendarPluginId,
+                    Provider = "remote_app",
+                })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_WidensTheExistingGoogleGrant_WhenASecondGooglePluginConnects()
+    {
+        // Drive consented first; the row records that in PluginId. Calendar now consents against
+        // the same Google grant, so this must update that row rather than add a second one - and
+        // must leave PluginId alone, because it claims only "first obtained through".
+        var calendar = GoogleCalendarPlugin();
+        var existing = ConnectedConnection();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(existing);
+        ConfigureExchange(calendar, [
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/calendar.events",
+        ]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        await _connectionRepository.DidNotReceive()
+            .AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+        _connectionRepository.Received(1).Update(existing);
+        Assert.Equal(PluginConstants.Providers.Google, existing.Provider);
+        Assert.Equal(PluginId, existing.PluginId);
+        Assert.Contains("calendar.events", existing.ScopesJson, StringComparison.Ordinal);
+        Assert.Contains("drive.readonly", existing.ScopesJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_StampsTheProvider_WhenItCreatesAConnection()
+    {
+        // provider is NOT NULL with no database default, so a write path that forgets it fails at
+        // runtime, not at compile time. This is the test that notices.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledPlugin(plugin);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(plugin, ["https://www.googleapis.com/auth/drive.readonly"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(connection =>
+                connection.Provider == PluginConstants.Providers.Google
+                && connection.PluginId == PluginId),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_ReportsTheSharedGoogleGrant_ForAGooglePluginThatDidNotStartIt()
+    {
+        // Meet was installed after the user consented through Drive. If this reported
+        // not_connected the tile would offer a connect button for a grant the user already has.
+        var meet = GoogleMeetPlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(meet);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ConnectedConnection());
+
+        var result = await CreateSut().GetStatusAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        await _connectionRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<PluginConnection, bool>>>(predicate =>
+                predicate.Compile().Invoke(new PluginConnection
+                {
+                    UserId = UserId,
+                    PluginId = PluginId,
+                    Provider = PluginConstants.Providers.Google,
+                })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteProviderOAuthCallbackAsync_TakesThePluginKeyFromState()
+    {
+        // The provider-scoped redirect URI has no plugin key in the path. The key rides in the
+        // sealed state - the same arrangement the MCP callback uses - so this asserts the plugin
+        // actually looked up is the one the state named, not the one the URL happened to mention.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(calendar, ["https://www.googleapis.com/auth/calendar.events"]);
+
+        var result = await CreateSut().CompleteProviderOAuthCallbackAsync(
+            PluginConstants.Providers.Google, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(GoogleCalendarKey, result.Value!.PluginKey);
+        await _pluginRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<Plugin, bool>>>(predicate =>
+                predicate.Compile().Invoke(new Plugin { PluginKey = GoogleCalendarKey, IsActive = true })
+                && !predicate.Compile().Invoke(new Plugin { PluginKey = GoogleDriveKey, IsActive = true })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteProviderOAuthCallbackAsync_RejectsAStateForAnotherProvider()
+    {
+        // A state minted for an MCP plugin must not be redeemable on Google's callback: the code
+        // that came back was issued by a different authorization server.
+        var remote = RemoteMcpPlugin();
+        ConfigureInstalledPlugin(remote, RemoteAppKey);
+
+        var result = await CreateSut().CompleteProviderOAuthCallbackAsync(
+            PluginConstants.Providers.Google, "oauth-code", "state-token");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        // Same opaque message the forged-state path returns, so a prober cannot tell the two apart.
+        Assert.Equal("Invalid OAuth state.", result.Error);
+        await _oauthClient.DidNotReceive().ExchangeCodeAsync(
+            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteProviderOAuthCallbackAsync_RejectsAnUnreadableState()
+    {
+        _stateProtector.Unprotect("tampered-state").Returns(_ => throw new InvalidOperationException("bad payload"));
+
+        var result = await CreateSut().CompleteProviderOAuthCallbackAsync(
+            PluginConstants.Providers.Google, "oauth-code", "tampered-state");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        await _oauthClient.DidNotReceive().ExchangeCodeAsync(
+            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_StillCompletesOnTheLegacyPerPluginPath()
+    {
+        // Kept working on purpose: consents already in flight when the provider-scoped redirect URI
+        // ships come back here, and so does any environment whose Google Cloud Console entry has
+        // not been updated yet.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledPlugin(plugin);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(plugin, ["https://www.googleapis.com/auth/drive.readonly"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(connection => connection.Provider == PluginConstants.Providers.Google),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_StillRejectsAPathKeyThatDisagreesWithState()
+    {
+        // The legacy path carries the key twice, and the cross-check that stops them disagreeing
+        // has to survive the addition of the provider-scoped route beside it.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledPlugin(plugin);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        await _oauthClient.DidNotReceive().ExchangeCodeAsync(
+            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DisconnectAsync_EndsTheProviderGrant_NotJustTheOnePluginsView()
+    {
+        // Disconnecting Meet ends the Google grant that Drive and Calendar also ride on. Google
+        // revokes per grant, so the alternative would leave rows we believe are healthy pointing
+        // at a dead grant.
+        var meet = GoogleMeetPlugin();
+        var connection = ConnectedConnection();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(meet);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var result = await CreateSut().DisconnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        await _connectionRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<PluginConnection, bool>>>(predicate =>
+                predicate.Compile().Invoke(new PluginConnection
+                {
+                    UserId = UserId,
+                    PluginId = PluginId,
+                    Provider = PluginConstants.Providers.Google,
+                })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    private void ConfigureExchange(Plugin plugin, string[] grantedScopes)
+    {
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(
+                "google-user-id",
+                "user@example.com",
+                grantedScopes,
+                "access-token",
+                "refresh-token",
+                DateTime.UtcNow.AddHours(1)));
+    }
+
+    private static Plugin GoogleCalendarPlugin() =>
+        GooglePlugin(CalendarPluginId, GoogleCalendarKey, "Google Calendar", "https://www.googleapis.com/auth/calendar.events");
+
+    private static Plugin GoogleMeetPlugin() =>
+        GooglePlugin(MeetPluginId, GoogleMeetKey, "Google Meet", "https://www.googleapis.com/auth/calendar.events");
+
+    private static Plugin GooglePlugin(Guid id, string key, string label, string scope)
+    {
+        return new Plugin
+        {
+            Id = id,
+            PluginKey = key,
+            Label = label,
+            Description = label,
+            Provider = PluginConstants.Providers.Google,
+            IsActive = true,
+            RequiredScopesJson = $"[\"{scope}\"]",
+            ToolsJson = "[]",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+    }
+
+    private static Plugin RemoteMcpPlugin()
+    {
+        return new Plugin
+        {
+            Id = RemotePluginId,
+            PluginKey = RemoteAppKey,
+            Label = "Remote App",
+            Description = "A remote MCP server.",
+            // Its own provider, so its grant can never be confused with Google's.
+            Provider = RemoteAppKey,
+            Kind = PluginConstants.PluginKind.Mcp,
+            McpServerUrl = "https://remote.test/mcp",
+            IsActive = true,
+            RequiredScopesJson = "[]",
+            ToolsJson = "[]",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+    }
+
     private static PluginConnection ConnectedConnection()
     {
         return new PluginConnection
         {
             Id = Guid.NewGuid(),
             UserId = UserId,
+            // Obtained through google_drive; serves every Google row from here on.
             PluginId = PluginId,
+            Provider = PluginConstants.Providers.Google,
             Status = PluginConstants.ConnectionStatus.Connected,
             EncryptedAccessToken = "protected:stale-access-token",
             EncryptedRefreshToken = "protected:refresh-token",
@@ -547,10 +882,18 @@ public class PluginConnectionServiceTests
         };
     }
 
-    private void ConfigureInstalledPlugin(Plugin plugin)
+    private void ConfigureInstalledPlugin(Plugin plugin) =>
+        ConfigureInstalledPlugin(plugin, GoogleDriveKey);
+
+    /// <param name="statePluginKey">
+    /// The key sealed into the OAuth state. Separate from the plugin argument on purpose: the
+    /// provider-scoped callback has no key in its path, so the state is the only thing that says
+    /// which plugin the flow was for, and a test has to be able to disagree with it.
+    /// </param>
+    private void ConfigureInstalledPlugin(Plugin plugin, string statePluginKey)
     {
         _stateProtector.Unprotect("state-token")
-            .Returns(new PluginOAuthStateDto(UserId, GoogleDriveKey));
+            .Returns(new PluginOAuthStateDto(UserId, statePluginKey));
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),

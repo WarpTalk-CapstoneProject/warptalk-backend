@@ -184,6 +184,58 @@ public class GoogleWorkspaceOAuthClientTests
         Assert.Equal("token=stored-refresh-token", capturedBody);
     }
 
+    // ---- WT-646: the invariant assertion is on Provider, not on the plugin key ----------------
+
+    [Theory]
+    [InlineData("google_drive")]
+    [InlineData("google_calendar")]
+    [InlineData("google_meet")]
+    public void BuildAuthorizationUrl_ServesEveryGoogleCatalogRow(string pluginKey)
+    {
+        // Before WT-646 this compared the key against 'google_workspace', so after the split all
+        // three of these threw and no Google plugin could be connected at all.
+        var sut = CreateSut(new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))));
+
+        var url = sut.BuildAuthorizationUrl(
+            GooglePlugin(pluginKey),
+            ["https://www.googleapis.com/auth/calendar.events"],
+            "state-token",
+            new PluginOAuthStateDto(Guid.NewGuid(), pluginKey));
+
+        Assert.Contains("state=state-token", url, StringComparison.Ordinal);
+        Assert.Contains("client_id=test-client", url, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExchangeCodeAsync_RefusesAPluginFromAnotherProvider()
+    {
+        // The guard that matters: this client posts to Google's token endpoint with Google's
+        // client secret, so another provider's authorization code must never reach it.
+        var sut = CreateSut(new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))));
+        var foreign = GooglePlugin("remote_app");
+        foreign.Provider = "remote_app";
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            sut.ExchangeCodeAsync(foreign, "code", new PluginOAuthStateDto(Guid.NewGuid(), "remote_app")));
+    }
+
+    private static Plugin GooglePlugin(string pluginKey)
+    {
+        return new Plugin
+        {
+            Id = Guid.NewGuid(),
+            PluginKey = pluginKey,
+            Label = pluginKey,
+            Description = pluginKey,
+            Provider = PluginConstants.Providers.Google,
+            IsActive = true,
+            RequiredScopesJson = "[]",
+            ToolsJson = "[]",
+        };
+    }
+
     private static GoogleWorkspaceOAuthClient CreateSut(HttpClient httpClient)
     {
         return new GoogleWorkspaceOAuthClient(
