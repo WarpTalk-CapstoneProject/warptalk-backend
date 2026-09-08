@@ -229,6 +229,11 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 // because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
 // WorkspaceService — the same two clauses the REST paths enforce.
 builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+// Server-side check of the workspace's allowed-language policy for SetSpeakLanguage and
+// SetListenLanguage. Composes the same two clients for the same reason: the room says which
+// workspace it belongs to, the workspace says which languages it permits. Until this existed the
+// policy was enforced only by the pickers in the web client.
+builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomLanguagePolicy, WarpTalk.Gateway.Services.RoomLanguagePolicy>();
 // WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
 // singleton would also be the wrong lifetime for something that must never cache its answer.
 builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();

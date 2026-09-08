@@ -71,6 +71,15 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             if (string.Equals(transcript.Status, "ARCHIVED", StringComparison.OrdinalIgnoreCase))
                 return Result.Failure("Archived transcripts cannot be corrected.", "BAD_REQUEST");
 
+            // FINALIZED means the host has locked the wording, and until now nothing on the server
+            // said so. `FinalizeTranscriptAsync` set the status, the web hid the editor behind
+            // `canCorrect = canEdit && !isFinalized` — and the API went on accepting corrections
+            // from anyone who called it directly. A lock enforced only by the screen that draws it
+            // is not a lock; it is the same shape as the language policy that was advisory until
+            // the hub started checking it.
+            if (string.Equals(transcript.Status, "FINALIZED", StringComparison.OrdinalIgnoreCase))
+                return Result.Failure("This transcript has been finalized and can no longer be corrected.", "BAD_REQUEST");
+
             if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
                 return Result.Failure("You do not have access to this transcript.", "UNAUTHORIZED");
 
@@ -307,7 +316,20 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             var room = await _roomClient.GetTranslationRoomByIdAsync(
                 new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() },
                 cancellationToken: cancellationToken);
-            if (!Guid.TryParse(room.HostId, out var hostId) || hostId != userId)
+            // The EFFECTIVE host, not the booker.
+            //
+            // This compared `room.HostId`, which is the column that records who created the room
+            // and does not move when the room is handed over. Every host gate inside
+            // TranslationRoomService asks `IsHostedBy` — i.e. `EffectiveHostId` — so after a
+            // transfer this endpoint refused the person the rest of the product calls the host and
+            // still admitted the one who had left. Publish/unpublish, sitting next to Finalize on
+            // the same screen, already used the effective host: two buttons, two answers.
+            //
+            // Falls back to `hostId` when the field is empty, which is what an older
+            // TranslationRoomService sends — that restores exactly the previous behaviour rather
+            // than refusing every host.
+            var effectiveHost = string.IsNullOrEmpty(room.EffectiveHostId) ? room.HostId : room.EffectiveHostId;
+            if (!Guid.TryParse(effectiveHost, out var hostId) || hostId != userId)
                 return Result.Failure("Only the meeting host can finalize the transcript.", "UNAUTHORIZED");
 
             if (string.Equals(transcript.Status, "ARCHIVED", StringComparison.OrdinalIgnoreCase))

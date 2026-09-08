@@ -30,7 +30,7 @@ public class MeetingHistoryService : IMeetingHistoryService
         // Build base query: rooms where user is creator or participant
         var query = _unitOfWork.MeetingRoomRepository.Query()
             .Where(r => r.CreatedBy == userId ||
-                         r.MeetingParticipants.Any(p => p.UserId == userId));
+                         r.RtcStreamParticipants.Any(p => p.UserId == userId));
 
         // Apply status filter
         if (!string.IsNullOrWhiteSpace(request.Status))
@@ -67,7 +67,7 @@ public class MeetingHistoryService : IMeetingHistoryService
         var roomIds = roomEntities.Select(r => r.Id).ToList();
 
         // Batch load participants
-        var participantsByRoom = _unitOfWork.MeetingParticipantRepository.Query()
+        var participantsByRoom = _unitOfWork.RtcStreamParticipantRepository.Query()
             .Where(p => roomIds.Contains(p.MeetingRoomId))
             .ToList()
             .GroupBy(p => p.MeetingRoomId)
@@ -114,13 +114,13 @@ public class MeetingHistoryService : IMeetingHistoryService
             return Result.Failure<MeetingRoomDetailDto>("Room not found.", "NOT_FOUND");
 
         // Check access: must be creator or participant
-        var isParticipant = await _unitOfWork.MeetingParticipantRepository
+        var isParticipant = await _unitOfWork.RtcStreamParticipantRepository
             .AnyAsync(p => p.MeetingRoomId == roomId && p.UserId == userId, ct);
 
         if (room.CreatedBy != userId && !isParticipant)
             return Result.Failure<MeetingRoomDetailDto>("Not authorized to view this room.", "FORBIDDEN");
 
-        var participants = await _unitOfWork.MeetingParticipantRepository
+        var participants = await _unitOfWork.RtcStreamParticipantRepository
             .FindAsync(p => p.MeetingRoomId == roomId, ct: ct);
 
         var messages = await _unitOfWork.MeetingChatMessageRepository
