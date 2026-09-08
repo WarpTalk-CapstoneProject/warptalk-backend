@@ -12,13 +12,13 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Helpers;
 
 public static class DocumentSecurityGuardrailHelper
 {
+    /// <summary>
+    /// Kept as the name this service's consumers already call; the rule itself now lives in
+    /// <see cref="WorkspaceDocumentExtensions.IsIndexEligible"/> so Application can ask the same
+    /// question. Two copies of an index gate is how one of them ends up missing a condition.
+    /// </summary>
     public static bool HasBasicIndexEligibility(WorkspaceDocument document)
-    {
-        return document.IsAiAllowed
-            && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
-            && !document.IsRestricted();
-    }
+        => document.IsIndexEligible();
 
     public static async Task MarkSkippedAsync(
         WorkspaceDocument document,

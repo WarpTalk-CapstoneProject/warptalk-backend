@@ -90,13 +90,40 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
         var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
 
+        // 2. Evaluate explicit policies with hierarchy propagation
+        var subjectPolicies = policies.Where(p =>
+            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase) && p.SubjectId == userId) ||
+            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, roleName, StringComparison.OrdinalIgnoreCase)) ||
+            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, member.MembershipType, StringComparison.OrdinalIgnoreCase))
+        ).ToList();
+
+        // Build sets of denied and allowed permissions for this subject
+        var deniedPermissions = subjectPolicies
+            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectDeny, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Permission.ToLowerInvariant())
+            .ToHashSet();
+
+        var allowedPermissions = subjectPolicies
+            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Permission.ToLowerInvariant())
+            .ToHashSet();
+
         // The uploader must retain visibility after an Owner/Admin approves the document.
         // This is intentionally limited to View: download and AI retrieval keep their
         // independent status/security requirements below.
-        if (isDocOwner && string.Equals(
-                requiredPermission,
-                WorkspaceDocumentPermissions.View,
-                StringComparison.OrdinalIgnoreCase))
+        //
+        // AN EXPLICIT DENY OUTRANKS IT, and that is why the policy matching above was lifted to
+        // the top of this method. This shortcut used to sit above the policy block entirely, so a
+        // DENY on `view` aimed at the uploader was evaluated for everyone EXCEPT the one person
+        // it named. The panel showed them as Blocked and they went on reading the document.
+        //
+        // Ownership is an implicit grant; a DENY is a decision somebody made on purpose, and the
+        // rest of this method already resolves deny before allow. Recoverable, too:
+        // CanManagePoliciesAsync answers from role and ownership and never reads policies, so the
+        // document owner can still delete the rule that locked them out.
+        if (isDocOwner
+            && string.Equals(requiredPermission, WorkspaceDocumentPermissions.View, StringComparison.OrdinalIgnoreCase)
+            && !deniedPermissions.Contains(WorkspaceDocumentPermissions.View))
         {
             return Result.Success();
         }
@@ -156,24 +183,7 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             }
         }
 
-        // 2. Evaluate explicit policies with hierarchy propagation
-        var subjectPolicies = policies.Where(p =>
-            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase) && p.SubjectId == userId) ||
-            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, roleName, StringComparison.OrdinalIgnoreCase)) ||
-            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, member.MembershipType, StringComparison.OrdinalIgnoreCase))
-        ).ToList();
-
-        // Build sets of denied and allowed permissions for this subject
-        var deniedPermissions = subjectPolicies
-            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectDeny, StringComparison.OrdinalIgnoreCase))
-            .Select(p => p.Permission.ToLowerInvariant())
-            .ToHashSet();
-
-        var allowedPermissions = subjectPolicies
-            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase))
-            .Select(p => p.Permission.ToLowerInvariant())
-            .ToHashSet();
-
+        // 2. Explicit policies, matched above — deny first, then allow, then the defaults.
         // 2a. Determine if denied by hierarchical rules
         bool isDenied = false;
         if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.View, StringComparison.OrdinalIgnoreCase))
