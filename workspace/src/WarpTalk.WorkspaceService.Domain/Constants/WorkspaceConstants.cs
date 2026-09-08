@@ -28,12 +28,23 @@ public static class WorkspaceConstants
     public const int WorkspaceNameMaxLength = 150;
 
     /// <summary>
-    /// workspaces.slug is varchar(100).
+    /// 63, which is NOT the width of the column — workspaces.slug is varchar(100).
+    ///
+    /// The column is the wrong number to bound this by, and picking it was a mistake worth
+    /// recording. A slug is a URL segment, and the web client routes on
+    /// `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$` — a DNS label, so 63 characters. A slug of 64 to
+    /// 100 fits the column perfectly and then fails normalizeWorkspaceSlug, which returns null,
+    /// and [workspaceSlug]/layout.tsx redirects the owner away from their own workspace.
+    ///
+    /// That was true before this guard existed: a 70-character name has always produced a
+    /// workspace that could be created and never opened. Bounding by the column would have left it
+    /// that way, which is why the number here follows the narrowest rule in the system rather than
+    /// the widest.
     ///
     /// Tighter than the name it is derived from, which is the trap: a name comfortably inside 150
-    /// produces a slug past 100, so the slug overflows first and the failure names neither.
+    /// produces a slug past 63, so the slug is what breaks and the failure names neither.
     /// </summary>
-    public const int WorkspaceSlugMaxLength = 100;
+    public const int WorkspaceSlugMaxLength = 63;
 
     /// <summary>workspaces.logo_url is varchar(500).</summary>
     public const int WorkspaceLogoUrlMaxLength = 500;

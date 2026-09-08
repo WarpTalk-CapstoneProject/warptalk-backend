@@ -65,6 +65,38 @@ public class SlugGeneratorTests
     /// column holding it is WorkspaceSlugMaxLength (100) — so the slug is what overflows first,
     /// on a name the validator was right to accept.
     /// </summary>
+    /// <summary>
+    /// The number that matters is the web client's, not the column's.
+    ///
+    /// workspaces.slug is varchar(100), so a 64-to-100 character slug stores perfectly — and then
+    /// the web routes on `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`, a DNS label. normalizeWorkspaceSlug
+    /// returns null for anything longer, and the workspace layout redirects its own owner away.
+    /// A workspace that can be created and never opened is worse than one that fails to create.
+    /// </summary>
+    [Fact]
+    public void TheSlugLimit_IsTheOneTheWebCanActuallyRoute()
+    {
+        const int dnsLabelLimit = 63;
+
+        Assert.Equal(dnsLabelLimit, WorkspaceConstants.WorkspaceSlugMaxLength);
+        Assert.True(
+            WorkspaceConstants.WorkspaceSlugMaxLength < 100,
+            "bounding the slug by the varchar(100) column produces workspaces the web cannot open");
+    }
+
+    [Fact]
+    public void AGeneratedSlug_MatchesTheWebClientsRoutingPattern()
+    {
+        // The same expression src/lib/workspace/workspace-slug.ts uses. If a generated slug fails
+        // this, the workspace exists and nobody can reach it.
+        var routable = new System.Text.RegularExpressions.Regex(
+            "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
+
+        var slug = SlugHelper.GenerateSlug(new string('a', WorkspaceConstants.WorkspaceNameMaxLength));
+
+        Assert.Matches(routable, slug);
+    }
+
     [Fact]
     public void GenerateSlug_ShouldNeverExceedTheColumnItIsStoredIn()
     {
