@@ -13,27 +13,34 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
 {
     private readonly IPluginProviderResolver _providerResolver;
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IWorkspacePluginPolicyClient _workspacePluginPolicyClient;
+    private readonly IWorkspacePluginGuard _workspacePluginGuard;
     private readonly IPluginTokenRefresher _tokenRefresher;
     private readonly IMcpConfirmationTokenService _confirmationTokenService;
 
     public McpToolOrchestrator(
         IPluginProviderResolver providerResolver,
         IUnitOfWork unitOfWork,
-        IWorkspacePluginPolicyClient workspacePluginPolicyClient,
+        IWorkspacePluginGuard workspacePluginGuard,
         IPluginTokenRefresher tokenRefresher,
         IMcpConfirmationTokenService confirmationTokenService)
     {
         _providerResolver = providerResolver;
         _unitOfWork = unitOfWork;
-        _workspacePluginPolicyClient = workspacePluginPolicyClient;
+        _workspacePluginGuard = workspacePluginGuard;
         _tokenRefresher = tokenRefresher;
         _confirmationTokenService = confirmationTokenService;
     }
 
     public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(Guid userId, Guid? workspaceId, CancellationToken ct = default)
     {
-        if (workspaceId.HasValue && !await _workspacePluginPolicyClient.AllowsPluginUsageAsync(workspaceId.Value, ct))
+        // Answered for the whole list at once: the workspace either permits plugins here or it
+        // does not, so there is nothing to decide per plugin.
+        //
+        // An empty list, not a refusal. This is what WarpBot may reach for in this conversation,
+        // so in a workspace with plugins off the model never learns the tools exist and never
+        // proposes an action that would be refused downstream.
+        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        if (!permitted.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
@@ -63,14 +70,20 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (tool == null)
             return Result.Failure<McpToolExecutionResult>("Unknown MCP tool.", PluginConstants.ErrorCodes.UnknownTool);
 
-        if (request.WorkspaceId.HasValue && !await _workspacePluginPolicyClient.AllowsPluginUsageAsync(request.WorkspaceId.Value, ct))
+        // The last gate a plugin in a workspace that has turned plugins off has to pass.
+        // Installation and connection rows are deliberately left alone when an admin tightens the
+        // policy - see PluginInstallationService.ListCatalogAsync - so this is what actually stops
+        // the tool running, and it is checked on every call rather than at install time because
+        // the policy can change between the two.
+        var policyCheck = await _workspacePluginGuard.CanUsePluginsAsync(request.WorkspaceId, ct);
+        if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,
                 userId,
                 plugin.Id,
                 request,
-                PluginConstants.ErrorCodes.PermissionDenied,
-                "Workspace settings do not allow personal plugins in WarpBot.",
+                policyCheck.ErrorCode!,
+                policyCheck.Error!,
                 ct);
 
         var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
@@ -82,9 +95,12 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (installation == null)
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.PluginNotInstalled, "Plugin is not installed.", ct);
 
+        // The grant is the provider's, not the plugin's. The per-tool scope check below is what
+        // still separates the products: a Drive tool needs drive.readonly on this connection
+        // whether the user consented through the Drive tile or the Calendar one.
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == userId
-                && c.PluginId == plugin.Id,
+                && c.Provider == plugin.Provider,
             ct: ct);
 
         if (connection == null || connection.Status != PluginConstants.ConnectionStatus.Connected)

@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
@@ -7,6 +10,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 
@@ -17,6 +21,48 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 public class WorkspacesController : ControllerBase
 {
     private readonly IWorkspaceService _workspaceService;
+
+    /// <summary>
+    /// The settings a PATCH may write. WT-646.
+    ///
+    /// PatchWorkspaceSettings merges the caller's JsonObject key-by-key into the current settings
+    /// document, and until this allowlist existed it merged ANY key — including the four computed,
+    /// read-only fields the GET response carries back out (maxActiveRoomsCeiling and its Source,
+    /// maxLanguagesCeiling and its Source). Those are the plan's ceilings, resolved from billing
+    /// entitlements on every read; they are not settings and there is no honest way to set them.
+    ///
+    /// They were never actually PERSISTED — WorkspaceSettingsDto.ToConfiguration enumerates the
+    /// fields it copies and WorkspaceConfiguration has no ceiling properties, so a forged ceiling
+    /// died at the mapper. What it did reach was the 200 response body, which is the merged DTO:
+    /// a client could PATCH maxActiveRoomsCeiling: 999 and be told, by the server, that its
+    /// ceiling was 999. Cosmetic today, and one refactor away from not being — the allowlist is
+    /// what stops the next person who makes that mapper reflective from opening a real hole.
+    ///
+    /// An ALLOWLIST rather than a denylist of the four known computed keys, so a field added to
+    /// the DTO in future is unwritable until someone deliberately lists it here.
+    /// </summary>
+    private static readonly HashSet<string> PatchableSettingsKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "defaultLanguage",
+        "timezone",
+        "allowedTargetLanguages",
+        "voiceCloningEnabled",
+        "maxActiveRooms",
+        "artifactRetentionDays",
+        // A display mirror of workspace_verified_domains rather than the record itself, but it
+        // stays patchable: clients read-modify-write the whole document, and the service already
+        // decides what a change to it is allowed to mean.
+        "verifiedDomains",
+        "allowExternalCollaboration",
+        // Derived from the verified-domain list, and UpdateWorkspaceSettingsAsync rejects a
+        // DIFFERENT value rather than the field's presence. It must stay patchable for exactly
+        // that reason — a client echoing back what GET gave it must not be an error.
+        "requireVerifiedDomainForInternal",
+        "aiUsagePolicy",
+        "isProfanityFilterEnabled",
+        "invitationExpiryDays",
+        "allowAnyPlugins"
+    };
 
     public WorkspacesController(IWorkspaceService workspaceService)
     {
@@ -164,6 +210,24 @@ public class WorkspacesController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
         if (patch == null) return BadRequest(new ApiErrorResponse("Invalid settings payload.", ErrorCodes.ValidationError));
+
+        // Refuse before reading anything. An unwritable key is a malformed request, not a
+        // permission question, so it does not need the workspace loaded to answer — and naming the
+        // keys beats the old behaviour of merging them and discarding them further down, which was
+        // indistinguishable from success.
+        var rejectedKeys = patch
+            .Select(property => property.Key)
+            .Where(key => !PatchableSettingsKeys.Contains(key))
+            .ToList();
+        if (rejectedKeys.Count > 0)
+        {
+            return BadRequest(new ApiErrorResponse(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    WorkspaceConstants.Errors.SettingsPatchKeyNotWritableFormat,
+                    string.Join(", ", rejectedKeys)),
+                ErrorCodes.ValidationError));
+        }
 
         var current = await _workspaceService.GetWorkspaceSettingsAsync(id, userId.Value, ct);
         if (!current.IsSuccess)

@@ -17,11 +17,16 @@ namespace WarpTalk.AssistantService.Infrastructure.OAuth;
 /// keeps a hand-written client instead of going through the generic MCP path.
 /// </summary>
 /// <remarks>
-/// The <c>PluginKey</c> checks in every method are <em>not</em> dispatch - <c>IPluginProviderResolver</c>
+/// The <c>Provider</c> checks in every method are <em>not</em> dispatch - <c>IPluginProviderResolver</c>
 /// does that, keyed on <c>Plugin.Kind</c>. They are invariant assertions, and they must stay: this
 /// client reads its endpoints and client credentials from <c>GoogleWorkspaceOAuthOptions</c>, so if a
 /// second <c>native</c> plugin were ever routed here it would silently send that provider's
 /// authorization code to Google's token endpoint. Failing loudly is the only safe answer.
+/// <para>
+/// They assert on <c>Provider</c> rather than <c>PluginKey</c> because google_drive,
+/// google_calendar and google_meet are three rows served by this one client, and a key comparison
+/// would now reject all three.
+/// </para>
 /// </remarks>
 public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
 {
@@ -48,11 +53,14 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         string state,
         PluginOAuthStateDto flowState)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         var query = HttpUtility.ParseQueryString(string.Empty);
         query["client_id"] = RequireConfigured(_options.ClientId, "ClientId", "GOOGLE_WORKSPACE_CLIENT_ID");
+        // Always the configured URI: a flow this build starts is a flow that comes back on the
+        // provider-scoped route. The legacy URI exists only for the other direction - finishing a
+        // consent an older build started - and so has no business in an authorization request.
         query["redirect_uri"] = _options.RedirectUri;
         query["response_type"] = "code";
         query["scope"] = string.Join(" ", IdentityScopes.Concat(scopes).Distinct(StringComparer.Ordinal));
@@ -67,12 +75,13 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         Plugin plugin,
         string code,
         PluginOAuthStateDto flowState,
+        PluginOAuthCallbackRoute route = PluginOAuthCallbackRoute.Configured,
         CancellationToken ct = default)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
-        var response = await _httpClient.PostAsync(
+        using var response = await _httpClient.PostAsync(
             _options.TokenEndpoint,
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -80,10 +89,21 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
                 ["client_secret"] = RequireConfigured(_options.ClientSecret, "ClientSecret", "GOOGLE_WORKSPACE_CLIENT_SECRET"),
                 ["code"] = code,
                 ["grant_type"] = "authorization_code",
-                ["redirect_uri"] = _options.RedirectUri,
+                ["redirect_uri"] = RedirectUriFor(route),
             }),
             ct);
-        response.EnsureSuccessStatusCode();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            // The body is the only thing that says which of the many 400s this is -
+            // redirect_uri_mismatch, invalid_grant on a code already spent, invalid_client. It goes
+            // in the exception so the caller can log it; a bare status code sends whoever reads the
+            // logs back to Google's documentation with nothing to look up.
+            var body = await ReadBodySafelyAsync(response, ct);
+            throw new InvalidOperationException(
+                $"Google refused the authorization code for plugin '{plugin.PluginKey}' with "
+                    + $"{(int)response.StatusCode}: {Summarise(body)}");
+        }
 
         var token = await response.Content.ReadFromJsonAsync<GoogleTokenResponse>(cancellationToken: ct)
             ?? throw new InvalidOperationException("Google OAuth token response was empty.");
@@ -109,8 +129,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         string refreshToken,
         CancellationToken ct = default)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         if (string.IsNullOrWhiteSpace(refreshToken))
             throw new ArgumentException("A refresh token is required to refresh Google OAuth credentials.", nameof(refreshToken));
@@ -181,8 +201,8 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         string token,
         CancellationToken ct = default)
     {
-        if (!string.Equals(plugin.PluginKey, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
-            throw new NotSupportedException($"OAuth is not configured for plugin '{plugin.PluginKey}'.");
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
+            throw new NotSupportedException($"OAuth is not configured for provider '{plugin.Provider}'.");
 
         if (string.IsNullOrWhiteSpace(token))
             return;
@@ -196,6 +216,39 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
             ct);
         response.EnsureSuccessStatusCode();
     }
+
+    /// <summary>
+    /// The redirect URI to repeat on the token request: whichever one the browser actually came
+    /// back on.
+    /// </summary>
+    /// <remarks>
+    /// Google matches this against the URI the authorization request carried, so sending the
+    /// configured one for a consent that started on the retired per-plugin path is an automatic
+    /// <c>redirect_uri_mismatch</c> - a 400 at the very last step of a flow the user has already
+    /// completed. Both URIs therefore have to stay registered in Google Cloud Console for as long
+    /// as <see cref="GoogleWorkspaceOAuthOptions.LegacyRedirectUri"/> is set; see the operator note
+    /// there for when to remove them.
+    /// </remarks>
+    private string RedirectUriFor(PluginOAuthCallbackRoute route) =>
+        route switch
+        {
+            PluginOAuthCallbackRoute.LegacyPerPlugin => string.IsNullOrWhiteSpace(_options.LegacyRedirectUri)
+                // Cleared on purpose once the last old consent drained. Failing here is the honest
+                // answer: exchanging with the current URI would fail at Google anyway, and would
+                // report it as the provider's fault rather than as this deployment's decision.
+                ? throw new InvalidOperationException(
+                    "A callback arrived on the retired per-plugin OAuth path, but "
+                        + "Plugins__GoogleWorkspace__OAuth__LegacyRedirectUri is empty, so there is no URI to "
+                        + "exchange it with. Reconnect the plugin to start a fresh consent.")
+                : _options.LegacyRedirectUri,
+            _ => _options.RedirectUri,
+        };
+
+    /// <summary>Bounded so a provider's error page cannot fill a log line.</summary>
+    private static string Summarise(string? body) =>
+        string.IsNullOrWhiteSpace(body) ? "(no body)"
+            : body.Length <= 300 ? body
+            : body[..300] + "...";
 
     /// <summary>
     /// The MCP client gets its credentials from the plugin row, so <c>Require</c> there points at

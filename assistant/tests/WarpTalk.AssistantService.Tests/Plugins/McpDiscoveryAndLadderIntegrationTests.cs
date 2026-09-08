@@ -31,7 +31,11 @@ public class McpDiscoveryAndLadderIntegrationTests : IAsyncLifetime
 
     /// <summary>Flipped per test to model what a given authorization server advertises.</summary>
     private bool _advertiseCimd = true;
-    private bool _advertiseRegistration;
+    // Explicitly false rather than left to the default: no test in this class currently flips it,
+    // so without an initializer the compiler reports CS0649 and --warnaserror fails the build.
+    // The value is load-bearing (read where the registration endpoint is advertised), and a server
+    // that offers CIMD is exactly the case where DCR should not be reached.
+    private bool _advertiseRegistration = false;
     private bool _advertisePkce = true;
     private bool _answerWwwAuthenticate;
     private bool _publishProtectedResourceMetadata = true;

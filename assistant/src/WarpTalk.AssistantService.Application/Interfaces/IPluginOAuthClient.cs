@@ -3,6 +3,32 @@ using WarpTalk.AssistantService.Domain.Entities;
 
 namespace WarpTalk.AssistantService.Application.Interfaces;
 
+/// <summary>
+/// Which redirect URI a callback came back on, and therefore which one the token exchange has to
+/// repeat.
+/// </summary>
+/// <remarks>
+/// An authorization server matches <c>redirect_uri</c> on the token request against the one the
+/// authorization request carried, so this is not a routing detail - it decides whether the exchange
+/// succeeds. Application knows the route the browser arrived on; only Infrastructure knows what URI
+/// that route is configured as, which is why this crosses the boundary as an intent rather than as
+/// a URI.
+/// </remarks>
+public enum PluginOAuthCallbackRoute
+{
+    /// <summary>
+    /// The redirect URI this deployment is configured with: provider-scoped for a native plugin,
+    /// the one shared URI for every MCP plugin. Every flow started by this build uses it.
+    /// </summary>
+    Configured,
+
+    /// <summary>
+    /// The retired per-plugin path, <c>{pluginKey}/oauth/callback</c>. Only a consent authorized
+    /// before the provider-scoped URI shipped can come back on it.
+    /// </summary>
+    LegacyPerPlugin,
+}
+
 public interface IPluginOAuthClient
 {
     /// <summary>
@@ -36,10 +62,17 @@ public interface IPluginOAuthClient
     /// The unsealed state from the callback, carrying whatever <see cref="PrepareState"/> stored -
     /// the PKCE verifier the token request has to prove possession with.
     /// </param>
+    /// <param name="route">
+    /// The redirect URI the response came back on. It has to be repeated on the token request or
+    /// the provider answers <c>redirect_uri_mismatch</c>, so a callback that arrived on the retired
+    /// per-plugin path must exchange with the retired URI - not with whatever this deployment is
+    /// configured with now.
+    /// </param>
     Task<PluginOAuthTokenDto> ExchangeCodeAsync(
         Plugin plugin,
         string code,
         PluginOAuthStateDto flowState,
+        PluginOAuthCallbackRoute route = PluginOAuthCallbackRoute.Configured,
         CancellationToken ct = default);
 
     /// <summary>
