@@ -85,7 +85,7 @@ public class MinutesTemplateChoiceTests
     {
         using var stream = new MemoryStream(docx);
         using var document = WordprocessingDocument.Open(stream, false);
-        return document.MainDocumentPart!.Document.Body!.InnerText;
+        return document.MainDocumentPart!.Document!.Body!.InnerText;
     }
 
     [Fact]
@@ -316,7 +316,7 @@ public class MinutesTemplateChoiceTests
         {
             using var stream = new MemoryStream(docx);
             using var document = WordprocessingDocument.Open(stream, false);
-            return document.MainDocumentPart!.Document.Body!
+            return document.MainDocumentPart!.Document!.Body!
                 .Elements<SectionProperties>().Single()
                 .Elements<PageMargin>().Single();
         }
