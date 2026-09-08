@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -66,7 +67,9 @@ public class RedisVoicePreviewQueue : IVoicePreviewQueue
             // page say the voice could not be rendered instead of spinning until the timeout.
             if (string.IsNullOrEmpty(envelope.Audio))
             {
-                return new VoicePreview(null, envelope.Error ?? "The preview could not be rendered.");
+                // Both halves are carried faithfully: the code decides what the caller is told,
+                // the message is for the log. Neither is interpreted here — this is transport.
+                return new VoicePreview(null, envelope.Error, envelope.ErrorCode);
             }
 
             return new VoicePreview(Convert.FromBase64String(envelope.Audio), null);
@@ -137,7 +140,10 @@ public class RedisVoicePreviewQueue : IVoicePreviewQueue
     /// The shape the AI side writes. Base64 rather than a second binary key, so a failure can be
     /// named in the same value instead of being indistinguishable from nothing written yet.
     /// </summary>
-    private sealed record PreviewEnvelope(string? Audio, string? Error);
+    private sealed record PreviewEnvelope(
+        string? Audio,
+        string? Error,
+        [property: JsonPropertyName("error_code")] string? ErrorCode);
 }
 
 /// <summary>

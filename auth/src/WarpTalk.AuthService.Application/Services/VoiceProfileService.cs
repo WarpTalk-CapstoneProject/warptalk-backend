@@ -266,12 +266,61 @@ public class VoiceProfileService : IVoiceProfileService
     /// as an empty success — a play button that silently plays nothing is the state this whole
     /// feature exists to remove.
     /// </summary>
-    private static Result<byte[]> AsResult(VoicePreview preview) =>
-        preview.Audio is { Length: > 0 }
-            ? Result.Success(preview.Audio)
-            : Result.Failure<byte[]>(
-                preview.Error ?? "The preview could not be rendered.",
-                ErrorCodes.InvalidState);
+    private static Result<byte[]> AsResult(VoicePreview preview)
+    {
+        if (preview.Audio is { Length: > 0 })
+        {
+            return Result.Success(preview.Audio);
+        }
+
+        var (message, code) = PreviewFailure(preview.ErrorCode);
+        return Result.Failure<byte[]>(message, code);
+    }
+
+    /// <summary>
+    /// What to tell somebody whose preview did not render.
+    ///
+    /// The provider's own wording is deliberately NOT used. This used to return
+    /// <c>preview.Error</c> verbatim, which meant a Cartesia SDK exception went out over the wire
+    /// to a play button:
+    ///
+    ///     "Error code: 404 - {'error_code': 'voice_not_found', 'message': 'The requested voice
+    ///      was not found.', 'title': 'Voice not found', 'request_id': 'e9d42fe9-…'}"
+    ///
+    /// The worker truncated that to 200 characters before sending it, under a comment correctly
+    /// observing that a stack trace is not a message for a person — a shorter stack trace is
+    /// still a stack trace. It now sends a CODE instead, and the sentence is chosen here.
+    ///
+    /// An unrecognised or absent code falls back to the generic line rather than to the
+    /// provider's text, which is the whole point: a message nobody has written for this audience
+    /// must never reach it, including from a worker version this build has not seen.
+    /// </summary>
+    /// <remarks>
+    /// The CODE is chosen here too, not just the sentence. Answering every one of these with
+    /// InvalidState would reproduce WT-649's actual complaint one branch over: a provider we
+    /// cannot reach is not a voice in a bad state, and a client keying off the code would read
+    /// "something is wrong with this voice" when the honest answer is "come back shortly".
+    /// </remarks>
+    private static (string Message, string Code) PreviewFailure(string? errorCode) => errorCode switch
+    {
+        // The voice itself is the problem — a state, and InvalidState is the truthful code.
+        "VOICE_NOT_FOUND" =>
+            ("This voice is no longer available from the provider.", ErrorCodes.InvalidState),
+        "VOICE_NOT_RENDERABLE" =>
+            ("This voice cannot be previewed.", ErrorCodes.InvalidState),
+        "NO_AUDIO" =>
+            ("The provider returned no audio for this voice.", ErrorCodes.InvalidState),
+
+        // The provider is the problem. Nothing here says anything about the voice, so neither
+        // should the code.
+        "PROVIDER_BUSY" =>
+            ("Voice previews are busy right now. Try again in a moment.", ErrorCodes.ServiceUnavailable),
+        "PROVIDER_UNREACHABLE" or "PROVIDER_UNAVAILABLE" or "PROVIDER_REJECTED" =>
+            ("Voice previews are unavailable right now.", ErrorCodes.ServiceUnavailable),
+
+        // Unknown: say only what is known. It did not render, and we do not know whose fault.
+        _ => ("The preview could not be rendered.", ErrorCodes.InvalidState),
+    };
 
     /// <summary>
     /// The name to store for a library voice, or null when the catalogue has nothing worth showing.
