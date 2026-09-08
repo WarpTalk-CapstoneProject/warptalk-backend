@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.Shared;
 
 namespace WarpTalk.AuthService.Infrastructure.Clients;
 
@@ -47,7 +48,7 @@ public class RedisVoiceCatalogDirectory : IVoiceCatalogDirectory
             return Array.Empty<VoiceCatalogItemDto>();
         }
 
-        var normalized = NormalizeLanguage(language);
+        var normalized = LanguageTag.Base(language);
 
         try
         {
@@ -82,18 +83,6 @@ public class RedisVoiceCatalogDirectory : IVoiceCatalogDirectory
             _logger.LogWarning(ex, "Voice catalog for {Language} could not be read from Redis.", normalized);
             return Array.Empty<VoiceCatalogItemDto>();
         }
-    }
-
-    /// <summary>
-    /// "vi-VN" → "vi". The AI worker keys the cache by the bare ISO-639-1 code, but callers
-    /// hand us whatever the room/user profile carries, which is often locale-tagged.
-    /// </summary>
-    private static string NormalizeLanguage(string language)
-    {
-        var trimmed = language.Trim();
-        var separator = trimmed.IndexOfAny(new[] { '-', '_' });
-        var bare = separator > 0 ? trimmed[..separator] : trimmed;
-        return bare.ToLowerInvariant();
     }
 
     private sealed record CatalogEntry(string? Id, string? Name, string? Gender);

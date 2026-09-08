@@ -218,7 +218,19 @@ public record TranslationRoomDto(
     string? ExternalProvider = null,
     string? ExternalMeetingUrl = null,
     string? ExternalCalendarEventId = null,
-    string? ExternalCalendarEventUrl = null
+    string? ExternalCalendarEventUrl = null,
+    /// <summary>
+    /// The host AFTER any transfer — <c>TranslationRoom.EffectiveHostId</c>.
+    ///
+    /// <see cref="HostId"/> stays the raw booker because several readers want exactly that, but
+    /// every host-gated decision in this service asks <c>IsHostedBy</c>, which is this. A consumer
+    /// comparing against <c>HostId</c> therefore disagrees with the service about who the host is
+    /// the moment a room is handed over.
+    ///
+    /// Trailing and defaulted so every existing positional construction site still compiles, and
+    /// <c>null</c> is read as "same as the booker" rather than "nobody".
+    /// </summary>
+    Guid? EffectiveHostId = null
 );
 
 public record TranslationRoomListItemDto(

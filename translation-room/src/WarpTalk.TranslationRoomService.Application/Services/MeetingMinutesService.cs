@@ -87,6 +87,31 @@ public class MeetingMinutesService : IMeetingMinutesService
                 MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
         }
 
+        // A DRAFT is not published, and this was the loosest read in the whole record.
+        //
+        // The gate above is RoomReadAccess, which admits the host, every participant AND anyone
+        // merely invited by email who never attended. Applied to a DRAFT that means a machine
+        // wrote a biên bản, nobody checked it, and it was already readable by more people than the
+        // transcript it was drawn from — while the transcript, the summary and the recording all
+        // sat behind the host's Publish switch.
+        //
+        // The document's own lifecycle is the publish act: DRAFT -> IN_REVIEW is a person signing
+        // their name to it, and that is the point at which it becomes somebody's word rather than
+        // a model's output. So the draft stays with the people who can act on it — the host, a
+        // workspace Owner/Admin — and everyone else sees it the moment it is signed.
+        if (string.Equals(minutes.Status, MeetingMinutesConstants.StatusDraft, StringComparison.OrdinalIgnoreCase))
+        {
+            var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+            var canManage = room != null
+                && await RoomHostAccess.HasHostAuthorityAsync(room, userId, _workspaceMemberDirectory, ct);
+
+            if (!canManage)
+            {
+                return Result.Failure<MeetingMinutesDto>(
+                    MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.Forbidden);
+            }
+        }
+
         return Result.Success(await ToDtoAsync(minutes, ct));
     }
 

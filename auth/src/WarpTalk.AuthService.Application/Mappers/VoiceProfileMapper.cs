@@ -22,7 +22,8 @@ public static class VoiceProfileMapper
             profile.EmbeddingRef,
             activeConsent is null ? null : "granted",
             activeConsent?.ConsentTextVersion,
-            activeConsent?.GrantedAt
+            activeConsent?.GrantedAt,
+            profile.Source
         );
     }
 }

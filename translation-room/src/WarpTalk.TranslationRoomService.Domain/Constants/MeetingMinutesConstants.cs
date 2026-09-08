@@ -9,6 +9,16 @@ public static class MeetingMinutesConstants
     public const string ErrorRoomNotFound = "Meeting not found.";
     public const string ErrorMinutesNotFound = "This meeting has no minutes yet.";
     public const string ErrorUnauthorizedRead = "You do not have access to this meeting.";
+
+    /// <summary>
+    /// Said to somebody who may read the MEETING but not its unpublished minutes.
+    ///
+    /// Deliberately not "not found": they can see the meeting, so claiming it has no minutes would
+    /// be a lie they can catch. It names who is holding it and what changes, which is the same
+    /// shape ArtifactAccessHelper.DescribeArtifactDenial uses for the record.
+    /// </summary>
+    public const string ErrorMinutesNotPublished =
+        "These minutes are still a draft. They become readable once the host or the secretary signs them.";
     public const string ErrorUnauthorizedManage = "Only the meeting host can draw up or sign the minutes.";
     public const string ErrorMeetingNotEnded = "Minutes can only be drawn up once the meeting has ended.";
     public const string ErrorApprovedIsImmutable =

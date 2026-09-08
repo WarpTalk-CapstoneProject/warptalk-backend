@@ -10,6 +10,7 @@ using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Services;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
@@ -530,5 +531,129 @@ public class VoiceProfileServiceTests
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
         await _storage.DidNotReceive().DeleteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>A voice this person actually recorded, once its clone has finished.</summary>
+    private static VoiceProfile OwnClonedUpload(Guid userId, string language, string voiceId) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = userId,
+        DisplayName = "My presenting voice",
+        Language = language,
+        // The whole trap: a finished upload carries the SAME provider as a library pick, because
+        // CollectFinishedClonesAsync writes `outcome.Provider ?? "cartesia"` and a clone lives in
+        // the Cartesia account too.
+        Provider = "cartesia",
+        EmbeddingRef = voiceId,
+        Source = VoiceProfileSources.Upload,
+        Status = "active",
+        IsActive = true,
+        VoiceSamples = new List<VoiceSample>(),
+    };
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldNameThePickFromTheCatalog()
+    {
+        // The catalogue is a TTL'd cache filled by the AI worker's first synthesis into a
+        // language, so it is routinely empty later — but it is guaranteed warm HERE, because the
+        // person is choosing from a list they can see. Storing the name at this moment is the
+        // only way the page can name the voice afterwards instead of printing its UUID.
+        var userId = Guid.NewGuid();
+        VoiceProfile? added = null;
+        _profiles.When(r => r.Add(Arg.Any<VoiceProfile>())).Do(c => added = c.Arg<VoiceProfile>());
+
+        await _service.SetPreferredVoiceAsync(userId, new SetPreferredVoiceRequest(Vi, LinhVoiceId));
+
+        Assert.Equal("Linh - Soft Presence", added!.DisplayName);
+    }
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldMarkThePickAsALibraryRow()
+    {
+        // Without its own source a pick is indistinguishable from an upload in every field the
+        // code reads, which is how somebody's own clone came to be shown as their library pick.
+        var userId = Guid.NewGuid();
+        VoiceProfile? added = null;
+        _profiles.When(r => r.Add(Arg.Any<VoiceProfile>())).Do(c => added = c.Arg<VoiceProfile>());
+
+        var result = await _service.SetPreferredVoiceAsync(
+            userId, new SetPreferredVoiceRequest(Vi, LinhVoiceId));
+
+        Assert.Equal(VoiceProfileSources.Library, added!.Source);
+        // And out to the client, which cannot work it out from anything else on the DTO.
+        Assert.Equal(VoiceProfileSources.Library, result.Value!.Source);
+    }
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldNeverTouchTheUsersOwnClonedVoice()
+    {
+        // THE ONE THAT MATTERS. Same person, same language, provider "cartesia" on both. Before
+        // the source check, this lookup found the upload — and the clearing branch would then
+        // have soft-deleted a voice the person recorded themselves. Only an accident of spelling
+        // ("vi" for picks, "vi-VN" for uploads) hid it, and normalising the language removes
+        // that accident.
+        var userId = Guid.NewGuid();
+        var ownVoice = OwnClonedUpload(userId, "vi-VN", "clone-of-their-actual-voice");
+        _profiles.GetByUserIdAsync(userId, Arg.Any<CancellationToken>()).Returns(new[] { ownVoice });
+
+        var result = await _service.SetPreferredVoiceAsync(userId, new SetPreferredVoiceRequest(Vi, LinhVoiceId));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("clone-of-their-actual-voice", ownVoice.EmbeddingRef);
+        Assert.Equal(VoiceProfileSources.Upload, ownVoice.Source);
+        Assert.Null(ownVoice.DeletedAt);
+        _profiles.Received(1).Add(Arg.Any<VoiceProfile>());
+        _profiles.DidNotReceive().Update(ownVoice);
+    }
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldNotDeleteTheUsersOwnVoiceWhenClearing()
+    {
+        // The same collision on the destructive path, stated on its own because the cost is not
+        // a wrong readout but a voice profile the person cannot get back.
+        var userId = Guid.NewGuid();
+        var ownVoice = OwnClonedUpload(userId, "vi-VN", "clone-of-their-actual-voice");
+        _profiles.GetByUserIdAsync(userId, Arg.Any<CancellationToken>()).Returns(new[] { ownVoice });
+
+        var result = await _service.SetPreferredVoiceAsync(userId, new SetPreferredVoiceRequest(Vi, null));
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(ownVoice.DeletedAt);
+        Assert.True(ownVoice.IsActive);
+        _profiles.DidNotReceive().Update(ownVoice);
+    }
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldFindALocaleTaggedPickWithABareCode()
+    {
+        // Callers send both spellings — the library list sends "vi", a room sends "vi-VN". Under
+        // string.Equals the same preference could be written twice, once per spelling, with only
+        // one of them ever found again.
+        var userId = Guid.NewGuid();
+        var existing = ExistingPick(userId, "vi-VN", LinhVoiceId);
+        _profiles.GetByUserIdAsync(userId, Arg.Any<CancellationToken>()).Returns(new[] { existing });
+
+        var result = await _service.SetPreferredVoiceAsync(userId, new SetPreferredVoiceRequest("VI-vn", MinhVoiceId));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MinhVoiceId, existing.EmbeddingRef);
+        // Normalised on the way past, so the row stops carrying whichever spelling created it.
+        Assert.Equal("vi", existing.Language);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    [Fact]
+    public async Task SetPreferredVoiceAsync_ShouldHealARowWrittenBeforePicksWereNamed()
+    {
+        // Rows already in the database have a null name and an "upload" source. The migration
+        // backfills the source; this covers the name, at the one moment the catalogue is warm.
+        var userId = Guid.NewGuid();
+        var legacy = ExistingPick(userId, Vi, LinhVoiceId);
+        _profiles.GetByUserIdAsync(userId, Arg.Any<CancellationToken>()).Returns(new[] { legacy });
+
+        await _service.SetPreferredVoiceAsync(userId, new SetPreferredVoiceRequest(Vi, MinhVoiceId));
+
+        Assert.Equal("Minh - Conversational Partner", legacy.DisplayName);
+        Assert.Equal(VoiceProfileSources.Library, legacy.Source);
     }
 }

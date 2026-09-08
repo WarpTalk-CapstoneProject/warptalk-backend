@@ -24,7 +24,7 @@ public class MeetingChatServiceTests
     private readonly Mock<IMeetingChatNotifier> _notifierMock;
     private readonly Mock<IRedisService> _redisMock;
     private readonly Mock<IMeetingRoomRepository> _roomRepoMock;
-    private readonly Mock<IMeetingParticipantRepository> _participantRepoMock;
+    private readonly Mock<IRtcStreamParticipantRepository> _participantRepoMock;
     private readonly Mock<IMeetingChatMessageRepository> _chatMessageRepoMock;
     private readonly Mock<IMeetingChatAssistantRequestRepository> _assistantRepoMock;
     private readonly Mock<IMeetingChatModerationEventRepository> _moderationRepoMock;
@@ -43,7 +43,7 @@ public class MeetingChatServiceTests
         _notifierMock = new Mock<IMeetingChatNotifier>();
         _redisMock = new Mock<IRedisService>();
         _roomRepoMock = new Mock<IMeetingRoomRepository>();
-        _participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        _participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         _chatMessageRepoMock = new Mock<IMeetingChatMessageRepository>();
         _assistantRepoMock = new Mock<IMeetingChatAssistantRequestRepository>();
         _moderationRepoMock = new Mock<IMeetingChatModerationEventRepository>();
@@ -52,7 +52,7 @@ public class MeetingChatServiceTests
         _fileStorageMock = new Mock<IMeetingChatFileStorage>();
 
         _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(_roomRepoMock.Object);
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(_participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(_participantRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatMessageRepository).Returns(_chatMessageRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatAssistantRequestRepository).Returns(_assistantRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatModerationEventRepository).Returns(_moderationRepoMock.Object);
@@ -87,7 +87,7 @@ public class MeetingChatServiceTests
         CreatedAt = DateTime.UtcNow
     };
 
-    private MeetingParticipant CreateParticipant(Guid userId, bool isActive = true) => new()
+    private RtcStreamParticipant CreateParticipant(Guid userId, bool isActive = true) => new()
     {
         Id = Guid.NewGuid(),
         MeetingRoomId = _roomId,
@@ -125,7 +125,7 @@ public class MeetingChatServiceTests
         _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_userId));
 
         var request = new SendMeetingChatMessageRequest
@@ -159,8 +159,8 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingParticipant?)null);
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RtcStreamParticipant?)null);
 
         var request = new SendMeetingChatMessageRequest { OriginalText = "hello", OriginalLanguage = "en" };
         var result = await _sut.SendMessageAsync(_roomId, _userId, request);
@@ -176,7 +176,7 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom(_hostId));
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_hostId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
@@ -209,7 +209,7 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom(_hostId));
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_hostId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
@@ -247,7 +247,7 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_userId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
@@ -267,7 +267,7 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_userId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
@@ -308,7 +308,7 @@ public class MeetingChatServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_userId));
@@ -416,7 +416,7 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_hostId));
 
         _chatMessageRepoMock.Setup(r => r.GetByIdAsync(messageId, It.IsAny<CancellationToken>()))
@@ -547,8 +547,8 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingParticipant?)null);
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RtcStreamParticipant?)null);
 
         var file = CreateFormFile("doc.pdf", "application/pdf", 100);
         var request = new UploadMeetingChatFileRequest { File = file };
@@ -566,7 +566,7 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateParticipant(_userId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);

@@ -56,7 +56,14 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             // on the wire means only one thing — an older server — rather than being ambiguous
             // with a room that genuinely wants no record. ReadSettings has already resolved the
             // default, so a room whose blob predates the key arrives here as TRUE.
-            SaveTranscript = result.Value!.Settings.SaveTranscript
+            SaveTranscript = result.Value!.Settings.SaveTranscript,
+            // The host every host-gate here compares against. `HostId` above stays the booker;
+            // TranscriptService was comparing its finalize gate against that and refusing the new
+            // host after a transfer while still admitting the departed one.
+            EffectiveHostId = (result.Value!.EffectiveHostId ?? result.Value!.HostId).ToString(),
+            // WT-480: the room's visibility switch, so a consumer can apply the same rule the
+            // download endpoint applies instead of inventing a looser one.
+            ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty
         };
     }
 
