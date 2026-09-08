@@ -136,6 +136,38 @@ public class WorkspaceServiceTests
         Assert.Equal(WorkspaceConstants.Errors.WorkspaceNameTooLong, result.Error);
     }
 
+    /// <summary>
+    /// The web form checks that the logo parses as a URL and stops there. A URL carrying a query
+    /// string or a data payload passes that at any length, and logo_url is varchar(500).
+    /// </summary>
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenLogoUrlIsOverTheColumnLength()
+    {
+        // Arrange — a genuinely well-formed URL, so length is the only thing wrong with it.
+        const string prefix = "https://cdn.example.com/logo.png?cache=";
+        var logoUrl = prefix + new string('a', WorkspaceConstants.WorkspaceLogoUrlMaxLength + 1 - prefix.Length);
+        var request = new CreateWorkspaceRequest("Acme", logoUrl);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, Guid.NewGuid());
+
+        // Assert
+        Assert.Equal(WorkspaceConstants.WorkspaceLogoUrlMaxLength + 1, logoUrl.Length);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceLogoUrlTooLong, result.Error);
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldNotRejectAWorkspace_ThatHasNoLogoAtAll()
+    {
+        // The rule must not turn an optional field into a required one.
+        var result = await _workspaceService.CreateWorkspaceAsync(
+            new CreateWorkspaceRequest("Acme", null), Guid.NewGuid());
+
+        Assert.NotEqual(WorkspaceConstants.Errors.WorkspaceLogoUrlTooLong, result.Error);
+    }
+
     [Fact]
     public async Task CreateWorkspaceAsync_ShouldNotRejectAName_ThatSitsExactlyOnTheLimit()
     {

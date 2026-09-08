@@ -81,6 +81,14 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNameTooLong, ErrorCodes.ValidationError);
             }
 
+            // logo_url is varchar(500). The web form validates that this parses as a URL and stops
+            // there, and a URL carrying a query string or a data payload passes that check at any
+            // length.
+            if (request.LogoUrl is { Length: > WorkspaceConstants.WorkspaceLogoUrlMaxLength })
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceLogoUrlTooLong, ErrorCodes.ValidationError);
+            }
+
             var user = await _authIdentity.GetUserByIdAsync(userId, ct);
             if (user == null)
             {

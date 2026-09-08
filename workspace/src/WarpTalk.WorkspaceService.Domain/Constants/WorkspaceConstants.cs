@@ -35,8 +35,14 @@ public static class WorkspaceConstants
     /// </summary>
     public const int WorkspaceSlugMaxLength = 100;
 
+    /// <summary>workspaces.logo_url is varchar(500).</summary>
+    public const int WorkspaceLogoUrlMaxLength = 500;
+
     /// <summary>workspace_invitations.email is varchar(320) — RFC 5321's ceiling.</summary>
     public const int InvitationEmailMaxLength = 320;
+
+    /// <summary>workspace_verified_domains.domain is varchar(255).</summary>
+    public const int VerifiedDomainMaxLength = 255;
 
 
     // Error Messages
@@ -44,6 +50,9 @@ public static class WorkspaceConstants
     {
         public const string WorkspaceNameRequired = "Workspace name is required.";
         public const string WorkspaceNameTooLong = "Workspace name cannot exceed 150 characters.";
+        public const string WorkspaceLogoUrlTooLong = "Logo URL cannot exceed 500 characters.";
+        public const string VerifiedDomainTooLong = "Domain cannot exceed 255 characters.";
+        public const string VerifiedDomainInvalidFormat = "Enter a domain name, for example acme.com.";
         public const string UserNotFound = "User not found.";
         public const string InvalidUserEmail = "Invalid user email.";
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";
