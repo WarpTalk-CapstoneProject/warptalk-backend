@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Mappers;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
@@ -256,6 +257,24 @@ public class VoiceProfileService : IVoiceProfileService
                 preview.Error ?? "The preview could not be rendered.",
                 ErrorCodes.InvalidState);
 
+    /// <summary>
+    /// Whether this row is a PICK of a catalogue voice rather than a voice of the person's own.
+    ///
+    /// The source column is the answer and the legacy clause below is the transition. Rows
+    /// written before that column carried "library" have it at its "upload" default and are
+    /// recognised the only way that was ever available: a pointer row is the one row in this
+    /// table with no display name. Migration 20260908... backfills them, after which the second
+    /// clause is dead and can go.
+    ///
+    /// Nothing else separates the two. Provider is "cartesia" for a pick AND for an upload once
+    /// <see cref="CollectFinishedClonesAsync"/> has run, because a clone lives in the Cartesia
+    /// account too — which is how a person's own voice came to be read as their library pick.
+    /// </summary>
+    private static bool IsLibraryPick(VoiceProfile profile) =>
+        string.Equals(profile.Source, VoiceProfileSources.Library, StringComparison.Ordinal)
+        || (string.Equals(profile.Provider, LibraryVoiceProvider, StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(profile.DisplayName));
+
     public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Language))
@@ -263,7 +282,11 @@ public class VoiceProfileService : IVoiceProfileService
             return Result.Failure<VoiceProfileDto?>("Language is required.", ErrorCodes.ValidationError);
         }
 
-        var language = request.Language.Trim();
+        // Stored and compared as the bare code, which is what the catalogue is keyed by. Callers
+        // send both spellings — the library list sends "vi", a room sends "vi-VN" — and matching
+        // them with string.Equals meant the same preference could be written twice, once under
+        // each spelling, with only one of them ever found again.
+        var language = LanguageTag.Base(request.Language);
         var voiceId = request.VoiceId?.Trim();
         var clearing = string.IsNullOrEmpty(voiceId);
 
@@ -272,6 +295,12 @@ public class VoiceProfileService : IVoiceProfileService
             // Reject an id that is not actually on offer for this language. Without this the
             // stored preference would be round-tripped into SetVoicePreference and silently
             // produce the wrong voice — or none — deep inside the TTS worker.
+            //
+            // The matched entry is KEPT rather than tested and dropped: it carries the voice's
+            // name, and this is the one moment the catalogue is guaranteed warm — the person is
+            // choosing from a list they can see. Storing the name here is what lets the page name
+            // the voice later, when the cache may have expired.
+            VoiceCatalogItemDto? chosen = null;
             if (!clearing)
             {
                 var catalog = await _voiceCatalog.GetAsync(language, ct);
@@ -281,7 +310,9 @@ public class VoiceProfileService : IVoiceProfileService
                         "No voices are available for this language yet.",
                         ErrorCodes.InvalidState);
                 }
-                if (!catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal)))
+
+                chosen = catalog.FirstOrDefault(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
+                if (chosen is null)
                 {
                     return Result.Failure<VoiceProfileDto?>(
                         "That voice is not offered for this language.",
@@ -290,9 +321,13 @@ public class VoiceProfileService : IVoiceProfileService
             }
 
             var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            // IsLibraryPick, not the provider alone. Without it this finds the person's own
+            // cloned profile for the same language and the clearing branch below SOFT-DELETES IT.
+            // Until now only an accident of spelling stopped that: picks are stored bare ("vi")
+            // and uploads locale-tagged ("vi-VN"), so string.Equals missed. Normalising the
+            // language above removes that accident, so the real guard has to be here.
             var existing = profiles.FirstOrDefault(p =>
-                string.Equals(p.Provider, LibraryVoiceProvider, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(p.Language, language, StringComparison.OrdinalIgnoreCase));
+                IsLibraryPick(p) && LanguageTag.SameLanguage(p.Language, language));
 
             var now = DateTime.UtcNow;
 
@@ -317,6 +352,13 @@ public class VoiceProfileService : IVoiceProfileService
             if (existing != null)
             {
                 existing.EmbeddingRef = voiceId;
+                // Healed on the way past. A row written before this method named its picks keeps
+                // a null name and an "upload" source until somebody changes their choice, and
+                // there is no cheaper moment to correct it than the one where we are already
+                // writing the row and already hold the catalogue entry.
+                existing.DisplayName = chosen!.Name;
+                existing.Source = VoiceProfileSources.Library;
+                existing.Language = language;
                 existing.IsActive = true;
                 existing.Status = "active";
                 existing.UpdatedAt = now;
@@ -330,9 +372,14 @@ public class VoiceProfileService : IVoiceProfileService
             {
                 Id = Guid.NewGuid(),
                 UserId = userId,
-                DisplayName = null,
+                // The catalogue's own name for the voice, so the page can say "Linh - Soft
+                // Presence" rather than a provider UUID when the catalogue cache has expired.
+                // It is a label for a pointer, not a name somebody chose — Source is what says
+                // which of those this row is.
+                DisplayName = chosen!.Name,
                 Language = language,
                 Provider = LibraryVoiceProvider,
+                Source = VoiceProfileSources.Library,
                 EmbeddingRef = voiceId,
                 Status = "active",
                 IsActive = true,
