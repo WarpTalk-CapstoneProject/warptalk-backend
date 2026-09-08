@@ -67,6 +67,7 @@ public static class WorkspaceDocumentConstants
         public const string UploadDocument = "UploadDocument";
         public const string GetDocumentDetails = "GetDocumentDetails";
         public const string PatchDocumentMetadata = "PatchDocumentMetadata";
+        public const string UpdateExtractedText = "UpdateExtractedText";
         public const string AddAccessPolicy = "AddAccessPolicy";
         public const string RemoveAccessPolicy = "RemoveAccessPolicy";
         public const string ApproveDocument = "ApproveDocument";

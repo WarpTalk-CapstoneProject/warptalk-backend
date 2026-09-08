@@ -396,12 +396,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     document.AiEligible = false;
                     await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
                 }
-                else if (wasRestricted && !isNowRestricted
-                    && document.IsAiAllowed
-                    && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase))
+                else if (wasRestricted && !isNowRestricted && document.IsIndexEligible())
                 {
                     // Re-indexed only when the rest of the gate already passes. Publishing for a
                     // pending_approval document would index something nobody has approved yet.
+                    // IsIndexEligible rather than a local copy of its conditions: this branch was
+                    // spelling out two of the four, and the retention state it left out means a
+                    // document staged for deletion could be re-indexed by un-restricting it.
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
                     await _eventPublisher.PublishDocumentUploadedAsync(
                         document.Id,
@@ -1008,14 +1009,29 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
-            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
-            if (!accessResult.IsSuccess)
+            // A WRITE, so it is gated like the other writes — not like a read.
+            //
+            // This asked for `view`, which is the permission every ordinary Internal member holds
+            // over every non-sensitive document by default. So anyone who could OPEN a document
+            // could overwrite the text of it, and the three lines below then published that text
+            // to the embedding index: one member could rewrite what the assistant answers about
+            // this document for the entire workspace. That is an indirect prompt-injection channel
+            // wearing the shape of a metadata edit.
+            //
+            // CanManagePoliciesAsync is the same gate PatchDocumentMetadataAsync already uses —
+            // workspace Owner/Admin, or the document's own owner — and it is the honest one here,
+            // because editing the extracted text IS editing the document as far as every reader
+            // downstream is concerned.
+            var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
+            if (!canManage)
             {
-                return Result.Failure<ExtractedTextDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+                return Result.Failure<ExtractedTextDto>(
+                    "Forbidden. Only workspace Owner/Admin or the document owner can edit extracted text.",
+                    ErrorCodes.Forbidden);
             }
 
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
-            if (document == null || document.DeletedAt != null)
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
             }
@@ -1024,16 +1040,36 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var jsonContent = JsonSerializer.Serialize(content);
             await _storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
-            if (document.IsAiAllowed &&
-                string.Equals(
-                    document.Status,
-                    WorkspaceDocumentStatus.@public.ToString(),
-                    StringComparison.OrdinalIgnoreCase))
+            // The FULL index gate, not the two conditions this path used to check.
+            //
+            // It asked only IsAiAllowed + public, so it re-indexed documents the guardrail refuses:
+            // ones staged for deletion, and — the one that matters — ones labelled confidential.
+            // A restricted document's vectors are purged when it is relabelled; this endpoint put
+            // them straight back, which made the whole confidentiality boundary bypassable by
+            // anyone who could edit the text.
+            if (document.IsIndexEligible())
             {
                 await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
             }
 
+            // Rewriting the AI-readable body of a document left no trace at all before this. It is
+            // the one document write with no reviewable artifact of its own — the blob is
+            // overwritten in place — so the audit row is the only record that it happened.
+            //
+            // Built before the audit call on purpose: `text?.Length` below would otherwise leave
+            // `text` in a maybe-null flow state and warn here, and the alternative — dropping the
+            // null-conditional — would turn a malformed body into a 500 where it used to be a 200.
             var textDto = new ExtractedTextDto(text, new(), new());
+
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.UpdateExtractedText,
+                new { Length = text?.Length ?? 0, Reindexed = document.IsIndexEligible() },
+                _logger,
+                ct);
+
             return Result.Success(textDto);
         }
         catch (Exception ex)
