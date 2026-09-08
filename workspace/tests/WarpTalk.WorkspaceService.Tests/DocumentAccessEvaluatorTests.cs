@@ -701,4 +701,87 @@ public class DocumentAccessEvaluatorTests
     }
 
     #endregion
+
+    // ---- An explicit DENY outranks ownership ------------------------------------------------
+    //
+    // The uploader shortcut used to sit ABOVE the policy block, so a DENY on `view` aimed at the
+    // uploader was evaluated for everyone except the one person it named. The panel showed them
+    // as Blocked and they went on reading the document — the UI stating a boundary the evaluator
+    // did not apply.
+
+    [Fact]
+    public async Task EvaluateAccessAsync_ShouldRefuseTheUploader_WhenAPolicyDeniesThemView()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            OwnerId = userId,
+            UploadedBy = userId,
+            IngestionStatus = "completed",
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+        };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "Internal" };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(roleId, "Member");
+        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceDocumentAccessPolicy>
+            {
+                new()
+                {
+                    DocumentId = documentId,
+                    WorkspaceId = workspaceId,
+                    SubjectType = WorkspacePolicyConstants.SubjectTypeUser,
+                    SubjectId = userId,
+                    Permission = WorkspaceDocumentPermissions.View,
+                    Effect = WorkspacePolicyConstants.EffectDeny,
+                },
+            });
+
+        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.AccessDeniedByPolicy, result.Error);
+    }
+
+    [Fact]
+    public async Task EvaluateAccessAsync_ShouldStillLetTheUploaderSeeTheirOwnPendingUpload()
+    {
+        // The shortcut's real job, and it must survive: an upload awaiting approval is refused to
+        // ordinary members, and the person who uploaded it is not an ordinary member of it.
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            OwnerId = userId,
+            UploadedBy = userId,
+            IngestionStatus = "awaiting_approval",
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            Status = WorkspaceDocumentStatus.pending_approval.ToString(),
+        };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "Internal" };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(roleId, "Member");
+        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceDocumentAccessPolicy>());
+
+        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View);
+
+        Assert.True(result.IsSuccess);
+    }
 }

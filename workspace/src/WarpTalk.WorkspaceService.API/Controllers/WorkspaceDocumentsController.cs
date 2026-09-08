@@ -225,6 +225,32 @@ public class WorkspaceDocumentsController : ControllerBase
         return ToNoContentResult(result);
     }
 
+    /// <summary>
+    /// The documents this caller may have the assistant answer from.
+    /// </summary>
+    /// <remarks>
+    /// Read by the AI pipeline AS THE CALLER, with the caller's own bearer token, so the answer
+    /// is this person's — not a service account's. It is the seam that finally makes the
+    /// `ai_retrieval` permission mean something: the evaluator has implemented it all along and
+    /// no production caller ever asked for it.
+    ///
+    /// Ids only, and no route to fetch content from them beyond the ones that already exist and
+    /// authorize for themselves.
+    /// </remarks>
+    [Authorize]
+    [HttpGet("ai-retrievable")]
+    public async Task<IActionResult> ListAiRetrievableDocuments(
+        Guid workspaceId,
+        [FromQuery] int limit = 0,
+        CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.ListAiRetrievableDocumentIdsAsync(workspaceId, userId.Value, limit, ct);
+        return ToActionResult(result);
+    }
+
     [Authorize]
     [HttpPost("{documentId:guid}/restore")]
     public async Task<IActionResult> RestoreDocument(
