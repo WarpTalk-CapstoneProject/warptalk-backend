@@ -1132,4 +1132,55 @@ public class WorkspaceDocumentServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
     }
+
+    // ---- Role policies name Member, and only Member ------------------------------------------
+    //
+    // DocumentAccessEvaluator matches a Role policy against the caller's role name whoever they
+    // are, so a DENY on Owner was evaluated and locked every owner out of the document. The web
+    // has only ever offered Member for that reason — but the API accepted all three, leaving the
+    // foot-gun one curl away from a control the UI deliberately does not draw.
+
+    [Theory]
+    [InlineData("Owner")]
+    [InlineData("Admin")]
+    public async Task AddAccessPolicyAsync_ShouldRefuse_ARoleRuleNamingOwnerOrAdmin(string roleName)
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.AddAccessPolicyAsync(
+            workspaceId, documentId,
+            new AddAccessPolicyRequest("Role", null, roleName, "view", "DENY"),
+            userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AddAccessPolicyAsync_ShouldStillAccept_ARoleRuleNamingMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.AddAccessPolicyAsync(
+            workspaceId, documentId,
+            new AddAccessPolicyRequest("Role", null, "Member", "view", "DENY"),
+            userId);
+
+        // The one Role rule that answers a question people actually ask: may ordinary members of
+        // this workspace see this document. web#435 draws exactly this control.
+        Assert.True(result.IsSuccess);
+    }
 }

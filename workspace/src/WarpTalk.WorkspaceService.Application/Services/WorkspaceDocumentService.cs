@@ -678,13 +678,27 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             {
                 return Result.Failure("SubjectId is required for a User policy.", ErrorCodes.ValidationError);
             }
+            // MEMBER ONLY, and refusing the other two is the point rather than an oversight.
+            //
+            // DocumentAccessEvaluator matches a Role policy against the caller's role name
+            // whoever they are, so a DENY on Owner was evaluated and locked every owner in the
+            // workspace out of the document. The web has only ever offered Member for exactly
+            // that reason — but the API accepted all three, so the foot-gun was one curl away
+            // from a control the UI deliberately does not draw.
+            //
+            // Nothing is lost by refusing them. An ALLOW on Owner or Admin is a no-op: they
+            // already reach every document in the workspace. A DENY is worse than a no-op — it
+            // is not even a boundary, since CanManagePoliciesAsync answers from role and never
+            // reads policies, so the admin it names can simply delete it.
+            //
+            // Existing rows, if any, keep evaluating: this is a write-side gate, and any owner
+            // can remove one. Nothing silently changes meaning underneath a workspace.
             if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeRole
-                && (normalizedSubjectKey == null
-                    || (!normalizedSubjectKey.IsOwner()
-                        && !normalizedSubjectKey.IsAdmin()
-                        && !normalizedSubjectKey.IsMember())))
+                && (normalizedSubjectKey == null || !normalizedSubjectKey.IsMember()))
             {
-                return Result.Failure("Role policy SubjectKey must be Owner, Admin, or Member.", ErrorCodes.ValidationError);
+                return Result.Failure(
+                    "Role policy SubjectKey must be Member. Owners and admins already reach every document in the workspace, and a rule naming them would only lock them out of one.",
+                    ErrorCodes.ValidationError);
             }
             if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeMembershipType
                 && !Enum.TryParse<MembershipType>(normalizedSubjectKey, true, out _))
