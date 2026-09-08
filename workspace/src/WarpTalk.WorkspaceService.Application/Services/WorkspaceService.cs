@@ -72,6 +72,15 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNameRequired, ErrorCodes.ValidationError);
             }
 
+            // The name reached varchar(150) with nothing between it and the column, so a long one
+            // failed at SaveChangesAsync and came back as an unexplained server error. The web form
+            // caps its own field, but it is not the only caller: the desktop app and anything
+            // holding a token post here directly.
+            if (request.Name.Trim().Length > WorkspaceConstants.WorkspaceNameMaxLength)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNameTooLong, ErrorCodes.ValidationError);
+            }
+
             var user = await _authIdentity.GetUserByIdAsync(userId, ct);
             if (user == null)
             {

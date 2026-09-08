@@ -18,11 +18,32 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
+    // Column Length Constraints
+    //
+    // Keep these in step with WorkspaceDbContext. They exist so an over-long value is refused by a
+    // rule that can say which field is wrong, instead of by Postgres at SaveChangesAsync — where
+    // the only thing the caller learns is that something went wrong on our side.
+
+    /// <summary>workspaces.name is varchar(150).</summary>
+    public const int WorkspaceNameMaxLength = 150;
+
+    /// <summary>
+    /// workspaces.slug is varchar(100).
+    ///
+    /// Tighter than the name it is derived from, which is the trap: a name comfortably inside 150
+    /// produces a slug past 100, so the slug overflows first and the failure names neither.
+    /// </summary>
+    public const int WorkspaceSlugMaxLength = 100;
+
+    /// <summary>workspace_invitations.email is varchar(320) — RFC 5321's ceiling.</summary>
+    public const int InvitationEmailMaxLength = 320;
+
 
     // Error Messages
     public static class Errors
     {
         public const string WorkspaceNameRequired = "Workspace name is required.";
+        public const string WorkspaceNameTooLong = "Workspace name cannot exceed 150 characters.";
         public const string UserNotFound = "User not found.";
         public const string InvalidUserEmail = "Invalid user email.";
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";

@@ -114,6 +114,44 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
     }
 
+    /// <summary>
+    /// workspaces.name is varchar(150) and nothing used to stand in front of it, so an over-long
+    /// name failed at SaveChangesAsync and reached the caller as an unexplained server error. The
+    /// web form caps its own field, but it is not the only caller.
+    /// </summary>
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenNameIsOverTheColumnLength()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var request = new CreateWorkspaceRequest(
+            new string('a', WorkspaceConstants.WorkspaceNameMaxLength + 1), null);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceNameTooLong, result.Error);
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldNotRejectAName_ThatSitsExactlyOnTheLimit()
+    {
+        // The boundary is worth pinning in both directions: a guard that is one out here would
+        // refuse a name the column can hold perfectly well.
+        var userId = Guid.NewGuid();
+        var request = new CreateWorkspaceRequest(
+            new string('a', WorkspaceConstants.WorkspaceNameMaxLength), null);
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // It fails later, on the unstubbed user lookup — the point is only that it is not refused
+        // for its length.
+        Assert.NotEqual(WorkspaceConstants.Errors.WorkspaceNameTooLong, result.Error);
+    }
+
     [Fact]
     public async Task CreateWorkspaceAsync_ShouldFail_WhenUserIsAlreadyInternalMemberOfAnotherEnterpriseWorkspace()
     {
