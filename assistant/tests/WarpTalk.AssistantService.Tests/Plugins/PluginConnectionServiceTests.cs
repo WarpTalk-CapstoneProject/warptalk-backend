@@ -28,6 +28,11 @@ public class PluginConnectionServiceTests
     private const string GoogleMeetKey = "google_meet";
     private const string RemoteAppKey = "remote_app";
 
+    // The row the split retired. It is not in the catalog any more, but it is the only key an
+    // OAuth state minted before the split can name.
+    private const string RetiredWorkspaceKey = "google_workspace";
+    private static readonly Guid RetiredWorkspacePluginId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
@@ -132,7 +137,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((PluginConnection?)null);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -181,7 +186,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(expiredConnection);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -210,7 +215,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((PluginConnection?)null);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -256,7 +261,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(expiredConnection);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -288,7 +293,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(connected);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -720,7 +725,7 @@ public class PluginConnectionServiceTests
         // Same opaque message the forged-state path returns, so a prober cannot tell the two apart.
         Assert.Equal("Invalid OAuth state.", result.Error);
         await _oauthClient.DidNotReceive().ExchangeCodeAsync(
-            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>());
+            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -734,32 +739,155 @@ public class PluginConnectionServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
         await _oauthClient.DidNotReceive().ExchangeCodeAsync(
-            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>());
+            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>());
     }
 
+    // ---- WT-646: what can actually arrive on the legacy per-plugin path ------------------------
+    //
+    // Only one thing can: a consent that was authorized against the old per-plugin redirect URI
+    // before the provider-scoped one shipped. Its state therefore names google_workspace - the row
+    // the split retired - and its exchange has to repeat the old URI. The test this section
+    // replaced asserted neither: it passed google_drive, a key no in-flight state can carry, to a
+    // substituted OAuth client that would have accepted any redirect URI at all.
+
     [Fact]
-    public async Task CompleteOAuthCallbackAsync_StillCompletesOnTheLegacyPerPluginPath()
+    public async Task CompleteOAuthCallbackAsync_CompletesAgainstTheRetiredCatalogRow()
     {
-        // Kept working on purpose: consents already in flight when the provider-scoped redirect URI
-        // ships come back here, and so does any environment whose Google Cloud Console entry has
-        // not been updated yet.
-        var plugin = GoogleDrivePlugin();
-        ConfigureInstalledPlugin(plugin);
+        // is_active=false is what 20260907100000 left the google_workspace row as. A lookup that
+        // filtered on it would answer unknown_plugin for a consent this product itself started.
+        var retired = RetiredGoogleWorkspacePlugin();
+        ConfigureInstalledPlugin(retired, RetiredWorkspaceKey);
         _connectionRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<PluginConnection, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((PluginConnection?)null);
-        ConfigureExchange(plugin, ["https://www.googleapis.com/auth/drive.readonly"]);
+        ConfigureExchange(retired, ["https://www.googleapis.com/auth/drive.readonly"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(RetiredWorkspaceKey, "oauth-code", "state-token");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        await _pluginRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<Plugin, bool>>>(predicate =>
+                predicate.Compile().Invoke(new Plugin { PluginKey = RetiredWorkspaceKey, IsActive = false })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+        // The grant still lands on the provider, so it is the same row the three product plugins
+        // read - the retirement changes where the flow began, not who the grant is with.
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(connection => connection.Provider == PluginConstants.Providers.Google),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ExchangesOnTheLegacyRoute()
+    {
+        // The redirect URI is repeated on the token request and Google matches it against the one
+        // the authorization request carried. Sending the provider-scoped URI for a flow that
+        // started on the old path is an automatic redirect_uri_mismatch, and this is the assertion
+        // that says which URI the exchange will pick.
+        var retired = RetiredGoogleWorkspacePlugin();
+        ConfigureInstalledPlugin(retired, RetiredWorkspaceKey);
+        ConfigureExchange(retired, ["https://www.googleapis.com/auth/drive.readonly"]);
+
+        await CreateSut().CompleteOAuthCallbackAsync(RetiredWorkspaceKey, "oauth-code", "state-token");
+
+        await _oauthClient.Received(1).ExchangeCodeAsync(
+            retired,
+            "oauth-code",
+            Arg.Any<PluginOAuthStateDto>(),
+            PluginOAuthCallbackRoute.LegacyPerPlugin,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteProviderOAuthCallbackAsync_ExchangesOnTheConfiguredRoute()
+    {
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        ConfigureExchange(calendar, ["https://www.googleapis.com/auth/calendar.events"]);
+
+        await CreateSut().CompleteProviderOAuthCallbackAsync(
+            PluginConstants.Providers.Google, "oauth-code", "state-token");
+
+        await _oauthClient.Received(1).ExchangeCodeAsync(
+            calendar,
+            "oauth-code",
+            Arg.Any<PluginOAuthStateDto>(),
+            PluginOAuthCallbackRoute.Configured,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteProviderOAuthCallbackAsync_StillRefusesARetiredCatalogRow()
+    {
+        // The exception is the legacy path's alone. A retired row may finish a flow that started
+        // while it was live; it may not be reached through the route this build sends people to.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        ConfigureExchange(calendar, ["https://www.googleapis.com/auth/calendar.events"]);
+
+        await CreateSut().CompleteProviderOAuthCallbackAsync(
+            PluginConstants.Providers.Google, "oauth-code", "state-token");
+
+        await _pluginRepository.Received(1).FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<Plugin, bool>>>(predicate =>
+                predicate.Compile().Invoke(new Plugin { PluginKey = GoogleCalendarKey, IsActive = true })
+                && !predicate.Compile().Invoke(new Plugin { PluginKey = GoogleCalendarKey, IsActive = false })),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReturnsAFailure_WhenTheExchangeThrows()
+    {
+        // A 429 or a 503 from Google arrives while the user's browser is mid-redirect. Letting the
+        // exception out ends that redirect on a raw API error page, so the failure has to come back
+        // as a result the caller can turn into a page.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledPlugin(plugin);
+        _oauthClient.ExchangeCodeAsync(
+                plugin,
+                "oauth-code",
+                Arg.Any<PluginOAuthStateDto>(),
+                Arg.Any<PluginOAuthCallbackRoute>(),
+                Arg.Any<CancellationToken>())
+            .Returns<PluginOAuthTokenDto>(_ => throw new InvalidOperationException(
+                """Google refused the authorization code for plugin 'google_drive' with 429: {"error":"rateLimitExceeded"}"""));
 
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
-        await _connectionRepository.Received(1).AddAsync(
-            Arg.Is<PluginConnection>(connection => connection.Provider == PluginConstants.Providers.Google),
-            Arg.Any<CancellationToken>());
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.ErrorCode);
+        // Google's own words go to the log, never into anything the user is handed.
+        Assert.DoesNotContain("rateLimitExceeded", result.Error!, StringComparison.Ordinal);
+        await _connectionRepository.DidNotReceive().AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void ReadPluginKeyFromState_ReturnsTheSealedKey()
+    {
+        // What a failed callback is addressed with: the provider-scoped route has no key in its
+        // path, so without this a cancelled consent could not name the tile it came from.
+        _stateProtector.Unprotect("state-token").Returns(new PluginOAuthStateDto(UserId, GoogleCalendarKey));
+
+        Assert.Equal(GoogleCalendarKey, CreateSut().ReadPluginKeyFromState("state-token"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("tampered-state")]
+    public void ReadPluginKeyFromState_ReturnsNull_WhenTheStateCannotBeRead(string? state)
+    {
+        _stateProtector.Unprotect("tampered-state")
+            .Returns<PluginOAuthStateDto>(_ => throw new InvalidOperationException("bad payload"));
+
+        Assert.Null(CreateSut().ReadPluginKeyFromState(state));
     }
 
     [Fact]
@@ -776,7 +904,7 @@ public class PluginConnectionServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
         await _oauthClient.DidNotReceive().ExchangeCodeAsync(
-            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>());
+            Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -816,7 +944,7 @@ public class PluginConnectionServiceTests
 
     private void ConfigureExchange(Plugin plugin, string[] grantedScopes)
     {
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
@@ -845,6 +973,27 @@ public class PluginConnectionServiceTests
             RequiredScopesJson = $"[\"{scope}\"]",
             ToolsJson = "[]",
             CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+    }
+
+    /// <summary>
+    /// The combined row as 20260907100000 leaves it: deactivated, not deleted, and still
+    /// provider='google' so the grant it produces is the same one the three product rows read.
+    /// </summary>
+    private static Plugin RetiredGoogleWorkspacePlugin()
+    {
+        return new Plugin
+        {
+            Id = RetiredWorkspacePluginId,
+            PluginKey = RetiredWorkspaceKey,
+            Label = "Google Workspace",
+            Description = "Work across Drive and Calendar",
+            Provider = PluginConstants.Providers.Google,
+            IsActive = false,
+            RequiredScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",
+            ToolsJson = "[]",
+            CreatedAt = DateTime.UtcNow.AddDays(-30),
             UpdatedAt = DateTime.UtcNow,
         };
     }
@@ -999,7 +1148,7 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns((PluginConnection?)null);
-        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
             .Returns(new PluginOAuthTokenDto(
                 "google-user-id",
                 "user@example.com",
