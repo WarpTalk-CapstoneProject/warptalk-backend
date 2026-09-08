@@ -10,16 +10,18 @@ public record InviteMemberRequest(
     // [EmailAddress] happily accepts an address far longer than that, so the only thing standing
     // between a long one and the column was Postgres.
     //
-    // [property:] rather than bare attributes. On a positional record the default target is the
-    // CONSTRUCTOR PARAMETER. ASP.NET reads those during model binding, so the rules did apply to
-    // requests — but they were invisible to every other validation path, including
-    // Validator.TryValidateObject, which is what lets these be tested without standing up MVC.
-    // A rule that only one caller can see is a rule the next refactor moves and nobody notices.
-    [property: Required]
-    [property: EmailAddress]
-    [property: StringLength(WorkspaceConstants.InvitationEmailMaxLength)]
-        string Email,
-    [property: Required] string RoleName,
+    // The attributes stay on the CONSTRUCTOR PARAMETER, which is where they land by default on a
+    // positional record. Moving them to [property:] looks tidier and is wrong: ASP.NET throws
+    // outright — "validation metadata defined on property 'RoleName' that will be ignored ... must
+    // be associated with the constructor parameter" — so every invite returned a 500 instead of
+    // being validated. Found by calling the endpoint; nothing in the build or the unit tests said
+    // a word about it.
+    //
+    // The cost is that Validator.TryValidateObject cannot see these, since it reflects over
+    // properties. That is why InviteMemberRequestValidationTests reads the parameter metadata
+    // directly rather than running the validator.
+    [Required][EmailAddress][StringLength(WorkspaceConstants.InvitationEmailMaxLength)] string Email,
+    [Required] string RoleName,
     string? MembershipType = null
 );
 
