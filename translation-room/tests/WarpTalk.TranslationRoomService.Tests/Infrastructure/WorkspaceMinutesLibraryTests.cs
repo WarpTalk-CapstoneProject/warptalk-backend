@@ -363,4 +363,61 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
 
         result.IsSuccess.Should().BeFalse();
     }
+
+    /// <summary>
+    /// The library lists documents somebody has signed, not everybody's drafts.
+    ///
+    /// #344 made an unsigned draft readable only by the people who can act on it, and this is the
+    /// same documents one door wider: room-read across a whole workspace, and every row carrying
+    /// its entire Content. Closing one and leaving the other open would move the leak rather than
+    /// fix it.
+    /// </summary>
+    [Fact]
+    public async Task List_HidesDraftsOfMeetingsTheCallerDoesNotHost()
+    {
+        await SeedMeetingWithMinutesAsync(
+            "Signed off", "{}", DateTime.UtcNow.AddDays(-1),
+            attendeeIds: AttendeeId);
+        await SeedMeetingWithMinutesAsync(
+            "Still unsigned", "{}", DateTime.UtcNow,
+            MeetingMinutesConstants.StatusDraft, attendeeIds: AttendeeId);
+
+        var attendee = await ListAsync(AttendeeId);
+
+        attendee.Items.Should().ContainSingle("only the signed document is anybody's record")
+            .Which.RoomTitle.Should().Be("Signed off");
+    }
+
+    /// <summary>
+    /// Signing is what publishes a minutes (#344), so IN_REVIEW is already somebody's word and
+    /// belongs in the library — the cut is at DRAFT, not at APPROVED.
+    /// </summary>
+    [Fact]
+    public async Task List_ShowsASignedMinutesBeforeItIsApproved()
+    {
+        await SeedMeetingWithMinutesAsync(
+            "Signed, not yet approved", "{}", DateTime.UtcNow,
+            MeetingMinutesConstants.StatusInReview, attendeeIds: AttendeeId);
+
+        var attendee = await ListAsync(AttendeeId);
+
+        attendee.Items.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The meeting's host is the person writing that draft. Hiding it here would hide the document
+    /// from its own author, on the page they would go to looking for it.
+    /// </summary>
+    [Fact]
+    public async Task List_KeepsDraftsForTheHostOfTheMeeting()
+    {
+        await SeedMeetingWithMinutesAsync(
+            "Still unsigned", "{}", DateTime.UtcNow,
+            MeetingMinutesConstants.StatusDraft, attendeeIds: AttendeeId);
+
+        var host = await ListAsync(HostId);
+
+        host.Items.Should().ContainSingle().Which.Minutes.Status
+            .Should().Be(MeetingMinutesConstants.StatusDraft);
+    }
 }
