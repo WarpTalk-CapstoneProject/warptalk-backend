@@ -108,7 +108,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("file.pdf");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
-        var request = new UploadDocumentApiRequest("Doc1", "upload", null, "internal", mockFile);
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         // Act
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
@@ -143,7 +143,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("file.pdf");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
-        var request = new UploadDocumentApiRequest("Doc1", "upload", null, "internal", mockFile);
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         // The blob write to storage succeeds, but the DB save that should follow it fails —
         // simulating a connection drop after the encrypted file already landed on disk.
@@ -176,7 +176,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("file.pdf");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
-        var request = new UploadDocumentApiRequest("Doc1", "upload", null, "internal", mockFile);
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         // Act
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
@@ -210,7 +210,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("payload.html");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("<script>alert(1)</script>")));
-        var request = new UploadDocumentApiRequest("Payload", "upload", null, "internal", mockFile);
+        var request = new UploadDocumentApiRequest("Payload", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
 
@@ -239,7 +239,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns(fileName);
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("legacy")));
-        var request = new UploadDocumentApiRequest("Legacy", "upload", null, "internal", mockFile);
+        var request = new UploadDocumentApiRequest("Legacy", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
 
@@ -265,7 +265,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("chart.png");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream([0x89, 0x50, 0x4E, 0x47]));
-        var request = new UploadDocumentApiRequest("Chart", "upload", null, "internal", mockFile, IsAiAllowed: true);
+        var request = new UploadDocumentApiRequest("Chart", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile, IsAiAllowed: true);
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
 
@@ -493,5 +493,196 @@ public class WorkspaceDocumentServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    // ---- Confidentiality is a BOUNDARY, not a caption -------------------------------------
+    //
+    // Every policy check in this service asks one question: WorkspaceDocumentExtensions
+    // .IsRestricted(), an equality test against the literal "restricted". The column was free
+    // text and both write paths stored whatever arrived, so any other spelling was a document
+    // that LOOKED confidential and was read as public by the access evaluator AND by
+    // DocumentSecurityGuardrailHelper.HasBasicIndexEligibility — which is what decides whether
+    // its text is embedded and answerable by the assistant.
+
+    private (Workspace workspace, WorkspaceMember member, IFormFile file) ArrangeAdminUpload(
+        Guid workspaceId, Guid userId, Guid roleId)
+    {
+        var workspace = new Workspace { Id = workspaceId, IsActive = true };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(roleId, "Owner");
+
+        var file = Substitute.For<IFormFile>();
+        file.FileName.Returns("policy.pdf");
+        file.Length.Returns(2048);
+        file.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("body")));
+        return (workspace, member, file);
+    }
+
+    [Theory]
+    [InlineData("confidential")]
+    [InlineData("secret")]
+    [InlineData("internal")]
+    [InlineData("PUBLIC")]
+    public async Task UploadDocumentAsync_ShouldRefuse_AConfidentialityLevelNothingReads(string level)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Doc", "upload", null, level, file), userId);
+
+        // Refused, not normalised. Guessing "secret" meant public would be the same failure with
+        // better manners; guessing it meant restricted would let a typo lock a document.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _workspaceDocumentRepository.DidNotReceiveWithAnyArgs()
+            .AddAsync(default!, default);
+    }
+
+    [Theory]
+    [InlineData("restricted", WorkspaceDocumentConstants.SensitiveConfidentialityLevel)]
+    [InlineData("  restricted  ", WorkspaceDocumentConstants.SensitiveConfidentialityLevel)]
+    [InlineData("RESTRICTED", WorkspaceDocumentConstants.SensitiveConfidentialityLevel)]
+    [InlineData("Public_Internal", WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel)]
+    public async Task UploadDocumentAsync_ShouldStoreTheCanonicalLevel_NotTheCallersSpelling(
+        string supplied, string expected)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        WorkspaceDocument? stored = null;
+        await _workspaceDocumentRepository.AddAsync(
+            Arg.Do<WorkspaceDocument>(d => stored = d), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Doc", "upload", null, supplied, file), userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(stored);
+        // "restricted " with one trailing space is an equality miss, and the document would have
+        // been indexed and answerable while displaying the word restricted.
+        Assert.Equal(expected, stored!.ConfidentialityLevel);
+    }
+
+    private WorkspaceDocument ArrangePatchableDocument(
+        Guid workspaceId, Guid documentId, Guid userId, string level, string status)
+    {
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            Name = "Quarterly plan",
+            FileName = "plan.pdf",
+            FileExtension = ".pdf",
+            StorageKey = $"documents/{workspaceId}/{documentId}.pdf",
+            ConfidentialityLevel = level,
+            Status = status,
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+            IsAiAllowed = true,
+            AiEligible = true,
+        };
+
+        _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        return document;
+    }
+
+    [Fact]
+    public async Task PatchDocumentMetadataAsync_ShouldRefuse_AConfidentialityLevelNothingReads()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.PatchDocumentMetadataAsync(
+            workspaceId, documentId, new PatchDocumentRequest(null, "confidential", null), userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        // The label the reader would have trusted must not have moved.
+        Assert.Equal(WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, document.ConfidentialityLevel);
+    }
+
+    [Fact]
+    public async Task PatchDocumentMetadataAsync_ShouldPurgeTheVectors_WhenADocumentBecomesRestricted()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.PatchDocumentMetadataAsync(
+            workspaceId, documentId,
+            new PatchDocumentRequest(null, WorkspaceDocumentConstants.SensitiveConfidentialityLevel, null),
+            userId);
+
+        Assert.True(result.IsSuccess);
+        // THE DEFECT. HasBasicIndexEligibility refuses to index a restricted document, but it is
+        // only consulted at upload — so a document indexed while public stayed in the vector store
+        // after being marked confidential, and the assistant went on answering out of it.
+        await _eventPublisher.Received(1).PublishDocumentDeletedAsync(
+            documentId, workspaceId, Arg.Any<CancellationToken>());
+        Assert.False(document.AiEligible);
+    }
+
+    [Fact]
+    public async Task PatchDocumentMetadataAsync_ShouldReindex_WhenARestrictedDocumentIsOpenedUp()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.SensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        document.AiEligible = false;
+
+        var result = await _documentService.PatchDocumentMetadataAsync(
+            workspaceId, documentId,
+            new PatchDocumentRequest(null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, null),
+            userId);
+
+        Assert.True(result.IsSuccess);
+        await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
+            documentId, workspaceId, document.StorageKey, document.FileName, document.FileExtension,
+            userId, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PatchDocumentMetadataAsync_ShouldNotReindex_ADocumentNobodyHasApproved()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.SensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.pending_approval.ToString());
+
+        var result = await _documentService.PatchDocumentMetadataAsync(
+            workspaceId, documentId,
+            new PatchDocumentRequest(null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, null),
+            userId);
+
+        Assert.True(result.IsSuccess);
+        // Un-restricting is not approval. Indexing here would put a document into the assistant
+        // that the workspace has not yet agreed to publish.
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(
+            default, default, default!, default!, default!, default, default, default);
     }
 }

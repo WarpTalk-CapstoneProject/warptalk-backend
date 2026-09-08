@@ -86,6 +86,19 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<WorkspaceDocumentDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
             }
 
+            // Refused at the boundary rather than stored and misread later. Every policy check
+            // downstream — access evaluation and index eligibility — asks IsRestricted(), which is
+            // an equality test against "restricted". So an unrecognised label is silently a
+            // NON-restricted document wearing a confidential-looking word in the UI, and it is
+            // embedded into the vector store and answerable by the assistant.
+            var confidentiality = WorkspaceDocumentHelper.NormalizeConfidentialityLevel(request.ConfidentialityLevel);
+            if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel) && confidentiality is null)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    $"Unsupported confidentiality level. Allowed values are: {WorkspaceDocumentHelper.SupportedConfidentialityLevels}.",
+                    ErrorCodes.ValidationError);
+            }
+
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
 
             var status = isOwnerOrAdmin
@@ -110,6 +123,10 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storage.StorageProviderName, status, ingestionStatus, aiEligible);
             document.IsAiAllowed = effectiveIsAiAllowed;
+            // The CANONICAL value, not the caller's spelling — "Restricted " and "RESTRICTED"
+            // both mean restricted, and storing either verbatim would make IsRestricted() false
+            // for one of them.
+            document.ConfidentialityLevel = confidentiality ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
 
             // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
             using (var stream = request.File.OpenReadStream())
@@ -347,7 +364,55 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel))
             {
-                document.ConfidentialityLevel = request.ConfidentialityLevel;
+                // Same gate as upload, and it has to be here too: this is the path that RE-labels
+                // a document, so it is the one that can quietly turn a restricted document into an
+                // unrecognised label that every policy check reads as not-restricted.
+                var level = WorkspaceDocumentHelper.NormalizeConfidentialityLevel(request.ConfidentialityLevel);
+                if (level is null)
+                {
+                    return Result.Failure<WorkspaceDocumentDto>(
+                        $"Unsupported confidentiality level. Allowed values are: {WorkspaceDocumentHelper.SupportedConfidentialityLevels}.",
+                        ErrorCodes.ValidationError);
+                }
+
+                var wasRestricted = document.IsRestricted();
+                document.ConfidentialityLevel = level;
+                var isNowRestricted = document.IsRestricted();
+
+                // RE-LABELLING HAS TO MOVE THE VECTORS TOO.
+                //
+                // DocumentSecurityGuardrailHelper.HasBasicIndexEligibility refuses to index a
+                // restricted document — but it is only ever consulted at UPLOAD. So a document
+                // uploaded as public_internal was embedded into Qdrant, and marking it restricted
+                // afterwards changed the label, the list and the access checks while leaving the
+                // chunks exactly where they were: the assistant went on answering out of a
+                // document the workspace had just declared confidential.
+                //
+                // Mirrors the IsAiAllowed branch below, which has always done this. The two
+                // switches gate the same thing — whether the model may read this document — and
+                // only one of them was wired to the index.
+                if (!wasRestricted && isNowRestricted)
+                {
+                    document.AiEligible = false;
+                    await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+                }
+                else if (wasRestricted && !isNowRestricted
+                    && document.IsAiAllowed
+                    && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    // Re-indexed only when the rest of the gate already passes. Publishing for a
+                    // pending_approval document would index something nobody has approved yet.
+                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
+                    await _eventPublisher.PublishDocumentUploadedAsync(
+                        document.Id,
+                        workspaceId,
+                        document.StorageKey,
+                        document.FileName,
+                        document.FileExtension,
+                        userId,
+                        document.ConfidentialityLevel,
+                        ct);
+                }
             }
 
             if (request.IsAiAllowed.HasValue && request.IsAiAllowed.Value != document.IsAiAllowed)
