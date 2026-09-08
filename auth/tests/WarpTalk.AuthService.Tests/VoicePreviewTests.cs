@@ -178,6 +178,58 @@ public class VoicePreviewTests
         Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
     }
 
+    /// <summary>
+    /// The bug WT-649 was actually reported against, and the reason its message looked like a
+    /// timing problem.
+    ///
+    /// A voice profile stores a LOCALE tag, because that is what the sign-up wizard collects. The
+    /// TTS worker normalises every language it is handed and writes its answer under the BASE
+    /// code. This service used the caller's string verbatim — so previewing an uploaded voice
+    /// asked for "vi-VN", the worker rendered it in about a second and wrote
+    /// `voice:preview:{voice}:vi`, and this service polled `…:vi-VN` for the full twelve seconds
+    /// before reporting "The preview is taking longer than expected."
+    ///
+    /// Nothing was ever slow. Every preview of an uploaded voice failed, every time.
+    /// </summary>
+    [Theory]
+    [InlineData("vi-VN")]
+    [InlineData("en-US")]
+    [InlineData("zh-Hans-CN")]
+    [InlineData("VI-vn")]
+    public async Task A_locale_tag_reaches_the_queue_as_the_base_code_the_worker_answers_under(
+        string localeTag)
+    {
+        var expected = localeTag.Split('-')[0].ToLowerInvariant();
+        _previews.TryGetAsync(CatalogVoiceId, expected, Arg.Any<CancellationToken>())
+            .Returns(new VoicePreview(Wav, null));
+
+        var result = await Preview(CatalogVoiceId, language: localeTag);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(Wav, result.Value);
+        // The locale tag must never reach Redis: that key is the one nobody writes to.
+        await _previews.DidNotReceive().TryGetAsync(
+            Arg.Any<string>(), localeTag, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task A_locale_tag_is_normalised_on_the_request_and_the_wait_too_not_only_the_read()
+    {
+        // All three calls key the same Redis entry. Normalising one and not the others would move
+        // the mismatch rather than remove it.
+        _previews.TryGetAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
+            .Returns((VoicePreview?)null);
+        _previews.RequestAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>()).Returns(true);
+        _previews.WaitAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
+            .Returns(new VoicePreview(Wav, null));
+
+        var result = await Preview(CatalogVoiceId, language: "vi-VN");
+
+        Assert.True(result.IsSuccess);
+        await _previews.Received(1).RequestAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>());
+        await _previews.Received(1).WaitAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task A_rendered_failure_is_reported_and_never_played_as_empty_audio()
     {

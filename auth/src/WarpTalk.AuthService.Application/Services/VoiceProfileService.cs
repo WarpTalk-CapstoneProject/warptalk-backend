@@ -63,6 +63,37 @@ public class VoiceProfileService : IVoiceProfileService
     /// </summary>
     private const int DisplayNameMaxLength = 100;
 
+    /// <summary>
+    /// The bare language code the AI side keys everything by: "vi-VN" becomes "vi".
+    ///
+    /// WHY THIS EXISTS
+    ///     The TTS worker normalises every language it is handed (shared.lang.base_language) and
+    ///     then writes its answers — the preview result, the voice catalogue — under the NORMALISED
+    ///     key. This service did not normalise, so it asked under one key and read under another.
+    ///
+    ///     A voice profile stores a locale tag, because that is what the sign-up wizard collects.
+    ///     So previewing an uploaded voice sent language="vi-VN": the worker rendered the sample in
+    ///     1 second and wrote it to `voice:preview:{voice}:vi`, while this service polled
+    ///     `voice:preview:{voice}:vi-VN` for the full twelve seconds and then reported
+    ///     "The preview is taking longer than expected."
+    ///
+    ///     Nothing was slow. The answer was written to a key nobody was reading, every time, for
+    ///     every uploaded voice — which is why WT-649 was reported against production with exactly
+    ///     that message.
+    ///
+    /// WHY ONLY AT THE REDIS BOUNDARY
+    ///     The stored value stays a locale tag. The convention this system already follows is
+    ///     "store the locale, key by the base" — the web client compares profiles with its own
+    ///     bareLanguage() for the same reason. Normalising what is STORED would be a different
+    ///     change with a migration behind it.
+    /// </summary>
+    private static string BaseLanguage(string language)
+    {
+        var trimmed = language.Trim();
+        var separator = trimmed.IndexOfAny(new[] { '-', '_' });
+        return separator < 0 ? trimmed.ToLowerInvariant() : trimmed[..separator].ToLowerInvariant();
+    }
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IVoiceSampleStorage _storage;
     private readonly IVoiceCatalogDirectory _voiceCatalog;
@@ -93,7 +124,7 @@ public class VoiceProfileService : IVoiceProfileService
             return Result.Failure<IReadOnlyList<VoiceCatalogItemDto>>("Language is required.", ErrorCodes.ValidationError);
         }
 
-        var voices = await _voiceCatalog.GetAsync(language, ct);
+        var voices = await _voiceCatalog.GetAsync(BaseLanguage(language), ct);
         return Result.Success(voices);
     }
 
@@ -178,7 +209,7 @@ public class VoiceProfileService : IVoiceProfileService
             return false;
         }
 
-        var catalog = await _voiceCatalog.GetAsync(language.Trim(), ct);
+        var catalog = await _voiceCatalog.GetAsync(BaseLanguage(language), ct);
         return catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
     }
 
@@ -198,6 +229,11 @@ public class VoiceProfileService : IVoiceProfileService
             // judgement in one language than another — which is the whole point of listening.
             return Result.Failure<byte[]>("A language is required.", ErrorCodes.ValidationError);
         }
+
+        // Everything below keys Redis by this, and the worker keys its answers by the base code.
+        // A profile stores a locale tag ("vi-VN"), so without this the request and the answer
+        // land on two different keys and every preview of an uploaded voice times out.
+        language = BaseLanguage(language);
 
         // The same gate SetDubVoiceAsync applies, deliberately reused rather than restated: a
         // voice cloned from somebody's recording is theirs, and rendering audio from an id this
@@ -365,7 +401,10 @@ public class VoiceProfileService : IVoiceProfileService
             // produce the wrong voice — or none — deep inside the TTS worker.
             if (!clearing)
             {
-                var catalog = await _voiceCatalog.GetAsync(language, ct);
+                // BaseLanguage, not the stored locale: the catalogue is written by the worker
+                // under the base code. `language` itself stays a locale tag because it is what
+                // gets persisted on the profile below.
+                var catalog = await _voiceCatalog.GetAsync(BaseLanguage(language), ct);
                 if (catalog.Count == 0)
                 {
                     return Result.Failure<VoiceProfileDto?>(
