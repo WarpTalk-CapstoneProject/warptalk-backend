@@ -41,10 +41,18 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
     private TranslationRoomDbContext _dbContext = null!;
     private MeetingMinutesService _service = null!;
 
+    /// <summary>
+    /// Answers false for everyone unless a test says otherwise — the ordinary member, and the
+    /// posture the directory itself promises when WorkspaceService cannot be reached.
+    /// </summary>
+    private readonly Mock<IWorkspaceMemberDirectory> _workspaceMembers = new();
+
     private static readonly Guid WorkspaceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid HostId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid AttendeeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
     private static readonly Guid StrangerId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+    /// <summary>A workspace Owner/Admin who hosted nothing and attended nothing.</summary>
+    private static readonly Guid AdminId = Guid.Parse("55555555-5555-5555-5555-555555555555");
 
     public async Task InitializeAsync()
     {
@@ -78,7 +86,7 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
 
         _service = new MeetingMinutesService(
             unitOfWork,
-            new Mock<IWorkspaceMemberDirectory>().Object,
+            _workspaceMembers.Object,
             new Mock<IMeetingMinutesDocumentWriter>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<MeetingMinutesService>>().Object);
     }
@@ -198,6 +206,83 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
         attendee.Items.Should().ContainSingle("someone who was in the meeting can read its record");
         stranger.Items.Should().BeEmpty("a workspace member who was not there has no claim on it");
         stranger.Total.Should().Be(0, "Total must count the caller's rows, not the workspace's");
+    }
+
+    /// <summary>
+    /// A workspace Owner/Admin reads the workspace's whole archive.
+    ///
+    /// The rooms list already widens this way (BuildListableRoomsQueryAsync), and the Artifacts
+    /// library draws its transcripts and summaries from that list while drawing its minutes from
+    /// here. Without this clause one page answered the same question two ways: every transcript in
+    /// the workspace, and no minutes at all — which is how a mentor account with 100 transcripts
+    /// and 100 summaries showed an empty Minutes tab.
+    /// </summary>
+    [Fact]
+    public async Task List_ShowsTheWholeWorkspace_ToAnOwnerOrAdmin()
+    {
+        _workspaceMembers
+            .Setup(directory => directory.IsOwnerOrAdminAsync(WorkspaceId, AdminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await SeedMeetingWithMinutesAsync(
+            "Sprint review", "{\"agenda\":\"sprint\"}", DateTime.UtcNow.AddDays(-1),
+            attendeeIds: AttendeeId);
+
+        var admin = await ListAsync(AdminId);
+        var stranger = await ListAsync(StrangerId);
+
+        admin.Items.Should().ContainSingle("an Admin sees every meeting in their own workspace");
+        admin.Total.Should().Be(1);
+        stranger.Items.Should().BeEmpty("the widening is a workspace ROLE, not a wider default");
+    }
+
+    /// <summary>
+    /// And the widening reaches ONE workspace only.
+    ///
+    /// The role is asked per workspace, so an Admin of this one is an ordinary member of the next.
+    /// The list is already filtered by <c>WorkspaceId</c> on both the rooms and the minutes, and
+    /// this pins that the role answer cannot travel past it.
+    /// </summary>
+    [Fact]
+    public async Task List_RefusesAnAdminOfADifferentWorkspace()
+    {
+        var otherWorkspace = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        _workspaceMembers
+            .Setup(directory => directory.IsOwnerOrAdminAsync(otherWorkspace, AdminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await SeedMeetingWithMinutesAsync("Sprint review", "{}", DateTime.UtcNow.AddDays(-1));
+
+        var admin = await ListAsync(AdminId);
+
+        admin.Items.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// And the document a widened list offers can actually be opened.
+    ///
+    /// A list that shows a card the per-room read then refuses is the mentor incident inverted,
+    /// and worse, because the reader has already clicked. <c>CanAccessRoomAsync</c> pairs the same
+    /// way with the rooms list.
+    /// </summary>
+    [Fact]
+    public async Task GetCurrent_IsReadableByAnOwnerOrAdmin_OfAMeetingTheyWereNotIn()
+    {
+        _workspaceMembers
+            .Setup(directory => directory.IsOwnerOrAdminAsync(WorkspaceId, AdminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var minutes = await SeedMeetingWithMinutesAsync(
+            "Sprint review", "{}", DateTime.UtcNow.AddDays(-1),
+            status: MeetingMinutesConstants.StatusInReview);
+
+        var asAdmin = await _service.GetCurrentAsync(
+            minutes.TranslationRoomId, AdminId, null, CancellationToken.None);
+        var asStranger = await _service.GetCurrentAsync(
+            minutes.TranslationRoomId, StrangerId, null, CancellationToken.None);
+
+        asAdmin.IsSuccess.Should().BeTrue(asAdmin.Error);
+        asStranger.IsSuccess.Should().BeFalse("the room gate is unchanged for everybody else");
     }
 
     /// <summary>

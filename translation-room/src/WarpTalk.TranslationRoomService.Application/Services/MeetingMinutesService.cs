@@ -66,10 +66,29 @@ public class MeetingMinutesService : IMeetingMinutesService
     public async Task<Result<MeetingMinutesDto>> GetCurrentAsync(
         Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default)
     {
-        var readable = await _unitOfWork.TranslationRoomRepository
+        var scopedRoom = _unitOfWork.TranslationRoomRepository
             .Query()
-            .Where(r => r.Id == roomId && r.DeletedAt == null && r.IsActive)
-            .AnyAsync(RoomReadAccess.IsReadableBy(userId, userEmail), ct);
+            .Where(r => r.Id == roomId && r.DeletedAt == null && r.IsActive);
+
+        var readable = await scopedRoom.AnyAsync(RoomReadAccess.IsReadableBy(userId, userEmail), ct);
+
+        if (!readable)
+        {
+            // The list a reader arrived from admits a workspace Owner/Admin to every room in the
+            // workspace (TranslationRoomService.BuildListableRoomsQueryAsync, and the same widening
+            // is now in ListForWorkspaceAsync), so the read of one document has to agree — the
+            // alternative is a library that shows an Admin a card and then reports the meeting does
+            // not exist when they open it. CanAccessRoomAsync guards the room's artifacts the same
+            // way, for the same reason.
+            //
+            // Asked second and only on failure, so the ordinary reader — host, participant,
+            // invitee — never pays a gRPC hop, and a room whose workspace is unknown cannot reach
+            // the directory at all.
+            var workspaceId = await scopedRoom.Select(r => r.WorkspaceId).FirstOrDefaultAsync(ct);
+
+            readable = workspaceId != Guid.Empty
+                && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId, userId, ct);
+        }
 
         if (!readable)
         {
@@ -135,10 +154,39 @@ public class MeetingMinutesService : IMeetingMinutesService
         // as a subquery rather than as a materialised id list on purpose: a workspace's readable
         // rooms is unbounded, and pulling every id into memory to send back as an IN clause is the
         // shape that works in a demo and falls over in a tenant.
-        var readableRoomIds = _unitOfWork.TranslationRoomRepository
+        var workspaceRooms = _unitOfWork.TranslationRoomRepository
             .Query()
-            .Where(r => r.WorkspaceId == workspaceId && r.DeletedAt == null && r.IsActive)
-            .Where(RoomReadAccess.IsReadableBy(userId, userEmail))
+            .Where(r => r.WorkspaceId == workspaceId && r.DeletedAt == null && r.IsActive);
+
+        // A workspace Owner/Admin reads the whole workspace's archive, exactly as they do in the
+        // rooms list.
+        //
+        // WHY THIS CLAUSE EXISTS. RoomReadAccess knows three ways into a room — host, participant,
+        // invited by email — and deliberately does not model workspace role, because that answer
+        // lives in WorkspaceService behind a gRPC call and cannot appear in an EF expression tree.
+        // TranslationRoomService.BuildListableRoomsQueryAsync therefore adds the Owner/Admin
+        // widening itself for the rooms list, which is what the Artifacts library's transcripts
+        // and summaries arrive through. This list was written to RoomReadAccess alone, so ONE PAGE
+        // answered the same question two ways: an Admin who hosted nothing saw every transcript
+        // and every AI summary in the workspace, and zero minutes — the record that is hardest to
+        // reach any other way, since a biên bản has no room panel a reader can guess at.
+        //
+        // The scope is the same one the rooms list widens to and no wider: one workspace's own
+        // non-deleted rooms. Listing a minutes is not permission to act on it — signing, approving
+        // and revising keep their own gates, and a DRAFT still stays with the people who can act
+        // on it (see GetCurrentAsync).
+        //
+        // Host-or-participant is checked FIRST by asking the directory only when the caller is not
+        // already inside the boundary... which cannot be expressed as a short-circuit here, because
+        // the answer narrows a SET rather than a single room. So the directory is asked once per
+        // request, and it never throws: an unreachable WorkspaceService answers false and the list
+        // falls back to the ordinary read boundary rather than failing.
+        var readsWholeWorkspace =
+            await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId, userId, ct);
+
+        var readableRoomIds = (readsWholeWorkspace
+                ? workspaceRooms
+                : workspaceRooms.Where(RoomReadAccess.IsReadableBy(userId, userEmail)))
             .Select(r => r.Id);
 
         var query = _unitOfWork.MeetingMinutesRepository
