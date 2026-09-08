@@ -976,4 +976,160 @@ public class WorkspaceDocumentServiceTests
         await _eventPublisher.DidNotReceiveWithAnyArgs()
             .PublishEmbeddingIndexRequestAsync(default, default, default!, default, default);
     }
+
+    // ---- ai_retrieval, finally asked ---------------------------------------------------------
+    //
+    // The permission has existed as long as the ACL. DocumentAccessEvaluator implements it in
+    // full and the web can grant and revoke it, but every production call site passed `view` or
+    // `download` — the only place the constant reached the evaluator was a unit test. Meanwhile
+    // semantic search could not read a document's ACL at all, so it dropped documents wholesale
+    // for anyone who was not an Owner or Admin. This endpoint is the seam that joins the two.
+
+    private WorkspaceDocument ArrangeIndexedDocument(Guid workspaceId, Guid documentId, string name)
+        => new()
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            Name = name,
+            FileName = $"{name}.pdf",
+            FileExtension = ".pdf",
+            StorageKey = $"documents/{workspaceId}/{documentId}.pdf",
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+            IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString(),
+            LastIndexedAt = DateTime.UtcNow,
+            IsAiAllowed = true,
+            AiEligible = true,
+        };
+
+    private WorkspaceMember ArrangeMemberFor(Guid workspaceId, Guid userId, string roleName = "Member")
+    {
+        var roleId = Guid.NewGuid();
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = roleId,
+            MembershipType = MembershipType.Internal.ToString(),
+        };
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        // GetRoleNameByIdAsync is a thin wrapper over GetRoleByIdAsync, so stubbing the wrapper
+        // configures the wrong call and NSubstitute rejects the type. StubRoleName is the shape
+        // the rest of this file already uses.
+        StubRoleName(roleId, roleName);
+        return member;
+    }
+
+    private void ArrangeDocuments(params WorkspaceDocument[] documents)
+        => _workspaceDocumentRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceDocument, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(documents.ToList());
+
+    private void StubRetrieval(Guid userId, Guid workspaceId, WorkspaceDocument document, bool allowed)
+        => _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, document, WorkspaceDocumentPermissions.AiRetrieval,
+                Arg.Any<WorkspaceMember>(), Arg.Any<string>(),
+                Arg.Any<IEnumerable<WorkspaceDocumentAccessPolicy>>(),
+                Arg.Any<Dictionary<Guid, TranslationRoomDto?>?>(),
+                Arg.Any<Dictionary<Guid, List<TranslationRoomParticipantDto>>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(allowed ? Result.Success() : Result.Failure("Access denied."));
+
+    [Fact]
+    public async Task ListAiRetrievableDocumentIdsAsync_ShouldReturnOnlyWhatTheCallerMayRetrieve()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var mine = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "handbook");
+        var theirs = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "salaries");
+        ArrangeMemberFor(workspaceId, userId);
+        ArrangeDocuments(mine, theirs);
+        StubRetrieval(userId, workspaceId, mine, allowed: true);
+        StubRetrieval(userId, workspaceId, theirs, allowed: false);
+
+        var result = await _documentService.ListAiRetrievableDocumentIdsAsync(workspaceId, userId, 0);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { mine.Id }, result.Value!.DocumentIds);
+        Assert.False(result.Value.Truncated);
+    }
+
+    [Fact]
+    public async Task ListAiRetrievableDocumentIdsAsync_ShouldAskForTheAiRetrievalPermission()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "handbook");
+        ArrangeMemberFor(workspaceId, userId);
+        ArrangeDocuments(document);
+        StubRetrieval(userId, workspaceId, document, allowed: true);
+
+        await _documentService.ListAiRetrievableDocumentIdsAsync(workspaceId, userId, 0);
+
+        // The whole point of the change. Asking for `view` here would hand the assistant every
+        // document the caller can merely open, which is a different and larger set — and would
+        // leave ai_retrieval exactly as dead as it was.
+        await _accessEvaluator.Received(1).EvaluateAccessAsync(
+            userId, workspaceId, document, WorkspaceDocumentPermissions.AiRetrieval,
+            Arg.Any<WorkspaceMember>(), Arg.Any<string>(),
+            Arg.Any<IEnumerable<WorkspaceDocumentAccessPolicy>>(),
+            Arg.Any<Dictionary<Guid, TranslationRoomDto?>?>(),
+            Arg.Any<Dictionary<Guid, List<TranslationRoomParticipantDto>>?>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ListAiRetrievableDocumentIdsAsync_ShouldReportTruncation_RatherThanSilentlyShortening()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var first = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "one");
+        var second = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "two");
+        first.UpdatedAt = DateTime.UtcNow;
+        second.UpdatedAt = DateTime.UtcNow.AddMinutes(-5);
+        ArrangeMemberFor(workspaceId, userId);
+        ArrangeDocuments(first, second);
+        StubRetrieval(userId, workspaceId, first, allowed: true);
+        StubRetrieval(userId, workspaceId, second, allowed: true);
+
+        var result = await _documentService.ListAiRetrievableDocumentIdsAsync(workspaceId, userId, limit: 1);
+
+        // A short list with no flag reads to the person asking as "the assistant does not know
+        // about that document", which is indistinguishable from a permission problem.
+        Assert.True(result.IsSuccess);
+        Assert.Single(result.Value!.DocumentIds);
+        Assert.True(result.Value.Truncated);
+    }
+
+    [Fact]
+    public async Task ListAiRetrievableDocumentIdsAsync_ShouldRefuse_WhenTheCallerIsNotAMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null);
+
+        var result = await _documentService.ListAiRetrievableDocumentIdsAsync(workspaceId, userId, 0);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ListAiRetrievableDocumentIdsAsync_ShouldRefuse_WhenTheWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangeMemberFor(workspaceId, userId);
+        ArrangeSuspendedWorkspace(workspaceId);
+
+        var result = await _documentService.ListAiRetrievableDocumentIdsAsync(workspaceId, userId, 0);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
 }

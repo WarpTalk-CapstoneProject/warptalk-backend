@@ -78,6 +78,181 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     /// this service and nothing else, so this is the real choke point; and the list path evaluates
     /// N documents per call, which would turn one workspace lookup into N.
     /// </remarks>
+    /// <summary>
+    /// Pre-load the meetings behind a set of documents, for an External member.
+    /// </summary>
+    /// <remarks>
+    /// Only External members need it: they reach a meeting-sourced document through the
+    /// participant-plus-grace-period exception in <see cref="IDocumentAccessEvaluator"/>, and
+    /// answering that per document would be two gRPC round trips each. Internal members never
+    /// take that branch, so the caches stay null and nothing is fetched.
+    ///
+    /// Shared by the document list and the AI-retrievable id list rather than copied into the
+    /// second one. Both ask the evaluator the same question over the same documents; a private
+    /// copy of the fetching would be a second place for the External rule to go quietly wrong.
+    /// </remarks>
+    private async Task<(Dictionary<Guid, TranslationRoomDto?>?, Dictionary<Guid, List<TranslationRoomParticipantDto>>?)> BuildMeetingCachesAsync(
+        WorkspaceMember member,
+        IEnumerable<WorkspaceDocument> documents,
+        CancellationToken ct)
+    {
+        if (!string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, null);
+        }
+
+        var meetingIds = documents
+            .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
+            .Select(d => d.SourceId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (meetingIds.Count == 0)
+        {
+            return (null, null);
+        }
+
+        var roomCache = new Dictionary<Guid, TranslationRoomDto?>();
+        var participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
+
+        var roomTasks = meetingIds.Select(async id =>
+        {
+            var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
+            return (id, room);
+        }).ToList();
+
+        var participantTasks = meetingIds.Select(async id =>
+        {
+            var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
+            return (id, participants);
+        }).ToList();
+
+        await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
+
+        foreach (var task in roomTasks)
+        {
+            var res = await task;
+            roomCache[res.id] = res.room;
+        }
+
+        foreach (var task in participantTasks)
+        {
+            var res = await task;
+            participantsCache[res.id] = res.participants;
+        }
+
+        return (roomCache, participantsCache);
+    }
+
+    /// <summary>
+    /// The documents this caller may have the assistant answer from.
+    /// </summary>
+    /// <remarks>
+    /// WHY THIS ENDPOINT EXISTS AT ALL.
+    ///
+    /// `ai_retrieval` has been one of three document permissions since the ACL was written.
+    /// DocumentAccessEvaluator implements it in full — status, retention, ingestion, AiEligible,
+    /// then the per-subject policies and the hierarchy above them — and the web can grant and
+    /// revoke it per user and per role. Nothing ever asked it. Every production call site passed
+    /// `view` or `download`; the only place the constant reached the evaluator was a unit test.
+    ///
+    /// Meanwhile the assistant's semantic search could not consult a document's ACL at all, so it
+    /// excluded documents wholesale for anyone who was not an Owner or Admin. Safe, and blunt:
+    /// members lost every document answer they were entitled to, and the permission the UI
+    /// offered them changed nothing either way.
+    ///
+    /// This is the seam that joins the two. The AI path asks this endpoint AS THE CALLER, gets
+    /// the ids it may retrieve, and scopes the vector query to them — the same shape the meeting
+    /// allowlist already uses. The authorization stays here, in the one evaluator that knows the
+    /// rules; Python never re-implements an ACL.
+    ///
+    /// NO RE-INDEX IS NEEDED, contrary to what the phase-2 note in search_worker.py assumed. That
+    /// note was about putting the ACL itself into the vector payload. An allowlist does not need
+    /// it: filtering on a document id only needs the document id, and RedisEmbeddingIndexPublisher
+    /// has always written `source_id` for document chunks.
+    ///
+    /// Capped, and the cap is reported. A workspace with more retrievable documents than the cap
+    /// would otherwise have the tail silently excluded, which reads to the asker as "the
+    /// assistant does not know about that document" — the exact failure this whole change is
+    /// trying to stop being invisible.
+    /// </remarks>
+    public async Task<Result<AiRetrievableDocumentsDto>> ListAiRetrievableDocumentIdsAsync(
+        Guid workspaceId,
+        Guid userId,
+        int limit,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<AiRetrievableDocumentsDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<AiRetrievableDocumentsDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var effectiveLimit = limit <= 0
+                ? WorkspaceDocumentConstants.DefaultAiRetrievableIdLimit
+                : Math.Min(limit, WorkspaceDocumentConstants.MaxAiRetrievableIdLimit);
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+
+            var allPolicies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FindAsync(
+                p => p.WorkspaceId == workspaceId, "", ct);
+            var policiesByDoc = allPolicies.ToLookup(p => p.DocumentId);
+
+            // AiEligible is the cheap pre-filter, and it is the one the index itself tracks: a
+            // document that has never been embedded cannot be returned by a vector search, so
+            // evaluating the rest of the ACL over it would be work for an id nobody can match.
+            // The evaluator still re-checks it — this narrows the set, it does not decide it.
+            var documents = await _unitOfWork.WorkspaceDocumentRepository.FindAsync(
+                d => d.WorkspaceId == workspaceId && d.DeletedAt == null && d.AiEligible, "", ct);
+
+            var ordered = documents.OrderByDescending(d => d.UpdatedAt == default ? d.CreatedAt : d.UpdatedAt).ToList();
+            var (roomCache, participantsCache) = await BuildMeetingCachesAsync(member, ordered, ct);
+
+            var ids = new List<Guid>();
+            var truncated = false;
+            foreach (var doc in ordered)
+            {
+                if (ids.Count >= effectiveLimit)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                var accessResult = await _accessEvaluator.EvaluateAccessAsync(
+                    userId,
+                    workspaceId,
+                    doc,
+                    WorkspaceDocumentPermissions.AiRetrieval,
+                    member,
+                    roleName,
+                    policiesByDoc[doc.Id],
+                    roomCache,
+                    participantsCache,
+                    ct);
+
+                if (accessResult.IsSuccess)
+                {
+                    ids.Add(doc.Id);
+                }
+            }
+
+            return Result.Success(new AiRetrievableDocumentsDto(ids, truncated));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while listing AI-retrievable documents. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<AiRetrievableDocumentsDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
     private async Task<bool> IsWorkspaceOperationalAsync(Guid workspaceId, CancellationToken ct)
     {
         var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
@@ -248,49 +423,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     SearchTextHelper.Matches(d.FileName, search));
             }
 
-            Dictionary<Guid, TranslationRoomDto?>? roomCache = null;
-            Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null;
-
-            if (string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                var meetingIds = filteredDocs
-                    .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
-                    .Select(d => d.SourceId!.Value)
-                    .Distinct()
-                    .ToList();
-
-                if (meetingIds.Any())
-                {
-                    roomCache = new Dictionary<Guid, TranslationRoomDto?>();
-                    participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
-
-                    var roomTasks = meetingIds.Select(async id =>
-                    {
-                        var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
-                        return (id, room);
-                    }).ToList();
-
-                    var participantTasks = meetingIds.Select(async id =>
-                    {
-                        var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
-                        return (id, participants);
-                    }).ToList();
-
-                    await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
-
-                    foreach (var task in roomTasks)
-                    {
-                        var res = await task;
-                        roomCache[res.id] = res.room;
-                    }
-
-                    foreach (var task in participantTasks)
-                    {
-                        var res = await task;
-                        participantsCache[res.id] = res.participants;
-                    }
-                }
-            }
+            var (roomCache, participantsCache) = await BuildMeetingCachesAsync(member, filteredDocs, ct);
 
             var allowedDtos = new List<WorkspaceDocumentDto>();
             foreach (var doc in filteredDocs)
