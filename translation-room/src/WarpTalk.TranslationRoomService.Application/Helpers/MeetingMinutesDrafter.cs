@@ -100,16 +100,20 @@ public static class MeetingMinutesDrafter
     }
 
     /// <summary>
-    /// The meeting title carried inside a content document, for the <c>meeting_title</c> column.
+    /// The meeting title carried inside a content document, for <c>MeetingMinutesDto.MeetingTitle</c>.
     ///
-    /// That column is a projection of this value, so it is read back out of the JSON rather than
-    /// taken from the room: the secretary can retitle the document in their editor, and the column
-    /// has to follow what they wrote, not what the room is called.
+    /// Read out of the JSON on the way out rather than stored anywhere. Underneath, a biên bản is
+    /// identified by its number and nothing else; this is a display name, and deriving it means
+    /// there is no second copy that can disagree with the document it names. It follows what the
+    /// secretary wrote in their editor, not what the room is called — renaming a room must not
+    /// retitle a document somebody has already signed.
     ///
     /// Returns null for absent, blank, or unparseable content. Null means "not recorded" and a
-    /// reader falls back to the room title for display — it never means the meeting had no name.
-    /// Trimmed and clamped to the column's 255, so a title longer than the column cannot fail the
-    /// write of an otherwise valid document.
+    /// caller falls back to the room title for display — it never means the meeting had no name.
+    ///
+    /// Trimmed, and bounded at 255 to match <c>translation_rooms.title</c>, which is where every
+    /// drafted title comes from. Only a hand-edited document can exceed it, and a card is a poor
+    /// place to discover that somebody pasted an essay into the title field.
     /// </summary>
     public static string? TitleFrom(string? contentJson)
     {
