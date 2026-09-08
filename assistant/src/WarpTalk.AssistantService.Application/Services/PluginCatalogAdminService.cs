@@ -338,11 +338,19 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         var installationCount = await _unitOfWork.PluginInstallationRepository.CountForPluginAsync(plugin.Id, ct);
         var connectionCount = await _unitOfWork.PluginConnectionRepository.CountForPluginAsync(plugin.Id, ct);
 
+        // Counted for both branches, not only for the delete. plugin_tool_audits and
+        // plugin_confirmation_tokens reference plugins(id) ON DELETE CASCADE, so unlike the two
+        // counts above they do not stand in a hard delete's way - they go into it, in the same
+        // statement, with no error and nothing in the response to say so.
+        var auditCount = await _unitOfWork.PluginToolAuditRepository.CountForPluginAsync(plugin.Id, ct);
+        var confirmationTokenCount = await _unitOfWork.PluginConfirmationTokenRepository.CountForPluginAsync(plugin.Id, ct);
+
         if (!hard)
         {
             plugin.IsActive = false;
             await StampAndSaveAsync(plugin, adminUserId, ct);
-            return Result.Success(new PluginCatalogDeleteResultDto(plugin.PluginKey, false, installationCount, connectionCount));
+            return Result.Success(new PluginCatalogDeleteResultDto(
+                plugin.PluginKey, false, installationCount, connectionCount, auditCount, confirmationTokenCount));
         }
 
         // plugin_connections_plugin_id_fkey is ON DELETE RESTRICT, so a hard delete against a
@@ -359,9 +367,36 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 PluginConstants.ErrorCodes.PluginInUse);
         }
 
+        // The guard above is not enough, and the case it misses is the ordinary one: everybody
+        // uninstalls a plugin before it is retired, which zeroes the installations and connections
+        // and leaves every audit row exactly where it was. Passing the check and then cascading
+        // away months of plugin_tool_audits is not a cleanup - those are the compliance records
+        // that the workspace plugin-usage endpoint added by this same ticket exists to serve, and
+        // they are the record of what the plugin did, which is precisely what is worth keeping
+        // about a plugin nobody uses any more.
+        //
+        // So audits refuse the delete, as installations and connections do. The retirement path is
+        // unaffected and is the right answer here anyway: is_active = false removes the row from
+        // every catalog, and the FKs - and therefore the history - stay intact. A row that has
+        // never been used still hard-deletes, which is the case a hard delete is actually for:
+        // undoing a typo in a freshly created MCP row.
+        //
+        // Confirmation tokens deliberately do not gate. One lives five minutes and is useful only
+        // to the single user mid-call on the plugin being deleted, so cascading them is not data
+        // loss; the count is carried into the response rather than into this refusal.
+        if (auditCount > 0)
+        {
+            return Result.Failure<PluginCatalogDeleteResultDto>(
+                $"'{plugin.PluginKey}' cannot be hard-deleted: {auditCount} tool audit record(s) reference it, "
+                + "and plugin_tool_audits cascades - deleting the row would destroy them with no way back. "
+                + "Retire it instead - a soft delete hides it from every catalog and keeps its history readable.",
+                PluginConstants.ErrorCodes.PluginInUse);
+        }
+
         _unitOfWork.PluginRepository.Remove(plugin);
         await _unitOfWork.SaveChangesAsync(ct);
-        return Result.Success(new PluginCatalogDeleteResultDto(plugin.PluginKey, true, 0, 0));
+        return Result.Success(new PluginCatalogDeleteResultDto(
+            plugin.PluginKey, true, 0, 0, 0, confirmationTokenCount));
     }
 
     public async Task<Result<PluginToolAuditPageDto>> ListAuditsAsync(

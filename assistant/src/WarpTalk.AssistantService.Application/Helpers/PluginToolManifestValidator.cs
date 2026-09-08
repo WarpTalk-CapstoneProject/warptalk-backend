@@ -139,10 +139,7 @@ internal static partial class PluginToolManifestValidator
                 description,
                 effect,
                 scopes,
-                parameters ?? new JsonObject(),
-                Trimmed(tool.ResourceKey),
-                Trimmed(tool.ResourceLabel),
-                Trimmed(tool.ResourceAvatarUrl)));
+                parameters ?? new JsonObject()));
         }
 
         return errors.Count > 0 ? (errors, []) : (errors, descriptors);
@@ -256,7 +253,4 @@ internal static partial class PluginToolManifestValidator
         node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     private static string Describe(JsonNode? node) => node is null ? "nothing" : $"\"{node}\"";
-
-    private static string? Trimmed(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

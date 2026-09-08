@@ -54,4 +54,15 @@ public interface IPluginToolAuditRepository : IGenericRepository<PluginToolAudit
         int skip,
         int take,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// How many audit rows a catalog row would take with it if it were deleted. WT-646.
+    /// </summary>
+    /// <remarks>
+    /// <c>plugin_tool_audits_plugin_id_fkey</c> is <c>ON DELETE CASCADE</c>, so this number is not
+    /// informational - it is the number of compliance records a hard delete destroys silently, in
+    /// the same statement and with no error. The catalog admin service asks before deleting for
+    /// that reason and for no other.
+    /// </remarks>
+    Task<int> CountForPluginAsync(Guid pluginId, CancellationToken ct = default);
 }

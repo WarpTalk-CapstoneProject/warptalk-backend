@@ -50,6 +50,13 @@ public static class PluginConstants
     /// the backstop for every write path that does not come through this code - hand-run SQL
     /// included. Declaring a new literal route reserved means adding it here AND in a migration.
     /// </para>
+    /// <para>
+    /// The two must agree on case as well as on the list. <see cref="IsReservedPluginKey"/> is
+    /// case-insensitive because the router is; the constraint was written exact, which let a
+    /// hand-run insert of <c>Catalog</c> through and handed that row's user-facing routes to the
+    /// admin controller anyway. 20260909100000 rewrote it as <c>lower(plugin_key) NOT IN (...)</c>.
+    /// A name added here has to be added in lower case, and matched the same way at both ends.
+    /// </para>
     /// </remarks>
     public static readonly IReadOnlyList<string> ReservedPluginKeys = ["mcp", "catalog"];
 
@@ -158,11 +165,18 @@ public static class PluginConstants
         public const string InvalidToolManifest = "invalid_tool_manifest";
 
         /// <summary>
-        /// A hard delete was refused because installations or connections still reference the row.
+        /// A hard delete was refused because installations, connections or recorded tool audits
+        /// still reference the row.
+        /// </summary>
+        /// <remarks>
+        /// The three are refused for two different reasons.
         /// <c>plugin_connections_plugin_id_fkey</c> is <c>ON DELETE RESTRICT</c>, so letting the
         /// delete through would surface as a database exception rather than an answer; refusing it
-        /// here is the same outcome said in words an operator can act on.
-        /// </summary>
+        /// is the same outcome said in words an operator can act on.
+        /// <c>plugin_tool_audits_plugin_id_fkey</c> is the opposite - <c>ON DELETE CASCADE</c>, so
+        /// the delete would succeed and take the plugin's entire recorded history with it without
+        /// saying anything at all. Retiring the row keeps both intact.
+        /// </remarks>
         public const string PluginInUse = "plugin_in_use";
 
         /// <summary>

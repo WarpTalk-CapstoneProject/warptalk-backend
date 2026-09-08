@@ -141,19 +141,32 @@ SELECT
     true
 FROM new_rows AS n
 LEFT JOIN grouped AS g ON g.target_key = n.plugin_key
+-- The conflict branch repairs the two columns an operator can never have authored, and touches
+-- nothing else.
+--
+-- provider and kind are structural: they are what 20260907101000 keys a user's OAuth grant by and
+-- what the orchestrator dispatches on, no admin endpoint writes either, and a row carrying the
+-- wrong one is broken rather than merely differently curated. Repairing those is this migration
+-- re-asserting its own decision.
+--
+-- label, description, avatar_url, required_scopes_json and tools_json are not structural: every
+-- one of them is editable through the admin catalog API that 20260907102000 exists to support, and
+-- tools_json is editable tool by tool through PUT catalog/{key}/tools. Copying them back off the
+-- legacy google_workspace row would silently revert an operator's curation to a snapshot of a row
+-- this very migration retires -- and would revert it again on every subsequent re-run, with no
+-- trace of what was overwritten. The same reasoning already kept `is_active` out of this branch
+-- (20260907102000 hands operators a portal that can deactivate a row, and a re-run must not undo
+-- that); it applies with equal force to the other five. Creating these rows is this migration's
+-- job; deciding what they say afterwards is not.
+--
+-- The WHERE is what makes a genuine re-run a true no-op rather than an updated_at churn: with the
+-- structural columns already correct, the branch writes nothing at all.
 ON CONFLICT (plugin_key) DO UPDATE SET
-    label = EXCLUDED.label,
-    description = EXCLUDED.description,
-    avatar_url = EXCLUDED.avatar_url,
     provider = EXCLUDED.provider,
     kind = EXCLUDED.kind,
-    required_scopes_json = EXCLUDED.required_scopes_json,
-    tools_json = EXCLUDED.tools_json,
-    updated_at = now();
--- Note the absence of `is_active = true` in the conflict branch, which the 20260823090000 seed
--- did have. 20260907102000 hands operators an admin portal that can deactivate a catalog row; a
--- re-run of this migration must not quietly undo that decision. Creating the row active is this
--- migration's job; keeping it active is not.
+    updated_at = now()
+WHERE assistant.plugins.provider IS DISTINCT FROM EXCLUDED.provider
+   OR assistant.plugins.kind IS DISTINCT FROM EXCLUDED.kind;
 
 -- Carry every existing google_workspace installation onto all three product rows. A user who had
 -- the combined plugin installed had all five tools available, so all three successors start

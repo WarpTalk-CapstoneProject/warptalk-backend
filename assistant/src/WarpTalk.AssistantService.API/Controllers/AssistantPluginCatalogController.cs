@@ -173,6 +173,13 @@ public class AssistantPluginCatalogController : ControllerBase
     /// <c>plugin_connections_plugin_id_fkey</c> has been <c>ON DELETE RESTRICT</c> since
     /// 20260907101000, so a hard delete against a referenced row would come back as a database
     /// exception. It is refused here instead, with the counts that explain the refusal.
+    /// <para>
+    /// A row with recorded tool audits is refused too, for the opposite reason:
+    /// <c>plugin_tool_audits_plugin_id_fkey</c> cascades, so nothing would stop that delete and
+    /// nothing would report it either. The response carries the installation, connection, audit and
+    /// confirmation-token counts whichever way the call goes, so "what is still attached to this
+    /// row" is answered rather than inferred.
+    /// </para>
     /// </remarks>
     [HttpDelete("{pluginKey}")]
     [ProducesResponseType(typeof(PluginCatalogDeleteResultDto), StatusCodes.Status200OK)]
