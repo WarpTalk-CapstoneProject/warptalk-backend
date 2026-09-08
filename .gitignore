@@ -45,3 +45,7 @@ Thumbs.db
 .env
 *.local
 appsettings.Development.json
+
+# Voice samples people upload. Personal data - never in the repository.
+auth/src/WarpTalk.AuthService.API/uploads/
+**/uploads/voice-samples/

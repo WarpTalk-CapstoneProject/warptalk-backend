@@ -378,6 +378,76 @@ public class VoiceProfileService : IVoiceProfileService
         return name.Length <= DisplayNameMaxLength ? name : name[..DisplayNameMaxLength];
     }
 
+    public async Task<Result<VoiceSampleContent>> GetSampleAsync(
+        Guid userId, Guid profileId, CancellationToken ct = default)
+    {
+        try
+        {
+            var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            var profile = profiles.FirstOrDefault(p => p.Id == profileId && p.DeletedAt == null);
+
+            // NotFound rather than Forbidden for a profile that is not theirs. Telling somebody
+            // "that exists but is not yours" is how a list of ids gets enumerated.
+            if (profile is null)
+            {
+                return Result.Failure<VoiceSampleContent>(
+                    "That voice profile could not be found.", ErrorCodes.NotFound);
+            }
+
+            var samples = await _unitOfWork.VoiceSampleRepository.FindAsync(
+                v => v.VoiceProfileId == profileId && v.DeletedAt == null, "", ct);
+
+            // The newest recording, and only one that still HAS its audio: contains_raw_audio goes
+            // false when a sample has been reduced to its embedding, and the row outlives the file.
+            var sample = samples
+                .Where(v => v.ContainsRawAudio && !string.IsNullOrWhiteSpace(v.FileUrl))
+                .OrderByDescending(v => v.CreatedAt)
+                .FirstOrDefault();
+
+            if (sample is null)
+            {
+                // Distinct from NotFound above: the profile is theirs, there is simply nothing to
+                // play — a library pick has no recording behind it, and neither does a clone whose
+                // audio has been discarded.
+                return Result.Failure<VoiceSampleContent>(
+                    "There is no recording stored for this voice.", ErrorCodes.InvalidState);
+            }
+
+            await using var stream = await _storage.ReadAsync(sample.FileUrl!, ct);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+
+            var extension = Path.GetExtension(sample.FileUrl) is { Length: > 0 } ext ? ext : ".wav";
+            return Result.Success(new VoiceSampleContent(
+                buffer.ToArray(),
+                ContentTypeFor(extension),
+                $"{profile.DisplayName ?? "voice-sample"}{extension}"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error reading the voice sample for profile {ProfileId}.", profileId);
+            return Result.Failure<VoiceSampleContent>(
+                "That recording could not be read.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
+        }
+    }
+
+    /// <summary>
+    /// The media type for a stored sample, from the extension it was saved under.
+    ///
+    /// CreateProfileAsync keeps the uploader's extension and validates the upload against
+    /// AllowedContentTypes, so this is reversing a decision already made rather than sniffing.
+    /// </summary>
+    private static string ContentTypeFor(string extension) => extension.ToLowerInvariant() switch
+    {
+        ".wav" => "audio/wav",
+        ".mp3" or ".mpeg" => "audio/mpeg",
+        ".m4a" or ".mp4" => "audio/mp4",
+        ".ogg" => "audio/ogg",
+        ".webm" => "audio/webm",
+        _ => "application/octet-stream",
+    };
+
     public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Language))
