@@ -61,11 +61,46 @@ public record PluginConnectUrlDto(string Url);
 /// anything re-fetched later would defeat the check.
 /// </para>
 /// </remarks>
+/// <param name="Client">
+/// Which surface started the flow - <c>web</c> or <c>desktop</c>. It rides inside the sealed state
+/// rather than on the redirect's query string on purpose: the callback page turns it into a
+/// <c>warptalk://</c> deep link, and a value an attacker could set in a link would be a value that
+/// makes someone else's browser open the desktop app.
+/// </param>
 public record PluginOAuthStateDto(
     Guid UserId,
     string PluginKey,
     string? CodeVerifier = null,
-    string? Issuer = null);
+    string? Issuer = null,
+    string? Client = null);
+
+/// <summary>
+/// What a finished OAuth callback has to say, in the terms the redirect needs.
+/// </summary>
+/// <remarks>
+/// Deliberately not a <c>Result</c>. A callback is reached by a browser following a redirect, so
+/// there is no caller who can act on a failure - every ending, including the ones that used to
+/// throw, has to become a page the user lands on. Modelling that as a value rather than as an
+/// error is what keeps the controller from having to decide what an exception means.
+/// </remarks>
+/// <param name="Status">One of <see cref="Domain.Constants.PluginConstants.CallbackStatus"/>.</param>
+/// <param name="Reason">
+/// An error code from <see cref="Domain.Constants.PluginConstants.ErrorCodes"/> when
+/// <paramref name="Status"/> is <c>error</c>; null otherwise. It picks which sentence the plugins
+/// page shows, so it stays a small closed set rather than a message.
+/// </param>
+/// <param name="Provider">
+/// The provider that was being connected, when the state named a plugin we could resolve. Null
+/// when the state itself did not survive, which is the one case where nothing about the flow is
+/// known.
+/// </param>
+public record PluginOAuthCallbackOutcomeDto(
+    string Status,
+    string? Reason,
+    string? Provider,
+    string? PluginKey,
+    string Client,
+    PluginConnectionStatusDto? Connection);
 
 public record PluginOAuthTokenDto(
     string? ProviderAccountId,

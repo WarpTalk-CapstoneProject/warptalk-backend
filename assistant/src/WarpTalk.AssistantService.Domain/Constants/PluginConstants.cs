@@ -74,6 +74,41 @@ public static class PluginConstants
         public const string Write = "write";
     }
 
+    /// <summary>
+    /// Which surface a connect flow started from, carried inside the sealed OAuth state.
+    /// </summary>
+    /// <remarks>
+    /// The desktop app opens the provider's consent page in the system browser, so the browser -
+    /// not the app - is holding the result when consent finishes. This is what lets the callback
+    /// page know it has to hand the user back through a deep link instead of just rendering.
+    /// </remarks>
+    public static class OAuthClient
+    {
+        public const string Web = "web";
+        public const string Desktop = "desktop";
+
+        /// <summary>Anything unrecognised is treated as web: the safe direction is to not deep-link.</summary>
+        public static string Normalize(string? value) =>
+            string.Equals(value, Desktop, StringComparison.Ordinal) ? Desktop : Web;
+    }
+
+    /// <summary>
+    /// How a connect flow ended, as the callback redirect reports it.
+    /// </summary>
+    public static class CallbackStatus
+    {
+        public const string Connected = "connected";
+
+        /// <summary>
+        /// The grant is real but narrower than the plugin asked for - the user unticked a scope on
+        /// the provider's consent screen. Distinct from <see cref="Error"/> because there is
+        /// nothing to retry: the connection works, part of the plugin does not.
+        /// </summary>
+        public const string Partial = "partial";
+
+        public const string Error = "error";
+    }
+
     public static class ErrorCodes
     {
         public const string PluginNotInstalled = "plugin_not_installed";
@@ -85,6 +120,14 @@ public static class PluginConstants
         public const string ProviderUnavailable = "provider_unavailable";
         public const string UnknownPlugin = "unknown_plugin";
         public const string UnknownTool = "unknown_tool";
+
+        /// <summary>
+        /// Our own OAuth configuration is missing or wrong - an empty client secret, a client id
+        /// the provider does not recognise. Separated from <see cref="ProviderUnavailable"/>
+        /// because the two need opposite words: one tells the user to try again later, the other
+        /// tells them no amount of retrying will help and an operator has to act.
+        /// </summary>
+        public const string ProviderConfiguration = "provider_configuration";
 
         /// <summary>
         /// Every rung of the client-registration ladder was exhausted: the row has no

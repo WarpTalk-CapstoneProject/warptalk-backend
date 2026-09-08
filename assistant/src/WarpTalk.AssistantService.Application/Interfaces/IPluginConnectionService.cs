@@ -5,8 +5,28 @@ namespace WarpTalk.AssistantService.Application.Interfaces;
 
 public interface IPluginConnectionService
 {
-    Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(string pluginKey, Guid userId, CancellationToken ct = default);
-    Task<Result<PluginConnectionStatusDto>> CompleteOAuthCallbackAsync(string pluginKey, string code, string state, CancellationToken ct = default);
+    /// <param name="client">
+    /// Which surface is asking - see <see cref="Domain.Constants.PluginConstants.OAuthClient"/>.
+    /// It is sealed into the state here so the callback can tell, several minutes and one external
+    /// browser later, whether it has to hand the user back to the desktop app.
+    /// </param>
+    Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
+        string pluginKey,
+        Guid userId,
+        string? client = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Completes a provider callback and says what the user should land on.
+    /// </summary>
+    /// <remarks>
+    /// Never throws for anything the flow can hit - a missing client secret, a provider that
+    /// refuses the exchange, a database that will not write. Those all become an outcome carrying
+    /// a reason, because the caller here is a browser mid-redirect: an exception escaping this
+    /// method is a raw JSON error page in a user's face on the API domain, which is exactly what
+    /// this signature exists to prevent.
+    /// </remarks>
+    Task<PluginOAuthCallbackOutcomeDto> CompleteOAuthCallbackAsync(string pluginKey, string code, string state, CancellationToken ct = default);
 
     /// <summary>
     /// Completes the callback for a <c>kind='mcp'</c> plugin, which arrives on one fixed redirect
@@ -24,7 +44,7 @@ public interface IPluginConnectionService
     /// compared against the issuer recorded before the redirect, which is what closes
     /// authorization-server mix-up.
     /// </param>
-    Task<Result<PluginConnectionStatusDto>> CompleteMcpOAuthCallbackAsync(
+    Task<PluginOAuthCallbackOutcomeDto> CompleteMcpOAuthCallbackAsync(
         string code,
         string state,
         string? issuer = null,

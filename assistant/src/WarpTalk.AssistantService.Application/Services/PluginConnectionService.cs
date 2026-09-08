@@ -44,7 +44,11 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     private IPluginOAuthClient OAuthClientFor(Plugin plugin) =>
         _providerResolver.ResolveOAuthClient(plugin.Kind);
 
-    public async Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(string pluginKey, Guid userId, CancellationToken ct = default)
+    public async Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
+        string pluginKey,
+        Guid userId,
+        string? client = null,
+        CancellationToken ct = default)
     {
         var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
@@ -72,13 +76,15 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         // Prepare, then seal, then build: the provider produces the secrets that must round-trip
         // (a PKCE verifier), those go inside the sealed state, and only then can a URL carrying
         // that state be assembled.
-        var flowState = oauthClient.PrepareState(plugin, new PluginOAuthStateDto(userId, pluginKey));
+        var flowState = oauthClient.PrepareState(
+            plugin,
+            new PluginOAuthStateDto(userId, pluginKey, Client: PluginConstants.OAuthClient.Normalize(client)));
         var state = _stateProtector.Protect(flowState);
         var url = oauthClient.BuildAuthorizationUrl(plugin, scopes, state, flowState);
         return Result.Success(new PluginConnectUrlDto(url));
     }
 
-    public async Task<Result<PluginConnectionStatusDto>> CompleteOAuthCallbackAsync(
+    public async Task<PluginOAuthCallbackOutcomeDto> CompleteOAuthCallbackAsync(
         string pluginKey,
         string code,
         string state,
@@ -86,19 +92,19 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     {
         var unprotected = UnprotectState(state);
         if (!unprotected.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+            return Failed(unprotected.ErrorCode!);
 
         var oauthState = unprotected.Value!;
 
         // A per-plugin callback path carries the key twice, so the two must agree: a mismatch means
         // the state does not belong to the URL it arrived on.
         if (!string.Equals(oauthState.PluginKey, pluginKey, StringComparison.Ordinal))
-            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
+            return Failed(PluginConstants.ErrorCodes.PermissionDenied, oauthState.Client);
 
         return await CompleteCallbackAsync(oauthState, code, ct);
     }
 
-    public async Task<Result<PluginConnectionStatusDto>> CompleteMcpOAuthCallbackAsync(
+    public async Task<PluginOAuthCallbackOutcomeDto> CompleteMcpOAuthCallbackAsync(
         string code,
         string state,
         string? issuer = null,
@@ -106,7 +112,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     {
         var unprotected = UnprotectState(state);
         if (!unprotected.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+            return Failed(unprotected.ErrorCode!);
 
         // No key in the path to cross-check against - the protected state is the only source, which
         // is exactly why it is integrity-protected rather than merely opaque.
@@ -114,7 +120,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         var issuerCheck = ValidateIssuer(oauthState, issuer);
         if (!issuerCheck.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(issuerCheck.Error!, issuerCheck.ErrorCode);
+            return Failed(issuerCheck.ErrorCode!, oauthState.Client);
 
         return await CompleteCallbackAsync(oauthState, code, ct);
     }
@@ -161,90 +167,176 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         }
     }
 
-    private async Task<Result<PluginConnectionStatusDto>> CompleteCallbackAsync(
+    /// <summary>
+    /// The shared tail of both callbacks: redeem the code, store the grant, and say what happened.
+    /// </summary>
+    /// <remarks>
+    /// Everything from the token exchange onwards runs inside one <c>catch</c>. The exchange calls
+    /// a provider over the network with credentials read from configuration, and the write that
+    /// follows touches the database - so an empty client secret, a provider outage and a failed
+    /// save all end here. Before this, each of them escaped as an exception and reached the user
+    /// as a JSON error page on the API domain, because a callback's caller is a browser following
+    /// a redirect and has nowhere to put an exception.
+    /// </remarks>
+    private async Task<PluginOAuthCallbackOutcomeDto> CompleteCallbackAsync(
         PluginOAuthStateDto oauthState,
         string code,
         CancellationToken ct)
     {
         var pluginKey = oauthState.PluginKey;
+        var client = PluginConstants.OAuthClient.Normalize(oauthState.Client);
+        string? provider = null;
 
-        var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
-        if (plugin == null)
-            return Result.Failure<PluginConnectionStatusDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
-
-        var installed = await _unitOfWork.PluginInstallationRepository.AnyAsync(
-            i => i.UserId == oauthState.UserId
-                && i.PluginId == plugin.Id
-                && i.Status == PluginConstants.InstallationStatus.Installed,
-            ct);
-
-        if (!installed)
-            return Result.Failure<PluginConnectionStatusDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
-
-        var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, ct);
-        var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
-            c => c.UserId == oauthState.UserId && c.PluginId == plugin.Id, ct: ct);
-        var now = DateTime.UtcNow;
-        var canReuseStoredRefreshToken = connection is
+        try
         {
-            Status: PluginConstants.ConnectionStatus.Connected,
-            EncryptedRefreshToken: not null
-        } && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken);
+            var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
+            if (plugin == null)
+                return Failed(PluginConstants.ErrorCodes.UnknownPlugin, client, pluginKey: pluginKey);
 
-        if (connection == null)
-        {
-            connection = new PluginConnection
+            provider = plugin.Provider;
+
+            var installed = await _unitOfWork.PluginInstallationRepository.AnyAsync(
+                i => i.UserId == oauthState.UserId
+                    && i.PluginId == plugin.Id
+                    && i.Status == PluginConstants.InstallationStatus.Installed,
+                ct);
+
+            if (!installed)
+                return Failed(PluginConstants.ErrorCodes.PluginNotInstalled, client, provider, pluginKey);
+
+            var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, ct);
+            var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
+                c => c.UserId == oauthState.UserId && c.PluginId == plugin.Id, ct: ct);
+            var now = DateTime.UtcNow;
+            var canReuseStoredRefreshToken = connection is
             {
-                Id = Guid.NewGuid(),
-                UserId = oauthState.UserId,
-                PluginId = plugin.Id,
-                CreatedAt = now,
-            };
-            await _unitOfWork.PluginConnectionRepository.AddAsync(connection, ct);
-        }
-        else
-        {
-            _unitOfWork.PluginConnectionRepository.Update(connection);
-        }
+                Status: PluginConstants.ConnectionStatus.Connected,
+                EncryptedRefreshToken: not null
+            } && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken);
 
-        connection.ProviderAccountId = token.ProviderAccountId;
-        connection.ProviderEmail = token.ProviderEmail;
-        connection.ScopesJson = JsonSerializer.Serialize(token.GrantedScopes);
-        connection.UpdatedAt = now;
+            if (connection == null)
+            {
+                connection = new PluginConnection
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = oauthState.UserId,
+                    PluginId = plugin.Id,
+                    CreatedAt = now,
+                };
+                await _unitOfWork.PluginConnectionRepository.AddAsync(connection, ct);
+            }
+            else
+            {
+                _unitOfWork.PluginConnectionRepository.Update(connection);
+            }
 
-        if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
-        {
-            connection.Status = PluginConstants.ConnectionStatus.Expired;
-            connection.EncryptedAccessToken = null;
-            connection.EncryptedRefreshToken = null;
-            connection.AccessTokenExpiresAt = null;
-            connection.TokenRotatedAt = null;
+            connection.ProviderAccountId = token.ProviderAccountId;
+            connection.ProviderEmail = token.ProviderEmail;
+            connection.ScopesJson = JsonSerializer.Serialize(token.GrantedScopes);
+            connection.UpdatedAt = now;
+
+            if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
+            {
+                connection.Status = PluginConstants.ConnectionStatus.Expired;
+                connection.EncryptedAccessToken = null;
+                connection.EncryptedRefreshToken = null;
+                connection.AccessTokenExpiresAt = null;
+                connection.TokenRotatedAt = null;
+                await _unitOfWork.SaveChangesAsync(ct);
+
+                // A consent that came back without a refresh token leaves nothing to act with later.
+                // The row is honest about that (`expired`), and the user is told to connect again
+                // rather than shown a success they cannot use.
+                return new PluginOAuthCallbackOutcomeDto(
+                    PluginConstants.CallbackStatus.Error,
+                    PluginConstants.ErrorCodes.ConnectionRequired,
+                    provider,
+                    pluginKey,
+                    client,
+                    new PluginConnectionStatusDto(
+                        pluginKey,
+                        connection.Status,
+                        connection.ProviderEmail,
+                        token.GrantedScopes));
+            }
+
+            connection.Status = PluginConstants.ConnectionStatus.Connected;
+            connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
+            if (!string.IsNullOrWhiteSpace(token.RefreshToken))
+                connection.EncryptedRefreshToken = _credentialProtector.Protect(token.RefreshToken);
+            connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
+            connection.TokenRotatedAt = now;
+
+            await SyncToolManifestAsync(plugin, connection, now, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(new PluginConnectionStatusDto(
+            return new PluginOAuthCallbackOutcomeDto(
+                ScopeOutcome(plugin, token.GrantedScopes),
+                null,
+                provider,
                 pluginKey,
-                connection.Status,
-                connection.ProviderEmail,
-                token.GrantedScopes));
+                client,
+                new PluginConnectionStatusDto(
+                    pluginKey,
+                    connection.Status,
+                    connection.ProviderEmail,
+                    token.GrantedScopes));
         }
-
-        connection.Status = PluginConstants.ConnectionStatus.Connected;
-        connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
-        if (!string.IsNullOrWhiteSpace(token.RefreshToken))
-            connection.EncryptedRefreshToken = _credentialProtector.Protect(token.RefreshToken);
-        connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
-        connection.TokenRotatedAt = now;
-
-        await SyncToolManifestAsync(plugin, connection, now, ct);
-
-        await _unitOfWork.SaveChangesAsync(ct);
-
-        return Result.Success(new PluginConnectionStatusDto(
-            pluginKey,
-            connection.Status,
-            connection.ProviderEmail,
-            token.GrantedScopes));
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var reason = Classify(ex);
+            _logger.LogError(
+                ex,
+                "Plugin OAuth callback could not be completed for {PluginKey} ({Reason}).",
+                pluginKey,
+                reason);
+            return Failed(reason, client, provider, pluginKey);
+        }
     }
+
+    /// <summary>
+    /// Connected, or connected-but-narrower than the plugin asked for.
+    /// </summary>
+    /// <remarks>
+    /// The same subset test the plugins page uses to decide whether a tile counts as connected, so
+    /// the redirect and the tile cannot disagree about the grant the user just gave.
+    /// </remarks>
+    private static string ScopeOutcome(Plugin plugin, IReadOnlyList<string> grantedScopes)
+    {
+        var granted = new HashSet<string>(grantedScopes, StringComparer.Ordinal);
+        return PluginScopeMapper.FromJson(plugin.RequiredScopesJson).All(granted.Contains)
+            ? PluginConstants.CallbackStatus.Connected
+            : PluginConstants.CallbackStatus.Partial;
+    }
+
+    /// <summary>
+    /// Which of the three sentences the user should read.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="InvalidOperationException"/> is the shape every "we are not configured" guard
+    /// throws - an empty client id or secret. It is worth its own reason because the answer differs
+    /// in kind: no amount of retrying fixes a missing secret, and telling the user to try again
+    /// would send them round the consent screen forever.
+    /// </remarks>
+    private static string Classify(Exception ex) => ex switch
+    {
+        InvalidOperationException => PluginConstants.ErrorCodes.ProviderConfiguration,
+        _ => PluginConstants.ErrorCodes.ProviderUnavailable,
+    };
+
+    private static PluginOAuthCallbackOutcomeDto Failed(
+        string reason,
+        string? client = null,
+        string? provider = null,
+        string? pluginKey = null) =>
+        new(
+            PluginConstants.CallbackStatus.Error,
+            reason,
+            provider,
+            pluginKey,
+            PluginConstants.OAuthClient.Normalize(client),
+            null);
 
     /// <summary>
     /// Refreshes the cached tool set for an MCP-backed row, using the connection just established.

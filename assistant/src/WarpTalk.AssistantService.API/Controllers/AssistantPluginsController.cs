@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Domain.Constants;
@@ -111,13 +112,18 @@ public class AssistantPluginsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <remarks>
+    /// <c>client=desktop</c> says the caller is the Electron shell rather than a browser tab. It is
+    /// sealed into the OAuth state here and read back at the callback, because by then the consent
+    /// has happened in the system browser and nothing else on that request says where it started.
+    /// </remarks>
     [HttpGet("{pluginKey}/connect-url")]
     [ProducesResponseType(typeof(PluginConnectUrlDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> GetConnectUrl(string pluginKey, CancellationToken ct)
+    public async Task<IActionResult> GetConnectUrl(string pluginKey, [FromQuery] string? client, CancellationToken ct)
     {
-        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, ct);
+        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, client, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
@@ -130,8 +136,8 @@ public class AssistantPluginsController : ControllerBase
     /// <remarks>
     /// Google redirects the end user's browser straight at this gateway URL, so the response has
     /// to be a redirect back into the app rather than a JSON body: nothing renders raw API JSON
-    /// for a human. The plugins page re-fetches connection status on load, so it reflects the
-    /// outcome without any query-string contract between this endpoint and the frontend.
+    /// for a human. The app still re-fetches connection status on arrival, so the query string
+    /// below decides only which sentence to show - never what the connection actually is.
     /// </remarks>
     /// <remarks>
     /// Every <c>kind='mcp'</c> plugin shares this one redirect URI. A Client ID Metadata Document
@@ -154,12 +160,11 @@ public class AssistantPluginsController : ControllerBase
         [FromQuery] string? iss,
         CancellationToken ct)
     {
-        var pluginsPageUrl = $"{_appBaseUrl}/settings/plugins";
+        if (!string.IsNullOrWhiteSpace(error) || string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+            return Redirect(DeclinedUrl(null));
 
-        if (string.IsNullOrWhiteSpace(error) && !string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(state))
-            await _connectionService.CompleteMcpOAuthCallbackAsync(code, state, iss, ct);
-
-        return Redirect(pluginsPageUrl);
+        var outcome = await _connectionService.CompleteMcpOAuthCallbackAsync(code, state, iss, ct);
+        return Redirect(LandingUrl(outcome));
     }
 
     [HttpGet("{pluginKey}/oauth/callback")]
@@ -172,13 +177,69 @@ public class AssistantPluginsController : ControllerBase
         [FromQuery] string? error,
         CancellationToken ct)
     {
-        var pluginsPageUrl = $"{_appBaseUrl}/settings/plugins";
+        if (!string.IsNullOrWhiteSpace(error) || string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+            return Redirect(DeclinedUrl(pluginKey));
 
-        if (string.IsNullOrWhiteSpace(error) && !string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(state))
-            await _connectionService.CompleteOAuthCallbackAsync(pluginKey, code, state, ct);
-
-        return Redirect(pluginsPageUrl);
+        var outcome = await _connectionService.CompleteOAuthCallbackAsync(pluginKey, code, state, ct);
+        return Redirect(LandingUrl(outcome));
     }
+
+    /// <summary>
+    /// Where a finished callback sends the browser.
+    /// </summary>
+    /// <remarks>
+    /// Through <c>/connect/{provider}/callback</c> rather than straight to the plugins page, because
+    /// the consent may have been given in the system browser while the app that asked for it is the
+    /// desktop shell. That page is the only place that can hand the user back across that gap - it
+    /// turns the outcome into a <c>warptalk://</c> deep link - and for a browser session it simply
+    /// forwards to the plugins page with the same query.
+    /// <para>
+    /// The provider comes from the outcome and never from the request, so a state that did not
+    /// survive lands on the plugins page instead of on a path an attacker could choose.
+    /// </para>
+    /// </remarks>
+    private string LandingUrl(PluginOAuthCallbackOutcomeDto outcome)
+    {
+        var query = new Dictionary<string, string?> { ["status"] = outcome.Status };
+        if (!string.IsNullOrWhiteSpace(outcome.PluginKey)) query["plugin"] = outcome.PluginKey;
+        if (!string.IsNullOrWhiteSpace(outcome.Reason)) query["reason"] = outcome.Reason;
+        if (outcome.Client == PluginConstants.OAuthClient.Desktop) query["client"] = outcome.Client;
+
+        // Only on a failure, and only the id the logs are already keyed by: it is the one thing a
+        // user can quote that turns "it did not work" into a line an operator can find.
+        if (outcome.Status == PluginConstants.CallbackStatus.Error) query["ref"] = CorrelationId;
+
+        var path = string.IsNullOrWhiteSpace(outcome.Provider)
+            ? $"{_appBaseUrl}/settings/plugins"
+            : $"{_appBaseUrl}/connect/{Uri.EscapeDataString(outcome.Provider)}/callback";
+
+        return QueryHelpers.AddQueryString(path, query);
+    }
+
+    /// <summary>
+    /// The provider answered with <c>error</c>, or without a code at all - the user pressed Cancel.
+    /// </summary>
+    /// <remarks>
+    /// Straight to the plugins page, not through the callback page: nothing was exchanged, so the
+    /// state was never opened and the provider is unknown. A desktop user therefore lands in their
+    /// browser rather than back in the app, which is the right trade for the one path where the
+    /// user has already decided not to connect.
+    /// </remarks>
+    private string DeclinedUrl(string? pluginKey)
+    {
+        var query = new Dictionary<string, string?>
+        {
+            ["status"] = PluginConstants.CallbackStatus.Error,
+            ["reason"] = PluginConstants.ErrorCodes.PermissionDenied,
+        };
+        if (!string.IsNullOrWhiteSpace(pluginKey)) query["plugin"] = pluginKey;
+
+        return QueryHelpers.AddQueryString($"{_appBaseUrl}/settings/plugins", query);
+    }
+
+    /// <summary>The id this request's logs are already tagged with (see the middleware in Program).</summary>
+    private string CorrelationId =>
+        HttpContext.Items["CorrelationId"]?.ToString() is { Length: > 0 } id ? id : HttpContext.TraceIdentifier;
 
     [HttpDelete("{pluginKey}/connection")]
     [ProducesResponseType(StatusCodes.Status200OK)]

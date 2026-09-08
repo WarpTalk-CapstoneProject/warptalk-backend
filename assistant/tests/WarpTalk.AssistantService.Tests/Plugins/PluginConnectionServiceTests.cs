@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
@@ -127,9 +128,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
-        Assert.Equal("user@example.com", result.Value.ProviderEmail);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
+        Assert.Equal("user@example.com", result.Connection.ProviderEmail);
         await _connectionRepository.Received(1)
             .AddAsync(
                 Arg.Is<PluginConnection>(connection =>
@@ -176,8 +177,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
         Assert.Equal(PluginConstants.ConnectionStatus.Connected, expiredConnection.Status);
         Assert.Equal("protected:new-access-token", expiredConnection.EncryptedAccessToken);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
@@ -205,8 +206,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Reason);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Connection!.Status);
         await _connectionRepository.Received(1)
             .AddAsync(
                 Arg.Is<PluginConnection>(connection =>
@@ -251,8 +253,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Reason);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Connection!.Status);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, expiredConnection.Status);
         Assert.Null(expiredConnection.EncryptedAccessToken);
         Assert.Null(expiredConnection.EncryptedRefreshToken);
@@ -283,8 +286,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
         Assert.Equal("protected:new-access-token", connected.EncryptedAccessToken);
         Assert.Equal("protected:refresh-token", connected.EncryptedRefreshToken);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
@@ -558,6 +561,140 @@ public class PluginConnectionServiceTests
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<CancellationToken>())
             .Returns(true);
+    }
+
+    /// <summary>
+    /// The failure that reached production as a JSON error page: an empty client secret made the
+    /// token exchange throw, and nothing between there and the browser caught it.
+    /// </summary>
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsConfigurationError_WhenExchangeThrowsBecauseWeAreNotConfigured()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        ArrangeInstalledPluginForCallback(plugin);
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("Google Workspace OAuth is not configured."));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderConfiguration, result.Reason);
+        Assert.Equal("google", result.Provider);
+        Assert.Null(result.Connection);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsProviderUnavailable_WhenTheProviderRefusesTheExchange()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        ArrangeInstalledPluginForCallback(plugin);
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new HttpRequestException("400 Bad Request"));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.Reason);
+    }
+
+    /// <summary>
+    /// The user unticked a scope on the provider's consent screen. The grant is real, so this is
+    /// not an error - but the plugins page has to say which half is missing rather than show a
+    /// tile that still reads "Connect" right after a successful connect.
+    /// </summary>
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsPartial_WhenConsentGrantedFewerScopesThanRequired()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        plugin.RequiredScopesJson = """["https://www.googleapis.com/auth/drive.readonly","https://www.googleapis.com/auth/drive.file"]""";
+        ArrangeInstalledPluginForCallback(plugin);
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(
+                "google-user-id",
+                "user@example.com",
+                ["https://www.googleapis.com/auth/drive.readonly"],
+                "access-token",
+                "refresh-token",
+                DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(PluginConstants.GoogleWorkspace, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Partial, result.Status);
+        Assert.Null(result.Reason);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
+    }
+
+    /// <summary>
+    /// The desktop flag has to survive the round trip inside the sealed state: by the time the
+    /// callback runs, the consent has happened in the system browser and nothing else on that
+    /// request remembers which app asked.
+    /// </summary>
+    [Fact]
+    public async Task GetConnectUrlAsync_SealsTheCallingClientIntoTheState()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.AnyAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        await CreateSut().GetConnectUrlAsync(
+            PluginConstants.GoogleWorkspace,
+            UserId,
+            PluginConstants.OAuthClient.Desktop);
+
+        _stateProtector.Received(1).Protect(
+            Arg.Is<PluginOAuthStateDto>(state => state.Client == PluginConstants.OAuthClient.Desktop));
+    }
+
+    [Fact]
+    public async Task GetConnectUrlAsync_TreatsAnUnrecognisedClientAsWeb()
+    {
+        var plugin = GoogleWorkspacePlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.AnyAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        await CreateSut().GetConnectUrlAsync(PluginConstants.GoogleWorkspace, UserId, "kiosk");
+
+        _stateProtector.Received(1).Protect(
+            Arg.Is<PluginOAuthStateDto>(state => state.Client == PluginConstants.OAuthClient.Web));
+    }
+
+    /// <summary>Everything a callback test needs before the exchange: state, plugin, installation.</summary>
+    private void ArrangeInstalledPluginForCallback(Plugin plugin)
+    {
+        _stateProtector.Unprotect("state-token")
+            .Returns(new PluginOAuthStateDto(UserId, PluginConstants.GoogleWorkspace));
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.AnyAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
     }
 
     private PluginConnectionService CreateSut()
