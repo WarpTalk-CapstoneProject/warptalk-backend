@@ -51,11 +51,22 @@ $Services = @(
 $envFile = Join-Path $ScriptDir "..\warptalk-infrastructure\.env"
 if (Test-Path $envFile) {
     Write-Host ($CYAN + "[ENV] Loading environment variables from .env..." + $NC)
+    # A value already in the process environment WINS over the file.
+    #
+    # Require-Env below tells you a setting may come from "..\warptalk-infrastructure\.env or the
+    # current process environment", and that was not true: the file overwrote the environment
+    # unconditionally, so exporting a variable before running this script did nothing and the
+    # message sent people looking for a typo they had not made. Overriding one setting for one run
+    # — a longer JWT_SECRET, a different database — is the ordinary reason to reach for an
+    # environment variable in the first place.
     Get-Content $envFile | ForEach-Object {
         $line = $_.Trim()
         if ($line -and -not $line.StartsWith("#") -and $line -match '=') {
             $key, $value = $line -split '=', 2
-            [System.Environment]::SetEnvironmentVariable($key.Trim(), $value.Trim(), "Process")
+            $name = $key.Trim()
+            if ([string]::IsNullOrWhiteSpace([System.Environment]::GetEnvironmentVariable($name, "Process"))) {
+                [System.Environment]::SetEnvironmentVariable($name, $value.Trim(), "Process")
+            }
         }
     }
 }
@@ -76,11 +87,29 @@ $env:REDIS_PASSWORD = Require-Env "REDIS_PASSWORD"
 $env:RABBITMQ_PASSWORD = Require-Env "RABBITMQ_PASSWORD"
 $env:JWT_SECRET = Require-Env "JWT_SECRET"
 
+# HS256 refuses a key shorter than 128 bits, and it refuses it at the moment a token is signed —
+# so a short secret starts every service cleanly and then fails only on the first login, as
+# "An unexpected error occurred during login." Checked here instead, where the message can name
+# the variable.
+#
+# Not on -Stop or -Status: those tear down or inspect what is already running, and refusing to
+# STOP a stack because its signing key is misconfigured would leave somebody stuck with no way
+# out but docker rm.
+if (-not $Stop -and -not $Status -and $env:JWT_SECRET.Length -lt 16) {
+    throw "JWT_SECRET must be at least 16 characters (HS256 requires a 128-bit key); it is currently $($env:JWT_SECRET.Length). Set a longer value in ..\warptalk-infrastructure\.env."
+}
+
+
 # Override connection variables for local native run
 $env:Redis__ConnectionString = "localhost:6379,password=$($env:REDIS_PASSWORD)"
 $env:RabbitMQ__Host = "localhost"
 $env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
 $env:RabbitMQ__Password = $env:RABBITMQ_PASSWORD
+
+# The services read Grpc:InternalSecret and refuse to start without it. The Helm chart maps it
+# (deploy/k3s/chart/values.yaml), and this script did not — so every service died on startup with
+# "Grpc:InternalSecret is required; no implicit fallback is allowed." while deployment worked fine.
+$env:Grpc__InternalSecret = Require-Env "GRPC_INTERNAL_SECRET"
 
 $env:ConnectionStrings__AuthDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
 $env:ConnectionStrings__WorkspaceDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
@@ -161,12 +190,19 @@ function Start-Postgres {
         Write-Host ($GREEN + "   Started existing container" + $NC)
     }
     else {
+        # The init script is what CREATES the schemas and base tables. docker-compose.yml mounts it
+        # here; this script did not, so the migrations below ran against an empty database, every
+        # one of them "succeeded" against nothing, and the auth schema ended up with zero tables.
+        # Postgres only runs this on a fresh data directory, which is exactly what a new container
+        # has, since no volume is attached.
+        $InitDb = (Resolve-Path (Join-Path $ScriptDir "..\warptalk-infrastructure\scripts\init-db.sql")).Path
         docker run -d `
             --name $PGContainer `
             -e POSTGRES_DB=$env:POSTGRES_DB `
             -e POSTGRES_USER=$env:POSTGRES_USER `
             -e POSTGRES_PASSWORD=$env:POSTGRES_PASSWORD `
             -p 5432:5432 `
+            -v "${InitDb}:/docker-entrypoint-initdb.d/01-init.sql:ro" `
             postgres:18-alpine | Out-Null
         Write-Host ($GREEN + "   Created and started new container" + $NC)
     }
@@ -252,26 +288,25 @@ function Start-RabbitMQ {
         Write-Host ($GREEN + "   Created and started new container" + $NC)
     }
 
-    # Wait until healthy, checking for permission cookie error
+    # Wait until healthy.
+    #
+    # This loop used to answer any exit with "Permission issue detected with rabbitmq volume",
+    # delete a volume named warptalk-infrastructure_rabbitmq-data, and re-create the container —
+    # up to twelve times. The container above attaches NO volume, so the delete could never change
+    # anything: it recreated an identical container, watched it exit for the same reason, and
+    # reported a cause it had not established. Twelve rounds of that, then a bare [TIMEOUT] with
+    # the real error still sitting unread in the container log.
+    #
+    # A container that exits is now reported once, with what it actually said.
     Write-Host -NoNewline "   Waiting for RabbitMQ to be ready"
     for ($i = 1; $i -le 40; $i++) {
-        # Check if container exited (permission issue)
         $status = docker inspect $RabbitContainer --format "{{.State.Status}}" 2>$null
         if ($status -eq "exited") {
             Write-Host ($RED + " [FAILED]" + $NC)
-            Write-Host ($YELLOW + "   Permission issue detected with rabbitmq volume. Re-creating volume..." + $NC)
-            docker rm $RabbitContainer | Out-Null
-            docker volume rm warptalk-infrastructure_rabbitmq-data 2>$null
-            
-            # Restart setup
-            docker run -d `
-                --name $RabbitContainer `
-                -p 5672:5672 -p 15672:15672 `
-                -e RABBITMQ_DEFAULT_USER=$env:RabbitMQ__Username `
-                -e RABBITMQ_DEFAULT_PASS=$env:RabbitMQ__Password `
-                rabbitmq:4-management-alpine | Out-Null
-            Write-Host -NoNewline "   Re-waiting for RabbitMQ to be ready"
-            continue
+            Write-Host ($RED + "   The RabbitMQ container exited. Its last lines were:" + $NC)
+            docker logs --tail 15 $RabbitContainer 2>&1 | ForEach-Object { Write-Host "     $_" }
+            Write-Host ($YELLOW + "   Recover with: docker rm -f $RabbitContainer  (then re-run this script)" + $NC)
+            exit 1
         }
 
         docker exec $RabbitContainer rabbitmq-diagnostics -q ping 2>$null | Out-Null
@@ -283,6 +318,7 @@ function Start-RabbitMQ {
         Start-Sleep -Seconds 2
     }
     Write-Host ($RED + " [TIMEOUT]" + $NC)
+    docker logs --tail 15 $RabbitContainer 2>&1 | ForEach-Object { Write-Host "     $_" }
     exit 1
 }
 
@@ -380,6 +416,62 @@ function Invoke-Migrations {
     }
     else {
         Write-Host ($YELLOW + "   [WARN] No migrations directory found at $MigrationsDir" + $NC)
+    }
+}
+
+<#
+.SYNOPSIS
+    Applies the per-service migrations that live beside each service, not in the infrastructure
+    repo.
+
+.DESCRIPTION
+    There are two migration sources in this project, and this script only ever ran one of them.
+    warptalk-infrastructure/scripts/migrations holds the cross-cutting ones; each service also
+    keeps its own under <service>/database/migrations, and there are roughly seventy of those.
+
+    Skipping them does not fail loudly. The database comes up, the services start, and the first
+    request that touches a missing column returns 503 — auth/users was missing
+    email_verification_token_expires_at, so registering an account failed with "WarpTalk is
+    temporarily unavailable" and nothing said why.
+
+    Applied per service in filename order, which is how they are named and how deployment applies
+    them. A failure is reported and stepped over rather than fatal: some services' migrations
+    depend on runtime roles or on schemas another environment creates, and a developer who only
+    needs auth and workspace should not be blocked by billing's.
+#>
+function Invoke-ServiceMigrations {
+    Write-Host ($CYAN + "[DB] Running per-service migrations..." + $NC)
+    $applied = 0
+    $skipped = 0
+
+    foreach ($dir in (Get-ChildItem -Path $ScriptDir -Directory | Sort-Object Name)) {
+        $migrations = Join-Path $dir.FullName "database\migrations"
+        if (-not (Test-Path $migrations)) { continue }
+
+        foreach ($file in (Get-ChildItem -Path $migrations -Filter *.sql | Sort-Object Name)) {
+            # stderr is discarded rather than captured. psql writes NOTICE lines there on a
+            # perfectly good run, and PowerShell 5.1 turns a native command's redirected stderr
+            # into NativeCommandError records — which sets $? to false and makes a successful
+            # migration look like a failure. ON_ERROR_STOP=1 puts the real answer in the exit code,
+            # so that is what gets read.
+            Get-Content $file.FullName -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -v ON_ERROR_STOP=1 -q 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $applied++
+            }
+            else {
+                $skipped++
+                Write-Host ($YELLOW + "   [SKIP] $($dir.Name)/$($file.Name)" + $NC)
+            }
+        }
+    }
+
+    if ($skipped -eq 0) {
+        Write-Host ($GREEN + "   [OK] $applied service migrations applied" + $NC)
+    }
+    else {
+        Write-Host ($YELLOW + "   [OK] $applied applied, $skipped skipped (listed above)" + $NC)
+        Write-Host ($YELLOW + "   To see why one was skipped, run it yourself:" + $NC)
+        Write-Host ("     Get-Content <service>\database\migrations\<file>.sql -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB")
     }
 }
 
@@ -595,6 +687,7 @@ Stop-Ports
 
 Start-Postgres
 Invoke-Migrations
+Invoke-ServiceMigrations
 Invoke-Seeds
 Start-Redis
 Start-RabbitMQ
