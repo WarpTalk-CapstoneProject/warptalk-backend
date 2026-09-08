@@ -1,4 +1,7 @@
 using System;
+using System.Text.Json;
+using System.Text;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -149,10 +152,12 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
             WorkspaceId = WorkspaceId,
             MinutesNo = $"BB-{now.Year}-{Random.Shared.Next(1000, 9999)}",
             Status = status,
+            // Content = WithMeetingTitle(...) below; see the helper for why the title is injected
+            // rather than left to each caller.
             Version = 1,
             IsCurrent = true,
             EditCountVsDraft = 0,
-            Content = content,
+            Content = WithMeetingTitle(content, title),
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -162,6 +167,39 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
         // The list must answer from the database, not from rows this test just inserted.
         _dbContext.ChangeTracker.Clear();
         return minutes;
+    }
+
+
+    /// <summary>
+    /// The seeded content with a <c>meetingTitle</c>, as MeetingMinutesDrafter always writes one.
+    ///
+    /// Without this the seeded rows are unlike anything production holds: the drafter copies the
+    /// room's title into the document at draft time, so every real row has this key. Tests that
+    /// omitted it were asserting against a document with no title, which is exactly the shape the
+    /// library's title search cannot find — a false failure, or worse a false pass.
+    ///
+    /// A title already in the passed content wins, so a test can seed a document whose title
+    /// deliberately differs from its room.
+    /// </summary>
+    private static string WithMeetingTitle(string contentJson, string title)
+    {
+        using var doc = JsonDocument.Parse(contentJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object) return contentJson;
+        if (doc.RootElement.TryGetProperty("meetingTitle", out _)) return contentJson;
+
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("meetingTitle", title);
+            foreach (var property in doc.RootElement.EnumerateObject())
+            {
+                property.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
     private Task<WorkspaceMinutesResponse> ListAsync(Guid userId, GetWorkspaceMinutesRequest? request = null)
@@ -252,9 +290,10 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
     /// <summary>
     /// Search matches the meeting, case-insensitively.
     ///
-    /// The body is NOT searched here: `content` is jsonb, and the room history does not search
-    /// artifact bodies either. The web folds and searches the bodies of the page it has loaded, so
-    /// every kind of record in the library behaves the same way.
+    /// The document's PROSE is not searched: one key is extracted by name, the sections are not
+    /// scanned, and the room history does not search artifact bodies either. The web folds and
+    /// searches the bodies of the page it has loaded, so every kind of record in the library
+    /// behaves the same way.
     /// </summary>
     [Fact]
     public async Task Search_MatchesTheMeetingItBelongsTo()
@@ -268,6 +307,74 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
 
         found.Items.Should().ContainSingle().Which.RoomTitle.Should().Be("Q4 budget review");
         found.Total.Should().Be(1, "Total reflects the filter, or the pager lies about what is behind it");
+    }
+
+    /// <summary>
+    /// Renaming the room does not retitle the documents it already produced.
+    ///
+    /// This is the case the library used to get wrong. It listed and searched
+    /// <c>TranslationRoom.Title</c>, read live through the navigation property, while both .docx
+    /// writers print <c>content.meetingTitle</c> — a snapshot taken once when the draft was built.
+    /// Rename a room after its minutes were signed and the card said one thing while the file that
+    /// downloaded said another, with nothing to tell a reader which the signatories had seen.
+    ///
+    /// The snapshot is the right answer: a biên bản records a moment, and letting a rename change
+    /// the title of an APPROVED document edits a signed record without a revision — the thing
+    /// ReviseAsync and the immutability rule exist to prevent.
+    /// </summary>
+    [Fact]
+    public async Task Renaming_the_room_does_not_change_what_the_minutes_are_called()
+    {
+        var minutes = await SeedMeetingWithMinutesAsync(
+            "Q4 budget review", "{}", DateTime.UtcNow.AddDays(-3));
+
+        await _dbContext.Set<TranslationRoom>()
+            .Where(r => r.Id == minutes.TranslationRoomId)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.Title, "Weekly sync"));
+        _dbContext.ChangeTracker.Clear();
+
+        var byOriginalName = await ListAsync(HostId, new GetWorkspaceMinutesRequest(Search: "q4 BUDGET"));
+        byOriginalName.Items.Should().ContainSingle(
+            "the document is still called what it was called when it was drawn up");
+        byOriginalName.Items[0].Minutes.MeetingTitle.Should().Be("Q4 budget review");
+
+        var byNewRoomName = await ListAsync(HostId, new GetWorkspaceMinutesRequest(Search: "weekly sync"));
+        byNewRoomName.Items.Should().BeEmpty(
+            "the library searches the documents it lists, not what their rooms happen to be called now");
+    }
+
+    /// <summary>
+    /// The title lives inside a jsonb column, so this is the test that the clause translates to SQL
+    /// at all — lower() cannot be applied to jsonb, and the extraction is a mapped Postgres
+    /// function rather than anything Npgsql surfaces on EF.Functions.
+    /// </summary>
+    [Fact]
+    public async Task Search_MatchesATitleStoredInsideTheDocument()
+    {
+        await SeedMeetingWithMinutesAsync(
+            "Design review", "{\"decisions\":[\"Ship the new icon set\"]}", DateTime.UtcNow.AddDays(-2));
+
+        var found = await ListAsync(HostId, new GetWorkspaceMinutesRequest(Search: "DESIGN"));
+
+        found.Items.Should().ContainSingle();
+        found.Items[0].Minutes.MeetingTitle.Should().Be("Design review");
+    }
+
+    /// <summary>
+    /// A document whose content records no title is not found by title — and, more importantly,
+    /// does not match every search. The extraction yields SQL NULL, and NULL LIKE '%x%' is NULL.
+    /// </summary>
+    [Fact]
+    public async Task A_document_with_no_recorded_title_does_not_match_everything()
+    {
+        // Seeded with an explicit null title, so WithMeetingTitle leaves it alone.
+        await SeedMeetingWithMinutesAsync(
+            "Untitled meeting", "{\"meetingTitle\":null}", DateTime.UtcNow.AddDays(-1));
+
+        var found = await ListAsync(HostId, new GetWorkspaceMinutesRequest(Search: "anything at all"));
+
+        found.Items.Should().BeEmpty();
+        found.Total.Should().Be(0);
     }
 
     /// <summary>The document number is how a reader who filed it on paper finds it again.</summary>
@@ -285,31 +392,48 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
     /// <summary>
     /// A superseded version is one meeting's paper trail, not a second library row.
     ///
-    /// The superseded row here carries a DIFFERENT MinutesNo, which is not what a real revision
-    /// does — ReviseAsync deliberately keeps the number ("a revision of BB-2026-0007 is still
-    /// BB-2026-0007"). That shape cannot be seeded, because meeting_minutes_workspace_no_idx is
-    /// UNIQUE on (workspace_id, minutes_no) and rejects the second row. The number is irrelevant
-    /// to what this test asserts, so it varies it rather than asserting a shape the schema
-    /// currently forbids; the collision itself is a separate defect in ReviseAsync.
+    /// The superseded row carries the SAME MinutesNo as the current one, which is what a real
+    /// revision produces — ReviseAsync deliberately keeps the number ("a revision of BB-2026-0007
+    /// is still BB-2026-0007"). That shape used to be unseedable, because
+    /// meeting_minutes_workspace_no_idx was UNIQUE on (workspace_id, minutes_no) and rejected the
+    /// second row; this test varied the number to work around it. The index is now keyed on
+    /// (workspace_id, minutes_no, version), so the real shape is the one asserted here — which
+    /// matters, because "only the current version" is exactly the claim a shared number tests.
     /// </summary>
     [Fact]
     public async Task List_ShowsOnlyTheCurrentVersion()
     {
-        var current = await SeedMeetingWithMinutesAsync(
+        // The helper seeds version 1 holding the head pointer. A revision moves that pointer on, so
+        // the row it seeded becomes the SUPERSEDED one and the head becomes version 2 — the order
+        // ReviseAsync actually writes, rather than a superseded v2 sitting behind a current v1.
+        var superseded = await SeedMeetingWithMinutesAsync(
             "Board meeting", "{}", DateTime.UtcNow.AddDays(-4));
+
+        // Surrendered before the new head is inserted, and as its own statement: both rows would
+        // otherwise claim `is_current`, and meeting_minutes_one_current_per_room_idx will not have
+        // two — EF is free to order an INSERT ahead of an UPDATE within one batch, and here it does.
+        //
+        // Written through the database rather than by assigning to `superseded`, because the seed
+        // helper clears the change tracker before returning: the entity in hand is detached, so a
+        // property set on it produces no UPDATE at all.
+        await _dbContext.Set<MeetingMinutes>()
+            .Where(m => m.Id == superseded.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.IsCurrent, false));
 
         _dbContext.Set<MeetingMinutes>().Add(new MeetingMinutes
         {
             Id = Guid.CreateVersion7(),
-            TranslationRoomId = current.TranslationRoomId,
+            TranslationRoomId = superseded.TranslationRoomId,
             WorkspaceId = WorkspaceId,
-            MinutesNo = $"{current.MinutesNo}-PRIOR",
+            // Same number, as a real revision keeps it.
+            MinutesNo = superseded.MinutesNo,
             Status = MeetingMinutesConstants.StatusApproved,
             // 2, not 0: Version is mapped HasDefaultValue(1), so EF omits the column for the CLR
-            // default and Postgres writes 1 — colliding with the current row on
-            // meeting_minutes_room_version_idx rather than seeding a prior version.
+            // default and Postgres writes 1 — colliding with the seeded row on
+            // meeting_minutes_room_version_idx rather than seeding a later version.
             Version = 2,
-            IsCurrent = false,
+            IsCurrent = true,
+            PreviousMinutesId = superseded.Id,
             EditCountVsDraft = 0,
             Content = "{}",
             CreatedAt = DateTime.UtcNow,
