@@ -116,10 +116,21 @@ public class McpOAuthClient : IPluginOAuthClient
         Plugin plugin,
         string code,
         PluginOAuthStateDto flowState,
+        PluginOAuthCallbackRoute route = PluginOAuthCallbackRoute.Configured,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(flowState.CodeVerifier))
             throw new InvalidOperationException("The OAuth state carries no PKCE verifier, so the code cannot be exchanged.");
+
+        // An MCP plugin has only ever been authorized against the one shared redirect URI, so there
+        // is no per-plugin URI to fall back to. Saying so beats posting the shared URI and having
+        // the server answer redirect_uri_mismatch, which reads like the server's fault.
+        if (route == PluginOAuthCallbackRoute.LegacyPerPlugin)
+        {
+            throw new NotSupportedException(
+                $"Plugin '{plugin.PluginKey}' is MCP-backed and has no per-plugin redirect URI; its "
+                    + "callback belongs on the shared mcp/oauth/callback route.");
+        }
 
         var form = new Dictionary<string, string>
         {

@@ -111,7 +111,17 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!string.Equals(oauthState.PluginKey, pluginKey, StringComparison.Ordinal))
             return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
 
-        return await CompleteCallbackAsync(oauthState, code, ct);
+        // Retired rows are allowed here and nowhere else. The only state that can arrive on this
+        // path is one minted before the split, which names google_workspace - a row 20260907100000
+        // set is_active=false. Filtering it out would refuse a consent we ourselves started while
+        // the row was live. Nothing new can enter through the gap: GetConnectUrlAsync still refuses
+        // an inactive row, so a retired plugin can finish a flow but can never begin one.
+        return await CompleteCallbackAsync(
+            oauthState,
+            code,
+            ct,
+            route: PluginOAuthCallbackRoute.LegacyPerPlugin,
+            includeRetiredPlugin: true);
     }
 
     /// <inheritdoc />
@@ -178,6 +188,15 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
                 PluginConstants.ErrorCodes.PermissionDenied);
     }
 
+    /// <inheritdoc />
+    public string? ReadPluginKeyFromState(string? state)
+    {
+        if (string.IsNullOrWhiteSpace(state)) return null;
+
+        var unprotected = UnprotectState(state);
+        return unprotected.IsSuccess ? unprotected.Value!.PluginKey : null;
+    }
+
     /// <summary>
     /// State is attacker-reachable input: it comes back through the user's browser. Unprotecting it
     /// is the trust boundary, so failures collapse to one indistinguishable error rather than
@@ -195,15 +214,27 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         }
     }
 
+    /// <param name="route">
+    /// Which redirect URI the browser came back on. It has to be repeated on the token request, so
+    /// this travels all the way down to the OAuth client rather than being decided there.
+    /// </param>
+    /// <param name="includeRetiredPlugin">
+    /// Whether a catalog row with <c>is_active=false</c> may complete this callback. True only on
+    /// the legacy path, where the state predates the row's retirement.
+    /// </param>
     private async Task<Result<PluginConnectionStatusDto>> CompleteCallbackAsync(
         PluginOAuthStateDto oauthState,
         string code,
         CancellationToken ct,
-        string? expectedProvider = null)
+        string? expectedProvider = null,
+        PluginOAuthCallbackRoute route = PluginOAuthCallbackRoute.Configured,
+        bool includeRetiredPlugin = false)
     {
         var pluginKey = oauthState.PluginKey;
 
-        var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
+        var plugin = includeRetiredPlugin
+            ? await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey, ct: ct)
+            : await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
             return Result.Failure<PluginConnectionStatusDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
@@ -223,7 +254,28 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!installed)
             return Result.Failure<PluginConnectionStatusDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
-        var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, ct);
+        PluginOAuthTokenDto token;
+        try
+        {
+            token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, route, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The caller here is a browser redirect, not an API client: whatever went wrong - a 429,
+            // a 503, a redirect_uri_mismatch, an empty body - has to end as a page the user can act
+            // on, and an exception would end as a raw error page instead. The provider's own words
+            // go to the log, which is the only place they belong: the redirect the user follows must
+            // not carry them.
+            _logger.LogWarning(
+                ex,
+                "Exchanging the authorization code for plugin {PluginKey} failed; the user is being sent "
+                    + "back to the plugins page and can try connecting again.",
+                plugin.PluginKey);
+
+            return Result.Failure<PluginConnectionStatusDto>(
+                "The provider could not complete the connection. Try connecting again in a moment.",
+                PluginConstants.ErrorCodes.ProviderUnavailable);
+        }
 
         // By provider, not by plugin. A user who already consented to Google through Drive and is
         // now connecting Calendar comes back here with the same grant: this has to find that row

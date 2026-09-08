@@ -22,9 +22,19 @@ public interface IPluginConnectionService
     /// <c>{pluginKey}/oauth/callback</c>.
     /// </summary>
     /// <remarks>
-    /// Superseded by <see cref="CompleteProviderOAuthCallbackAsync"/> and kept because live grants
-    /// and deployed Google Cloud Console configuration still point at the old path. A flow that
-    /// started before the provider-scoped redirect URI shipped comes back here.
+    /// Superseded by <see cref="CompleteProviderOAuthCallbackAsync"/> and kept for one narrow case:
+    /// a consent that was authorized against the old per-plugin redirect URI before the
+    /// provider-scoped one shipped, and comes back after it. Two things follow from that, and both
+    /// are implemented rather than assumed. The token exchange repeats the old URI, because the
+    /// provider matches it against the URI the authorization request carried - so the old URI has
+    /// to remain registered with the provider for as long as this path is live. And the plugin the
+    /// state names may be retired: the only key that can arrive here is <c>google_workspace</c>,
+    /// which the split deactivated, so the lookup on this path does not filter on <c>is_active</c>.
+    /// <para>
+    /// A retired row can therefore finish a flow but never start one - <see cref="GetConnectUrlAsync"/>
+    /// still refuses it. When the provider's console entry for the old URI goes away, this method,
+    /// its route, and the option that holds the old URI go with it.
+    /// </para>
     /// </remarks>
     Task<Result<PluginConnectionStatusDto>> CompleteOAuthCallbackAsync(string pluginKey, string code, string state, CancellationToken ct = default);
 
@@ -75,6 +85,20 @@ public interface IPluginConnectionService
         string state,
         string? issuer = null,
         CancellationToken ct = default);
+    /// <summary>
+    /// The plugin key sealed inside an OAuth state, or <c>null</c> when the state is missing or
+    /// cannot be read.
+    /// </summary>
+    /// <remarks>
+    /// A callback that fails has no result to take a plugin key from, and the user still has to
+    /// land back on the tile they started from. The provider-scoped and MCP callbacks have no key
+    /// in their path, so the state is the only place left to ask - including when the provider came
+    /// back with <c>error=access_denied</c> and no code at all, which it does return the state
+    /// with. <c>null</c> is the answer that says the key is not recoverable, and the caller reports
+    /// that as an invalid state rather than guessing.
+    /// </remarks>
+    string? ReadPluginKeyFromState(string? state);
+
     Task<Result<PluginConnectionStatusDto>> GetStatusAsync(string pluginKey, Guid userId, CancellationToken ct = default);
     Task<Result> DisconnectAsync(string pluginKey, Guid userId, CancellationToken ct = default);
 }
