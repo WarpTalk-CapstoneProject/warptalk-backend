@@ -60,8 +60,15 @@ public interface IPluginCatalogAdminService
 
     /// <summary>
     /// Retires a row. Soft by default (<c>is_active = false</c>); a hard delete is possible only
-    /// while nothing references the row.
+    /// while nothing references the row - installations, connections and tool audits alike.
     /// </summary>
+    /// <remarks>
+    /// Audits count as a reference even though their foreign key would not stop the delete: it
+    /// cascades, so letting the delete through would take the plugin's whole recorded history with
+    /// it, silently, in the case that occurs most often - a plugin everybody has already
+    /// uninstalled. The returned <see cref="PluginCatalogDeleteResultDto"/> carries all four counts
+    /// either way, so a refusal and a retirement both say what is still attached to the row.
+    /// </remarks>
     Task<Result<PluginCatalogDeleteResultDto>> DeleteAsync(
         string pluginKey,
         bool hard,

@@ -47,6 +47,9 @@ public class PluginToolAuditRepository : GenericRepository<PluginToolAudit>, IPl
         return (items, totalCount);
     }
 
+    public async Task<int> CountForPluginAsync(Guid pluginId, CancellationToken ct = default)
+        => await _db.PluginToolAudits.CountAsync(audit => audit.PluginId == pluginId, ct);
+
     public async Task<IReadOnlyList<PluginToolAudit>> ListForWorkspaceAsync(
         Guid workspaceId,
         string? pluginKey,

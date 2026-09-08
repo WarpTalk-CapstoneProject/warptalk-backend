@@ -20,6 +20,65 @@
 --   plugin_id survives as provenance: it records which catalog row first sent the user to consent.
 --   It is no longer the identity of the connection and must not be looked up by.
 
+-- ---------------------------------------------------------------------------------------------
+-- Pre-flight: one provider has to mean one authorization server, or the merge below is not a merge.
+--
+-- Everything past this point assumes that two connections sharing (user_id, provider) are two
+-- records of ONE grant, which is what makes unioning their scopes onto a single row and deleting
+-- the rest a consolidation rather than a destruction. That assumption is true of google_drive,
+-- google_calendar and google_meet, which 20260907100000 created as three faces of one Google
+-- consent. It is not true in general.
+--
+-- A kind='mcp' row takes its plugin_key as its provider, and every MCP server is its own
+-- authorization server with its own grant. PluginInstallationService.CreateMcpPluginAsync now
+-- refuses a key that collides with a provider already in the catalog -- but that guard is new in
+-- WT-646. On a database that predates it, an operator could have added an MCP row keyed 'google',
+-- and there would now be two unrelated plugins claiming provider='google'. The dedupe below would
+-- union two different servers' scope strings onto one row and DELETE the other's encrypted refresh
+-- token: unrecoverable, and it leaves a row asserting scopes the surviving token was never issued
+-- for -- which is worse than either row alone, because nothing downstream can tell that it happened.
+--
+-- There is no safe automatic answer. Which of the two is "the" google grant is a question about
+-- what an operator meant, not about what is in the table, so this refuses to run and names the
+-- rows instead. A migration that fails is an afternoon; a migration that succeeds by destroying a
+-- token is permanent.
+--
+-- The forward fix is taken by hand before re-running: give the MCP row a provider of its own
+-- (its plugin_key travels with it -- see the guard above), and re-point or delete the connections
+-- that were obtained through it. Then this migration has one grant per (user, provider) again and
+-- the merge below means what it says.
+-- ---------------------------------------------------------------------------------------------
+DO $preflight$
+DECLARE
+    collisions text;
+BEGIN
+    SELECT string_agg(detail, '; ' ORDER BY detail)
+    INTO collisions
+    FROM (
+        SELECT format(
+                   'provider %L is claimed by %s',
+                   p.provider,
+                   string_agg(format('%s (kind=%s)', p.plugin_key, p.kind), ', ' ORDER BY p.plugin_key)
+               ) AS detail
+        FROM assistant.plugins AS p
+        GROUP BY p.provider
+        -- Narrowed to groups containing an MCP row on purpose. Several native rows sharing a
+        -- provider is the shape this ticket deliberately creates and must not be refused; an MCP
+        -- row sharing one is the shape that cannot be true and safe at the same time.
+        HAVING count(*) > 1
+           AND count(*) FILTER (WHERE p.kind = 'mcp') > 0
+    ) AS grouped;
+
+    IF collisions IS NOT NULL THEN
+        RAISE EXCEPTION 'WT-646: refusing to key plugin_connections by provider -- %', collisions
+            USING HINT =
+                'An MCP plugin''s provider is its own authorization server and cannot be shared. '
+                || 'Give the colliding row a provider of its own, deal with the connections '
+                || 'obtained through it, then re-run this migration.';
+    END IF;
+END
+$preflight$;
+
 ALTER TABLE assistant.plugin_connections
     ADD COLUMN IF NOT EXISTS provider VARCHAR(100) NULL;
 
@@ -150,6 +209,48 @@ DELETE FROM assistant.plugin_connections AS c
 USING ranked AS r
 WHERE c.id = r.id
   AND r.rn > 1;
+
+-- ---------------------------------------------------------------------------------------------
+-- NOT NULL, and a temporary server-side default alongside it.
+--
+-- The default is the expand half of the expand/backfill/contract this column needs; the contract
+-- half is a one-line follow-up migration in the NEXT release, not this one.
+--
+-- Deploys here are migration-first: the SQL runs, then the pods roll. For the length of that roll
+-- there are pods serving traffic that were built before this column existed. One of them finishing
+-- an OAuth callback INSERTs a connection naming every column it knows about, and provider is not
+-- among them -- against a bare NOT NULL with no default that is a 23502. A user who has just
+-- consented at Google gets a 500 and the grant is dropped on the floor; they cannot even tell that
+-- retrying is the fix.
+--
+-- The other deploy order is not the escape. Roll the pods first and the new code SELECTs a column
+-- that does not exist yet, so every connection read fails for everyone until the SQL lands.
+-- Migration-first is the only order with a working state at both ends, and the default is what
+-- makes the middle survivable.
+--
+-- 'unknown' is the value on purpose: it is the same one the belt-and-braces UPDATE above parks an
+-- orphaned row under, and it is a provider name no OAuth client answers to. A row written during
+-- the window is therefore inert rather than wrong. The new code looks a connection up by provider,
+-- so it never finds it, the user is shown as not connected, and consenting again writes a correct
+-- row -- which succeeds, because the new unique key is (user_id, provider) and 'unknown' collides
+-- with nothing.
+--
+-- Deliberately not something cleverer. A trigger deriving provider from plugin_id would guess a
+-- real provider for a row an old pod wrote, and a plausible-looking row is worse than an inert
+-- one: under the new unique key it would collide with the user's live Google grant, turning a 500
+-- at consent time into a 23505 at consent time, having also minted a second encrypted token for a
+-- grant that already had one.
+--
+-- CONTRACT, next release:
+--     ALTER TABLE assistant.plugin_connections ALTER COLUMN provider DROP DEFAULT;
+-- once no pre-WT-646 pod is left, so that a write path forgetting provider fails loudly again.
+-- It cannot ship in this release: it would run in the same migration pass, before the pods roll,
+-- and close the window it exists for. Until it lands,
+--     SELECT * FROM assistant.plugin_connections WHERE provider = 'unknown'
+-- is the exact list of rows the window produced, and the only rows the contract has to look at.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE assistant.plugin_connections
+    ALTER COLUMN provider SET DEFAULT 'unknown';
 
 ALTER TABLE assistant.plugin_connections
     ALTER COLUMN provider SET NOT NULL;

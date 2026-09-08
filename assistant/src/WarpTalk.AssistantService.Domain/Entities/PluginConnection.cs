@@ -21,9 +21,19 @@ public partial class PluginConnection
     /// The provider this grant is with - the identity of the connection, unique per user.
     /// </summary>
     /// <remarks>
-    /// <c>NOT NULL</c> with no database default, so every write path that creates a connection has
-    /// to set it or the insert throws. It is <c>Plugin.Provider</c>, copied at consent time rather
-    /// than joined to, because the connection outlives any single catalog row.
+    /// It is <c>Plugin.Provider</c>, copied at consent time rather than joined to, because the
+    /// connection outlives any single catalog row. Every write path that creates a connection sets
+    /// it; nothing here should rely on a default.
+    /// <para>
+    /// The column is <c>NOT NULL</c> and, for now, carries a server-side <c>DEFAULT 'unknown'</c>.
+    /// That default is a rolling-deploy shim, not part of the model: deploys are migration-first,
+    /// so between 20260907101000 landing and the last pre-WT-646 pod retiring there are pods
+    /// inserting connections without this column, and a bare <c>NOT NULL</c> would answer them with
+    /// a 23502 on the OAuth callback. A row written that way lands under <c>'unknown'</c>, which no
+    /// OAuth client answers to and which collides with nothing, so it is inert rather than wrong
+    /// and the user's next consent writes a correct row. The default is dropped by a contract
+    /// migration in the release after that one.
+    /// </para>
     /// </remarks>
     public string Provider { get; set; } = null!;
 

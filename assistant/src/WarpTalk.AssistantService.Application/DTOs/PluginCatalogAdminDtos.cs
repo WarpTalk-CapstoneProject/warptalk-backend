@@ -186,6 +186,12 @@ public record ReplacePluginToolsRequest(IReadOnlyList<PluginToolManifestEntryDto
 /// comes back as a readable error, instead of failing inside the JSON deserializer as a 400 with
 /// nothing actionable in it.
 /// </para>
+/// <para>
+/// <c>resourceKey</c>, <c>resourceLabel</c> and <c>resourceAvatarUrl</c> are not accepted. They
+/// grouped a single plugin's tools by product before 20260907100000 split google_workspace into
+/// three rows and made the plugin row itself the grouping; a body that still sends them has them
+/// ignored, which is the same answer the migration gave the rows it moved.
+/// </para>
 /// </remarks>
 public record PluginToolManifestEntryDto(
     string? Name,
@@ -193,19 +199,29 @@ public record PluginToolManifestEntryDto(
     string? Description,
     string? Effect,
     IReadOnlyList<string>? RequiredScopes,
-    JsonObject? Parameters,
-    string? ResourceKey = null,
-    string? ResourceLabel = null,
-    string? ResourceAvatarUrl = null);
+    JsonObject? Parameters);
 
 /// <summary>
 /// What a delete actually did, so the caller need not infer it from the status code.
 /// </summary>
+/// <remarks>
+/// The four counts are everything that references the row, reported whichever way the delete went.
+/// They are what makes the difference between the two outcomes legible: a retired row still has all
+/// of them, and a hard delete is only offered when the first three are zero. WT-646.
+/// <para>
+/// <paramref name="AuditCount"/> and <paramref name="ConfirmationTokenCount"/> are here because
+/// their foreign keys are <c>ON DELETE CASCADE</c> - unlike installations and connections, they do
+/// not block a delete, they disappear into it. Reporting them is how an operator finds out that a
+/// row they retired was carrying two years of tool history.
+/// </para>
+/// </remarks>
 public record PluginCatalogDeleteResultDto(
     string PluginKey,
     bool HardDeleted,
     int InstallationCount,
-    int ConnectionCount);
+    int ConnectionCount,
+    int AuditCount,
+    int ConfirmationTokenCount);
 
 /// <summary>Filters and paging for the tool-audit listing.</summary>
 /// <remarks>

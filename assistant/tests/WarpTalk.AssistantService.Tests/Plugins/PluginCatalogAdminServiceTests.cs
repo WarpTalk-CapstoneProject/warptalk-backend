@@ -37,6 +37,7 @@ public class PluginCatalogAdminServiceTests
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
     private readonly IPluginConnectionRepository _connectionRepository = Substitute.For<IPluginConnectionRepository>();
     private readonly IPluginToolAuditRepository _auditRepository = Substitute.For<IPluginToolAuditRepository>();
+    private readonly IPluginConfirmationTokenRepository _confirmationTokenRepository = Substitute.For<IPluginConfirmationTokenRepository>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
 
     public PluginCatalogAdminServiceTests()
@@ -45,6 +46,7 @@ public class PluginCatalogAdminServiceTests
         _unitOfWork.PluginInstallationRepository.Returns(_installationRepository);
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
+        _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
 
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => "enc:" + call.Arg<string>());
@@ -59,6 +61,8 @@ public class PluginCatalogAdminServiceTests
             .Returns(new Dictionary<Guid, int>());
         _installationRepository.CountForPluginAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(0);
         _connectionRepository.CountForPluginAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(0);
+        _auditRepository.CountForPluginAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(0);
+        _confirmationTokenRepository.CountForPluginAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(0);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -406,6 +410,48 @@ public class PluginCatalogAdminServiceTests
     }
 
     [Fact]
+    public async Task ReplaceToolsAsync_DropsTheProductGroupingFieldsTheSplitRemoved()
+    {
+        // 20260907100000 stripped resourceKey/resourceLabel/resourceAvatarUrl from every tool it
+        // moved, on the grounds that the plugin row IS the grouping now and keeping them would
+        // leave two competing sources of truth for which product a tool belongs to. While the
+        // manifest DTO still carried them, one PUT of an old manifest put them straight back and
+        // the migration's rationale held only until the first admin edit.
+        //
+        // Deserialised from JSON rather than constructed, because the point under test is the wire
+        // contract: a body that still sends the three fields has to be accepted and have them
+        // ignored, not 400.
+        var body = JsonSerializer.Deserialize<ReplacePluginToolsRequest>(
+            """
+            {
+              "tools": [
+                {
+                  "name": "remote_app_search",
+                  "label": "Search the remote app",
+                  "description": "Search the connected remote app for matching records.",
+                  "effect": "read",
+                  "requiredScopes": ["remote.read"],
+                  "parameters": { "type": "object", "properties": {} },
+                  "resourceKey": "drive",
+                  "resourceLabel": "Google Drive",
+                  "resourceAvatarUrl": "/assets/plugins/google-drive.svg"
+                }
+              ]
+            }
+            """,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+
+        var result = await CreateSut().ReplaceToolsAsync(McpKey, body, AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("remote_app_search", Assert.Single(result.Value!.Tools).Name);
+        Assert.DoesNotContain("resource", plugin.ToolsJson, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ReplaceToolsAsync_ClearsTheSyncMarkers()
     {
         // tools_synced_at means "this is what the MCP server last told us". A hand-authored manifest
@@ -686,6 +732,66 @@ public class PluginCatalogAdminServiceTests
         Assert.True(result.Value!.HardDeleted);
         _pluginRepository.Received(1).Remove(plugin);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RefusesAHardDeleteWhileToolAuditsExist()
+    {
+        // The case the installation/connection guard misses is the ordinary one: everybody
+        // uninstalls a plugin before it is retired, so both of those counts are zero while every
+        // audit row is still there. plugin_tool_audits_plugin_id_fkey cascades, so the delete would
+        // succeed and take the whole recorded history with it, silently.
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+        _auditRepository.CountForPluginAsync(McpPluginId, Arg.Any<CancellationToken>()).Returns(1_284);
+
+        var result = await CreateSut().DeleteAsync(McpKey, hard: true, AdminUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PluginInUse, result.ErrorCode);
+        Assert.Contains("1284", result.Error!, StringComparison.Ordinal);
+        _pluginRepository.DidNotReceive().Remove(Arg.Any<Plugin>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_LetsConfirmationTokensCascadeRatherThanBlockingOnThem()
+    {
+        // A confirmation token lives five minutes and is useful only to the one user mid-call on
+        // the plugin being deleted, so cascading them is not data loss. It is reported, not refused.
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+        _confirmationTokenRepository.CountForPluginAsync(McpPluginId, Arg.Any<CancellationToken>()).Returns(3);
+
+        var result = await CreateSut().DeleteAsync(McpKey, hard: true, AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.HardDeleted);
+        Assert.Equal(3, result.Value!.ConfirmationTokenCount);
+        _pluginRepository.Received(1).Remove(plugin);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_SoftDeleteReportsEverythingStillAttachedToTheRow()
+    {
+        // Retiring a row keeps all four; the response is where an operator finds out that the row
+        // they just retired is carrying two years of tool history.
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+        _installationRepository.CountForPluginAsync(McpPluginId, Arg.Any<CancellationToken>()).Returns(4);
+        _connectionRepository.CountForPluginAsync(McpPluginId, Arg.Any<CancellationToken>()).Returns(2);
+        _auditRepository.CountForPluginAsync(McpPluginId, Arg.Any<CancellationToken>()).Returns(910);
+        _confirmationTokenRepository.CountForPluginAsync(McpPluginId, Arg.Any<CancellationToken>()).Returns(1);
+
+        var result = await CreateSut().DeleteAsync(McpKey, hard: false, AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.HardDeleted);
+        Assert.Equal(4, result.Value!.InstallationCount);
+        Assert.Equal(2, result.Value!.ConnectionCount);
+        Assert.Equal(910, result.Value!.AuditCount);
+        Assert.Equal(1, result.Value!.ConfirmationTokenCount);
+        Assert.False(plugin.IsActive);
     }
 
     // -----------------------------------------------------------------------------------------

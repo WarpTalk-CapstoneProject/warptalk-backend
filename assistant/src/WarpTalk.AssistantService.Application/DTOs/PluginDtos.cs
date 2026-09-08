@@ -164,10 +164,25 @@ public record PluginOAuthRefreshResultDto(
     string? Detail = null);
 
 /// <summary>
-/// A tool's <see cref="ResourceKey"/> groups it with sibling tools in the catalog UI (for example,
-/// a plugin whose OAuth grant covers two distinct products can render one tile per product without
-/// the frontend hardcoding provider-specific logic). Null when a plugin's tools are not grouped.
+/// One tool as WarpBot sees it. <see cref="PluginKey"/> is the only grouping a tool has: it is the
+/// catalog row the tool belongs to, and what the orchestrator resolves a call back to a plugin,
+/// an installation and a scope check with.
 /// </summary>
+/// <remarks>
+/// This used to carry <c>ResourceKey</c>/<c>ResourceLabel</c>/<c>ResourceAvatarUrl</c> as well.
+/// 20260826130000 added them so the frontend could render one tile per Google product off the
+/// single google_workspace row; 20260907100000 made that unnecessary by splitting the row into
+/// google_drive, google_calendar and google_meet, and stripped the three fields from every tool it
+/// moved - on the stated grounds that keeping them would leave two competing sources of truth for
+/// which product a tool belongs to.
+/// <para>
+/// They are gone from the type for the same reason. While they were still accepted here, a single
+/// <c>PUT catalog/{key}/tools</c> put them straight back into <c>tools_json</c>, so the migration's
+/// rationale held only until the first admin edit. Rows written before the split may still hold the
+/// three properties; <c>System.Text.Json</c> ignores members it cannot map, so they deserialise as
+/// nothing and are dropped the next time a manifest is written back.
+/// </para>
+/// </remarks>
 public record McpToolDescriptorDto(
     string Name,
     string PluginKey,
@@ -175,10 +190,7 @@ public record McpToolDescriptorDto(
     string Description,
     string Effect,
     IReadOnlyList<string> RequiredScopes,
-    JsonObject Parameters,
-    string? ResourceKey = null,
-    string? ResourceLabel = null,
-    string? ResourceAvatarUrl = null);
+    JsonObject Parameters);
 
 public record McpToolExecutionRequest(
     Guid? WorkspaceId,
