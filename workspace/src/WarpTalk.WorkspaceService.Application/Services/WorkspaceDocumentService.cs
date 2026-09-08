@@ -58,12 +58,37 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Refuse every document operation on a workspace that is suspended or deleted.
+    /// </summary>
+    /// <remarks>
+    /// THE HOLE THIS PLUGS. Upload and List asked this question; the other twelve endpoints did
+    /// not, and <see cref="IDocumentAccessEvaluator"/> never loads the workspace at all. Deletion
+    /// happened to be safe because both delete paths stamp RemovedAt on every member, so the
+    /// membership lookups fail closed. SUSPENSION is not: AdminWorkspaceService.ChangeLifecycleAsync
+    /// flips IsActive and leaves every membership row live.
+    ///
+    /// So a suspended workspace returned 404 from the document LIST while every by-id route —
+    /// get, download, extracted-text read and write, patch, approve, delete, archive, restore and
+    /// all three policy routes — kept working for anyone holding a document id. Suspension is what
+    /// an admin reaches for on non-payment, abuse or legal hold, and it did not stop the documents
+    /// leaving.
+    ///
+    /// It lives here rather than in the evaluator for two reasons: the evaluator is injected into
+    /// this service and nothing else, so this is the real choke point; and the list path evaluates
+    /// N documents per call, which would turn one workspace lookup into N.
+    /// </remarks>
+    private async Task<bool> IsWorkspaceOperationalAsync(Guid workspaceId, CancellationToken ct)
+    {
+        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+        return workspace is not null && workspace.IsOperational();
+    }
+
     public async Task<Result<WorkspaceDocumentDto>> UploadDocumentAsync(Guid workspaceId, UploadDocumentApiRequest request, Guid userId, CancellationToken ct = default)
     {
         try
         {
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-            if (workspace == null || !workspace.IsActive || workspace.DeletedAt != null)
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
@@ -187,8 +212,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-            if (workspace == null || !workspace.IsActive || workspace.DeletedAt != null)
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<PagedResult<WorkspaceDocumentDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
@@ -312,6 +336,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
             if (!accessResult.IsSuccess)
             {
@@ -345,6 +374,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -478,6 +512,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -574,6 +613,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -604,6 +648,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -629,6 +678,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
             if (member == null)
@@ -723,6 +777,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, ct);
             if (!accessResult.IsSuccess)
             {
@@ -752,6 +811,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
@@ -809,6 +873,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
@@ -864,6 +933,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
@@ -941,6 +1015,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
             if (!accessResult.IsSuccess)
             {
@@ -1009,6 +1088,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             // A WRITE, so it is gated like the other writes — not like a read.
             //
             // This asked for `view`, which is the permission every ordinary Internal member holds

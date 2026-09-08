@@ -71,6 +71,20 @@ public class WorkspaceDocumentServiceTests
         _urlProvider.GetDocumentDownloadUrl(Arg.Any<Guid>(), Arg.Any<Guid>())
             .Returns(x => $"/api/v1/workspaces/{x.ArgAt<Guid>(0)}/documents/{x.ArgAt<Guid>(1)}/download");
 
+        // Every document endpoint now refuses a suspended or deleted workspace, so the default is
+        // an operational one. Without it a test that arranges only a document would be asserting
+        // the workspace guard instead of its own subject — and would pass for the wrong reason if
+        // the guard were ever removed. Tests that care override this with a specific id.
+        _workspaceRepository.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => new Workspace
+            {
+                Id = call.ArgAt<Guid>(0),
+                Name = "Acme",
+                Slug = "acme",
+                Settings = "{}",
+                IsActive = true
+            });
+
         _documentService = new WorkspaceDocumentService(
             _unitOfWork,
             _accessEvaluator,
@@ -811,5 +825,155 @@ public class WorkspaceDocumentServiceTests
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
         await _storage.DidNotReceiveWithAnyArgs()
             .SaveExtractedTextAsync(default!, default!, default);
+    }
+
+    // ---- A suspended workspace is not a readable one -----------------------------------------
+    //
+    // Only Upload and List ever asked whether the workspace was still operational; the other
+    // twelve routes authorized on membership alone, and DocumentAccessEvaluator never loads the
+    // workspace. Deletion happened to be safe — both delete paths stamp RemovedAt on every member,
+    // so membership fails closed — but SUSPENSION flips IsActive and leaves memberships live. So
+    // the document LIST returned 404 on a suspended workspace while every by-id route kept serving
+    // anyone holding a document id. Suspension is the lever for non-payment, abuse and legal hold.
+
+    private void ArrangeSuspendedWorkspace(Guid workspaceId)
+        => _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace
+            {
+                Id = workspaceId, Name = "Acme", Slug = "acme", Settings = "{}", IsActive = false
+            });
+
+    [Fact]
+    public async Task GetDocumentByIdAsync_ShouldRefuse_WhenTheWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        ArrangeSuspendedWorkspace(workspaceId);
+
+        var result = await _documentService.GetDocumentByIdAsync(workspaceId, documentId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        // Refused before the per-document question is even asked: a suspended tenant has no
+        // readable documents, whatever this caller's policies say.
+        await _accessEvaluator.DidNotReceiveWithAnyArgs()
+            .EvaluateAccessAsync(default, default, default, default!, default);
+    }
+
+    [Fact]
+    public async Task GetDocumentByIdAsync_ShouldRefuse_WhenTheWorkspaceIsSoftDeleted()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace
+            {
+                Id = workspaceId, Name = "Acme", Slug = "acme", Settings = "{}",
+                IsActive = true, DeletedAt = DateTime.UtcNow
+            });
+
+        var result = await _documentService.GetDocumentByIdAsync(workspaceId, documentId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DownloadDocumentAsync_ShouldRefuse_WhenTheWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        ArrangeSuspendedWorkspace(workspaceId);
+
+        var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, userId);
+
+        // The one that actually moves bytes off the platform.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ArchiveDocumentAsync_ShouldRefuse_WhenTheWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        ArrangeSuspendedWorkspace(workspaceId);
+
+        var result = await _documentService.ArchiveDocumentAsync(workspaceId, documentId, userId);
+
+        // Archive/Restore/Delete/Approve never went through the evaluator at all — they rolled
+        // their own member lookup, so they needed the guard in their own right.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AddAccessPolicyAsync_ShouldRefuse_WhenTheWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        ArrangeSuspendedWorkspace(workspaceId);
+
+        var result = await _documentService.AddAccessPolicyAsync(
+            workspaceId, documentId,
+            new AddAccessPolicyRequest("User", userId, null, "view", "ALLOW"),
+            userId);
+
+        // Granting access inside a workspace an admin has just cut off.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateExtractedTextAsync_ShouldRefuse_WhenTheWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        ArrangeSuspendedWorkspace(workspaceId);
+
+        var result = await _documentService.UpdateExtractedTextAsync(
+            workspaceId, documentId, "revised text", userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        await _eventPublisher.DidNotReceiveWithAnyArgs()
+            .PublishEmbeddingIndexRequestAsync(default, default, default!, default, default);
     }
 }
