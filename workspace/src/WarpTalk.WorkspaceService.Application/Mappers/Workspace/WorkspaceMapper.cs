@@ -40,7 +40,10 @@ public static class WorkspaceMapper
         return new Workspace
         {
             Id = Guid.NewGuid(),
-            Name = request.Name,
+            // Trimmed, because the length rule in CreateWorkspaceAsync is applied to the trimmed
+            // name. Storing the raw one would let "140 characters plus 20 spaces" pass a guard
+            // measuring 140 and then arrive at a varchar(150) column as 160.
+            Name = request.Name.Trim(),
             Slug = slug,
             LogoUrl = request.LogoUrl,
             OwnerId = ownerId,
