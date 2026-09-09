@@ -86,6 +86,42 @@ public sealed class S3ArtifactUrlSignerTests
         Assert.Contains("X-Amz-Expires=", url);
     }
 
+    /// <summary>
+    /// WT-655: egress can report the object over http for an endpoint we address over https. Neither
+    /// URL states a port, so both carry a default invented from the scheme (80 against 443) — and
+    /// treating that as a different address would send the recording down the foreign-host path and
+    /// throw, for a file sitting in our own bucket.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_SignsUrlWhoseSchemeDiffersFromTheEndpoint()
+    {
+        using var signer = CreateSigner("https://r2.example.test");
+
+        var url = await signer.CreateDownloadUrlAsync(
+            "http://r2.example.test/recordings/rooms/demo.mp4",
+            TimeSpan.FromMinutes(15));
+
+        Assert.Contains("rooms/demo.mp4", url);
+        Assert.Contains("X-Amz-Signature=", url);
+    }
+
+    /// <summary>
+    /// The other half of that rule: a port both sides actually state is a real address, and a
+    /// mismatch there is a different host — not a default filled in on our behalf.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_RejectsAStatedPortThatDoesNotMatch()
+    {
+        using var signer = CreateSigner("http://minio:9000");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => signer.CreateDownloadUrlAsync(
+                "http://minio:9001/recordings/rooms/demo.mp4",
+                TimeSpan.FromMinutes(15)));
+
+        Assert.Contains("foreign host", error.Message);
+    }
+
     [Fact]
     public async Task CreateDownloadUrlAsync_SignsHttpPathStyleUrlOnConfiguredEndpointWithPort()
     {

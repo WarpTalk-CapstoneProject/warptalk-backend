@@ -150,7 +150,12 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
         bucket = string.Empty;
         key = string.Empty;
 
-        if (uri.Port != endpoint.Port)
+        // Ports are compared only when BOTH sides state one. Uri.Port invents a default from the
+        // scheme — 443 for https, 80 for http — so comparing it unconditionally would reject
+        // `http://endpoint/bucket/key` against an endpoint configured as `https://endpoint`, which is
+        // exactly the scheme mismatch the remarks above promise to tolerate. A stated port (minio on
+        // 9000) still has to match: that one is a real address, not a default filled in for us.
+        if (!uri.IsDefaultPort && !endpoint.IsDefaultPort && uri.Port != endpoint.Port)
             return false;
 
         // Path-style (what ForcePathStyle writes): https://endpoint/bucket/key…
