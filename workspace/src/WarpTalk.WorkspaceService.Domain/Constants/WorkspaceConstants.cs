@@ -18,11 +18,52 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
+    // Column Length Constraints
+    //
+    // Keep these in step with WorkspaceDbContext. They exist so an over-long value is refused by a
+    // rule that can say which field is wrong, instead of by Postgres at SaveChangesAsync — where
+    // the only thing the caller learns is that something went wrong on our side.
+
+    /// <summary>workspaces.name is varchar(150).</summary>
+    public const int WorkspaceNameMaxLength = 150;
+
+    /// <summary>
+    /// 63, which is NOT the width of the column — workspaces.slug is varchar(100).
+    ///
+    /// The column is the wrong number to bound this by, and picking it was a mistake worth
+    /// recording. A slug is a URL segment, and the web client routes on
+    /// `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$` — a DNS label, so 63 characters. A slug of 64 to
+    /// 100 fits the column perfectly and then fails normalizeWorkspaceSlug, which returns null,
+    /// and [workspaceSlug]/layout.tsx redirects the owner away from their own workspace.
+    ///
+    /// That was true before this guard existed: a 70-character name has always produced a
+    /// workspace that could be created and never opened. Bounding by the column would have left it
+    /// that way, which is why the number here follows the narrowest rule in the system rather than
+    /// the widest.
+    ///
+    /// Tighter than the name it is derived from, which is the trap: a name comfortably inside 150
+    /// produces a slug past 63, so the slug is what breaks and the failure names neither.
+    /// </summary>
+    public const int WorkspaceSlugMaxLength = 63;
+
+    /// <summary>workspaces.logo_url is varchar(500).</summary>
+    public const int WorkspaceLogoUrlMaxLength = 500;
+
+    /// <summary>workspace_invitations.email is varchar(320) — RFC 5321's ceiling.</summary>
+    public const int InvitationEmailMaxLength = 320;
+
+    /// <summary>workspace_verified_domains.domain is varchar(255).</summary>
+    public const int VerifiedDomainMaxLength = 255;
+
 
     // Error Messages
     public static class Errors
     {
         public const string WorkspaceNameRequired = "Workspace name is required.";
+        public const string WorkspaceNameTooLong = "Workspace name cannot exceed 150 characters.";
+        public const string WorkspaceLogoUrlTooLong = "Logo URL cannot exceed 500 characters.";
+        public const string VerifiedDomainTooLong = "Domain cannot exceed 255 characters.";
+        public const string VerifiedDomainInvalidFormat = "Enter a domain name, for example acme.com.";
         public const string UserNotFound = "User not found.";
         public const string InvalidUserEmail = "Invalid user email.";
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";

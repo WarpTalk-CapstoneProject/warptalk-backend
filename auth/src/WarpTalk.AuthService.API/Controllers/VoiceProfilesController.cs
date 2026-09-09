@@ -118,6 +118,32 @@ public class VoiceProfilesController : ControllerBase
         return File(result.Value!, "audio/wav");
     }
 
+    /// <summary>
+    /// The recording this person uploaded, played back to them.
+    ///
+    /// Deliberately a different endpoint from `preview`, because they answer different questions:
+    /// preview is the CLONE speaking a fixed sentence, this is the ORIGINAL. Playing them next to
+    /// each other is the only way somebody can judge whether the clone sounds like them.
+    ///
+    /// A profile belonging to anybody else answers 404, not 403 — see GetSampleAsync.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{profileId:guid}/sample")]
+    public async Task<IActionResult> GetSample(Guid profileId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.GetSampleAsync(userId.Value, profileId, ct);
+        if (!result.IsSuccess)
+        {
+            return StatusCode(ApiErrorStatus.For(result.ErrorCode), new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        var sample = result.Value!;
+        return File(sample.Content, sample.ContentType);
+    }
+
     [Authorize]
     [HttpDelete("{profileId:guid}")]
     public async Task<IActionResult> DeleteProfile(Guid profileId, CancellationToken ct)

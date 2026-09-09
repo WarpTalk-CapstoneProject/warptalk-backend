@@ -11,10 +11,11 @@ public class UpdateProfileRequestValidator : AbstractValidator<UpdateProfileRequ
     {
         RuleFor(x => x.FullName)
             .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.FullNameNotEmpty)
+            .MaximumLength(UserConstants.FullNameMaxLength).WithMessage(ApiMessageConstants.ValidationMessages.FullNameMaxLength)
             .When(x => x.FullName != null);
 
         RuleFor(x => x.PreferredLanguage)
-            .Matches(UserConstants.LanguageCodeRegex).WithMessage(ApiMessageConstants.ValidationMessages.PreferredLanguageInvalid)
+            .Matches(UserConstants.LanguageTagRegex).WithMessage(ApiMessageConstants.ValidationMessages.PreferredLanguageInvalid)
             .When(x => x.PreferredLanguage != null);
 
         RuleFor(x => x.Timezone)

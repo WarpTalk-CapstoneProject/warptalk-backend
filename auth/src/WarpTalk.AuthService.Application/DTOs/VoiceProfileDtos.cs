@@ -100,3 +100,12 @@ public class CreateVoiceProfileRequest
     public bool NoImpersonationConfirmed { get; set; }
     public bool RetentionAcknowledged { get; set; }
 }
+
+/// <summary>
+/// An uploaded recording on its way back to the person who uploaded it.
+///
+/// The bytes are read into memory rather than streamed: a sample is capped at 20 MB on the way in
+/// (VoiceProfileService.MaxSampleSizeBytes) and the caller is one person pressing play, so the
+/// simplicity is worth more than the streaming.
+/// </summary>
+public sealed record VoiceSampleContent(byte[] Content, string ContentType, string FileName);

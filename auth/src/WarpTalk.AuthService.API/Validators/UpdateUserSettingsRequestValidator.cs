@@ -35,11 +35,11 @@ public class UpdateUserSettingsRequestValidator : AbstractValidator<UpdateUserSe
             .When(x => x.DefaultTranslationRoomType != null);
 
         RuleFor(x => x.DefaultSpeakLanguage)
-            .Matches(UserConstants.LanguageCodeRegex).WithMessage(ApiMessageConstants.ValidationMessages.InvalidSpeakLanguage)
+            .Matches(UserConstants.LanguageTagRegex).WithMessage(ApiMessageConstants.ValidationMessages.InvalidSpeakLanguage)
             .When(x => x.DefaultSpeakLanguage != null);
 
         RuleFor(x => x.DefaultListenLanguage)
-            .Matches(UserConstants.LanguageCodeRegex).WithMessage(ApiMessageConstants.ValidationMessages.InvalidListenLanguage)
+            .Matches(UserConstants.LanguageTagRegex).WithMessage(ApiMessageConstants.ValidationMessages.InvalidListenLanguage)
             .When(x => x.DefaultListenLanguage != null);
     }
 }
