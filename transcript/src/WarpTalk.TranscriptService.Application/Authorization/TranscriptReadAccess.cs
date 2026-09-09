@@ -24,8 +24,9 @@ namespace WarpTalk.TranscriptService.Application.Authorization;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Scope: the effective host always; a participant only while the room's <c>ArtifactAccess</c>
-/// says the record is shared. It used to be a flat "host OR participant", which made the
+/// Scope: the effective host always; a participant of a meeting still running; and, once the
+/// meeting has ENDED, a participant only while the room's <c>ArtifactAccess</c> says the record is
+/// shared. It used to be a flat "host OR participant", which made the
 /// transcript the one output the host's Publish control did not actually govern — the banner over
 /// that control says it shares "the transcript, AI summary and recording", the download endpoint
 /// asked <c>ArtifactAccessHelper</c>, and this asked nothing. A participant could therefore read
@@ -71,6 +72,13 @@ public sealed class TranscriptReadAccess : ITranscriptReadAccess
     /// </summary>
     private const string AllParticipants = "ALL_PARTICIPANTS";
 
+    /// <summary>
+    /// <c>RoomStatus.ENDED</c> as the wire spells it — the same cross-service copy as
+    /// <see cref="AllParticipants"/>. Compared case-insensitively: it is written by
+    /// <c>Enum.ToString()</c> on one side and read as a bare string on the other.
+    /// </summary>
+    private const string EndedStatus = "ENDED";
+
     private readonly TranslationRoomServiceClient _roomClient;
 
     public TranscriptReadAccess(TranslationRoomServiceClient roomClient)
@@ -98,6 +106,28 @@ public sealed class TranscriptReadAccess : ITranscriptReadAccess
             var effectiveHost = string.IsNullOrEmpty(room.EffectiveHostId) ? room.HostId : room.EffectiveHostId;
             if (Guid.TryParse(effectiveHost, out var hostId) && hostId == userId)
                 return true;
+
+            // ...once the meeting is over. The sharing policy governs a FINISHED meeting's
+            // record — record-sharing.ts opens with that sentence, and SetArtifactAccess has a
+            // route of its own because the act "only makes sense after the meeting has ended".
+            //
+            // This endpoint is also what the live panel reads to CATCH UP somebody who joined
+            // late: `useTranscriptByRoom` in persistent-meeting-session.tsx, merged with the
+            // SignalR segments so arriving twenty minutes in does not show an empty panel. Gating
+            // that on the policy would refuse a person the first twenty minutes of a meeting they
+            // are sitting in, listening to the captions of, in every room left on the HOST_ONLY
+            // default — which is nearly all of them. Withholding a record from somebody currently
+            // being told its contents protects nobody.
+            if (!string.Equals(room.Status, EndedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                var live = await _roomClient.GetParticipantsByRoomIdAsync(
+                    new GetParticipantsByRoomIdRequest { RoomId = translationRoomId.ToString() },
+                    cancellationToken: cancellationToken);
+
+                return live.Participants.Any(p =>
+                    Guid.TryParse(p.Id, out var liveParticipantId) &&
+                    liveParticipantId == userId);
+            }
 
             // A participant reads it only while the record is shared.
             //
