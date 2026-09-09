@@ -46,6 +46,13 @@ public static class UserConstants
     /// </summary>
     public const int PasswordMaxLength = 128;
 
+    /// <summary>
+    /// Generous headroom over what TokenHashing.GenerateToken actually produces (32 random bytes
+    /// as base64url, so 43 characters), rather than a tight fit — the point is to refuse a payload
+    /// nobody could have been issued, not to encode the current token size in a second place.
+    /// </summary>
+    public const int TokenMaxLength = 256;
+
     public const string ThemeLight = "light";
     public const string ThemeDark = "dark";
     public const string ThemeSystem = "system";

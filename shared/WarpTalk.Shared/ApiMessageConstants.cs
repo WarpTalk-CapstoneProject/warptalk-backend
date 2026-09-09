@@ -70,6 +70,8 @@ public static class ApiMessageConstants
         public const string PasswordMaxLength = "Password cannot exceed 128 characters.";
         public const string NewPasswordMaxLength = "New password cannot exceed 128 characters.";
         public const string RefreshTokenRequired = "Refresh token is required.";
+        public const string TokenRequired = "Token is required.";
+        public const string TokenMaxLength = "Token is not valid.";
         public const string GoogleIdTokenRequired = "Google ID token is required.";
         public const string PreferredLanguageInvalid = "Preferred language format is invalid.";
         public const string LanguageTagInvalid = "Language must be a valid language tag, for example en-US.";
