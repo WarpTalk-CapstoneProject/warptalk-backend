@@ -292,6 +292,33 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             // constraint would reject.
             var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
                 c => c.UserId == oauthState.UserId && c.Provider == plugin.Provider, ct: ct);
+
+            // One grant backs every plugin of this provider, so consenting with a different account
+            // does not add a connection - it overwrites the one Drive, Calendar and Meet are all
+            // reading. Left unchecked that is silent: every tile changes email, the previous refresh
+            // token is destroyed here but stays live at the provider because nothing revokes it, and
+            // from then on the same tools read a different Drive than the user's history implies.
+            //
+            // Refused rather than merged. The user has to disconnect deliberately, which is also the
+            // only path that revokes the grant being replaced.
+            if (connection is { ProviderAccountId: not null }
+                && !string.IsNullOrWhiteSpace(token.ProviderAccountId)
+                && !string.Equals(connection.ProviderAccountId, token.ProviderAccountId, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "Refused a {Provider} consent for a different account on an existing connection "
+                        + "(plugin {PluginKey}, user {UserId}).",
+                    plugin.Provider,
+                    pluginKey,
+                    oauthState.UserId);
+
+                return Failed(
+                    PluginConstants.ErrorCodes.ProviderAccountMismatch,
+                    client,
+                    provider,
+                    pluginKey);
+            }
+
             var now = DateTime.UtcNow;
             var canReuseStoredRefreshToken = connection is
             {
@@ -364,7 +391,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             await _unitOfWork.SaveChangesAsync(ct);
 
             return new PluginOAuthCallbackOutcomeDto(
-                ScopeOutcome(plugin, token.GrantedScopes),
+                await ScopeOutcomeAsync(plugin, oauthState.UserId, token.GrantedScopes, ct),
                 null,
                 provider,
                 pluginKey,
@@ -395,13 +422,48 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     /// The same subset test the plugins page uses to decide whether a tile counts as connected, so
     /// the redirect and the tile cannot disagree about the grant the user just gave.
     /// </remarks>
-    private static string ScopeOutcome(Plugin plugin, IReadOnlyList<string> grantedScopes)
+    private async Task<string> ScopeOutcomeAsync(
+        Plugin plugin,
+        Guid userId,
+        IReadOnlyList<string> grantedScopes,
+        CancellationToken ct)
     {
         var granted = new HashSet<string>(grantedScopes, StringComparer.Ordinal);
-        return PluginScopeMapper.FromJson(plugin.RequiredScopesJson).All(granted.Contains)
+
+        if (!Satisfies(plugin, granted)) return PluginConstants.CallbackStatus.Partial;
+
+        // Asked of every installed plugin on this provider, not only the one the user clicked.
+        //
+        // The grant is shared and this callback replaces its whole scope set, so consenting through
+        // Calendar decides what Drive can do. The provider is asked for the union - Google is sent
+        // include_granted_scopes=true - but the user can still clear a previously granted box on
+        // the consent screen, and then the narrower set is what comes back and what gets stored.
+        //
+        // Judging that against the clicked plugin alone reported `connected` for a consent that had
+        // just dropped Drive's scope: the Drive tile went on saying Connected, and the user found
+        // out when a tool call failed in the middle of an answer.
+        //
+        // Deliberately NOT solved by unioning the new scopes with the stored ones. The stored set
+        // has to describe what the provider will actually honour; widening it here would put the
+        // failure back one step, at the provider, with the scope gate saying yes on the way past.
+        var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
+            i => i.UserId == userId && i.Status == PluginConstants.InstallationStatus.Installed,
+            ct: ct);
+        var installedPluginIds = installations.Select(i => i.PluginId).ToHashSet();
+
+        var siblings = await _unitOfWork.PluginRepository.FindAsync(
+            p => installedPluginIds.Contains(p.Id)
+                && p.Provider == plugin.Provider
+                && p.IsActive,
+            ct: ct);
+
+        return siblings.All(sibling => Satisfies(sibling, granted))
             ? PluginConstants.CallbackStatus.Connected
             : PluginConstants.CallbackStatus.Partial;
     }
+
+    private static bool Satisfies(Plugin plugin, HashSet<string> grantedScopes) =>
+        PluginScopeMapper.FromJson(plugin.RequiredScopesJson).All(grantedScopes.Contains);
 
     /// <summary>
     /// Which of the three sentences the user should read.
