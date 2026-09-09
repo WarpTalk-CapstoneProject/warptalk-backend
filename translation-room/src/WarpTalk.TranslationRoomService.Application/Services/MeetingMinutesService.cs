@@ -931,6 +931,15 @@ public class MeetingMinutesService : IMeetingMinutesService
     {
         var link = await _unitOfWork.MeetingMinutesShareRepository.GetByTokenAsync(token, ct);
 
+        // A deleted meeting takes its link with it. Deletion is soft here, so nothing about the
+        // row would have stopped a public URL from carrying on serving the minutes of a meeting
+        // the host had already removed — and "delete the meeting" has to mean that too, or the
+        // deletion is only true inside the app.
+        if (link != null && !await RoomIsLiveAsync(link.TranslationRoomId, ct))
+        {
+            link = null;
+        }
+
         // Named on the share list, or already entitled to the minutes by the ordinary room rules:
         // a restricted link widens who may read, it never narrows it for the people who were
         // at the meeting.
@@ -958,6 +967,12 @@ public class MeetingMinutesService : IMeetingMinutesService
                 MeetingMinutesConstants.ErrorShareLinkNotFound, ErrorCodes.NotFound)
         };
     }
+
+    /// <summary>Whether the meeting behind a link still exists — the same test every other read makes.</summary>
+    private async Task<bool> RoomIsLiveAsync(Guid roomId, CancellationToken ct) =>
+        await _unitOfWork.TranslationRoomRepository
+            .Query()
+            .AnyAsync(r => r.Id == roomId && r.DeletedAt == null && r.IsActive, ct);
 
     private async Task<bool> CanReadRoomAsync(
         Guid roomId, Guid userId, string? userEmail, CancellationToken ct)
