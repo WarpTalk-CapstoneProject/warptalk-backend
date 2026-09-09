@@ -184,42 +184,54 @@ public class NotificationValidatorTests
     // reads SendNotification's Success flag, which is why a producer can never tell.
     //
     // Add the InlineData when adding a type. That sentence is now on its third ticket.
+    // The payload travels WITH the type, because the schemas are not uniform: a leave request
+    // must name its requester, and a role change carries the two roles instead of the workspace
+    // name. One shared payload passed here only while every membership schema happened to want
+    // the same two fields, and it stopped being true the moment WORKSPACE_ROLE_CHANGED was
+    // registered properly.
     [Theory]
-    [InlineData(NotificationConstants.TypeWorkspaceLeaveRequested)]
-    [InlineData(NotificationConstants.TypeWorkspaceLeaveApproved)]
-    [InlineData(NotificationConstants.TypeWorkspaceLeaveRejected)]
-    [InlineData(NotificationConstants.TypeWorkspaceMemberRemoved)]
-    [InlineData(NotificationConstants.TypeWorkspaceRoleChanged)]
-    public void Validate_WorkspaceMembershipPayload_IsAccepted(string type)
+    [InlineData(NotificationConstants.TypeWorkspaceLeaveRequested,
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo","requester_id":"019f0d00-0de0-7000-9000-0000000000bb"}""")]
+    [InlineData(NotificationConstants.TypeWorkspaceLeaveApproved,
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
+    [InlineData(NotificationConstants.TypeWorkspaceLeaveRejected,
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
+    [InlineData(NotificationConstants.TypeWorkspaceMemberRemoved,
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
+    [InlineData(NotificationConstants.TypeWorkspaceRoleChanged,
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","old_role":"Member","new_role":"Admin"}""")]
+    public void Validate_WorkspaceMembershipPayload_IsAccepted(string type, string payload)
     {
-        var payload = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
-            workspace_name = "WarpTalk Demo"
-        });
-
         var result = NotificationValidator.Validate(type, "Title", "Content", "/warptalk-demo/members", payload);
 
         Assert.True(result.IsSuccess);
     }
 
     [Fact]
-    public void Validate_LeaveRequestCarryingTheMemberEmail_IsAccepted()
+    public void Validate_LeaveRequestCarryingAnUndeclaredField_IsRejected()
     {
-        // member_email is OPTIONAL, and an optional field must not be the thing that drops the
-        // notification — the whole class of bug here is a payload being rejected for a field
-        // nobody thought was load-bearing.
+        // This started life asserting the opposite: that `member_email` rides along harmlessly,
+        // because an optional field must never be the thing that drops a notification. That was
+        // true of the schema this branch wrote — but the schema that SHIPPED declares three
+        // required fields and no optional ones, and nothing anywhere sends `member_email`.
+        //
+        // So the behaviour worth pinning is the one production actually has: an undeclared field
+        // is refused rather than ignored. Strict is defensible here — a field nobody declared is
+        // a producer and a validator that disagree — but it is a trap for the next person adding
+        // one, and this test is where they will find out.
         var payload = System.Text.Json.JsonSerializer.Serialize(new
         {
             workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
             workspace_name = "WarpTalk Demo",
+            requester_id = "019f0d00-0de0-7000-9000-0000000000bb",
             member_email = "member@example.com"
         });
 
         var result = NotificationValidator.Validate(
             NotificationConstants.TypeWorkspaceLeaveRequested, "Title", "Content", null, payload);
 
-        Assert.True(result.IsSuccess);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(NotificationConstants.ErrorUnsupportedPayloadField, result.Error);
     }
 
     [Fact]
