@@ -90,6 +90,21 @@ public static class MinutesShareAccess
     }
 
     /// <summary>
+    /// Whether a document in this state may go out through a link at all.
+    ///
+    /// A DRAFT is not published — that is the rule the whole record lifecycle turns on: DRAFT to
+    /// IN_REVIEW is a person signing their name, and until then the document is a model's output
+    /// that nobody has checked. The ordinary read gate already keeps a draft with the host and the
+    /// workspace's owners; a share link that served one would walk straight around that and put an
+    /// unchecked machine draft in front of a client.
+    ///
+    /// The link itself stays valid. It simply starts opening the moment somebody signs, which is
+    /// also the moment the document becomes theirs rather than the model's.
+    /// </summary>
+    public static bool IsServable(string? minutesStatus) =>
+        !string.Equals(minutesStatus, MeetingMinutesConstants.StatusDraft, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Whether a mode string is one this system knows. Guarded at the edge rather than trusted,
     /// because an unrecognised mode written into the column would be read back by
     /// <see cref="Decide"/> as "not public", and a link nobody can open looks like data loss.
