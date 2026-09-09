@@ -31,9 +31,10 @@ public class MeetingMinutesContent
     public DateTime? ScheduledAt { get; set; }
 
     /// <summary>
-    /// Chương trình họp. Null on a draft: there is no agenda field on a room — an agenda given at
-    /// booking is folded into the description — so this is the secretary's to fill rather than
-    /// something to guess at from prose.
+    /// Chương trình họp. Prefilled from the room's booking description when there is one, carrying
+    /// a line that says that is what it is — there is no agenda field on a room, and a booking
+    /// description is a plan, not a programme the meeting adopted. Null when the room was booked
+    /// without one: the secretary fills it, rather than the draft guessing an agenda out of prose.
     /// </summary>
     [JsonPropertyName("agenda")]
     public string? Agenda { get; set; }
@@ -173,6 +174,18 @@ public class MinutesItem
     public long? AtMs { get; set; }
 }
 
+/// <summary>
+/// One motion and how it was disposed of.
+///
+/// The three counts alone are enough for the Vietnamese form, which records the tally. They are
+/// not enough for the global template: Robert's Rules minutes record the ACTION TAKEN, and a
+/// motion there is identified by who moved it and who seconded it, then by whether it carried.
+/// A reader of that form looking for "who proposed this" must not have to infer it from a count.
+///
+/// All four of the added fields are the secretary's to fill. Nothing infers a mover from the
+/// transcript, for the same reason nothing infers the tally: a name attached to a motion somebody
+/// did not make is a worse error than a blank.
+/// </summary>
 public class MinutesVote
 {
     [JsonPropertyName("topic")]
@@ -186,6 +199,26 @@ public class MinutesVote
 
     [JsonPropertyName("abstainCount")]
     public int AbstainCount { get; set; }
+
+    /// <summary>Who put the motion. Null until the secretary states it.</summary>
+    [JsonPropertyName("movedBy")]
+    public string? MovedBy { get; set; }
+
+    /// <summary>Who seconded it. Null when nobody did, which is itself worth recording.</summary>
+    [JsonPropertyName("secondedBy")]
+    public string? SecondedBy { get; set; }
+
+    /// <summary>
+    /// How the motion was disposed of — "carried", "failed", "withdrawn", "tabled". Free text
+    /// rather than an enum: the set differs between rulebooks, and a value this service does not
+    /// recognise must print rather than be dropped.
+    ///
+    /// Null means the secretary has not stated it. Deliberately NOT derived from the counts: a
+    /// motion needing a two-thirds majority carries on numbers that would fail a simple one, and
+    /// this service does not know which bar applies.
+    /// </summary>
+    [JsonPropertyName("outcome")]
+    public string? Outcome { get; set; }
 
     [JsonPropertyName("atMs")]
     public long? AtMs { get; set; }

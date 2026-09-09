@@ -78,6 +78,50 @@ public interface IMeetingMinutesService
     /// were at the meeting, and one only its author can download is a record of nothing. The
     /// document prints its own status, so a draft that leaves the building says it is a draft.
     /// </summary>
-    Task<Result<MinutesExportFile>> ExportDocxAsync(
-        Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default);
+    Task<Result<MinutesExportFile>> ExportAsync(
+        Guid roomId, Guid userId, string? userEmail, string? template, string format,
+        CancellationToken ct = default);
+
+    // ------------------------------------------------------------------ sharing
+
+    /// <summary>
+    /// The room's sharing state, creating the link on first ask.
+    ///
+    /// Created INVITED_ONLY: opening the dialog must not be the act that publishes a document.
+    /// Host authority, because who may read a record is the host's decision, not a reader's.
+    /// </summary>
+    Task<Result<MinutesShareDto>> GetOrCreateShareAsync(
+        Guid roomId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>Change the mode, downloads or expiry. Null fields are left as they are.</summary>
+    Task<Result<MinutesShareDto>> UpdateShareAsync(
+        Guid roomId, Guid userId, UpdateMinutesShareRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Kill the link. The token is rotated rather than flagged, so the URL in somebody's inbox is
+    /// gone from the database and cannot be revived by a bug or a future "undo".
+    /// </summary>
+    Task<Result<MinutesShareDto>> RevokeShareAsync(
+        Guid roomId, Guid userId, CancellationToken ct = default);
+
+    Task<Result<MinutesShareDto>> AddSharePersonAsync(
+        Guid roomId, Guid userId, string email, CancellationToken ct = default);
+
+    Task<Result<MinutesShareDto>> RemoveSharePersonAsync(
+        Guid roomId, Guid userId, string email, CancellationToken ct = default);
+
+    /// <summary>
+    /// The minutes behind a share token, for a viewer who may be nobody at all.
+    ///
+    /// <paramref name="viewerUserId"/> and <paramref name="viewerEmail"/> are null for an
+    /// anonymous reader; that is a legitimate caller on a public link and a sign-in prompt on a
+    /// restricted one.
+    /// </summary>
+    Task<Result<SharedMinutesDto>> GetSharedAsync(
+        string token, Guid? viewerUserId, string? viewerEmail, CancellationToken ct = default);
+
+    /// <summary>The same document as a file, for a viewer holding a link that allows downloads.</summary>
+    Task<Result<MinutesExportFile>> ExportSharedAsync(
+        string token, Guid? viewerUserId, string? viewerEmail, string? template, string format,
+        CancellationToken ct = default);
 }

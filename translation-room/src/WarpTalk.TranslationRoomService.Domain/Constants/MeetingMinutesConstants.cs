@@ -29,4 +29,23 @@ public static class MeetingMinutesConstants
         "This minutes document could not be read. Edit and save it before exporting.";
     public const string ErrorNumberCollision =
         "Another minutes document took that number a moment ago. Try again.";
+    public const string ErrorRevisionAlreadyOpen =
+        "Somebody else has just opened a revision of these minutes. Reload to see it.";
+
+    // ------------------------------------------------------------------ sharing
+
+    /// <summary>Only the people named on the share list may open the link. The default.</summary>
+    public const string ShareModeInvitedOnly = "INVITED_ONLY";
+
+    /// <summary>Anybody holding the URL may open it, signed in or not.</summary>
+    public const string ShareModeAnyoneWithLink = "ANYONE_WITH_LINK";
+
+    public const string ErrorShareLinkNotFound = "This share link is no longer available.";
+    public const string ErrorShareModeUnknown =
+        "Unknown sharing mode. Use INVITED_ONLY or ANYONE_WITH_LINK.";
+    public const string ErrorShareEmailInvalid = "That does not look like an email address.";
+    public const string ErrorShareDownloadDisabled =
+        "The person who shared this document turned downloads off.";
+    public const string ErrorSharePdfUnavailable =
+        "PDF conversion is unavailable right now. The Word file still downloads.";
 }

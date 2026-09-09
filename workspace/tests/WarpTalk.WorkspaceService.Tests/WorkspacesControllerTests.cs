@@ -365,4 +365,124 @@ public class WorkspacesControllerTests
         Assert.Empty(savedSettings?.VerifiedDomains ?? new List<string> { "unexpected" });
     }
 
+    private static WorkspaceSettingsDto CurrentSettings() => new(
+        "en",
+        "UTC",
+        new List<string>(),
+        true,
+        5,
+        30,
+        new List<string>(),
+        true,
+        false,
+        null,
+        false);
+
+    /// <summary>
+    /// WT-646. PATCH used to merge ANY key the caller sent into the settings document. The four
+    /// computed ceiling fields are the ones that mattered: GET reports them, so a client that
+    /// read-modify-writes has them in hand, and the endpoint accepted them back as if they were
+    /// settings.
+    ///
+    /// They never actually reached the database — ToConfiguration copies named fields and
+    /// WorkspaceConfiguration has no ceiling properties — but they did reach the 200 response,
+    /// which echoes the merged DTO. The server would tell a client its plan ceiling was whatever
+    /// the client had just made up. An allowlist is what keeps that from becoming a real hole the
+    /// day someone makes that mapper reflective.
+    /// </summary>
+    [Theory]
+    [InlineData("maxActiveRoomsCeiling")]
+    [InlineData("maxActiveRoomsCeilingSource")]
+    [InlineData("maxLanguagesCeiling")]
+    [InlineData("maxLanguagesCeilingSource")]
+    [InlineData("someFieldThatDoesNotExist")]
+    public async Task PatchWorkspaceSettings_ShouldReject_ComputedAndUnknownKeys(string key)
+    {
+        var workspaceId = Guid.NewGuid();
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new JsonObject { [key] = 999 },
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        var value = Assert.IsType<ApiErrorResponse>(badRequest.Value);
+        Assert.Equal(ErrorCodes.ValidationError, value.Code);
+        Assert.Contains(key, value.Error, StringComparison.Ordinal);
+
+        // Refused before the workspace is even read, and certainly before anything is written.
+        await _workspaceService.DidNotReceive().UpdateWorkspaceSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceSettingsDto>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldReject_WhenOneKeyOfManyIsNotWritable()
+    {
+        var workspaceId = Guid.NewGuid();
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new JsonObject
+            {
+                ["artifactRetentionDays"] = 60,
+                ["maxLanguagesCeiling"] = 99
+            },
+            CancellationToken.None);
+
+        // All or nothing. Applying the writable half of a rejected payload would leave the caller
+        // with a partial save reported as a failure.
+        Assert.IsType<BadRequestObjectResult>(result);
+        await _workspaceService.DidNotReceive().UpdateWorkspaceSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceSettingsDto>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldAccept_WritableKey()
+    {
+        var workspaceId = Guid.NewGuid();
+        WorkspaceSettingsDto? savedSettings = null;
+
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(CurrentSettings()));
+        _workspaceService.UpdateWorkspaceSettingsAsync(
+                workspaceId,
+                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
+                _userId,
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new JsonObject { ["artifactRetentionDays"] = 60 },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var merged = Assert.IsType<WorkspaceSettingsDto>(ok.Value);
+        Assert.Equal(60, merged.ArtifactRetentionDays);
+        Assert.Equal(60, savedSettings?.ArtifactRetentionDays);
+    }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldAccept_AllowAnyPlugins()
+    {
+        var workspaceId = Guid.NewGuid();
+        WorkspaceSettingsDto? savedSettings = null;
+
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(CurrentSettings()));
+        _workspaceService.UpdateWorkspaceSettingsAsync(
+                workspaceId,
+                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
+                _userId,
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new JsonObject { ["allowAnyPlugins"] = false },
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.False(savedSettings?.AllowAnyPlugins);
+    }
 }

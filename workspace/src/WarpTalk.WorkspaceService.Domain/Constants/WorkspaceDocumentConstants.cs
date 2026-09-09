@@ -5,6 +5,17 @@ public static class WorkspaceDocumentConstants
     public const string SensitiveConfidentialityLevel = "restricted";
     public const string NonSensitiveConfidentialityLevel = "public_internal";
     public const string RetentionStateActive = "active";
+
+    /// <summary>
+    /// How many AI-retrievable document ids one lookup returns by default.
+    /// </summary>
+    /// <remarks>
+    /// Matches MAX_SCOPED_ROOM_IDS in the assistant worker. Every id travels through a Redis
+    /// stream field and into a Qdrant MatchAny, so the list is bounded on purpose at both ends.
+    /// </remarks>
+    public const int DefaultAiRetrievableIdLimit = 200;
+
+    public const int MaxAiRetrievableIdLimit = 500;
     public const string SourceTypeMeeting = "meeting";
     public const string LocalStorageProvider = "local";
 
@@ -67,6 +78,7 @@ public static class WorkspaceDocumentConstants
         public const string UploadDocument = "UploadDocument";
         public const string GetDocumentDetails = "GetDocumentDetails";
         public const string PatchDocumentMetadata = "PatchDocumentMetadata";
+        public const string UpdateExtractedText = "UpdateExtractedText";
         public const string AddAccessPolicy = "AddAccessPolicy";
         public const string RemoveAccessPolicy = "RemoveAccessPolicy";
         public const string ApproveDocument = "ApproveDocument";

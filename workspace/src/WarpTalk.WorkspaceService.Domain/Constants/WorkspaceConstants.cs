@@ -54,6 +54,14 @@ public static class WorkspaceConstants
         public const string RequireVerifiedDomainIsDerived = "Whether internal members must use a verified domain is decided by the workspace's verified domains, not set directly. Add a verified domain to require one, or revoke every verified domain to stop requiring one.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
 
+        /// <summary>
+        /// PATCH /workspaces/{id}/settings rejecting a key it will not write. Format arg is the
+        /// comma-separated offending keys — naming them matters, because the alternative the old
+        /// code chose was to accept the key silently and drop it later, which looks identical to
+        /// success from the client's side.
+        /// </summary>
+        public const string SettingsPatchKeyNotWritableFormat = "These settings cannot be changed: {0}. They are either read-only (computed from the workspace's plan or its verified domains) or not workspace settings at all.";
+
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
         public const string NewOwnerMustBeActiveMember = "New owner must be an active member of the workspace.";
         public const string CannotTransferToExternal = "Cannot transfer ownership to an external member.";

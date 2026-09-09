@@ -5,6 +5,7 @@ using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -33,7 +34,38 @@ public class MeetingMinutesRepository : GenericRepository<MeetingMinutes>, IMeet
 
     public async Task<int> CountForWorkspaceYearAsync(Guid workspaceId, int year, CancellationToken ct = default)
     {
+        // Version 1 only: one row per DOCUMENT, not per row in the table.
+        //
+        // Counting every row made the number skip as soon as anybody revised anything. A workspace
+        // holding one document, BB-2026-0007, revised once, counted 2 and handed the next meeting
+        // BB-2026-0009 — a gap that reads to anybody looking at the register as a minutes that was
+        // written and then destroyed. Worse across a year boundary: revising a 2026 document in
+        // January 2027 counted as one 2027 document, so the first real minutes of 2027 came out as
+        // BB-2027-0002 and BB-2027-0001 never existed.
+        //
+        // Version 1 is the row that consumed the number, exactly once per chain, and it stays that
+        // row however many revisions follow and whichever one currently holds `is_current`.
         return await _dbSet
-            .CountAsync(m => m.WorkspaceId == workspaceId && m.CreatedAt.Year == year, ct);
+            .CountAsync(
+                m => m.WorkspaceId == workspaceId && m.Version == 1 && m.CreatedAt.Year == year,
+                ct);
+    }
+
+    /// <inheritdoc />
+    public Expression<Func<MeetingMinutes, bool>> MatchesSearch(string search)
+    {
+        var term = (search ?? string.Empty).Trim().ToLowerInvariant();
+
+        // jsonb_extract_path_text is how a title stored inside jsonb becomes something lower()
+        // can be applied to at all — lower(jsonb) does not exist, which is why this clause could
+        // not simply be written out in the service alongside the others.
+        //
+        // A row whose content has no meetingTitle yields SQL NULL here; NULL LIKE '%x%' is NULL,
+        // so it fails the clause instead of matching everything. That is the behaviour wanted: a
+        // document with no recorded title is not found by title.
+        return minutes =>
+            minutes.MinutesNo.ToLower().Contains(term)
+            || PostgresJsonFunctions.JsonbExtractPathText(minutes.Content, "meetingTitle")!.ToLower().Contains(term)
+            || minutes.TranslationRoom.TranslationRoomCode.ToLower().Contains(term);
     }
 }

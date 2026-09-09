@@ -10,6 +10,13 @@ namespace WarpTalk.AssistantService.Application.DTOs;
 public record PluginDefinitionDto(
     Guid Id,
     string Key,
+    /// <summary>
+    /// Who the OAuth grant is with. Several catalog rows share one provider - google_drive,
+    /// google_calendar and google_meet are all <c>google</c> - and a connection is keyed by this,
+    /// not by <paramref name="Key"/>. It is also what a compiled-in gateway or OAuth client asserts
+    /// on before it sends a user's token anywhere.
+    /// </summary>
+    string Provider,
     string Label,
     string Description,
     string? AvatarUrl,
@@ -17,10 +24,22 @@ public record PluginDefinitionDto(
     IReadOnlyList<McpToolDescriptorDto> Tools,
     string Kind = "native",
     /// <summary>Null for a native row, which has no MCP server to talk to.</summary>
-    string? McpServerUrl = null);
+    string? McpServerUrl = null,
+    /// <summary>Operator-curated presentation. See the same members on <see cref="PluginCatalogItemDto"/>.</summary>
+    bool IsFeatured = false,
+    int SortOrder = 0,
+    string? Category = null);
 
 public record PluginCatalogItemDto(
     string Key,
+    /// <summary>
+    /// Who the OAuth grant is with. Several rows share one provider - google_drive,
+    /// google_calendar and google_meet are all <c>google</c> - and one grant serves all of them,
+    /// so this is what a client must group by to tell a user that disconnecting one row
+    /// disconnects its siblings. Deriving that grouping from scope URLs instead, as the frontend
+    /// briefly had to, guesses at something the catalog already knows.
+    /// </summary>
+    string Provider,
     string Label,
     string Description,
     string? AvatarUrl,
@@ -29,7 +48,36 @@ public record PluginCatalogItemDto(
     string ConnectionStatus,
     string? ConnectedAccountEmail,
     IReadOnlyList<McpToolDescriptorDto> Tools,
-    IReadOnlyList<string> GrantedScopes);
+    IReadOnlyList<string> GrantedScopes,
+    /// <summary>
+    /// Why the active workspace's plugin policy refuses this row, or null when nothing refuses it.
+    /// WT-646.
+    /// </summary>
+    /// <remarks>
+    /// Null whenever the catalog was listed without a workspace in context, which is the personal
+    /// plugins page's own case and the default.
+    /// <para>
+    /// A blocked row is REPORTED rather than hidden, and that is the deliberate answer to what
+    /// happens when an admin turns plugins off under a user who has already installed and
+    /// connected. Hiding it would leave a live OAuth grant the user can neither see nor revoke;
+    /// deleting the connection would throw away a personal grant on a workspace's say-so, and the
+    /// same grant may be in use in another workspace that still permits it. So the rows stand, the
+    /// user can still disconnect, and the plugin is stopped where it would actually be used - at
+    /// tool execution.
+    /// </para>
+    /// </remarks>
+    string? WorkspacePolicyBlockReason = null,
+    /// <summary>
+    /// Operator-curated presentation, set from the admin catalog surface. Exposed here because the
+    /// user-facing page is the only place they mean anything: a "Featured" heading rendered over
+    /// the whole catalog, which is what this page did before these existed, stops being true the
+    /// moment the catalog holds more than a handful of rows.
+    /// </summary>
+    bool IsFeatured = false,
+    /// <summary>Ascending. Ties are the client's to break, by label.</summary>
+    int SortOrder = 0,
+    /// <summary>Null on every row today; grouping by it is only worth it once rows carry one.</summary>
+    string? Category = null);
 
 public record InstallPluginRequest();
 
@@ -61,11 +109,56 @@ public record PluginConnectUrlDto(string Url);
 /// anything re-fetched later would defeat the check.
 /// </para>
 /// </remarks>
+/// <param name="Client">
+/// Which surface started the flow - <c>web</c> or <c>desktop</c>. It rides inside the sealed state
+/// rather than on the redirect's query string on purpose: the callback page turns it into a
+/// <c>warptalk://</c> deep link, and a value an attacker could set in a link would be a value that
+/// makes someone else's browser open the desktop app.
+/// </param>
 public record PluginOAuthStateDto(
     Guid UserId,
     string PluginKey,
     string? CodeVerifier = null,
-    string? Issuer = null);
+    string? Issuer = null,
+    string? Client = null);
+
+/// <summary>
+/// What a finished OAuth callback has to say, in the terms the redirect needs.
+/// </summary>
+/// <remarks>
+/// Deliberately not a <c>Result</c>. A callback is reached by a browser following a redirect, so
+/// there is no caller who can act on a failure - every ending, including the ones that used to
+/// throw, has to become a page the user lands on. Modelling that as a value rather than as an
+/// error is what keeps the controller from having to decide what an exception means.
+/// </remarks>
+/// <param name="Status">One of <see cref="Domain.Constants.PluginConstants.CallbackStatus"/>.</param>
+/// <param name="Reason">
+/// An error code from <see cref="Domain.Constants.PluginConstants.ErrorCodes"/> when
+/// <paramref name="Status"/> is <c>error</c>; null otherwise. It picks which sentence the plugins
+/// page shows, so it stays a small closed set rather than a message.
+/// </param>
+/// <param name="Provider">
+/// The provider that was being connected, when the state named a plugin we could resolve. Null
+/// when the state itself did not survive, which is the one case where nothing about the flow is
+/// known.
+/// </param>
+public record PluginOAuthCallbackOutcomeDto(
+    string Status,
+    string? Reason,
+    string? Provider,
+    string? PluginKey,
+    string Client,
+    PluginConnectionStatusDto? Connection);
+
+/// <summary>
+/// What a caller may learn from a sealed OAuth state without opening it.
+/// </summary>
+/// <remarks>
+/// Deliberately narrower than <see cref="PluginOAuthStateDto"/>, which also carries the user id and
+/// the PKCE verifier. A callback that never reached an exchange still has to send the user back to
+/// the right tile on the right surface, and those two fields are the whole of what that takes.
+/// </remarks>
+public record PluginOAuthFlowHintDto(string? PluginKey, string Client);
 
 public record PluginOAuthTokenDto(
     string? ProviderAccountId,
@@ -116,10 +209,25 @@ public record PluginOAuthRefreshResultDto(
     string? Detail = null);
 
 /// <summary>
-/// A tool's <see cref="ResourceKey"/> groups it with sibling tools in the catalog UI (for example,
-/// a plugin whose OAuth grant covers two distinct products can render one tile per product without
-/// the frontend hardcoding provider-specific logic). Null when a plugin's tools are not grouped.
+/// One tool as WarpBot sees it. <see cref="PluginKey"/> is the only grouping a tool has: it is the
+/// catalog row the tool belongs to, and what the orchestrator resolves a call back to a plugin,
+/// an installation and a scope check with.
 /// </summary>
+/// <remarks>
+/// This used to carry <c>ResourceKey</c>/<c>ResourceLabel</c>/<c>ResourceAvatarUrl</c> as well.
+/// 20260826130000 added them so the frontend could render one tile per Google product off the
+/// single google_workspace row; 20260907100000 made that unnecessary by splitting the row into
+/// google_drive, google_calendar and google_meet, and stripped the three fields from every tool it
+/// moved - on the stated grounds that keeping them would leave two competing sources of truth for
+/// which product a tool belongs to.
+/// <para>
+/// They are gone from the type for the same reason. While they were still accepted here, a single
+/// <c>PUT catalog/{key}/tools</c> put them straight back into <c>tools_json</c>, so the migration's
+/// rationale held only until the first admin edit. Rows written before the split may still hold the
+/// three properties; <c>System.Text.Json</c> ignores members it cannot map, so they deserialise as
+/// nothing and are dropped the next time a manifest is written back.
+/// </para>
+/// </remarks>
 public record McpToolDescriptorDto(
     string Name,
     string PluginKey,
@@ -127,10 +235,7 @@ public record McpToolDescriptorDto(
     string Description,
     string Effect,
     IReadOnlyList<string> RequiredScopes,
-    JsonObject Parameters,
-    string? ResourceKey = null,
-    string? ResourceLabel = null,
-    string? ResourceAvatarUrl = null);
+    JsonObject Parameters);
 
 public record McpToolExecutionRequest(
     Guid? WorkspaceId,

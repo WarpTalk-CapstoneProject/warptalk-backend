@@ -166,4 +166,16 @@ public class WorkspaceConfigurationTests
         Assert.NotNull(config.AiUsagePolicy);
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
     }
+
+    /// <summary>
+    /// The whole of a workspace's plugin policy is this one flag, and it defaults to permitting
+    /// plugins. If it ever flips, every existing workspace loses plugins on the next deploy.
+    /// </summary>
+    [Fact]
+    public void AllowAnyPlugins_ShouldDefaultToTrue_WhenUnconfigured()
+    {
+        var config = new WorkspaceConfiguration();
+
+        Assert.True(config.AllowAnyPlugins);
+    }
 }
