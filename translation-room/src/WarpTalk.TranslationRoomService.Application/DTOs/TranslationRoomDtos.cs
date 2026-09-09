@@ -365,7 +365,21 @@ public record RoomArtifactDto(
     bool ConsentRequired,
     DateTime? RetentionUntil,
     string Status,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    /// <summary>
+    /// WT-655: when the recording BEGAN, in UTC. Null for artifacts that are not recordings, and
+    /// for recordings made before the column existed.
+    ///
+    /// Carried here for the same reason it is carried on <see cref="TranslationRoomArtifactDto"/>:
+    /// a consumer that reaches artifacts through THIS DTO used to see every recording as
+    /// non-seekable, with no way to tell that apart from a recording that genuinely has no start
+    /// instant.
+    ///
+    /// Null means NOT KNOWN — never zero, and never <c>CreatedAt</c>, which is stamped when egress
+    /// FINISHED. Substituting either produces a plausible-looking, silently wrong seek position.
+    /// Added LAST so existing positional constructions keep compiling.
+    /// </summary>
+    DateTime? RecordingStartedAt = null
 );
 
 public record TranslationRoomArtifactDto(
