@@ -18,12 +18,16 @@ internal static class PluginDefinitionMapper
         return new PluginDefinitionDto(
             plugin.Id,
             plugin.PluginKey,
+            plugin.Provider,
             plugin.Label,
             plugin.Description,
             plugin.AvatarUrl,
             requiredScopes,
             tools,
             plugin.Kind,
-            plugin.McpServerUrl);
+            plugin.McpServerUrl,
+            plugin.IsFeatured,
+            plugin.SortOrder,
+            plugin.Category);
     }
 }

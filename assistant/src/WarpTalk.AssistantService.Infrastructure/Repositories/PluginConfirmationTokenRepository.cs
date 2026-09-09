@@ -14,6 +14,9 @@ public class PluginConfirmationTokenRepository : GenericRepository<PluginConfirm
         _db = db;
     }
 
+    public async Task<int> CountForPluginAsync(Guid pluginId, CancellationToken ct = default)
+        => await _db.PluginConfirmationTokens.CountAsync(token => token.PluginId == pluginId, ct);
+
     public async Task<bool> TryConsumeAsync(Guid tokenId, DateTime utcNow, CancellationToken ct = default)
     {
         var updated = await _db.PluginConfirmationTokens

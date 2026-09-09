@@ -102,7 +102,7 @@ builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAud
 builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
 builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
-builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MeetingMinutesDocxWriter>();
+builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MinutesDocumentWriter>();
 builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
 builder.Services.AddScoped<IMeetingActionItemService, MeetingActionItemService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();

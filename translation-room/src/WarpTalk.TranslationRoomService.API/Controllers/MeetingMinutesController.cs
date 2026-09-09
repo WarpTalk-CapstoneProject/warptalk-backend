@@ -94,14 +94,24 @@ public class MeetingMinutesController : ControllerBase
         return Respond(await _minutesService.ReviseAsync(roomId, minutesId, userId.Value, ct));
     }
 
-    /// <summary>Download the minutes as a Word document.</summary>
+    /// <summary>
+    /// Download the minutes as a Word document.
+    ///
+    /// <paramref name="template"/> selects the layout — "global-en" (the default) or "vn-nd30".
+    /// It is a query parameter rather than a stored preference because the choice belongs to the
+    /// person sending the document, and one meeting's minutes routinely goes to both a domestic
+    /// filing and a foreign partner. An unrecognised value renders the default rather than
+    /// failing: see MinutesTemplates.Normalise.
+    /// </summary>
     [HttpGet("export.docx")]
-    public async Task<IActionResult> ExportDocx(Guid roomId, CancellationToken ct = default)
+    public async Task<IActionResult> ExportDocx(
+        Guid roomId, [FromQuery] string? template = null, CancellationToken ct = default)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _minutesService.ExportDocxAsync(roomId, userId.Value, User.GetEmail(), ct);
+        var result = await _minutesService.ExportDocxAsync(
+            roomId, userId.Value, User.GetEmail(), template, ct);
 
         if (!result.IsSuccess)
         {

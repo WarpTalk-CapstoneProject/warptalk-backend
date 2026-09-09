@@ -35,6 +35,9 @@ public class WorkspacePluginPolicyGrpcClient : IWorkspacePluginPolicyClient
         }
         catch (RpcException ex)
         {
+            // Denied, not permitted. A workspace whose policy could not be read is not a workspace
+            // that permits everything, and failing open here would turn any workspace-service
+            // outage into a product-wide lifting of plugin restrictions.
             _logger.LogWarning(ex, "Workspace plugin policy check failed for workspace {WorkspaceId}.", workspaceId);
             return false;
         }

@@ -79,5 +79,6 @@ public interface IMeetingMinutesService
     /// document prints its own status, so a draft that leaves the building says it is a draft.
     /// </summary>
     Task<Result<MinutesExportFile>> ExportDocxAsync(
-        Guid roomId, Guid userId, string? userEmail, CancellationToken ct = default);
+        Guid roomId, Guid userId, string? userEmail, string? template = null,
+        CancellationToken ct = default);
 }
