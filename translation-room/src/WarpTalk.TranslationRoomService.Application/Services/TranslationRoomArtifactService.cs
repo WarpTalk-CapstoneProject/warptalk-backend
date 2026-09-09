@@ -25,6 +25,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     private readonly ILogger<TranslationRoomArtifactService> _logger;
     private readonly IArtifactUrlSigner _urlSigner;
     private readonly IRedisStateRepository _redisStateRepo;
+    private readonly IArtifactsFinalizationQueue _finalizationQueue;
 
     // Moved to TranslationRoomConstants: ArtifactsFinalizer publishes to this stream too, and
     // two private copies of a stream name is how one of them ends up renamed alone.
@@ -34,12 +35,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         IUnitOfWork unitOfWork,
         ILogger<TranslationRoomArtifactService> logger,
         IArtifactUrlSigner urlSigner,
-        IRedisStateRepository redisStateRepo)
+        IRedisStateRepository redisStateRepo,
+        IArtifactsFinalizationQueue finalizationQueue)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _urlSigner = urlSigner;
         _redisStateRepo = redisStateRepo;
+        _finalizationQueue = finalizationQueue;
     }
 
     public async Task<Result> RegenerateSummaryAsync(
@@ -67,6 +70,47 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
                 return Result.Failure("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
+
+            // A REWRITE NEEDS SOMETHING TO REWRITE.
+            //
+            // SummaryResultConsumerWorker REPLACES the room's SUMMARY_EXPORT and deliberately
+            // refuses to invent one — "inventing one here would create an artifact the finalizer
+            // never made and whose other columns nobody set". This method never checked, so on a
+            // meeting that was never finalized the button returned success, the worker read the
+            // transcript, spent an LLM call, published a perfectly good summary, and the consumer
+            // logged "No summary artifact to rewrite" and dropped it. Every press. Which is
+            // exactly the meeting a person is most likely to press it on: the one showing no
+            // summary at all.
+            //
+            // Finalization, not a request, is what that meeting is missing — so ask for the thing
+            // it actually needs. Queued only when the meeting has NEITHER text artifact, which is
+            // precisely what ArtifactsFinalizer.FinalizeRoomArtifactsAsync writes (both, in one
+            // save, or neither); with a transcript already stored, re-finalizing would add a
+            // SECOND one rather than fill the gap, and that is a repair for a human to choose.
+            var storedArtifacts = room.TranslationRoomArtifacts
+                .Where(artifact => artifact.DeletedAt == null)
+                .ToList();
+            var hasSummaryArtifact = storedArtifacts.Any(artifact =>
+                string.Equals(artifact.ArtifactType, ArtifactType.SUMMARY_EXPORT.ToString(), StringComparison.OrdinalIgnoreCase));
+
+            if (!hasSummaryArtifact)
+            {
+                var hasTranscriptArtifact = storedArtifacts.Any(artifact =>
+                    string.Equals(artifact.ArtifactType, ArtifactType.TRANSCRIPT_EXPORT.ToString(), StringComparison.OrdinalIgnoreCase));
+
+                if (hasTranscriptArtifact)
+                {
+                    return Result.Failure(
+                        "This meeting has a transcript but no summary artifact to rewrite. It needs to be finalized again, not re-summarised.",
+                        ErrorCodes.InvalidState);
+                }
+
+                _logger.LogInformation(
+                    "Room {RoomId} has no artifacts at all; queueing finalization instead of a summary rewrite that would have nothing to land on.",
+                    roomId);
+                _finalizationQueue.QueueFinalization(roomId);
+                return Result.Success();
+            }
 
             var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
 

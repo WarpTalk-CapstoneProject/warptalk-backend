@@ -28,13 +28,36 @@ public sealed class EgressCompletion : IEgressCompletion
         if (string.IsNullOrWhiteSpace(egressId) && string.IsNullOrWhiteSpace(roomName))
             return EgressCompletionOutcome.RoomNotFound;
 
+        // WT-644 — WHY THE ROOM NAME IS A FALLBACK AND NOT AN ALTERNATIVE.
+        //
+        // The id lookup is the precise one and stays first. But it can only ever match a room that
+        // is STILL holding this egress, and the ordinary way a recording ends is the Stop button:
+        // MeetingRoomService.SetRecordingAsync stops the egress and clears ActiveEgressId in the
+        // same request, seconds before LiveKit's egress_ended webhook arrives here. So the main
+        // path through the UI produced RoomNotFound, published nothing, and the meeting ended with
+        // no recording artifact — nothing for the record page to play or download.
+        //
+        // The reconciliation sweep could not save it either: it scans for ActiveEgressId != null,
+        // which is precisely the column this room no longer has.
+        //
+        // roomName is on every EgressInfo LiveKit sends and ProviderRoomName is unique per room, so
+        // it identifies the same room the id would have. It runs only when the id found nothing,
+        // so a room that IS still recording is matched by its egress and never by its name.
         var room = !string.IsNullOrWhiteSpace(egressId)
             ? await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ActiveEgressId == egressId)
-            : await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
+            : null;
+
+        if (room == null && !string.IsNullOrWhiteSpace(roomName))
+            room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
 
         if (room == null) return EgressCompletionOutcome.RoomNotFound;
 
-        room.ActiveEgressId = null;
+        // Only the egress this webhook is about. Clearing unconditionally was safe while the only
+        // way in was `ActiveEgressId == egressId`; with the name fallback above it is not, because
+        // a room matched by name may already have STARTED A SECOND recording — and cancelling the
+        // live one because the previous one just finished uploading is a worse bug than the one
+        // being fixed here.
+        if (room.ActiveEgressId == egressId) room.ActiveEgressId = null;
 
         string? fileUrl = null;
         long? fileSizeBytes = null;
