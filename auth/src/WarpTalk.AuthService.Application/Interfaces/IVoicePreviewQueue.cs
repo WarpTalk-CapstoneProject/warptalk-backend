@@ -7,7 +7,15 @@ namespace WarpTalk.AuthService.Application.Interfaces;
 /// <summary>One rendered sample, or the reason there is not one.</summary>
 /// <param name="Audio">WAV bytes, when it worked.</param>
 /// <param name="Error">Why it did not, when it did not. Never both this and Audio.</param>
-public sealed record VoicePreview(byte[]? Audio, string? Error);
+/// <summary>
+/// A rendered preview, or the reason there is not one.
+///
+/// <paramref name="Error"/> is the PROVIDER's own wording and is for the logs. It must not be
+/// shown to anybody: it has carried a Cartesia request id and a Python dict to a play button
+/// before now. <paramref name="ErrorCode"/> is what the copy is chosen from — see
+/// VoiceProfileService.AsResult.
+/// </summary>
+public sealed record VoicePreview(byte[]? Audio, string? Error, string? ErrorCode = null);
 
 /// <summary>
 /// Asks the AI side for a sample of one voice, so somebody can hear a voice before a meeting
