@@ -37,4 +37,54 @@ public class MeetingChatNotifier : IMeetingChatNotifier
             new { requestId },
             cancellationToken: ct);
     }
+
+    public async Task BroadcastAssistantReasoningAsync(
+        Guid roomId, Guid requestId, string title, string body, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantReasoning",
+            new { requestId, title, body },
+            cancellationToken: ct);
+    }
+
+    public async Task BroadcastAssistantChunkAsync(
+        Guid roomId, Guid requestId, string delta, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantChunk",
+            new { requestId, delta },
+            cancellationToken: ct);
+    }
+
+    public async Task BroadcastAssistantToolCallStartedAsync(
+        Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantToolCallStarted",
+            new { requestId, toolName, toolDetail },
+            cancellationToken: ct);
+    }
+
+    public async Task BroadcastAssistantToolCallCompletedAsync(
+        Guid roomId, Guid requestId, string toolName, string toolDetail, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantToolCallCompleted",
+            new { requestId, toolName, toolDetail },
+            cancellationToken: ct);
+    }
+
+    public async Task BroadcastAssistantQuestionAsync(
+        Guid roomId, Guid requestId, string questionsJson, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantQuestion",
+            new { requestId, questionsJson },
+            cancellationToken: ct);
+    }
 }

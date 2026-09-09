@@ -213,7 +213,67 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         if (request == null || request.Status is "completed" or "failed")
             return;
 
-        if (resultType is "chunk" or "tool_call_started")
+        // WHICH ROOM ID THE HUB GROUP IS KEYED ON — and it is not this one.
+        //
+        // MeetingChatHub.JoinMeetingRoom takes the TRANSLATION room id (the one in the URL),
+        // looks the meeting room up BY it, and then joins `meeting_chat:{translationRoomId}`.
+        // MeetingChatService broadcasts on that same value, because it is what the caller passed.
+        // This consumer had only `request.MeetingRoomId` — the meeting room's own primary key —
+        // and broadcast on that, so every assistant event was addressed to a group name no client
+        // has ever joined.
+        //
+        // Nothing errored: SignalR delivers to an empty group happily. The room's whole live
+        // record of a WarpBot turn — pending, every tool call, every reasoning line, every chunk,
+        // and the answer itself — went nowhere, and the answer appeared only because it is
+        // persisted and the panel reads it back from history. That is why the trail showed two
+        // steps: both of them are seeded by the client, and neither is evidence of a broadcast.
+        var room = await unitOfWork.MeetingRoomRepository.GetByIdAsync(request.MeetingRoomId, ct);
+        if (room == null)
+        {
+            // Deliberately not a fallback to request.MeetingRoomId: that is the broken address,
+            // and using it would restore the silent failure this exists to end.
+            _logger.LogWarning(
+                "Meeting room {MeetingRoomId} not found for assistant request {RequestId}; cannot address its chat group.",
+                request.MeetingRoomId,
+                request.Id);
+            return;
+        }
+
+        var groupRoomId = room.TranslationRoomId;
+
+        // The model narrating its own step, which is neither a chunk of the answer nor a tool
+        // call — and which used to fall through this method entirely and be dropped.
+        if (resultType == "reasoning")
+        {
+            await notifier.BroadcastAssistantReasoningAsync(
+                groupRoomId,
+                request.Id,
+                fields.GetValueOrDefault("tool_detail", ""),
+                fields.GetValueOrDefault("content", ""),
+                ct);
+            return;
+        }
+
+        if (resultType == "question")
+        {
+            await notifier.BroadcastAssistantQuestionAsync(
+                groupRoomId,
+                request.Id,
+                fields.GetValueOrDefault("tool_calls_json", ""),
+                ct);
+            return;
+        }
+
+        // `tool_call_completed` belongs with these and was missing, which is the whole of the
+        // reported defect. OpenAI's HOSTED web search never enters the worker's dispatch loop, so
+        // no function call is ever dispatched for it — the worker publishes the step by hand off
+        // the response stream, and the event carrying the searched target is the COMPLETED one
+        // (the started event fires before the item naming the query is on the wire, so its detail
+        // is empty). Falling through to the terminal check below, "tool_call_completed" is not
+        // "completed", so every web-search event a meeting produced was discarded: the room's
+        // trail sat on "Reading your question" for the length of the search while the widget
+        // beside it named every site it had read.
+        if (resultType is "chunk" or "tool_call_started" or "tool_call_completed")
         {
             // "pending" is accepted for the rows already in the database when this shipped:
             // they were written by the old spelling and would otherwise stay silent forever.
@@ -222,7 +282,53 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
                 request.Status = "processing";
                 unitOfWork.MeetingChatAssistantRequestRepository.Update(request);
                 await unitOfWork.SaveChangesAsync(ct);
-                await notifier.BroadcastAssistantResponsePendingAsync(request.MeetingRoomId, request.Id, ct);
+                await notifier.BroadcastAssistantResponsePendingAsync(groupRoomId, request.Id, ct);
+            }
+
+            // The answer, as it is written. Until this the room saw nothing between the question
+            // and the finished reply — the message is not persisted until the turn is over — so a
+            // long answer looked like a stall while the widget beside it was visibly writing.
+            //
+            // Broadcast, not stored: this is a draft. The persisted message that follows is what
+            // everyone keeps, and it is the one that survives a reload or a late joiner.
+            if (resultType == "chunk")
+            {
+                var delta = fields.GetValueOrDefault("content", "");
+                if (!string.IsNullOrEmpty(delta))
+                {
+                    await notifier.BroadcastAssistantChunkAsync(
+                        groupRoomId,
+                        request.Id,
+                        delta,
+                        ct);
+                }
+            }
+
+            // The tool name was already on the message and was being dropped. It is the only
+            // evidence the room has that WarpBot is working rather than gone, and it is what the
+            // client re-arms its deadline on.
+            var toolName = fields.GetValueOrDefault("tool_name", "");
+            if (resultType == "tool_call_started" && !string.IsNullOrWhiteSpace(toolName))
+            {
+                await notifier.BroadcastAssistantToolCallStartedAsync(
+                    groupRoomId,
+                    request.Id,
+                    toolName,
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
+            }
+
+            // Sent as its own event rather than as another "started". The client folds it into the
+            // step already running for that tool — filling in a target the started event could not
+            // carry — and a second "started" would instead draw the same search twice.
+            if (resultType == "tool_call_completed" && !string.IsNullOrWhiteSpace(toolName))
+            {
+                await notifier.BroadcastAssistantToolCallCompletedAsync(
+                    groupRoomId,
+                    request.Id,
+                    toolName,
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
             }
 
             return;
@@ -251,7 +357,11 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             TranslationEnabled = false,
             IsHidden = false,
             Mentions = "[]",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            // Only on a real answer. A failure message is this service's own prose, and hanging
+            // the model's citations off it would attribute WarpTalk's apology to somebody's
+            // uploaded document.
+            SourcesJson = failed ? null : NullIfBlank(fields.GetValueOrDefault("sources_json"))
         };
 
         await unitOfWork.MeetingChatMessageRepository.AddAsync(response, ct);
@@ -259,6 +369,13 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         request.CompletedAt = DateTime.UtcNow;
         unitOfWork.MeetingChatAssistantRequestRepository.Update(request);
         await unitOfWork.SaveChangesAsync(ct);
-        await notifier.BroadcastMessageReceivedAsync(request.MeetingRoomId, response.ToDto(), ct);
+        await notifier.BroadcastMessageReceivedAsync(groupRoomId, response.ToDto(), ct);
     }
+
+    /// <summary>
+    /// An answer that cited nothing publishes an empty field, and an empty string is not valid
+    /// jsonb — it would fail the insert rather than store "no sources".
+    /// </summary>
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 }

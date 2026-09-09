@@ -217,12 +217,34 @@ public class AssistantChatResultConsumerService : BackgroundService
                 break;
 
             case "tool_call_started":
-                await notifier.BroadcastToolCallStartedAsync(conversationId, requestId, fields.GetValueOrDefault("tool_name", ""), ct);
+                await notifier.BroadcastToolCallStartedAsync(
+                    conversationId,
+                    requestId,
+                    fields.GetValueOrDefault("tool_name", ""),
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
                 break;
 
             case "tool_call_completed":
                 await notifier.BroadcastToolCallCompletedAsync(
-                    conversationId, requestId, fields.GetValueOrDefault("tool_name", ""), fields.GetValueOrDefault("tool_status", ""), ct);
+                    conversationId,
+                    requestId,
+                    fields.GetValueOrDefault("tool_name", ""),
+                    fields.GetValueOrDefault("tool_status", ""),
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    ct);
+                break;
+
+            // The model narrating its own step. tool_detail carries the heading and content the
+            // paragraph — two existing fields rather than a schema change, because the shape is
+            // the same "one line about one step" every other event on this stream carries.
+            case "reasoning":
+                await notifier.BroadcastReasoningAsync(
+                    conversationId,
+                    requestId,
+                    fields.GetValueOrDefault("tool_detail", ""),
+                    content,
+                    ct);
                 break;
 
             // The ask_user tool's output is a card, not text. Relayed on its own event so the
@@ -233,11 +255,11 @@ public class AssistantChatResultConsumerService : BackgroundService
                 break;
 
             case "completed":
-                await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), failed: false, ct);
+                await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), fields.GetValueOrDefault("sources_json", ""), failed: false, ct);
                 break;
 
             case "failed":
-                await FinalizeMessageAsync(scope, conversationId, requestId, content, "", failed: true, ct);
+                await FinalizeMessageAsync(scope, conversationId, requestId, content, "", "", failed: true, ct);
                 break;
 
             default:
@@ -247,7 +269,7 @@ public class AssistantChatResultConsumerService : BackgroundService
     }
 
     private async Task FinalizeMessageAsync(
-        IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, bool failed, CancellationToken ct)
+        IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, string sourcesJson, bool failed, CancellationToken ct)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var notifier = scope.ServiceProvider.GetRequiredService<IAssistantNotifier>();
@@ -265,6 +287,10 @@ public class AssistantChatResultConsumerService : BackgroundService
             message.Content = content;
         if (!string.IsNullOrEmpty(toolCallsJson))
             message.ToolResultsJson = toolCallsJson;
+        // Written even when empty is NOT wanted: leaving the previous value would let a retried
+        // answer keep chips it no longer earns.
+        if (!failed)
+            message.SourcesJson = string.IsNullOrWhiteSpace(sourcesJson) ? null : sourcesJson;
 
         unitOfWork.AssistantMessageRepository.Update(message);
         await unitOfWork.SaveChangesAsync(ct);

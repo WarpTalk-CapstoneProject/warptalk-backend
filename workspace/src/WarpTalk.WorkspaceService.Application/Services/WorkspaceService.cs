@@ -40,6 +40,7 @@ public class WorkspaceService : IWorkspaceService
     /// workspace's settings JSON stays the only record, which is the pre-WT-263 behaviour.
     /// </summary>
     private readonly IBillingSubscriptionClient? _billingSubscriptionClient;
+    private readonly IWorkspaceInvitationService? _invitationService;
 
     public WorkspaceService(
         IUnitOfWork unitOfWork,
@@ -47,7 +48,8 @@ public class WorkspaceService : IWorkspaceService
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher,
-        IBillingSubscriptionClient? billingSubscriptionClient = null)
+        IBillingSubscriptionClient? billingSubscriptionClient = null,
+        IWorkspaceInvitationService? invitationService = null)
     {
         _unitOfWork = unitOfWork;
         _workspaceCache = workspaceCache;
@@ -55,6 +57,7 @@ public class WorkspaceService : IWorkspaceService
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
         _billingSubscriptionClient = billingSubscriptionClient;
+        _invitationService = invitationService;
     }
 
 
@@ -174,6 +177,22 @@ public class WorkspaceService : IWorkspaceService
 
             await _eventPublisher.PublishWorkspaceCreatedAsync(workspace.Id, workspace.Name, workspace.Slug, userId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            if (_invitationService != null && request.InitialInvitations != null && request.InitialInvitations.Count > 0)
+            {
+                foreach (var initialInvite in request.InitialInvitations)
+                {
+                    if (!string.IsNullOrWhiteSpace(initialInvite.Email))
+                    {
+                        var inviteReq = new WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation.InviteMemberRequest(
+                            initialInvite.Email.Trim(),
+                            initialInvite.RoleName,
+                            initialInvite.MembershipType
+                        );
+                        await _invitationService.InviteMemberAsync(workspace.Id, inviteReq, userId, ct);
+                    }
+                }
+            }
 
             return Result.Success(workspace.ToDto(WorkspaceMemberRole.Owner));
         }
@@ -374,6 +393,12 @@ public class WorkspaceService : IWorkspaceService
                 : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
             var ceiling = entitlements.SelfServiceLimit(EntitlementKeys.MaxActiveRooms);
 
+            // WT-500: the same argument, for languages. `Limit` rather than `SelfServiceLimit`
+            // because ValidatePlanLanguageQuota — the code that actually refuses the meeting —
+            // calls `Limit`. A ceiling reported from the other function could differ from the one
+            // enforced, which would be a fresh instance of the bug above rather than a fix for it.
+            var languageCeiling = entitlements.Limit(EntitlementKeys.MaxLanguages);
+
             return Result.Success(settings.ToSettingsDto() with
             {
                 MaxActiveRoomsCeiling = ceiling.HasValue
@@ -381,6 +406,12 @@ public class WorkspaceService : IWorkspaceService
                     : null,
                 MaxActiveRoomsCeilingSource = ceiling.HasValue
                     ? entitlements.Source(EntitlementKeys.MaxActiveRooms)
+                    : null,
+                MaxLanguagesCeiling = languageCeiling.HasValue
+                    ? (int)Math.Clamp(languageCeiling.Value, int.MinValue, int.MaxValue)
+                    : null,
+                MaxLanguagesCeilingSource = languageCeiling.HasValue
+                    ? entitlements.Source(EntitlementKeys.MaxLanguages)
                     : null,
             });
         }
@@ -438,7 +469,15 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var ownerOnlyPolicyChanged = currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
+
+            // The owner-only settings. Everything else on this endpoint is Owner-or-Admin, already
+            // established above; these are the ones an Admin may read but not change.
+            //
+            // AllowAnyPlugins is NOT among them. It stays Owner-or-Admin as it has always been:
+            // making it owner-only here would revoke, with no announcement, a permission every
+            // Admin currently has.
+            var ownerOnlyPolicyChanged =
+                currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
             if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);

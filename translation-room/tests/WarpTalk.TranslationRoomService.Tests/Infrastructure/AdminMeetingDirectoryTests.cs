@@ -27,6 +27,13 @@ public sealed class AdminMeetingDirectoryTests : IAsyncLifetime
 
     private static readonly DateTime Anchor = new(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
 
+    /// <summary>
+    /// Midnight UTC today — the earliest instant that still counts as "today" for
+    /// <c>GetAdminCountsAsync(DateTime.UtcNow.Date)</c>, whose boundary is inclusive (`>= since`).
+    /// Never in the future, never yesterday, whatever time the suite runs.
+    /// </summary>
+    private static DateTime StartedToday => DateTime.UtcNow.Date;
+
     private readonly Guid _workspaceA = Guid.NewGuid();
     private readonly Guid _workspaceB = Guid.NewGuid();
 
@@ -81,11 +88,23 @@ public sealed class AdminMeetingDirectoryTests : IAsyncLifetime
     {
         _context.TranslationRooms.AddRange(
             // Started today, still running.
+            //
+            // Anchored to the START of today rather than to `UtcNow` minus a few minutes. The
+            // subtraction made this a time bomb: `Counts_report_live_now_and_started_since_separately`
+            // asks for rooms started since `UtcNow.Date`, so for the first twenty minutes after
+            // midnight UTC the "20 minutes ago" room landed on YESTERDAY and the count came back 1
+            // instead of 2. The suite was red every day between 00:00 and 00:20 UTC and green the
+            // other 23h40m, which is exactly the shape that gets rerun until it passes and never
+            // investigated. It blocked three unrelated PRs the night it was noticed.
+            //
+            // Midnight-today is always both today and in the past, so the boundary cannot move
+            // underneath it. `StartedToday` keeps the two rooms distinguishable in time without
+            // reintroducing the dependency on what o'clock it happens to be.
             Room(_liveId, _workspaceA, nameof(RoomStatus.IN_PROGRESS),
-                startedAt: DateTime.UtcNow.AddMinutes(-20)),
+                startedAt: StartedToday),
             // Translation stopped, call did not. Still live.
             Room(_pausedId, _workspaceA, nameof(RoomStatus.PAUSED),
-                startedAt: DateTime.UtcNow.AddMinutes(-5)),
+                startedAt: StartedToday.AddMinutes(1)),
             // Created, not opened. NOT live — nobody is in it.
             Room(_waitingId, _workspaceB, nameof(RoomStatus.WAITING),
                 scheduledAt: Anchor.AddDays(3)),

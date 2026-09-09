@@ -18,7 +18,11 @@ public record RoomSettingsRequest(
     bool? MuteOnEntry = null,
     bool? AutoRecord = null,
     bool? BreakoutsEnabled = null,
-    bool? ParticipantsCanStartTranslation = null
+    bool? ParticipantsCanStartTranslation = null,
+    // WT-587: false makes this an ephemeral meeting — captions and translation still run, nothing
+    // is written to transcript_segments. Null (the default) leaves it alone, which for a new room
+    // means TranslationRoomSettings' own TRUE.
+    bool? SaveTranscript = null
 );
 
 public record RoomSettingsResponse(
@@ -27,7 +31,11 @@ public record RoomSettingsResponse(
     bool MuteOnEntry,
     bool AutoRecord,
     bool BreakoutsEnabled,
-    bool ParticipantsCanStartTranslation
+    bool ParticipantsCanStartTranslation,
+    // WT-587. Trailing with a default so every existing positional construction site — and every
+    // client reading this record — is unaffected, and so an older caller cannot accidentally
+    // report a room as ephemeral by omission.
+    bool SaveTranscript = true
 );
 
 public record UpdateRoomSettingsRequest(
@@ -122,7 +130,11 @@ public record CreateTranslationRoomRequest(
     // WT-327: present means "this is a recurring booking, not a single meeting". Mutually
     // exclusive with ScheduledAt — the recurrence rule owns every occurrence's time, so a
     // second, contradictory time on the same request is rejected rather than silently ignored.
-    RecurrenceRequest? Recurrence = null
+    RecurrenceRequest? Recurrence = null,
+    string? ExternalProvider = null,
+    string? ExternalMeetingUrl = null,
+    string? ExternalCalendarEventId = null,
+    string? ExternalCalendarEventUrl = null
 );
 
 /// <summary>WT-327: what creating a recurring booking returns.</summary>
@@ -142,6 +154,29 @@ public record JoinTranslationRoomRequest(
     string? SpeakLanguage,
     string? ListenLanguage
 );
+
+/// <summary>
+/// WT-555: joining by ROOM ID carries no code — the route already names the room, and the handler
+/// reads the code off the room it loads.
+///
+/// It has its own type because sharing <see cref="JoinTranslationRoomRequest"/> put a required,
+/// format-checked TranslationRoomCode on a route that never has one: both DataAnnotations and the
+/// by-code FluentValidation rule run BEFORE the action, so every call through a shared meeting
+/// link was answered 400 ("The TranslationRoomCode field is required.") and the handler was never
+/// reached. Loosening the shared validator instead would have taken the check off the by-code
+/// route, where a malformed code is the whole thing worth rejecting.
+/// </summary>
+public record JoinTranslationRoomByIdRequest(
+    [Required] string DisplayName,
+    string? SpeakLanguage,
+    string? ListenLanguage
+);
+
+/// <summary>
+/// WT-552: who to add to a meeting that is already running.
+/// </summary>
+public record InviteParticipantsRequest(
+    List<string> Emails);
 
 public record TranslationRoomDto(
     Guid Id,
@@ -179,7 +214,23 @@ public record TranslationRoomDto(
     /// "0/100" however many people attended it. Trailing and defaulted so every existing
     /// positional construction site still compiles.
     /// </summary>
-    int AttendedCount = 0
+    int AttendedCount = 0,
+    string? ExternalProvider = null,
+    string? ExternalMeetingUrl = null,
+    string? ExternalCalendarEventId = null,
+    string? ExternalCalendarEventUrl = null,
+    /// <summary>
+    /// The host AFTER any transfer — <c>TranslationRoom.EffectiveHostId</c>.
+    ///
+    /// <see cref="HostId"/> stays the raw booker because several readers want exactly that, but
+    /// every host-gated decision in this service asks <c>IsHostedBy</c>, which is this. A consumer
+    /// comparing against <c>HostId</c> therefore disagrees with the service about who the host is
+    /// the moment a room is handed over.
+    ///
+    /// Trailing and defaulted so every existing positional construction site still compiles, and
+    /// <c>null</c> is read as "same as the booker" rather than "nobody".
+    /// </summary>
+    Guid? EffectiveHostId = null
 );
 
 public record TranslationRoomListItemDto(
@@ -215,7 +266,11 @@ public record TranslationRoomListItemDto(
     /// ParticipantCount is live occupancy and is 0 for every finished meeting, which is why an
     /// ended room showed "0/100" no matter how many attended.
     /// </summary>
-    int AttendedCount = 0
+    int AttendedCount = 0,
+    string? ExternalProvider = null,
+    string? ExternalMeetingUrl = null,
+    string? ExternalCalendarEventId = null,
+    string? ExternalCalendarEventUrl = null
 );
 
 /// <summary>
@@ -330,6 +385,11 @@ public record TranslationRoomArtifactDto(
     // WT-13: inline payload (e.g. AI meeting-summary JSON) for artifact types that don't
     // need external file storage.
     string? Content = null,
+    /// <summary>
+    /// When the CONTENT last changed. Null on artifacts predating the column — a reader compares
+    /// against <c>CreatedAt</c> then, rather than treating null as "never updated".
+    /// </summary>
+    DateTime? UpdatedAt = null,
     /// <summary>
     /// WT-473: when the recording BEGAN, in UTC. Null for non-recordings, and for recordings made
     /// before the column existed.

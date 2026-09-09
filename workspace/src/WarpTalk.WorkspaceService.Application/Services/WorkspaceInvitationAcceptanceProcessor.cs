@@ -97,7 +97,7 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
                 policyResult.ErrorCode);
         }
 
-        if (membershipType == MembershipType.Internal && config.RequireVerifiedDomainForInternal)
+        if (membershipType == MembershipType.Internal)
         {
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
             if (isInternalElsewhere)

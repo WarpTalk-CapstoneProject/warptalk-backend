@@ -73,10 +73,64 @@ public class TranscriptReadAccessTests
     }
 
     [Fact]
-    public async Task Participant_StillGetsTheTranscript()
+    public async Task Participant_IsRefused_WhileTheHostHasNotSharedTheRecord()
     {
+        // The rule item 5 adds. The transcript is one of the three things the host's Publish
+        // control claims to cover, and it was the one that never consulted the setting: a
+        // participant could read the whole transcript of a meeting the host had deliberately kept
+        // private, while being refused the same text as a download.
         var participant = Guid.NewGuid();
         var (service, transcript, _) = CreateQueryService(host: Guid.NewGuid(), participants: new[] { participant });
+
+        var result = await service.GetTranscriptAsync(transcript.Id, participant);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Host_ReadsTheirOwnUnsharedTranscript()
+    {
+        // The host is never gated by the switch they own — otherwise publishing would be the only
+        // way to check what you are about to publish.
+        var host = Guid.NewGuid();
+        var (service, transcript, _) = CreateQueryService(host, participants: Array.Empty<Guid>());
+
+        Assert.True((await service.GetTranscriptAsync(transcript.Id, host)).IsSuccess);
+    }
+
+    [Fact]
+    public async Task AnUnknownAccessLevel_ReadsAsHostOnly()
+    {
+        // Fail closed on a value this build does not know, the same direction
+        // ArtifactAccessHelper.ReadArtifactAccessLevel fails in for an unparseable settings blob.
+        var participant = Guid.NewGuid();
+        var (service, transcript, client) = CreateQueryService(host: Guid.NewGuid(), participants: new[] { participant });
+        client.ArtifactAccess = "EVERYONE_ON_THE_INTERNET";
+
+        Assert.Equal("FORBIDDEN", (await service.GetTranscriptAsync(transcript.Id, participant)).ErrorCode);
+    }
+
+    [Fact]
+    public async Task TheNewHost_ReadsTheTranscript_AfterATransfer()
+    {
+        // Item 2. `HostId` is the booker and does not move on a transfer; every host gate inside
+        // TranslationRoomService asks the EFFECTIVE host. Comparing against the booker refused the
+        // person the rest of the product calls the host.
+        var booker = Guid.NewGuid();
+        var newHost = Guid.NewGuid();
+        var (service, transcript, client) = CreateQueryService(booker, participants: Array.Empty<Guid>());
+        client.EffectiveHostId = newHost.ToString();
+
+        Assert.True((await service.GetTranscriptAsync(transcript.Id, newHost)).IsSuccess);
+    }
+
+    [Fact]
+    public async Task Participant_GetsTheTranscript_OnceTheRecordIsShared()
+    {
+        var participant = Guid.NewGuid();
+        var (service, transcript, client) = CreateQueryService(host: Guid.NewGuid(), participants: new[] { participant });
+        client.ArtifactAccess = "ALL_PARTICIPANTS";
 
         var result = await service.GetTranscriptAsync(transcript.Id, participant);
 
@@ -152,6 +206,44 @@ public class TranscriptReadAccessTests
         }
     }
 
+    /// <summary>
+    /// The sharing policy is about a FINISHED meeting's record. While the meeting is still running
+    /// this same endpoint is what catches a late joiner up on the part they missed — and they are
+    /// in the room, listening to the captions, as it refuses them the transcript of what they are
+    /// hearing. Withholding a record from somebody currently being told its contents protects
+    /// nobody, and every room left on the HOST_ONLY default would do it.
+    /// </summary>
+    [Fact]
+    public async Task LiveMeeting_LetsAParticipantCatchUp_WhateverTheSharingPolicySays()
+    {
+        var participant = Guid.NewGuid();
+        var (service, transcript, client) = CreateQueryService(
+            host: Guid.NewGuid(), participants: new[] { participant });
+        client.RoomStatus = "IN_PROGRESS";
+        client.ArtifactAccess = "HOST_ONLY";
+
+        var result = await service.GetTranscriptAsync(transcript.Id, participant);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    /// <summary>
+    /// And a live room is not a way in for somebody who was never there.
+    /// </summary>
+    [Fact]
+    public async Task LiveMeeting_StillRefusesAStranger()
+    {
+        var (service, transcript, client) = CreateQueryService(
+            host: Guid.NewGuid(), participants: new[] { Guid.NewGuid() });
+        client.RoomStatus = "IN_PROGRESS";
+        client.ArtifactAccess = "ALL_PARTICIPANTS";
+
+        var result = await service.GetTranscriptAsync(transcript.Id, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
     private static (TranscriptQueryService Service, Transcript Transcript, FakeRoomClient Client) CreateQueryService(
         Guid host, IReadOnlyCollection<Guid> participants)
     {
@@ -201,6 +293,23 @@ public class TranscriptReadAccessTests
             _participants = participants;
         }
 
+        /// <summary>
+        /// The room's visibility switch. Defaults to EMPTY on purpose — that is what an older
+        /// TranslationRoomService sends, and the gate must read it as HOST_ONLY.
+        /// </summary>
+        public string ArtifactAccess { get; set; } = string.Empty;
+
+        /// <summary>Empty unless a test hands the room over, matching the wire default.</summary>
+        public string EffectiveHostId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The room's lifecycle status. The sharing policy only governs a meeting that has ended.
+        ///
+        /// Named RoomStatus, not Status: a member called Status on this class would shadow
+        /// Grpc.Core.Status for the whole type, and Call() below needs the gRPC one.
+        /// </summary>
+        public string RoomStatus { get; set; } = "ENDED";
+
         public bool RoomMissing { get; set; }
         public int ParticipantLookups { get; private set; }
 
@@ -217,8 +326,10 @@ public class TranscriptReadAccessTests
             {
                 Id = request.Id,
                 HostId = _hostId.ToString(),
+                EffectiveHostId = EffectiveHostId,
+                ArtifactAccess = ArtifactAccess,
                 Title = "Room",
-                Status = "ENDED"
+                Status = RoomStatus
             });
         }
 

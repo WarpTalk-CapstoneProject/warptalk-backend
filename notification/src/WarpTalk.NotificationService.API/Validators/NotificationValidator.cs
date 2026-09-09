@@ -63,6 +63,20 @@ public static class NotificationValidator
             }
         },
         {
+            // Every field the producer sends is declared. An UNDECLARED field does not get
+            // ignored — it rejects the whole payload with UNSUPPORTED_PAYLOAD_FIELD.
+            NotificationConstants.TypeActionItemAssigned, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "room_id", JsonValueKind.String },
+                    { "room_title", JsonValueKind.String },
+                    { "action_item_id", JsonValueKind.String },
+                    { "task", JsonValueKind.String }
+                }
+            }
+        },
+        {
             "TRANSCRIPT_READY", new PayloadSchema
             {
                 RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } }
@@ -74,29 +88,56 @@ public static class NotificationValidator
                 RequiredFields = { { "sender_id", JsonValueKind.String }, { "sender_name", JsonValueKind.String }, { "room_id", JsonValueKind.String } }
             }
         },
-        // ── Workspace membership (WT-521) ─────────────────────────────────────────────────
-        // workspace_id + workspace_name are what WorkspaceInvitationService and
-        // WorkspaceMemberService put in Metadata. Required, because a notification about a
-        // workspace that cannot be identified has nowhere to send the reader.
         {
+            // Producer: WorkspaceMemberService.NotifyMemberRoleChangedAsync, which has been
+            // sending exactly these three fields against no schema at all — so every role change
+            // fell through to the unknown-type branch below and was rejected.
+            NotificationConstants.TypeWorkspaceRoleChanged, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "old_role", JsonValueKind.String },
+                    { "new_role", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            // WT-454. The reason is required, not optional: a suspension notice that does not say
+            // why is the same dead end as no notice, and the admin endpoint already refuses to
+            // suspend without one.
+            NotificationConstants.TypeWorkspaceSuspended, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String },
+                    { "reason", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            NotificationConstants.TypeWorkspaceReactivated, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            // WT-521, to every Owner and Admin. `requester_id` is required because the Requests
+            // tab has to be able to find the row this notification is about; a notice that only
+            // says somebody wants to leave sends the reader hunting.
             NotificationConstants.TypeWorkspaceLeaveRequested, new PayloadSchema
             {
-                RequiredFields = { { "workspace_id", JsonValueKind.String }, { "workspace_name", JsonValueKind.String } },
-                // Who asked. Optional rather than required so the reviewer still hears about the
-                // request if the email is ever unavailable — the Members page is the real answer.
-                OptionalFields = { { "member_email", JsonValueKind.String } }
-            }
-        },
-        {
-            NotificationConstants.TypeWorkspaceLeaveApproved, new PayloadSchema
-            {
-                RequiredFields = { { "workspace_id", JsonValueKind.String }, { "workspace_name", JsonValueKind.String } }
-            }
-        },
-        {
-            NotificationConstants.TypeWorkspaceLeaveRejected, new PayloadSchema
-            {
-                RequiredFields = { { "workspace_id", JsonValueKind.String }, { "workspace_name", JsonValueKind.String } }
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String },
+                    { "requester_id", JsonValueKind.String }
+                }
             }
         },
         {
@@ -106,20 +147,23 @@ public static class NotificationValidator
             }
         },
         {
-            // Producer since WT-431, schema since WT-521. Every role change announced in between
-            // was rejected here and thrown away.
-            NotificationConstants.TypeWorkspaceRoleChanged, new PayloadSchema
+            // WT-521, back to the member who asked. Both outcomes carry the same shape, because
+            // the member needs the same two facts either way: which workspace, and what happened.
+            NotificationConstants.TypeWorkspaceLeaveApproved, new PayloadSchema
             {
-                RequiredFields = { { "workspace_id", JsonValueKind.String } },
-                OptionalFields =
+                RequiredFields =
                 {
-                    { "old_role", JsonValueKind.String },
-                    { "new_role", JsonValueKind.String },
-                    // Not sent by the producer today. Declared anyway, because an UNDECLARED
-                    // field is not ignored here — it rejects the whole notification
-                    // (UNSUPPORTED_PAYLOAD_FIELD, a few lines down). Adding the workspace name to
-                    // this payload later would otherwise silently stop every role-change notice
-                    // again, which is precisely the failure this ticket is cleaning up after.
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            NotificationConstants.TypeWorkspaceLeaveRejected, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
                     { "workspace_name", JsonValueKind.String }
                 }
             }

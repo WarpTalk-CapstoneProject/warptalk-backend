@@ -121,6 +121,20 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
             .FirstOrDefaultAsync(ct);
     }
 
+    public async Task<WorkspaceDirectoryRow?> GetAdminDetailBySlugAsync(string slug, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(slug)) return null;
+
+        // Compared lowercase because a slug is generated lowercase but arrives from a URL, and
+        // a browser will happily hand back whatever case somebody typed or a mail client
+        // capitalised. Not the folding search uses: this is an identity lookup, so "demo" must
+        // never resolve "demo-2".
+        var normalized = slug.Trim().ToLowerInvariant();
+
+        return await Project(_context.Workspaces.AsNoTracking().Where(w => w.Slug.ToLower() == normalized))
+            .FirstOrDefaultAsync(ct);
+    }
+
     /// <summary>
     /// Counts are subqueries rather than Includes, so a page of the directory costs one row
     /// per workspace instead of every member, invitation, and document row behind it.

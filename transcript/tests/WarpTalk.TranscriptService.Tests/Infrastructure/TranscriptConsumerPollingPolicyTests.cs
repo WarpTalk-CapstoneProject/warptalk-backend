@@ -20,16 +20,27 @@ public class TranscriptConsumerPollingPolicyTests
     }
 
     [Fact]
-    public void InputStreams_UseThreeGlobalStreamsInsteadOfScanningPerRoomKeys()
+    public void InputStreams_UseGlobalStreamsInsteadOfScanningPerRoomKeys()
     {
         Assert.Equal(
-            ["stt:results", "translate:results", "tts:results"],
+            ["stt:results", "translate:results", "translate:backfill_results", "tts:results"],
             TranscriptConsumerPollingPolicy.InputStreams);
+    }
+
+    [Fact]
+    public void InputStreams_KeepBackfilledTranslationsOffTheStreamThatDrivesSpeech()
+    {
+        // tts_worker reads "translate:results". Publishing a post-meeting backfill there would
+        // synthesise and bill audio for every line of a meeting that already ended, so the
+        // backfill has a stream of its own — persisted by the same code, heard by nobody.
+        Assert.Contains("translate:backfill_results", TranscriptConsumerPollingPolicy.InputStreams);
+        Assert.NotEqual("translate:results", "translate:backfill_results");
     }
 
     [Theory]
     [InlineData("stt:results", TranscriptResultStreamKind.Stt)]
     [InlineData("translate:results", TranscriptResultStreamKind.Translation)]
+    [InlineData("translate:backfill_results", TranscriptResultStreamKind.Translation)]
     [InlineData("tts:results", TranscriptResultStreamKind.Tts)]
     [InlineData("stt:results:legacy-room", TranscriptResultStreamKind.Unknown)]
     public void Classify_RecognizesOnlyCanonicalGlobalStreams(

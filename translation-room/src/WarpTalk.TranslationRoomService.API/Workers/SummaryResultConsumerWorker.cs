@@ -140,6 +140,10 @@ public class SummaryResultConsumerWorker : BackgroundService
         }
 
         summary.Content = content;
+        // Moved here and nowhere else on this path. Without it "is this summary out of date?"
+        // could only ever answer yes, because regenerating would not clear the comparison — and a
+        // staleness warning that cannot turn itself off stops meaning anything.
+        summary.UpdatedAt = DateTime.UtcNow;
         unitOfWork.TranslationRoomArtifactRepository.Update(summary);
         await unitOfWork.SaveChangesAsync(ct);
 

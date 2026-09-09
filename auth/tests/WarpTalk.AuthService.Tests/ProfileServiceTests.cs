@@ -22,6 +22,7 @@ public class ProfileServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserRepository _userRepository;
     private readonly IPasswordHasher _passwordHasher;
+    private readonly IVoiceSampleStorage _storage;
     private readonly IRefreshTokenRepository _refreshTokenRepository;
     private readonly IOptions<AuthSettings> _authSettingsOptions;
     private readonly ProfileService _profileService;
@@ -44,11 +45,13 @@ public class ProfileServiceTests
         };
         _authSettingsOptions = Options.Create(settings);
 
+        _storage = Substitute.For<IVoiceSampleStorage>();
         _profileService = new ProfileService(
             _unitOfWork,
             _passwordHasher,
             _authSettingsOptions,
-            Substitute.For<ILogger<ProfileService>>()
+            Substitute.For<ILogger<ProfileService>>(),
+            _storage
         );
     }
 

@@ -23,6 +23,7 @@ public class TranslationRoomHub : Hub
     private readonly ActiveTranslationRoomRegistry _translationRoomRegistry;
     private readonly IConnectionMultiplexer _redis;
     private readonly IRoomHostAuthority _hostAuthority;
+    private readonly IRoomLanguagePolicy _languagePolicy;
     private readonly ILogger<TranslationRoomHub> _logger;
 
     // Track which connection belongs to which room
@@ -56,6 +57,7 @@ public class TranslationRoomHub : Hub
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IConnectionMultiplexer redis,
         IRoomHostAuthority hostAuthority,
+        IRoomLanguagePolicy languagePolicy,
         ILogger<TranslationRoomHub> logger)
     {
         _connectionManager = connectionManager;
@@ -64,7 +66,35 @@ public class TranslationRoomHub : Hub
         _translationRoomRegistry = translationRoomRegistry;
         _redis = redis;
         _hostAuthority = hostAuthority;
+        _languagePolicy = languagePolicy;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Refuse a language the room's workspace does not permit.
+    ///
+    /// Throws rather than returning a bool, for the same reason
+    /// <see cref="EnsureHostAuthorityAsync"/> does: a caller that forgets to check a return value
+    /// re-opens the hole silently, and a HubException surfaces on the client as a rejected invoke
+    /// with this text, which is the sentence the participant needs to read.
+    ///
+    /// See <see cref="IRoomLanguagePolicy"/> for why an unreachable WorkspaceService permits here
+    /// while it refuses in the host check.
+    /// </summary>
+    private async Task EnsureLanguageAllowedAsync(Guid translationRoomId, string language)
+    {
+        if (await _languagePolicy.IsLanguageAllowedAsync(
+                translationRoomId, language, Context.ConnectionAborted))
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "TranslationRoomHub: refused language {Language} in room {RoomId} for user {UserId} — "
+            + "the workspace's allowed-language policy does not include it.",
+            language, translationRoomId, GetUserId());
+
+        throw new HubException("This workspace does not allow that language in meetings.");
     }
 
     /// <summary>
@@ -491,6 +521,8 @@ public class TranslationRoomHub : Hub
         if (string.IsNullOrWhiteSpace(listenLanguage))
             throw new HubException("listenLanguage is required.");
 
+        await EnsureLanguageAllowedAsync(translationRoomId, listenLanguage);
+
         var userId = GetUserId();
         var groupName = TranslationRoomGroupName(translationRoomId);
         var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
@@ -530,6 +562,8 @@ public class TranslationRoomHub : Hub
     {
         if (string.IsNullOrWhiteSpace(speakLanguage))
             throw new HubException("speakLanguage is required.");
+
+        await EnsureLanguageAllowedAsync(translationRoomId, speakLanguage);
 
         var userId = GetUserId();
         var groupName = TranslationRoomGroupName(translationRoomId);

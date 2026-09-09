@@ -60,7 +60,10 @@ public record CreateGlossaryTermDto(
     [MaxLength(1000, ErrorMessage = "Context cannot exceed 1000 characters.")]
     string? Context,
 
-    [MaxLength(100, ErrorMessage = "Domain cannot exceed 100 characters.")]
+    // WT-601: 50, because `transcript.glossary_terms.domain` is VARCHAR(50). At 100 the
+    // validator accepted values the column then refused with SQLSTATE 22001, which surfaced
+    // as a 500 from an import whose only fault was a long word in the Field column.
+    [MaxLength(50, ErrorMessage = "Domain cannot exceed 50 characters.")]
     string? Domain,
 
     string? Definition,
@@ -111,7 +114,10 @@ public record UpdateGlossaryTermDto(
     [MaxLength(1000, ErrorMessage = "Context cannot exceed 1000 characters.")]
     string? Context,
 
-    [MaxLength(100, ErrorMessage = "Domain cannot exceed 100 characters.")]
+    // WT-601: 50, because `transcript.glossary_terms.domain` is VARCHAR(50). At 100 the
+    // validator accepted values the column then refused with SQLSTATE 22001, which surfaced
+    // as a 500 from an import whose only fault was a long word in the Field column.
+    [MaxLength(50, ErrorMessage = "Domain cannot exceed 50 characters.")]
     string? Domain,
 
     string? Definition,

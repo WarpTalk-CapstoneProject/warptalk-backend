@@ -68,6 +68,7 @@ public class RefreshDubVoiceTests
             languagePolicy.Object,
             consent.Object,
             settings.Object,
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 

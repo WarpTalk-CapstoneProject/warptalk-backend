@@ -24,4 +24,5 @@ public interface IWorkspaceDocumentService
     Task<Result> DeleteDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
     Task<Result> ArchiveDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
     Task<Result> RestoreDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
+    Task<Result<AiRetrievableDocumentsDto>> ListAiRetrievableDocumentIdsAsync(Guid workspaceId, Guid userId, int limit, CancellationToken ct = default);
 }

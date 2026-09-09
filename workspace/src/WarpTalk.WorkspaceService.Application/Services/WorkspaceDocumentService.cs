@@ -58,12 +58,212 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Refuse every document operation on a workspace that is suspended or deleted.
+    /// </summary>
+    /// <remarks>
+    /// THE HOLE THIS PLUGS. Upload and List asked this question; the other twelve endpoints did
+    /// not, and <see cref="IDocumentAccessEvaluator"/> never loads the workspace at all. Deletion
+    /// happened to be safe because both delete paths stamp RemovedAt on every member, so the
+    /// membership lookups fail closed. SUSPENSION is not: AdminWorkspaceService.ChangeLifecycleAsync
+    /// flips IsActive and leaves every membership row live.
+    ///
+    /// So a suspended workspace returned 404 from the document LIST while every by-id route —
+    /// get, download, extracted-text read and write, patch, approve, delete, archive, restore and
+    /// all three policy routes — kept working for anyone holding a document id. Suspension is what
+    /// an admin reaches for on non-payment, abuse or legal hold, and it did not stop the documents
+    /// leaving.
+    ///
+    /// It lives here rather than in the evaluator for two reasons: the evaluator is injected into
+    /// this service and nothing else, so this is the real choke point; and the list path evaluates
+    /// N documents per call, which would turn one workspace lookup into N.
+    /// </remarks>
+    /// <summary>
+    /// Pre-load the meetings behind a set of documents, for an External member.
+    /// </summary>
+    /// <remarks>
+    /// Only External members need it: they reach a meeting-sourced document through the
+    /// participant-plus-grace-period exception in <see cref="IDocumentAccessEvaluator"/>, and
+    /// answering that per document would be two gRPC round trips each. Internal members never
+    /// take that branch, so the caches stay null and nothing is fetched.
+    ///
+    /// Shared by the document list and the AI-retrievable id list rather than copied into the
+    /// second one. Both ask the evaluator the same question over the same documents; a private
+    /// copy of the fetching would be a second place for the External rule to go quietly wrong.
+    /// </remarks>
+    private async Task<(Dictionary<Guid, TranslationRoomDto?>?, Dictionary<Guid, List<TranslationRoomParticipantDto>>?)> BuildMeetingCachesAsync(
+        WorkspaceMember member,
+        IEnumerable<WorkspaceDocument> documents,
+        CancellationToken ct)
+    {
+        if (!string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, null);
+        }
+
+        var meetingIds = documents
+            .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
+            .Select(d => d.SourceId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (meetingIds.Count == 0)
+        {
+            return (null, null);
+        }
+
+        var roomCache = new Dictionary<Guid, TranslationRoomDto?>();
+        var participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
+
+        var roomTasks = meetingIds.Select(async id =>
+        {
+            var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
+            return (id, room);
+        }).ToList();
+
+        var participantTasks = meetingIds.Select(async id =>
+        {
+            var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
+            return (id, participants);
+        }).ToList();
+
+        await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
+
+        foreach (var task in roomTasks)
+        {
+            var res = await task;
+            roomCache[res.id] = res.room;
+        }
+
+        foreach (var task in participantTasks)
+        {
+            var res = await task;
+            participantsCache[res.id] = res.participants;
+        }
+
+        return (roomCache, participantsCache);
+    }
+
+    /// <summary>
+    /// The documents this caller may have the assistant answer from.
+    /// </summary>
+    /// <remarks>
+    /// WHY THIS ENDPOINT EXISTS AT ALL.
+    ///
+    /// `ai_retrieval` has been one of three document permissions since the ACL was written.
+    /// DocumentAccessEvaluator implements it in full — status, retention, ingestion, AiEligible,
+    /// then the per-subject policies and the hierarchy above them — and the web can grant and
+    /// revoke it per user and per role. Nothing ever asked it. Every production call site passed
+    /// `view` or `download`; the only place the constant reached the evaluator was a unit test.
+    ///
+    /// Meanwhile the assistant's semantic search could not consult a document's ACL at all, so it
+    /// excluded documents wholesale for anyone who was not an Owner or Admin. Safe, and blunt:
+    /// members lost every document answer they were entitled to, and the permission the UI
+    /// offered them changed nothing either way.
+    ///
+    /// This is the seam that joins the two. The AI path asks this endpoint AS THE CALLER, gets
+    /// the ids it may retrieve, and scopes the vector query to them — the same shape the meeting
+    /// allowlist already uses. The authorization stays here, in the one evaluator that knows the
+    /// rules; Python never re-implements an ACL.
+    ///
+    /// NO RE-INDEX IS NEEDED, contrary to what the phase-2 note in search_worker.py assumed. That
+    /// note was about putting the ACL itself into the vector payload. An allowlist does not need
+    /// it: filtering on a document id only needs the document id, and RedisEmbeddingIndexPublisher
+    /// has always written `source_id` for document chunks.
+    ///
+    /// Capped, and the cap is reported. A workspace with more retrievable documents than the cap
+    /// would otherwise have the tail silently excluded, which reads to the asker as "the
+    /// assistant does not know about that document" — the exact failure this whole change is
+    /// trying to stop being invisible.
+    /// </remarks>
+    public async Task<Result<AiRetrievableDocumentsDto>> ListAiRetrievableDocumentIdsAsync(
+        Guid workspaceId,
+        Guid userId,
+        int limit,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<AiRetrievableDocumentsDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<AiRetrievableDocumentsDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var effectiveLimit = limit <= 0
+                ? WorkspaceDocumentConstants.DefaultAiRetrievableIdLimit
+                : Math.Min(limit, WorkspaceDocumentConstants.MaxAiRetrievableIdLimit);
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+
+            var allPolicies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FindAsync(
+                p => p.WorkspaceId == workspaceId, "", ct);
+            var policiesByDoc = allPolicies.ToLookup(p => p.DocumentId);
+
+            // AiEligible is the cheap pre-filter, and it is the one the index itself tracks: a
+            // document that has never been embedded cannot be returned by a vector search, so
+            // evaluating the rest of the ACL over it would be work for an id nobody can match.
+            // The evaluator still re-checks it — this narrows the set, it does not decide it.
+            var documents = await _unitOfWork.WorkspaceDocumentRepository.FindAsync(
+                d => d.WorkspaceId == workspaceId && d.DeletedAt == null && d.AiEligible, "", ct);
+
+            var ordered = documents.OrderByDescending(d => d.UpdatedAt == default ? d.CreatedAt : d.UpdatedAt).ToList();
+            var (roomCache, participantsCache) = await BuildMeetingCachesAsync(member, ordered, ct);
+
+            var ids = new List<Guid>();
+            var truncated = false;
+            foreach (var doc in ordered)
+            {
+                if (ids.Count >= effectiveLimit)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                var accessResult = await _accessEvaluator.EvaluateAccessAsync(
+                    userId,
+                    workspaceId,
+                    doc,
+                    WorkspaceDocumentPermissions.AiRetrieval,
+                    member,
+                    roleName,
+                    policiesByDoc[doc.Id],
+                    roomCache,
+                    participantsCache,
+                    ct);
+
+                if (accessResult.IsSuccess)
+                {
+                    ids.Add(doc.Id);
+                }
+            }
+
+            return Result.Success(new AiRetrievableDocumentsDto(ids, truncated));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while listing AI-retrievable documents. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<AiRetrievableDocumentsDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    private async Task<bool> IsWorkspaceOperationalAsync(Guid workspaceId, CancellationToken ct)
+    {
+        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+        return workspace is not null && workspace.IsOperational();
+    }
+
     public async Task<Result<WorkspaceDocumentDto>> UploadDocumentAsync(Guid workspaceId, UploadDocumentApiRequest request, Guid userId, CancellationToken ct = default)
     {
         try
         {
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-            if (workspace == null || !workspace.IsActive || workspace.DeletedAt != null)
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
@@ -84,6 +284,19 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             {
                 var allowed = string.Join(", ", WorkspaceDocumentConstants.SupportedUploadExtensions);
                 return Result.Failure<WorkspaceDocumentDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
+            }
+
+            // Refused at the boundary rather than stored and misread later. Every policy check
+            // downstream — access evaluation and index eligibility — asks IsRestricted(), which is
+            // an equality test against "restricted". So an unrecognised label is silently a
+            // NON-restricted document wearing a confidential-looking word in the UI, and it is
+            // embedded into the vector store and answerable by the assistant.
+            var confidentiality = WorkspaceDocumentHelper.NormalizeConfidentialityLevel(request.ConfidentialityLevel);
+            if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel) && confidentiality is null)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    $"Unsupported confidentiality level. Allowed values are: {WorkspaceDocumentHelper.SupportedConfidentialityLevels}.",
+                    ErrorCodes.ValidationError);
             }
 
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
@@ -110,6 +323,10 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storage.StorageProviderName, status, ingestionStatus, aiEligible);
             document.IsAiAllowed = effectiveIsAiAllowed;
+            // The CANONICAL value, not the caller's spelling — "Restricted " and "RESTRICTED"
+            // both mean restricted, and storing either verbatim would make IsRestricted() false
+            // for one of them.
+            document.ConfidentialityLevel = confidentiality ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
 
             // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
             using (var stream = request.File.OpenReadStream())
@@ -170,8 +387,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-            if (workspace == null || !workspace.IsActive || workspace.DeletedAt != null)
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<PagedResult<WorkspaceDocumentDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
@@ -196,55 +412,18 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var filteredDocs = documents.OrderByDescending(d => d.CreatedAt).AsEnumerable();
             if (!string.IsNullOrWhiteSpace(query.Search))
             {
-                var search = query.Search.Trim();
+                // SearchTextHelper, not string.Contains: a raw OrdinalIgnoreCase match reads the
+                // punctuation of a file name as if it were part of the word. Nobody types
+                // "bug-tracking" for a file called BUG-TRACKING-WT478-494, and nobody types the
+                // diacritics on a Vietnamese title either — both were misses, and WarpBot
+                // reported them to the user as "there is no such document".
+                var search = query.Search;
                 filteredDocs = filteredDocs.Where(d =>
-                    d.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                    d.FileName.Contains(search, StringComparison.OrdinalIgnoreCase));
+                    SearchTextHelper.Matches(d.Name, search) ||
+                    SearchTextHelper.Matches(d.FileName, search));
             }
 
-            Dictionary<Guid, TranslationRoomDto?>? roomCache = null;
-            Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null;
-
-            if (string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                var meetingIds = filteredDocs
-                    .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
-                    .Select(d => d.SourceId!.Value)
-                    .Distinct()
-                    .ToList();
-
-                if (meetingIds.Any())
-                {
-                    roomCache = new Dictionary<Guid, TranslationRoomDto?>();
-                    participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
-
-                    var roomTasks = meetingIds.Select(async id =>
-                    {
-                        var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
-                        return (id, room);
-                    }).ToList();
-
-                    var participantTasks = meetingIds.Select(async id =>
-                    {
-                        var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
-                        return (id, participants);
-                    }).ToList();
-
-                    await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
-
-                    foreach (var task in roomTasks)
-                    {
-                        var res = await task;
-                        roomCache[res.id] = res.room;
-                    }
-
-                    foreach (var task in participantTasks)
-                    {
-                        var res = await task;
-                        participantsCache[res.id] = res.participants;
-                    }
-                }
-            }
+            var (roomCache, participantsCache) = await BuildMeetingCachesAsync(member, filteredDocs, ct);
 
             var allowedDtos = new List<WorkspaceDocumentDto>();
             foreach (var doc in filteredDocs)
@@ -290,6 +469,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
             if (!accessResult.IsSuccess)
             {
@@ -323,6 +507,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -342,7 +531,56 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel))
             {
-                document.ConfidentialityLevel = request.ConfidentialityLevel;
+                // Same gate as upload, and it has to be here too: this is the path that RE-labels
+                // a document, so it is the one that can quietly turn a restricted document into an
+                // unrecognised label that every policy check reads as not-restricted.
+                var level = WorkspaceDocumentHelper.NormalizeConfidentialityLevel(request.ConfidentialityLevel);
+                if (level is null)
+                {
+                    return Result.Failure<WorkspaceDocumentDto>(
+                        $"Unsupported confidentiality level. Allowed values are: {WorkspaceDocumentHelper.SupportedConfidentialityLevels}.",
+                        ErrorCodes.ValidationError);
+                }
+
+                var wasRestricted = document.IsRestricted();
+                document.ConfidentialityLevel = level;
+                var isNowRestricted = document.IsRestricted();
+
+                // RE-LABELLING HAS TO MOVE THE VECTORS TOO.
+                //
+                // DocumentSecurityGuardrailHelper.HasBasicIndexEligibility refuses to index a
+                // restricted document — but it is only ever consulted at UPLOAD. So a document
+                // uploaded as public_internal was embedded into Qdrant, and marking it restricted
+                // afterwards changed the label, the list and the access checks while leaving the
+                // chunks exactly where they were: the assistant went on answering out of a
+                // document the workspace had just declared confidential.
+                //
+                // Mirrors the IsAiAllowed branch below, which has always done this. The two
+                // switches gate the same thing — whether the model may read this document — and
+                // only one of them was wired to the index.
+                if (!wasRestricted && isNowRestricted)
+                {
+                    document.AiEligible = false;
+                    await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+                }
+                else if (wasRestricted && !isNowRestricted && document.IsIndexEligible())
+                {
+                    // Re-indexed only when the rest of the gate already passes. Publishing for a
+                    // pending_approval document would index something nobody has approved yet.
+                    // IsIndexEligible rather than a local copy of its conditions: this branch was
+                    // spelling out two of the four, and the retention state it left out means a
+                    // document staged for deletion could be re-indexed by un-restricting it.
+                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
+                    await _eventPublisher.PublishDocumentUploadedAsync(
+                        document.Id,
+                        workspaceId,
+                        document.StorageKey,
+                        document.FileName,
+                        document.FileExtension,
+                        userId,
+                        document.ConfidentialityLevel,
+                        ct);
+                }
             }
 
             if (request.IsAiAllowed.HasValue && request.IsAiAllowed.Value != document.IsAiAllowed)
@@ -407,6 +645,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -435,13 +678,27 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             {
                 return Result.Failure("SubjectId is required for a User policy.", ErrorCodes.ValidationError);
             }
+            // MEMBER ONLY, and refusing the other two is the point rather than an oversight.
+            //
+            // DocumentAccessEvaluator matches a Role policy against the caller's role name
+            // whoever they are, so a DENY on Owner was evaluated and locked every owner in the
+            // workspace out of the document. The web has only ever offered Member for exactly
+            // that reason — but the API accepted all three, so the foot-gun was one curl away
+            // from a control the UI deliberately does not draw.
+            //
+            // Nothing is lost by refusing them. An ALLOW on Owner or Admin is a no-op: they
+            // already reach every document in the workspace. A DENY is worse than a no-op — it
+            // is not even a boundary, since CanManagePoliciesAsync answers from role and never
+            // reads policies, so the admin it names can simply delete it.
+            //
+            // Existing rows, if any, keep evaluating: this is a write-side gate, and any owner
+            // can remove one. Nothing silently changes meaning underneath a workspace.
             if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeRole
-                && (normalizedSubjectKey == null
-                    || (!normalizedSubjectKey.IsOwner()
-                        && !normalizedSubjectKey.IsAdmin()
-                        && !normalizedSubjectKey.IsMember())))
+                && (normalizedSubjectKey == null || !normalizedSubjectKey.IsMember()))
             {
-                return Result.Failure("Role policy SubjectKey must be Owner, Admin, or Member.", ErrorCodes.ValidationError);
+                return Result.Failure(
+                    "Role policy SubjectKey must be Member. Owners and admins already reach every document in the workspace, and a rule naming them would only lock them out of one.",
+                    ErrorCodes.ValidationError);
             }
             if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeMembershipType
                 && !Enum.TryParse<MembershipType>(normalizedSubjectKey, true, out _))
@@ -503,6 +760,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -533,6 +795,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
@@ -558,6 +825,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
             if (member == null)
@@ -652,6 +924,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, ct);
             if (!accessResult.IsSuccess)
             {
@@ -681,6 +958,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
@@ -738,6 +1020,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
@@ -793,6 +1080,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
@@ -870,6 +1162,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
             if (!accessResult.IsSuccess)
             {
@@ -938,14 +1235,34 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
-            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
-            if (!accessResult.IsSuccess)
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
-                return Result.Failure<ExtractedTextDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+                return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            // A WRITE, so it is gated like the other writes — not like a read.
+            //
+            // This asked for `view`, which is the permission every ordinary Internal member holds
+            // over every non-sensitive document by default. So anyone who could OPEN a document
+            // could overwrite the text of it, and the three lines below then published that text
+            // to the embedding index: one member could rewrite what the assistant answers about
+            // this document for the entire workspace. That is an indirect prompt-injection channel
+            // wearing the shape of a metadata edit.
+            //
+            // CanManagePoliciesAsync is the same gate PatchDocumentMetadataAsync already uses —
+            // workspace Owner/Admin, or the document's own owner — and it is the honest one here,
+            // because editing the extracted text IS editing the document as far as every reader
+            // downstream is concerned.
+            var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
+            if (!canManage)
+            {
+                return Result.Failure<ExtractedTextDto>(
+                    "Forbidden. Only workspace Owner/Admin or the document owner can edit extracted text.",
+                    ErrorCodes.Forbidden);
             }
 
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
-            if (document == null || document.DeletedAt != null)
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
             {
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
             }
@@ -954,16 +1271,36 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var jsonContent = JsonSerializer.Serialize(content);
             await _storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
-            if (document.IsAiAllowed &&
-                string.Equals(
-                    document.Status,
-                    WorkspaceDocumentStatus.@public.ToString(),
-                    StringComparison.OrdinalIgnoreCase))
+            // The FULL index gate, not the two conditions this path used to check.
+            //
+            // It asked only IsAiAllowed + public, so it re-indexed documents the guardrail refuses:
+            // ones staged for deletion, and — the one that matters — ones labelled confidential.
+            // A restricted document's vectors are purged when it is relabelled; this endpoint put
+            // them straight back, which made the whole confidentiality boundary bypassable by
+            // anyone who could edit the text.
+            if (document.IsIndexEligible())
             {
                 await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
             }
 
+            // Rewriting the AI-readable body of a document left no trace at all before this. It is
+            // the one document write with no reviewable artifact of its own — the blob is
+            // overwritten in place — so the audit row is the only record that it happened.
+            //
+            // Built before the audit call on purpose: `text?.Length` below would otherwise leave
+            // `text` in a maybe-null flow state and warn here, and the alternative — dropping the
+            // null-conditional — would turn a malformed body into a 500 where it used to be a 200.
             var textDto = new ExtractedTextDto(text, new(), new());
+
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.UpdateExtractedText,
+                new { Length = text?.Length ?? 0, Reindexed = document.IsIndexEligible() },
+                _logger,
+                ct);
+
             return Result.Success(textDto);
         }
         catch (Exception ex)

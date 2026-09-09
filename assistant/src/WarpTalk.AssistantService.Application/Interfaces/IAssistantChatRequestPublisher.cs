@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 namespace WarpTalk.AssistantService.Application.Interfaces;
 
-public sealed record ChatTurnDto(string Role, string Content);
+public record ChatTurnDto(string Role, string Content);
 
 /// <summary>
 /// Publishes a chat turn to the Python ai_assistant_worker chat pipeline over Redis Streams

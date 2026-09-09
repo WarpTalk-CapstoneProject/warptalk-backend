@@ -295,6 +295,23 @@ public class SubscriptionService : ISubscriptionService
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
                     ErrorCodes.BillingSubscriptionNotFound);
 
+            // WT-599: cancelling an already-cancelled subscription is not a second cancellation.
+            //
+            // `Cancel` deliberately leaves IsActive true — the workspace keeps what it paid for
+            // until the period ends — so the lookup above finds the SAME row on every later call.
+            // Nothing stopped it from running again: each repeat re-stamped the row, made another
+            // Stripe call, and published another notification. That is how one cancellation became
+            // a column of identical "Subscription Updated" entries in the bell.
+            //
+            // A conflict rather than a silent success, because the caller asked for something that
+            // did not happen, and "already cancelled" is what the billing page needs to say.
+            if (!sub.AutoRenew || sub.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled)
+            {
+                return Result.Failure<bool>(
+                    BillingMessageConstants.ApiErrorMessages.BillingSubscriptionAlreadyCancelled,
+                    ErrorCodes.BillingSubscriptionConflict);
+            }
+
             if (sub.TrialEndsAt != null)
             {
                 sub.CancelImmediately(reason);

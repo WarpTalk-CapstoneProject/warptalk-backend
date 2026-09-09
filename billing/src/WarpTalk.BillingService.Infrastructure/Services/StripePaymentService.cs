@@ -120,6 +120,12 @@ public class StripePaymentService : IStripePaymentService
                 Mode = isSubscription ? PaymentConstants.StripeModes.Subscription : PaymentConstants.StripeModes.Payment,
                 SuccessUrl = successUrl,
                 CancelUrl = cancelUrl,
+                // WT-545: bind the page to the account that started the checkout. Stripe prefills
+                // this address and makes the field read-only, so a forwarded link pays as the
+                // buyer rather than under a stranger's email — which is what made the resulting
+                // customer, receipt and dispute trail name the wrong person. Null when the token
+                // carried no email claim; Stripe then asks, exactly as it did before.
+                CustomerEmail = string.IsNullOrWhiteSpace(request.BuyerEmail) ? null : request.BuyerEmail,
                 Metadata = metadata
             };
 

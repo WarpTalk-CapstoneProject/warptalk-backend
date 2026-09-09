@@ -81,6 +81,80 @@ public class LiveKitEgressServiceTests
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>
         new ConfigurationBuilder().AddInMemoryCollection(values).Build();
 
+    /// <summary>
+    /// The production defect this pins, found 2026-08-20 by reading prod.
+    ///
+    /// LiveKit answers an unknown egress with 404 + {"code":"not_found"}. This method used to
+    /// return Failure for it, EgressReconciliationService reads a failed lookup as "LiveKit
+    /// unreachable" and deliberately leaves the room alone — so its UnknownEgressGrace path,
+    /// written for exactly the aged-out case, could never run. Five rooms had been holding an
+    /// ActiveEgressId ever since, and the service logged 2,955 egress lines in 24 hours asking
+    /// about egresses that will never exist again.
+    ///
+    /// The interface has always documented the contract: "Not knowing an id is a normal answer,
+    /// not a failure." The implementation was guessing the wrong wire shape for it.
+    /// </summary>
+    [Fact]
+    public async Task GetEgressAsync_TreatsLiveKitsNotFoundAsAnAnswer_NotAFailure()
+    {
+        var handler = new StubHttpMessageHandler(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent(
+                    """{"code":"not_found","msg":"object cannot be found"}""")
+            }));
+
+        var result = await BuildService(handler).GetEgressAsync("EG_knxfkj8TECU3");
+
+        // Success carrying null is what lets the caller clear the room after its grace period.
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task GetEgressAsync_TrustsTheTwirpBodyEvenWhenTheStatusIsNot404()
+    {
+        // A gateway in front of LiveKit can rewrite the status; the body's own code is the
+        // authoritative statement.
+        var handler = new StubHttpMessageHandler(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"code":"not_found","msg":"object cannot be found"}""")
+            }));
+
+        var result = await BuildService(handler).GetEgressAsync("EG_gone");
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task GetEgressAsync_StillFailsWhenLiveKitIsGenuinelyUnreachable()
+    {
+        // The distinction that matters: clearing a room on a transport failure would tell a host
+        // their live recording had stopped when it had not.
+        var handler = new StubHttpMessageHandler(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent("upstream unavailable")
+            }));
+
+        var result = await BuildService(handler).GetEgressAsync("EG_live");
+
+        Assert.False(result.IsSuccess);
+    }
+
+    private static LiveKitEgressService BuildService(StubHttpMessageHandler handler) =>
+        new(
+            new HttpClient(handler),
+            BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["LiveKit:Url"] = "wss://warptalk-staging.livekit.cloud",
+                ["LiveKit:ApiKey"] = "test-api-key",
+                ["LiveKit:ApiSecret"] = "test-api-secret-with-at-least-32-characters"
+            }),
+            NullLogger<LiveKitEgressService>.Instance);
+
     private sealed class StubHttpMessageHandler(
         Func<HttpRequestMessage, Task<HttpResponseMessage>> handler) : HttpMessageHandler
     {

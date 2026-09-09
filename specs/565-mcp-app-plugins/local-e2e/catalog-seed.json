@@ -1,0 +1,68 @@
+[
+  {
+    "pluginKey": "linear",
+    "label": "Linear",
+    "description": "Create and track issues, projects and comments in Linear from WarpBot.",
+    "mcpServerUrl": "https://mcp.linear.app/mcp"
+  },
+  {
+    "pluginKey": "notion",
+    "label": "Notion",
+    "description": "Search, read and create pages and databases in your Notion workspace.",
+    "mcpServerUrl": "https://mcp.notion.com/mcp"
+  },
+  {
+    "pluginKey": "atlassian",
+    "label": "Atlassian Jira & Confluence",
+    "description": "Search and update Jira issues and Confluence pages in your Atlassian site.",
+    "mcpServerUrl": "https://mcp.atlassian.com/v1/mcp"
+  },
+  {
+    "pluginKey": "asana",
+    "label": "Asana",
+    "description": "Find and manage Asana tasks and projects.",
+    "mcpServerUrl": "https://mcp.asana.com/mcp"
+  },
+  {
+    "pluginKey": "figma",
+    "label": "Figma",
+    "description": "Read Figma files, frames and design context.",
+    "mcpServerUrl": "https://mcp.figma.com/mcp"
+  },
+  {
+    "pluginKey": "canva",
+    "label": "Canva",
+    "description": "Search and create Canva designs.",
+    "mcpServerUrl": "https://mcp.canva.com/mcp"
+  },
+  {
+    "pluginKey": "zapier",
+    "label": "Zapier",
+    "description": "Run Zapier actions across thousands of connected apps.",
+    "mcpServerUrl": "https://mcp.zapier.com/api/mcp/mcp"
+  },
+  {
+    "pluginKey": "monday",
+    "label": "monday.com",
+    "description": "Read and update boards and items in monday.com.",
+    "mcpServerUrl": "https://mcp.monday.com/mcp"
+  },
+  {
+    "pluginKey": "github",
+    "label": "GitHub",
+    "description": "Browse repositories, issues and pull requests on GitHub.",
+    "mcpServerUrl": "https://api.githubcopilot.com/mcp/"
+  },
+  {
+    "pluginKey": "slack",
+    "label": "Slack",
+    "description": "Search messages and post to channels in your Slack workspace.",
+    "mcpServerUrl": "https://mcp.slack.com/mcp"
+  },
+  {
+    "pluginKey": "hubspot",
+    "label": "HubSpot",
+    "description": "Look up and update contacts, companies and deals in HubSpot.",
+    "mcpServerUrl": "https://mcp.hubspot.com/anthropic"
+  }
+]

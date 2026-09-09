@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
@@ -87,6 +88,89 @@ public class AdminWorkspaceServiceTests
         CreatedAt = Now.AddDays(-30),
         UpdatedAt = Now.AddDays(-2),
     };
+
+    // ── Detail by slug (WT-560) ──────────────────────────────
+    //
+    // The admin portal's URL used to carry the workspace's primary key. Addressing the same
+    // detail by the workspace's own slug is what lets the address bar name it instead.
+
+    [Fact]
+    public async Task GetDetailBySlugAsync_ReturnsTheSameDetailTheIdLookupWould()
+    {
+        var id = Guid.NewGuid();
+        var ownerId = Guid.NewGuid();
+        _workspaceRepository
+            .GetAdminDetailBySlugAsync("acme-localization", Arg.Any<CancellationToken>())
+            .Returns(Row(id, ownerId));
+
+        var result = await _service.GetDetailBySlugAsync("acme-localization");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(id, result.Value!.Id);
+        Assert.Equal("acme-localization", result.Value.Slug);
+    }
+
+    [Fact]
+    public async Task GetDetailBySlugAsync_ReadsHistoryForTheWorkspaceTheSlugResolvedTo()
+    {
+        // The refactor risk. Both lookups now share one builder, and the audit history is the
+        // one thing in it that used to be keyed on the caller's argument rather than on the row
+        // that was found. Keyed on the argument, a slug lookup would attach some other
+        // workspace's lifecycle history — or none — to a perfectly valid page.
+        var id = Guid.NewGuid();
+        _workspaceRepository
+            .GetAdminDetailBySlugAsync("acme-localization", Arg.Any<CancellationToken>())
+            .Returns(Row(id, Guid.NewGuid()));
+
+        await _service.GetDetailBySlugAsync("acme-localization");
+
+        await _adminAuditLogRepository.Received(1).GetForEntityAsync(
+            AdminAuditEntityTypes.Workspace, id, Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetDetailBySlugAsync_UnknownSlugIsNotFound()
+    {
+        _workspaceRepository
+            .GetAdminDetailBySlugAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((WorkspaceDirectoryRow?)null);
+
+        var result = await _service.GetDetailBySlugAsync("nothing-here");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task GetDetailBySlugAsync_BlankSlugIsNotFoundAndNeverReachesTheDatabase(string? slug)
+    {
+        var result = await _service.GetDetailBySlugAsync(slug!);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        await _workspaceRepository.DidNotReceive()
+            .GetAdminDetailBySlugAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetDetailBySlugAsync_ASoftDeletedWorkspaceIsStillReachable()
+    {
+        // The admin portal is the one surface that has to reach deleted workspaces — that is
+        // where a deletion is reviewed. A slug is safe to address them by precisely because a
+        // soft delete leaves the row, and its UNIQUE slug, in place.
+        var id = Guid.NewGuid();
+        _workspaceRepository
+            .GetAdminDetailBySlugAsync("acme-localization", Arg.Any<CancellationToken>())
+            .Returns(Row(id, Guid.NewGuid(), isActive: false, deletedAt: Now.AddDays(-1)));
+
+        var result = await _service.GetDetailBySlugAsync("acme-localization");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(id, result.Value!.Id);
+    }
 
     // ── Directory ────────────────────────────────────────────
 

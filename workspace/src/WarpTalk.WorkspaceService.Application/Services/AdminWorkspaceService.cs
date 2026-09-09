@@ -50,13 +50,28 @@ public class AdminWorkspaceService : IAdminWorkspaceService
     private readonly ILogger<AdminWorkspaceService> _logger;
     private readonly TimeProvider _timeProvider;
 
+    /// <summary>
+    /// Nullable for the same reason WorkspaceMemberService's is: an unreachable notification mesh
+    /// must not fail a suspension that is already committed, and tests construct this service
+    /// without one.
+    /// </summary>
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+
+    // The wire values, spelled here rather than imported: these constants live in
+    // NotificationService.Domain, which this service does not reference — the same reason
+    // WorkspaceMemberService writes "WORKSPACE_ROLE_CHANGED" as a literal. Both are registered in
+    // NotificationValidator.Schemas; an unregistered type carrying metadata is rejected outright.
+    private const string WorkspaceSuspendedNotificationType = "WORKSPACE_SUSPENDED";
+    private const string WorkspaceReactivatedNotificationType = "WORKSPACE_REACTIVATED";
+
     public AdminWorkspaceService(
         IUnitOfWork unitOfWork,
         IAuthIdentityClient authIdentityClient,
         IAdminAuditLogRepository adminAuditLogRepository,
         IWorkspaceEventPublisher eventPublisher,
         ILogger<AdminWorkspaceService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null)
     {
         _unitOfWork = unitOfWork;
         _authIdentityClient = authIdentityClient;
@@ -64,6 +79,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         _eventPublisher = eventPublisher;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _notificationClient = notificationClient;
     }
 
     public async Task<Result<AdminPagedResult<AdminWorkspaceSummaryDto>>> GetDirectoryAsync(
@@ -134,6 +150,32 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Admin workspace detail query failed. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspace, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<AdminWorkspaceDetailDto>> GetDetailBySlugAsync(string slug, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(slug))
+        {
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+        }
+
+        try
+        {
+            var row = await _unitOfWork.WorkspaceRepository.GetAdminDetailBySlugAsync(slug, ct);
+            var detail = await BuildDetailFromRowAsync(row, ct);
+            return detail is null
+                ? Result.Failure<AdminWorkspaceDetailDto>(
+                    WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound)
+                : Result.Success(detail);
+        }
+        catch (Exception ex)
+        {
+            // The slug is the caller's, so it is logged as a parameter rather than interpolated.
+            _logger.LogError(ex, "Admin workspace detail query by slug failed. Slug: {Slug}", slug);
             return Result.Failure<AdminWorkspaceDetailDto>(
                 WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspace, ErrorCodes.InternalServerError);
         }
@@ -409,6 +451,11 @@ public class AdminWorkspaceService : IAdminWorkspaceService
                 workspaceId,
                 correlationId);
 
+            // WT-454 — after the commit, never inside it. The owner is being told about a change
+            // that has already happened; a notification mesh that is down must not roll back an
+            // admin action or make the endpoint fail.
+            await NotifyOwnerOfLifecycleChangeAsync(workspace, trimmedReason, suspend, ct);
+
             var detail = await BuildDetailAsync(workspaceId, ct);
             return detail is null
                 ? Result.Failure<AdminWorkspaceDetailDto>(
@@ -427,16 +474,92 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         }
     }
 
+    /// <summary>
+    /// Tell the workspace owner their workspace was suspended, and why — or that it is back. WT-454.
+    /// </summary>
+    /// <remarks>
+    /// The whole of this used to be missing: ChangeLifecycleAsync wrote the row, appended the audit
+    /// entry, logged, and stopped. The owner's workspace simply stopped working, with no message
+    /// naming a reason and nothing to act on, so every case became a manual support mail.
+    ///
+    /// The reason the admin typed is carried through verbatim. It is already required and
+    /// length-checked by the caller, so there is nothing to invent here — which matters, because a
+    /// suspension notice explained by the system rather than by the person who suspended it is
+    /// worse than none.
+    ///
+    /// Best-effort, and deliberately swallowing: the lifecycle change is committed by the time this
+    /// runs. Same shape and same argument as NotifyMemberRoleChangedAsync.
+    /// </remarks>
+    private async Task NotifyOwnerOfLifecycleChangeAsync(
+        Workspace workspace,
+        string reason,
+        bool suspend,
+        CancellationToken ct)
+    {
+        if (_notificationClient == null) return;
+
+        try
+        {
+            var workspaceName = string.IsNullOrWhiteSpace(workspace.Name) ? "your workspace" : workspace.Name;
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = workspace.OwnerId.ToString(),
+                Type = suspend ? WorkspaceSuspendedNotificationType : WorkspaceReactivatedNotificationType,
+                Title = suspend
+                    ? $"{workspaceName} has been suspended"
+                    : $"{workspaceName} is active again",
+                Body = suspend
+                    ? $"An administrator suspended {workspaceName}. Reason: {reason}"
+                    : $"An administrator lifted the suspension on {workspaceName}. Reason: {reason}",
+                // A suspended workspace cannot be opened, so the link goes to the account's own
+                // workspace list rather than into the one the reader is locked out of.
+                ActionUrl = suspend
+                    ? "/workspace"
+                    : workspace.Slug is { Length: > 0 } slug ? $"/{slug}" : "/workspace",
+            };
+
+            request.Metadata.Add("workspace_id", workspace.Id.ToString());
+            request.Metadata.Add("workspace_name", workspaceName);
+            // Required by the WORKSPACE_SUSPENDED schema, and omitted from the reactivation one
+            // where the body already carries it and there is nothing to act on.
+            if (suspend) request.Metadata.Add("reason", reason);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not notify owner {OwnerId} that workspace {WorkspaceId} was {Action}; the lifecycle change itself is committed.",
+                workspace.OwnerId,
+                workspace.Id,
+                suspend ? "suspended" : "reactivated");
+        }
+    }
+
     private async Task<AdminWorkspaceDetailDto?> BuildDetailAsync(Guid workspaceId, CancellationToken ct)
     {
         var row = await _unitOfWork.WorkspaceRepository.GetAdminDetailAsync(workspaceId, ct);
+        return await BuildDetailFromRowAsync(row, ct);
+    }
+
+    /// <summary>
+    /// Everything after the row is found, so a lookup by slug produces exactly the detail a
+    /// lookup by id does. Keyed on the row's own id rather than on whatever the caller was
+    /// holding — the two must not be able to drift.
+    /// </summary>
+    private async Task<AdminWorkspaceDetailDto?> BuildDetailFromRowAsync(
+        WorkspaceDirectoryRow? row,
+        CancellationToken ct)
+    {
         if (row is null) return null;
 
         var owner = await _authIdentityClient.GetUserByIdAsync(row.OwnerId, ct);
         // Ordered and limited in SQL by the audit repository rather than in memory, and scoped
         // by entity so a platform-wide action never leaks into a workspace's history.
         var history = await _adminAuditLogRepository.GetForEntityAsync(
-            AdminAuditEntityTypes.Workspace, workspaceId, LifecycleHistoryLimit, ct);
+            AdminAuditEntityTypes.Workspace, row.Id, LifecycleHistoryLimit, ct);
 
         return AdminWorkspaceMapper.ToDetail(row, owner, history);
     }

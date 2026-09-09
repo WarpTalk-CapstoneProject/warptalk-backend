@@ -67,15 +67,15 @@ public class MeetingRoomServiceTests
     /// <summary>
     /// The single participant row <c>IsInMeetingAsync</c> looks up, or null for "not in the room".
     /// </summary>
-    private static Mock<IMeetingParticipantRepository> SetupMeetingParticipant(
+    private static Mock<IRtcStreamParticipantRepository> SetupMeetingParticipant(
         Mock<IUnitOfWork> unitOfWorkMock,
-        MeetingParticipant? participant)
+        RtcStreamParticipant? participant)
     {
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(participant);
-        unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
         return participantRepoMock;
     }
 
@@ -155,11 +155,11 @@ public class MeetingRoomServiceTests
         };
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingParticipant?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RtcStreamParticipant?)null);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
         var participantsCacheKey = $"meeting:participants:{translationRoomId}";
         _redisServiceMock
@@ -169,11 +169,11 @@ public class MeetingRoomServiceTests
             .Setup(g => g.GetParticipantsAsync(translationRoomId))
             .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse()));
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingInvitation, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         var result = await _sut.JoinMeetingAsync(translationRoomId, userId);
 
@@ -210,7 +210,7 @@ public class MeetingRoomServiceTests
                 }));
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var meetingParticipant = new MeetingParticipant
+        var meetingParticipant = new RtcStreamParticipant
         {
             Id = Guid.NewGuid(),
             MeetingRoomId = meetingRoom.Id,
@@ -219,24 +219,24 @@ public class MeetingRoomServiceTests
             IsActive = true,
             JoinedAt = DateTime.UtcNow
         };
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(meetingParticipant);
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository)
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository)
             .Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository)
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository)
             .Returns(invitationRepoMock.Object);
 
         var translationParticipants = new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse();
@@ -366,7 +366,7 @@ public class MeetingRoomServiceTests
         var participantUserId = Guid.NewGuid();
         var meetingRoom = new MeetingRoom { Id = meetingRoomId, TranslationRoomId = translationRoomId, ActiveHostId = Guid.NewGuid(), ProviderRoomName = "room-1" };
         var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
-        SetupMeetingParticipant(_unitOfWorkMock, new MeetingParticipant
+        SetupMeetingParticipant(_unitOfWorkMock, new RtcStreamParticipant
         {
             MeetingRoomId = meetingRoomId,
             UserId = participantUserId,
@@ -408,16 +408,16 @@ public class MeetingRoomServiceTests
         var meetingRoom = new MeetingRoom { Id = meetingRoomId, TranslationRoomId = translationRoomId, ActiveHostId = departedHostId, ProviderRoomName = "room-1" };
         var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participants = new List<MeetingParticipant>
+        var participants = new List<RtcStreamParticipant>
         {
             new() { MeetingRoomId = meetingRoomId, UserId = laterUserId, IsActive = true, JoinedAt = DateTime.UtcNow },
             new() { MeetingRoomId = meetingRoomId, UserId = earlierUserId, IsActive = true, JoinedAt = DateTime.UtcNow.AddMinutes(-5) },
         };
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(participants);
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
         var result = await _sut.HandleHostOfflineAsync(translationRoomId, departedHostId);
 
@@ -472,11 +472,11 @@ public class MeetingRoomServiceTests
         var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = departedHostId, ProviderRoomName = "room-1" };
         var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<MeetingParticipant>());
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RtcStreamParticipant>());
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
         var result = await _sut.HandleHostOfflineAsync(translationRoomId, departedHostId);
 
@@ -504,11 +504,11 @@ public class MeetingRoomServiceTests
             .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
             .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RtcStreamParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
         // WT-359: host authority lives in the translation-room service, so the transfer has to
         // reach it. It answers with the host it replaced.
@@ -552,11 +552,11 @@ public class MeetingRoomServiceTests
             .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
             .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RtcStreamParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
         _grpcServiceMock
             .Setup(g => g.TransferRoomHostAsync(translationRoomId, currentHostId, newHostId))
@@ -600,11 +600,11 @@ public class MeetingRoomServiceTests
             .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
             .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RtcStreamParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
         _grpcServiceMock
             .Setup(g => g.TransferRoomHostAsync(translationRoomId, currentHostId, newHostId))
@@ -718,18 +718,18 @@ public class MeetingRoomServiceTests
             .ReturnsAsync(meetingRoom);
         _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
 
-        var invitation = new MeetingInvitation
+        var invitation = new RtcSessionRevocation
         {
             Id = Guid.NewGuid(),
             MeetingRoomId = meetingRoomId,
             InviteeUserId = userId,
             Status = "DECLINED"
         };
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingInvitation, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(invitation);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         var result = await _sut.JoinMeetingAsync(translationRoomId, userId);
 
@@ -878,28 +878,35 @@ public class MeetingRoomServiceTests
                     WorkspaceId = Guid.NewGuid().ToString()
                 }));
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant
+            .ReturnsAsync(new RtcStreamParticipant
             {
                 MeetingRoomId = meetingRoom.Id,
                 UserId = participantUserId,
                 IsActive = true
             });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
+
+        // WT-564: the kick now carries the TERMINAL status to the room service before it touches
+        // anything local, because that is the only write that stops a rejoin. Unstubbed, this is
+        // where the kick stops.
+        _grpcServiceMock
+            .Setup(g => g.KickRoomParticipantAsync(translationRoomId, hostId, participantUserId))
+            .ReturnsAsync(Result.Success(true));
 
         var result = await _sut.KickParticipantAsync(translationRoomId, hostId, participantUserId);
 
@@ -952,13 +959,13 @@ public class MeetingRoomServiceTests
         };
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant
+            .ReturnsAsync(new RtcStreamParticipant
             {
                 Id = Guid.NewGuid(),
                 MeetingRoomId = meetingRoom.Id,
@@ -967,16 +974,16 @@ public class MeetingRoomServiceTests
                 IsActive = true,
                 JoinedAt = DateTime.UtcNow
             });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         _tokenServiceMock
             .Setup(service => service.GenerateToken(
@@ -1037,13 +1044,13 @@ public class MeetingRoomServiceTests
         };
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant
+            .ReturnsAsync(new RtcStreamParticipant
             {
                 Id = Guid.NewGuid(),
                 MeetingRoomId = meetingRoom.Id,
@@ -1052,16 +1059,16 @@ public class MeetingRoomServiceTests
                 IsActive = true,
                 JoinedAt = DateTime.UtcNow
             });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         // WT-428: the lobby gate is now unconditional for a requires-approval room, so being
         // "admitted" is no longer implied by the room being IN_PROGRESS — the translation-room
@@ -1127,29 +1134,29 @@ public class MeetingRoomServiceTests
         };
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingParticipant?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+            .ReturnsAsync((RtcStreamParticipant?)null);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingInvitation
+            .ReturnsAsync(new RtcSessionRevocation
             {
                 Id = Guid.NewGuid(),
                 MeetingRoomId = meetingRoom.Id,
                 InviteeUserId = participantUserId,
                 Status = "PENDING",
             });
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         // The translation-room roster does NOT show them admitted — the host never approved.
         _grpcServiceMock
@@ -1196,13 +1203,13 @@ public class MeetingRoomServiceTests
         };
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant
+            .ReturnsAsync(new RtcStreamParticipant
             {
                 Id = Guid.NewGuid(),
                 MeetingRoomId = meetingRoom.Id,
@@ -1211,16 +1218,16 @@ public class MeetingRoomServiceTests
                 IsActive = true,
                 JoinedAt = DateTime.UtcNow
             });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         // Not yet admitted by the host: Translation Room reports no active participant row.
         _grpcServiceMock
@@ -1267,13 +1274,13 @@ public class MeetingRoomServiceTests
         };
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
-        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        var participantRepoMock = new Mock<IRtcStreamParticipantRepository>();
         participantRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MeetingParticipant
+            .ReturnsAsync(new RtcStreamParticipant
             {
                 Id = Guid.NewGuid(),
                 MeetingRoomId = meetingRoom.Id,
@@ -1282,16 +1289,16 @@ public class MeetingRoomServiceTests
                 IsActive = true,
                 JoinedAt = DateTime.UtcNow
             });
-        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcStreamParticipantRepository).Returns(participantRepoMock.Object);
 
-        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        var invitationRepoMock = new Mock<IRtcSessionRevocationRepository>();
         invitationRepoMock
             .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingInvitation?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+            .ReturnsAsync((RtcSessionRevocation?)null);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(invitationRepoMock.Object);
 
         var translationParticipants = new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse();
         translationParticipants.Participants.Add(new WarpTalk.Shared.Protos.Participant
@@ -1325,5 +1332,100 @@ public class MeetingRoomServiceTests
 
         var property = payload.GetType().GetProperty(propertyName);
         return string.Equals(property?.GetValue(payload)?.ToString(), expectedValue, StringComparison.Ordinal);
+    }
+
+    // ---- WT-525: bridge token ----------------------------------------------------------------
+    //
+    // This is the one method that mints a LiveKit token for an identity other than the caller's,
+    // so the tests that matter most are the two REFUSALS. A regression that widens either gate
+    // would not break any of the happy-path assertions.
+
+    private void SetupBridgeRoom(Guid translationRoomId, string hostId, string roomType, string status = "IN_PROGRESS")
+    {
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+            {
+                HostId = hostId,
+                Status = status,
+                TranslationRoomType = roomType,
+            }));
+        _tokenServiceMock
+            .Setup(t => t.GenerateToken(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()))
+            .Returns(Result.Success("a-token"));
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_MintsTheStandInIdentity_ForTheHostOfABridgeRoom()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType);
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+        // The identity is the contract the AI pipeline routes on — assert the value, not just success.
+        Assert.Equal(ExternalBridgeConstants.ParticipantUserId.ToString(), result.Value!.ParticipantIdentity);
+        // Publish-only: subscribing the stand-in would send the room's dubs back into the device
+        // Meet is playing into, which is a feedback loop rather than a wasted subscription.
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(),
+            ExternalBridgeConstants.ParticipantUserId.ToString(),
+            ExternalBridgeConstants.DisplayName,
+            true,
+            false), Times.Once);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_RefusesANonHost_EvenInABridgeRoom()
+    {
+        var translationRoomId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType);
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_RefusesTheHost_WhenTheRoomIsNotABridge()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), "EVENT");
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_TreatsAnEmptyRoomTypeAsNotABridge()
+    {
+        // An older translation-room server does not send field 12, and proto3 delivers "". The
+        // failure being guarded is minting a second identity into someone else's meeting, so the
+        // absence of the field must read as "no" rather than as "unknown, allow".
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), string.Empty);
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
     }
 }

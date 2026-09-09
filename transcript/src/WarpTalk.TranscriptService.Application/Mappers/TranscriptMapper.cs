@@ -18,7 +18,8 @@ public static class TranscriptMapper
             entity.TotalDurationMs,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.FinalizedAt
+            entity.FinalizedAt,
+            entity.TimelineAnchorAt
         );
     }
 
@@ -33,7 +34,19 @@ public static class TranscriptMapper
             entity.Confidence,
             entity.StartTimeMs,
             entity.EndTimeMs,
-            entity.SequenceOrder
+            entity.SequenceOrder,
+            entity.IsCorrected,
+            entity.UpdatedAt
+        );
+    }
+
+    public static TranscriptPauseWindowDto ToDto(this TranscriptPauseWindow entity)
+    {
+        return new TranscriptPauseWindowDto(
+            entity.Id,
+            entity.TranslationRoomId,
+            entity.StartedAt,
+            entity.EndedAt
         );
     }
 

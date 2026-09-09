@@ -128,7 +128,7 @@ public class MeetingRoomService : IMeetingRoomService
                 }
             }
 
-            // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)
+            // 3. Enforce Authorization (RtcSessionRevocation, Expiration & Dynamic Workspace)
             bool isHost = roomDetails.HostId == userIdString;
             bool isAuthorized = isHost;
             Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
@@ -141,10 +141,10 @@ public class MeetingRoomService : IMeetingRoomService
             // for the caller's existing participant row when the room IS locked, to avoid an
             // extra DB round-trip on the (common) non-locked path — step 4 below falls back to
             // its own query when this stays null.
-            MeetingParticipant? existingParticipant = null;
+            RtcStreamParticipant? existingParticipant = null;
             if (meetingRoom.IsLocked)
             {
-                existingParticipant = await _unitOfWork.MeetingParticipantRepository
+                existingParticipant = await _unitOfWork.RtcStreamParticipantRepository
                     .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
                 bool isExistingActiveParticipant = existingParticipant != null && existingParticipant.IsActive && !existingParticipant.LeftAt.HasValue;
                 if (!isHost && !isExistingActiveParticipant)
@@ -156,8 +156,8 @@ public class MeetingRoomService : IMeetingRoomService
 
             if (!isHost)
             {
-                // Check MeetingInvitation Table first (for explicit invites & external guests)
-                var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+                // Check RtcSessionRevocation Table first (for explicit invites & external guests)
+                var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
                 var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
 
                 if (explicitInvite != null)
@@ -204,12 +204,12 @@ public class MeetingRoomService : IMeetingRoomService
 
             // 4. Register or Update Participant
             var providerIdentity = userIdString;
-            var participant = existingParticipant ?? await _unitOfWork.MeetingParticipantRepository
+            var participant = existingParticipant ?? await _unitOfWork.RtcStreamParticipantRepository
                 .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
 
             if (participant == null)
             {
-                participant = new MeetingParticipant
+                participant = new RtcStreamParticipant
                 {
                     Id = Guid.CreateVersion7(),
                     MeetingRoomId = meetingRoom.Id,
@@ -220,7 +220,7 @@ public class MeetingRoomService : IMeetingRoomService
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow
                 };
-                await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
+                await _unitOfWork.RtcStreamParticipantRepository.AddAsync(participant);
                 await _unitOfWork.SaveChangesAsync();
             }
             else
@@ -230,7 +230,7 @@ public class MeetingRoomService : IMeetingRoomService
                     participant.IsActive = true;
                     participant.JoinedAt = DateTime.UtcNow;
                     participant.LeftAt = null;
-                    _unitOfWork.MeetingParticipantRepository.Update(participant);
+                    _unitOfWork.RtcStreamParticipantRepository.Update(participant);
                     await _unitOfWork.SaveChangesAsync();
                 }
             }
@@ -331,7 +331,7 @@ public class MeetingRoomService : IMeetingRoomService
             {
                 participant.DisplayName = participantName;
                 participant.UpdatedAt = DateTime.UtcNow;
-                _unitOfWork.MeetingParticipantRepository.Update(participant);
+                _unitOfWork.RtcStreamParticipantRepository.Update(participant);
                 await _unitOfWork.SaveChangesAsync();
             }
 
@@ -380,6 +380,100 @@ public class MeetingRoomService : IMeetingRoomService
             _logger.LogError(ex, "Unexpected error in JoinMeetingAsync for room {RoomId}", translationRoomId);
             return Result.Failure<JoinMeetingResponse>("An unexpected error occurred while joining the meeting.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// WT-525. Mints a publish-only LiveKit token for the EXTERNAL_BRIDGE stand-in seat.
+    ///
+    /// This is the only place this service issues a token for an identity that is not the caller.
+    /// Everywhere else `providerIdentity = userIdString`, and that equality is what makes the
+    /// pipeline's speaker attribution mean anything — stt_worker reads speaker_id straight off
+    /// participant_identity. Breaking it here is deliberate and is exactly why it is fenced.
+    ///
+    /// BOTH gates are load-bearing, neither is belt-and-braces:
+    ///   host-only    otherwise anyone who can reach a room could add a ghost participant to
+    ///                someone else's meeting, and everything it "said" would be attributed to
+    ///                the far side of a call they are not on.
+    ///   bridge-only  otherwise the host of an ordinary meeting could mint a second identity
+    ///                into their own room, which no product surface would explain.
+    ///
+    /// canSubscribe is false because the stand-in has nothing to listen to: it exists to carry
+    /// the far side's voice INTO the room. Subscribing it would also send the room's own dubs
+    /// back out to the device Meet is playing into — an echo loop that ends in feedback.
+    /// </summary>
+    public async Task<Result<BridgeTokenResponse>> GenerateBridgeTokenAsync(Guid translationRoomId, Guid callerUserId)
+    {
+        // Read through gRPC, NOT the local cache. `meeting:room:{id}` is written with a 24h TTL
+        // and holds whatever the room looked like when someone first joined; an authorization
+        // decision this sharp must not be made from a projection that may be a day stale.
+        var roomResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+        if (!roomResult.IsSuccess || roomResult.Value == null)
+            return Result.Failure<BridgeTokenResponse>("Translation room not found", ErrorCodes.NotFound);
+
+        var room = roomResult.Value;
+
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+        {
+            // Same message for "not a bridge" as the host check gives for "not the host": a
+            // caller probing this endpoint learns whether they are allowed, not what the room is.
+            return Result.Failure<BridgeTokenResponse>(
+                "This meeting does not bridge an external call.", ErrorCodes.Forbidden);
+        }
+
+        if (!string.Equals(room.HostId, callerUserId.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Failure<BridgeTokenResponse>(
+                "Only the host may connect this meeting to an external call.", ErrorCodes.Forbidden);
+        }
+
+        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED")
+        {
+            return Result.Failure<BridgeTokenResponse>(
+                "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
+        }
+
+        // The LiveKit room name is the translation room id everywhere in this service (see
+        // JoinMeetingAsync's ProviderRoomName when it provisions). Read the row when it exists so
+        // a room provisioned under a different name still bridges to the right place.
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        var providerRoomName = meetingRoom?.ProviderRoomName ?? translationRoomId.ToString();
+
+        var identity = ExternalBridgeConstants.ParticipantUserId.ToString();
+        var tokenResult = _tokenService.GenerateToken(
+            roomName: providerRoomName,
+            participantIdentity: identity,
+            participantName: ExternalBridgeConstants.DisplayName,
+            canPublish: true,
+            canSubscribe: false);
+
+        if (!tokenResult.IsSuccess)
+            return Result.Failure<BridgeTokenResponse>(
+                tokenResult.Error ?? "Failed to generate token", ErrorCodes.InternalServerError);
+
+        // Tell the AI worker there is audio coming from this identity, exactly as the normal join
+        // path does for a person. Without it the far side's track can sit unread: the worker opens
+        // an audio task per participant it has been told about.
+        try
+        {
+            await PublishTrackPublishedAsync(providerRoomName, identity, "audio_track_1");
+        }
+        catch (Exception ex)
+        {
+            // Not fatal: the worker also discovers participants on its own. Failing the token here
+            // would take away the whole bridge for a notification that has a second source.
+            _logger.LogWarning(ex, "Failed to announce the bridge participant for room {RoomName}", providerRoomName);
+        }
+
+        _logger.LogInformation(
+            "Issued a bridge token for room {RoomId} to host {UserId}", translationRoomId, callerUserId);
+
+        return Result.Success(new BridgeTokenResponse
+        {
+            Token = tokenResult.Value!,
+            ProviderRoomName = providerRoomName,
+            ParticipantIdentity = identity
+        });
     }
 
     public async Task<Result<bool>> TriggerAiAsync(Guid translationRoomId, TriggerAiRequest request)
@@ -514,7 +608,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // 3. Revoke Invitation
-        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+        var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -525,7 +619,7 @@ public class MeetingRoomService : IMeetingRoomService
         else
         {
             // Create a revoked invitation to prevent future joins
-            invitation = new MeetingInvitation
+            invitation = new RtcSessionRevocation
             {
                 MeetingRoomId = meetingRoom.Id,
                 InviteeUserId = participantUserId,
@@ -536,14 +630,14 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // 4. Update Participant state
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);
 
         if (participant != null)
         {
             participant.IsActive = false;
             participant.LeftAt = DateTime.UtcNow;
-            _unitOfWork.MeetingParticipantRepository.Update(participant);
+            _unitOfWork.RtcStreamParticipantRepository.Update(participant);
         }
 
         await _unitOfWork.SaveChangesAsync();
@@ -585,7 +679,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // Verify new host is an active participant
-        var newHostParticipant = await _unitOfWork.MeetingParticipantRepository
+        var newHostParticipant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == newHostUserId && p.IsActive);
 
         if (newHostParticipant == null)
@@ -674,19 +768,38 @@ public class MeetingRoomService : IMeetingRoomService
         if (!isOriginalHost && !isActiveHost)
             return Result.Failure<bool>("Only the host can kick participants.", ErrorCodes.Forbidden);
 
+        // WT-564: THE ROSTER FIRST, BEFORE ANYTHING LOCAL.
+        //
+        // KICKED is a terminal status on the ROOM service, and it is the only thing that stops a
+        // rejoin there: JoinTranslationRoomAsync refuses on it (BR-010). Everything below this line
+        // — deactivating the local participant, revoking the invitation, evicting from LiveKit —
+        // stops the person being in the meeting NOW and none of it stops them coming back through
+        // the room service's own join, which reads a disconnected roster row as proof they were
+        // already admitted and lets them in without even a lobby.
+        //
+        // Called FIRST so a failure leaves nothing half-applied: the host sees the kick refused and
+        // retries, rather than a person evicted from LiveKit who quietly walks back in. The room
+        // service re-authorizes host identity against its own tables, so this is not a trusted
+        // instruction — it is a request that can be refused.
+        var rosterKick = await _grpcService.KickRoomParticipantAsync(
+            translationRoomId, hostUserId, participantUserId);
+
+        if (!rosterKick.IsSuccess)
+            return Result.Failure<bool>(rosterKick.Error ?? "Could not remove the participant from the room.", ErrorCodes.InternalServerError);
+
         // Update Participant status
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);
 
         if (participant != null)
         {
             participant.IsActive = false;
             participant.LeftAt = DateTime.UtcNow;
-            _unitOfWork.MeetingParticipantRepository.Update(participant);
+            _unitOfWork.RtcStreamParticipantRepository.Update(participant);
         }
 
         // Revoke Invitation to prevent re-join
-        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+        var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -696,7 +809,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
         else
         {
-            await invitationRepo.AddAsync(new MeetingInvitation
+            await invitationRepo.AddAsync(new RtcSessionRevocation
             {
                 MeetingRoomId = meetingRoom.Id,
                 InviteeUserId = participantUserId,
@@ -1042,7 +1155,7 @@ public class MeetingRoomService : IMeetingRoomService
         if (await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
             return true;
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(
+        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(
             p => p.MeetingRoomId == meetingRoom.Id
                  && p.UserId == callerUserId
                  && p.DeletedAt == null);

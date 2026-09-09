@@ -47,7 +47,23 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             ScheduledStartTime = result.Value!.ScheduledAt?.ToString("O") ?? string.Empty,
             // WT-428: Meeting Service gates its lobby on this. The DTO's Settings already carry
             // the resolved value (ReadSettings defaults it TRUE when absent from the JSON).
-            RequiresApproval = result.Value!.Settings.RequiresApproval
+            RequiresApproval = result.Value!.Settings.RequiresApproval,
+            // WT-525: Meeting Service gates the bridge-token endpoint on this. Sent as the stored
+            // string rather than a normalized one — the consumer compares against the same
+            // TranslationRoomTypes constants this service writes.
+            TranslationRoomType = result.Value!.TranslationRoomType ?? string.Empty,
+            // WT-587: TranscriptService gates persistence on this. Always set, so that "absent"
+            // on the wire means only one thing — an older server — rather than being ambiguous
+            // with a room that genuinely wants no record. ReadSettings has already resolved the
+            // default, so a room whose blob predates the key arrives here as TRUE.
+            SaveTranscript = result.Value!.Settings.SaveTranscript,
+            // The host every host-gate here compares against. `HostId` above stays the booker;
+            // TranscriptService was comparing its finalize gate against that and refusing the new
+            // host after a transfer while still admitting the departed one.
+            EffectiveHostId = (result.Value!.EffectiveHostId ?? result.Value!.HostId).ToString(),
+            // WT-480: the room's visibility switch, so a consumer can apply the same rule the
+            // download endpoint applies instead of inventing a looser one.
+            ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty
         };
     }
 
@@ -81,6 +97,44 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// WT-564. MeetingService owns the kick and authorizes it; the TERMINAL status lives here,
+    /// because this is the service whose join path refuses on it. A kick that stopped at
+    /// MeetingService left the roster row CONNECTED — later DISCONNECTED — which the rejoin path
+    /// reads as proof of admission and waves straight back in.
+    /// </summary>
+    public override async Task<KickRoomParticipantResponse> KickRoomParticipant(
+        KickRoomParticipantRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var roomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        if (!Guid.TryParse(request.ParticipantUserId, out var participantUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        if (!Guid.TryParse(request.RequestedByUserId, out var requestedByUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        var result = await _directoryService.KickParticipantByUserAsync(
+            roomId, requestedByUserId, participantUserId, context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            // The same three-way split TransferRoomHost makes, for the same reason: the room is
+            // gone, the caller may not do this, or the request is impossible against the roster.
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                throw new RpcException(new Status(StatusCode.PermissionDenied, result.Error ?? "Not the current host."));
+
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Kick refused."));
+        }
+
+        return new KickRoomParticipantResponse { Kicked = result.Value };
     }
 
     /// <summary>

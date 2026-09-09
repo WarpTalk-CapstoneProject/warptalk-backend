@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -23,15 +24,23 @@ public class ProfileService : IProfileService
     private readonly IPasswordHasher _passwordHasher;
     private readonly AuthSettings _authSettings;
     private readonly ILogger<ProfileService> _logger;
+    /// <summary>
+    /// The object store. Named for the first thing that used it, not for what it can hold — it
+    /// is a key/stream blob store, and a second interface over the same bucket, the same S3
+    /// client and the same local fallback would be three files that differ only in a noun.
+    /// </summary>
+    private readonly IVoiceSampleStorage _storage;
 
     public ProfileService(
         IUnitOfWork unitOfWork,
         IPasswordHasher passwordHasher,
         IOptions<AuthSettings> authSettings,
-        ILogger<ProfileService> logger)
+        ILogger<ProfileService> logger,
+        IVoiceSampleStorage storage)
     {
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
+        _storage = storage;
         _authSettings = authSettings.Value;
         _logger = logger;
         _userRepository = _unitOfWork.UserRepository;
@@ -56,6 +65,94 @@ public class ProfileService : IProfileService
         {
             _logger.LogError(ex, "Error occurred while fetching profile. UserId: {UserId}", userId);
             return Result.Failure<UserDto>("An unexpected error occurred while fetching the profile.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<UserDto>> UpdateAvatarAsync(
+        Guid userId, Stream content, string? contentType, long length, CancellationToken ct = default)
+    {
+        var extension = ProfileAvatarContract.ExtensionFor(contentType);
+        if (extension is null)
+        {
+            return Result.Failure<UserDto>(
+                "An avatar must be a PNG, JPEG or WebP image.", ErrorCodes.ValidationError);
+        }
+        if (length <= 0)
+        {
+            return Result.Failure<UserDto>("The image is empty.", ErrorCodes.ValidationError);
+        }
+        if (length > ProfileAvatarContract.MaxSizeBytes)
+        {
+            return Result.Failure<UserDto>(
+                "An avatar must be under 2 MB.", ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var user = await _userRepository.GetByIdWithRolesAsync(userId, ct);
+            if (user is null || user.DeletedAt is not null)
+                return Result.Failure<UserDto>(AuthConstants.ErrorUserNotFound, ErrorCodes.UserNotFound);
+
+            var statusResult = UserStatusHelper.CheckUserStatus<UserDto>(user);
+            if (statusResult is not null)
+                return statusResult;
+
+            // Read once, into memory. The bytes are needed twice — to check what they actually
+            // are, and to store them — and a request stream cannot always be rewound. 2 MB is
+            // the cap enforced above, so this is bounded before it is buffered.
+            using var buffer = new MemoryStream();
+            await content.CopyToAsync(buffer, ct);
+            var bytes = buffer.ToArray();
+
+            if (!ProfileAvatarContract.LooksLikeImage(bytes))
+            {
+                // The Content-Type is supplied by whoever is uploading. Storing a file under a
+                // name the browser will fetch back, on the strength of a header the uploader
+                // chose, is how an image endpoint becomes a file-serving one.
+                return Result.Failure<UserDto>(
+                    "That file is not a PNG, JPEG or WebP image.", ErrorCodes.ValidationError);
+            }
+
+            var key = ProfileAvatarContract.StorageKey(userId, extension);
+            using (var upload = new MemoryStream(bytes, writable: false))
+            {
+                await _storage.SaveAsync(key, upload, ct);
+            }
+
+            user.AvatarUrl = ProfileAvatarContract.PublicPath(userId, extension);
+            user.UpdatedAt = DateTime.UtcNow;
+            _userRepository.Update(user);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success(UserMapper.ToDto(user, _authSettings.DefaultRole));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while updating the avatar. UserId: {UserId}", userId);
+            return Result.Failure<UserDto>(
+                "An unexpected error occurred while saving the avatar.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<ProfileAvatarContent>> GetAvatarAsync(
+        Guid userId, string extension, CancellationToken ct = default)
+    {
+        if (!ProfileAvatarContract.ContentTypeByExtension.TryGetValue(extension, out var contentType))
+        {
+            return Result.Failure<ProfileAvatarContent>("Unknown image type.", ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var stream = await _storage.ReadAsync(ProfileAvatarContract.StorageKey(userId, extension), ct);
+            return Result.Success(new ProfileAvatarContent(stream, contentType));
+        }
+        catch (Exception ex)
+        {
+            // A missing avatar is a 404, not a 500: the row can carry a path whose object was
+            // never written, and the caller is an <img> that should simply fall back to initials.
+            _logger.LogDebug(ex, "No stored avatar for {UserId}.", userId);
+            return Result.Failure<ProfileAvatarContent>("No avatar for this user.", ErrorCodes.NotFound);
         }
     }
 

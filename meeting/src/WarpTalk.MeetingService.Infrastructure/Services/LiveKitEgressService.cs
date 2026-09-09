@@ -27,6 +27,11 @@ public class LiveKitEgressService : ILiveKitEgressService
     private readonly string _apiSecret;
     private readonly string _host;
     private readonly object? _s3Output;
+    /// <summary>
+    /// Base URL of our own recording template, or null to use LiveKit's built-in layout.
+    /// Read once here, like the S3 output beside it.
+    /// </summary>
+    private readonly string? _templateBaseUrl;
     private readonly ILogger<LiveKitEgressService> _logger;
 
     public LiveKitEgressService(HttpClient httpClient, IConfiguration configuration, ILogger<LiveKitEgressService> logger)
@@ -38,6 +43,7 @@ public class LiveKitEgressService : ILiveKitEgressService
             ?? throw new InvalidOperationException("LiveKit:Url is required.");
         _host = ToHttpApiUrl(configuredUrl);
         _s3Output = BuildS3Output(configuration);
+        _templateBaseUrl = configuration["LiveKit:Egress:TemplateBaseUrl"]?.TrimEnd('/');
         _logger = logger;
     }
 
@@ -46,13 +52,40 @@ public class LiveKitEgressService : ILiveKitEgressService
         try
         {
             var filepath = $"recordings/{roomName}-{DateTime.UtcNow:yyyyMMddHHmmss}.mp4";
-            var payload = new
-            {
-                room_name = roomName,
-                layout = "grid",
-                audio_only = false,
-                file_outputs = new[] { new { filepath, s3 = _s3Output } }
-            };
+
+            // WHY A CUSTOM TEMPLATE, WHEN ONE IS CONFIGURED
+            //
+            // RoomComposite records the MIXED room, and tts_worker publishes one bot per
+            // (speaker, target language) INTO that room — so the default layout produces a file
+            // where the original speech and every translation play at once. No field on this
+            // request can filter that: RoomComposite has no include/exclude list
+            // (livekit/egress#923 is the open request for one). The supported way is a template
+            // page of ours, which the egress opens in Chrome and whose SUBSCRIPTIONS decide what
+            // is encoded — see warptalk-web /egress/composite.
+            //
+            // OFF UNLESS CONFIGURED, deliberately. A template that fails to load records a blank
+            // page for the length of the meeting, which is worse than the soup it replaces, and
+            // this path cannot be exercised without a real egress. Setting
+            // LiveKit:Egress:TemplateBaseUrl is the act that turns it on, and clearing it is the
+            // whole rollback.
+            object payload = string.IsNullOrWhiteSpace(_templateBaseUrl)
+                ? new
+                {
+                    room_name = roomName,
+                    layout = "grid",
+                    audio_only = false,
+                    file_outputs = new[] { new { filepath, s3 = _s3Output } }
+                }
+                : new
+                {
+                    room_name = roomName,
+                    layout = "grid",
+                    audio_only = false,
+                    // LiveKit appends ?url=&token=&layout= to this; the page reads them with the
+                    // egress SDK helpers.
+                    custom_base_url = _templateBaseUrl,
+                    file_outputs = new[] { new { filepath, s3 = _s3Output } }
+                };
 
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_host}/twirp/livekit.Egress/StartRoomCompositeEgress")
             {
@@ -147,6 +180,26 @@ public class LiveKitEgressService : ILiveKitEgressService
             using var response = await _httpClient.SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
+            // "I have no such egress" is an ANSWER, and LiveKit gives it as a 404 carrying
+            // {"code":"not_found"} — not as a 200 with an empty list, which is what the branch
+            // below was written for. Until this was here, an aged-out egress returned Failure,
+            // EgressReconciliationService read that as "LiveKit unreachable" and left the room
+            // alone, and its UnknownEgressGrace path — written for exactly this case — could
+            // never run.
+            //
+            // Production, 2026-08-20: five rooms had held an ActiveEgressId since long before,
+            // the meeting service logged 2,955 egress lines in 24 hours re-asking about them,
+            // and not one of them could ever converge. The interface has always documented the
+            // intended contract ("Not knowing an id is a normal answer, not a failure"); the
+            // implementation was guessing the wrong wire shape for it.
+            if (IsNotFound(response.StatusCode, body))
+            {
+                _logger.LogInformation(
+                    "LiveKit has no record of egress {EgressId}; treating it as aged out.",
+                    egressId);
+                return Result.Success<JsonElement?>(null);
+            }
+
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
@@ -200,6 +253,20 @@ public class LiveKitEgressService : ILiveKitEgressService
             return normalized;
 
         throw new InvalidOperationException("LiveKit:Url must use ws, wss, http, or https.");
+    }
+
+    /// <summary>
+    /// Whether LiveKit is saying it has never heard of this egress, rather than failing to answer.
+    ///
+    /// Both signals are checked because they carry the same meaning and either alone is fragile: a
+    /// gateway in front of LiveKit can turn a 404 into something else, and the Twirp body's own
+    /// <c>not_found</c> code is the authoritative statement. Conflating this with a transport
+    /// failure is what kept five production rooms recording forever.
+    /// </summary>
+    private static bool IsNotFound(HttpStatusCode status, string body)
+    {
+        if (status == HttpStatusCode.NotFound) return true;
+        return body.Contains("\"code\":\"not_found\"", StringComparison.OrdinalIgnoreCase);
     }
 
     private static object? BuildS3Output(IConfiguration configuration)

@@ -10,7 +10,7 @@ using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AssistantService.API.Controllers;
 
-public sealed record AssistantSkillDto(string Name, string Label, string Description);
+public record AssistantSkillDto(string Name, string Label, string Description);
 
 [ApiController]
 [Route("api/v1/assistant")]

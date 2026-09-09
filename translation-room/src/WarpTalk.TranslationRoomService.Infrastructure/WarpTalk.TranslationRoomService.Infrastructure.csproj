@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <PackageReference Include="AWSSDK.S3" Version="3.7.415.7" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
     <ProjectReference Include="..\WarpTalk.TranslationRoomService.Domain\WarpTalk.TranslationRoomService.Domain.csproj" />
     <ProjectReference Include="..\WarpTalk.TranslationRoomService.Application\WarpTalk.TranslationRoomService.Application.csproj" />
   </ItemGroup>

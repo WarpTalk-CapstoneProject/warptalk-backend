@@ -212,7 +212,7 @@ public class TranslationRoomsController : ControllerBase
     /// correctly refuses them); this endpoint is their path into the waiting room instead.
     /// </summary>
     [HttpPost("{id:guid}/join")]
-    public async Task<IActionResult> JoinTranslationRoomById(Guid id, [FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
+    public async Task<IActionResult> JoinTranslationRoomById(Guid id, [FromBody] JoinTranslationRoomByIdRequest request, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null)
@@ -373,6 +373,33 @@ public class TranslationRoomsController : ControllerBase
     }
 
     /// <summary>
+    /// Every document the caller's visible meetings produced, newest meeting first.
+    ///
+    /// A sibling of <c>history</c>, not a flag on it: that route returns meetings carrying their
+    /// outputs, this one returns the outputs themselves, and the two page and order differently
+    /// because they count different things. Minutes are included here and cannot be in
+    /// <c>history</c> — they are not artifacts and live in their own table.
+    /// </summary>
+    [HttpGet("documents")]
+    public async Task<IActionResult> GetMeetingDocuments([FromQuery] GetMeetingDocumentsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetMeetingDocumentsAsync(request, userId.Value, User.GetEmail(), ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    /// <summary>
     /// WT-333 — UC 25. The caller's own meetings in one workspace, past and upcoming together.
     ///
     /// Separate action rather than a <c>?scope=mine</c> flag on <c>history</c> because the two
@@ -436,6 +463,41 @@ public class TranslationRoomsController : ControllerBase
         }
 
         return Ok(result.Value!);
+    }
+
+    /// <summary>
+    /// WT-552: add somebody to a meeting that is already running.
+    ///
+    /// Separate from the settings update, which freezes at IN_PROGRESS on purpose — languages and
+    /// approval policy must not change under people already in the room. Inviting changes neither.
+    /// </summary>
+    [HttpPost("{id:guid}/invitations")]
+    public async Task<IActionResult> InviteParticipants(
+        Guid id,
+        [FromBody] InviteParticipantsRequest request,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var emails = request?.Emails ?? new List<string>();
+        if (emails.Count == 0)
+            return BadRequest(new ApiErrorResponse("At least one email is required.", ErrorCodes.ValidationError));
+
+        var result = await _translationRoomService.InviteParticipantsAsync(id, userId.Value, emails, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        // The count, so the caller can say "2 invited" rather than guessing — re-inviting somebody
+        // already on the list is a deliberate no-op and must not read as a failure.
+        return Ok(new { invited = result.Value });
     }
 
     /// <summary>

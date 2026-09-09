@@ -252,7 +252,7 @@ public class WorkspaceInvitationServiceTests
             "Member",
             Arg.Is<string>(token => token.Length == 64),
             Arg.Any<CancellationToken>());
-        await _authIdentity.DidNotReceive().GetUserByEmailAsync("invitee@warptalk.vn", Arg.Any<CancellationToken>());
+        await _authIdentity.Received(1).GetUserByEmailAsync("invitee@warptalk.vn", Arg.Any<CancellationToken>());
     }
 
     [Fact]

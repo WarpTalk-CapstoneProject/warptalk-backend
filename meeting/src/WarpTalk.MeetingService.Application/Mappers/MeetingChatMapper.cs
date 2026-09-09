@@ -26,7 +26,8 @@ public static class MeetingChatMapper
             FileUrl = entity.FileUrl,
             FileName = entity.FileName,
             FileSizeBytes = entity.FileSizeBytes,
-            ContentType = entity.ContentType
+            ContentType = entity.ContentType,
+            SourcesJson = entity.SourcesJson
         };
     }
 
@@ -35,7 +36,7 @@ public static class MeetingChatMapper
         Guid roomId,
         Guid workspaceId,
         Guid userId,
-        MeetingParticipant? participant)
+        RtcStreamParticipant? participant)
     {
         return new MeetingChatMessage
         {
@@ -67,7 +68,7 @@ public static class MeetingChatMapper
         Guid roomId,
         Guid workspaceId,
         Guid userId,
-        MeetingParticipant? participant,
+        RtcStreamParticipant? participant,
         string fileUrl,
         string fileName,
         long fileSizeBytes,

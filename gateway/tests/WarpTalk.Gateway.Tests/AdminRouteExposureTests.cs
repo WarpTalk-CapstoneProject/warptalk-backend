@@ -25,6 +25,12 @@ public sealed class AdminRouteExposureTests
         "/api/v1/admin/subscriptions/{**catch-all}",
         // The platform meeting directory, served by translation-room. Metadata only: no join, no
         // room control, and no transcript read anywhere on that controller.
+        //
+        // TWO entries, and the bare one is not redundant (WT-445). YARP matches a route's Path as
+        // a template: "/api/v1/admin/meetings/{**catch-all}" requires the separator, so
+        // GET /api/v1/admin/meetings — the list endpoint the admin screen actually calls — matched
+        // no route at all and never reached translation-room.
+        "/api/v1/admin/meetings",
         "/api/v1/admin/meetings/{**catch-all}",
         // The System Health screen, served by workspace. Query-only against the metrics store:
         // nothing behind it can silence an alert, restart a container or write a sample.

@@ -10,6 +10,7 @@ using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Services;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -650,5 +651,89 @@ public class ParticipantManagementServiceTests
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
         _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── WT-563: leaving the LOBBY must not look like leaving the ROOM ────────
+    //
+    // LEFT and DISCONNECTED are what TranslationRoomParticipantMapper.UpdateFrom reads as proof
+    // the host already admitted somebody, so a reconnect does not queue them twice. Writing
+    // either for a participant who is still WAITING therefore promotes them: knock, refresh, and
+    // you are inside a requires-approval room nobody let you into. Reported from production.
+    //
+    // INVITED is where they actually are — known to the room, not yet admitted. It clears the
+    // host's queue exactly as LEFT did, and the next join re-evaluates approval.
+
+    private TranslationRoomParticipant ArrangeParticipant(Guid roomId, Guid userId, string status)
+    {
+        var participant = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            UserId = userId,
+            DisplayName = "Someone",
+            Role = nameof(TranslationRoomParticipantRole.PARTICIPANT),
+            Status = status,
+            ListenLanguage = "vi",
+            SpeakLanguage = "en",
+        };
+
+        _participantRepositoryMock
+            .Setup(repo => repo.GetByRoomAndUserAsync(roomId, userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(participant);
+
+        return participant;
+    }
+
+    [Fact]
+    public async Task LeavingTheLobbyReturnsToInvitedRatherThanLeft()
+    {
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var participant = ArrangeParticipant(roomId, userId, TranslationRoomParticipantStatuses.Waiting);
+
+        await _sut.LeaveRoomAsync(roomId, userId);
+
+        participant.Status.Should().Be(TranslationRoomParticipantStatuses.Invited);
+        // LeftAt records a departure from the room. They were never in it.
+        participant.LeftAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task LeavingTheMeetingStillRecordsADeparture()
+    {
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var participant = ArrangeParticipant(roomId, userId, TranslationRoomParticipantStatuses.Connected);
+
+        await _sut.LeaveRoomAsync(roomId, userId);
+
+        participant.Status.Should().Be(TranslationRoomParticipantStatuses.Left);
+        participant.LeftAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ADroppedLobbyConnectionReturnsToInvitedRatherThanLeft()
+    {
+        // The reported path: the tab closes while waiting, and the offline consumer lands here.
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var participant = ArrangeParticipant(roomId, userId, TranslationRoomParticipantStatuses.Waiting);
+
+        await _sut.MarkParticipantDisconnectedAsync(roomId, userId);
+
+        participant.Status.Should().Be(TranslationRoomParticipantStatuses.Invited);
+        participant.LeftAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ADroppedConnectionFromInsideTheRoomIsStillADisconnect()
+    {
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var participant = ArrangeParticipant(roomId, userId, TranslationRoomParticipantStatuses.Connected);
+
+        await _sut.MarkParticipantDisconnectedAsync(roomId, userId);
+
+        participant.Status.Should().Be(TranslationRoomParticipantStatuses.Disconnected);
     }
 }

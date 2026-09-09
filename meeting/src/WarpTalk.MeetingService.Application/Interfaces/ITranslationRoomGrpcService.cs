@@ -21,5 +21,15 @@ public interface ITranslationRoomGrpcService
     /// blind write — a caller who is no longer the host is refused there, which is what stops the
     /// outgoing host taking the room back on their own.
     /// </remarks>
+    /// <summary>
+    /// WT-564: carry the kick through to the room service, where the TERMINAL status lives.
+    /// Without it a kicked participant is only disconnected, and the rejoin path there reads a
+    /// disconnected roster row as proof they were already admitted.
+    /// </summary>
+    Task<Result<bool>> KickRoomParticipantAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId);
+
     Task<Result<Guid>> TransferRoomHostAsync(Guid translationRoomId, Guid requestedByUserId, Guid newHostUserId);
 }

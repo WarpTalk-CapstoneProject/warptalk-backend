@@ -1,0 +1,11 @@
+# Runtime-only image for AssistantService, built from a host-side `dotnet publish` output.
+# Mirrors the `final` stage of assistant/Dockerfile exactly; only the build stage is skipped
+# because the in-container NuGet restore truncates large packages on this machine (T055).
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:207cc51496778557731c81ff670333d8ade4a4fec22768fd1be8e78474a84ecf AS final
+WORKDIR /app
+EXPOSE 5108
+RUN mkdir -p /var/lib/warptalk/keys \
+    && chown -R $APP_UID:$APP_UID /var/lib/warptalk
+COPY --chown=$APP_UID:$APP_UID assistant-publish/ .
+USER $APP_UID
+ENTRYPOINT ["dotnet", "WarpTalk.AssistantService.API.dll"]

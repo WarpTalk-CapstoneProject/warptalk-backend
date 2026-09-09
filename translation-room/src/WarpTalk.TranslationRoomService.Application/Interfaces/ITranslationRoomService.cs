@@ -143,7 +143,19 @@ public interface ITranslationRoomService
     /// room's workspace, then identical to the by-code join (a requires-approval room lands the
     /// caller in the waiting room). Non-members get NotFound, indistinguishable from a missing room.
     /// </summary>
-    Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(Guid translationRoomId, JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+    Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(Guid translationRoomId, JoinTranslationRoomByIdRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-552: invite somebody to a meeting that is already running. Room settings are frozen once
+    /// a room leaves SCHEDULED/WAITING, and that freeze is deliberate — inviting is not a settings
+    /// change, so it gets its own door rather than a hole in that guard.
+    /// </summary>
+    Task<Result<int>> InviteParticipantsAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        IReadOnlyList<string> emails,
+        CancellationToken ct = default);
+
     /// <summary>
     /// WT-341: takes a room live. The caller is no longer required to be the host.
     ///
@@ -203,6 +215,16 @@ public interface ITranslationRoomService
     /// response shape as the history read; the implementation documents the three ways it differs.
     /// </summary>
     Task<Result<TranslationRoomHistoryResponse>> GetMyMeetingsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every document the caller's visible meetings produced — transcripts, AI summaries,
+    /// recordings and minutes — as one ordered, paged list.
+    ///
+    /// The document-shaped read of the same data <see cref="GetTranslationRoomHistoryAsync"/>
+    /// returns meeting-shaped. Separate because minutes are not artifacts and live in their own
+    /// table: only the server can order and count across both.
+    /// </summary>
+    Task<Result<MeetingDocumentsResponse>> GetMeetingDocumentsAsync(GetMeetingDocumentsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
     Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackStateDto>> GetFeedbackStateAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default);

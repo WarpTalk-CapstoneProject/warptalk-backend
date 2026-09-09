@@ -63,6 +63,22 @@ public interface ITranslationRoomDirectoryService
     /// Returns the host it replaced, so the caller can announce both sides without a second read.
     /// Idempotent: transferring to the user who already holds the room succeeds and changes nothing.
     /// </summary>
+    /// <summary>
+    /// WT-564: write the TERMINAL kicked status onto this service's roster.
+    ///
+    /// MeetingService owns and authorizes the kick, but KICKED lives here — it is what
+    /// JoinTranslationRoomAsync refuses on (BR-010). Host authority is re-checked against THIS
+    /// service's tables rather than trusted from the caller, the same way TransferHostAsync does.
+    ///
+    /// Returns false when the person had no roster row, which is not a failure: there was nothing
+    /// to terminate and the kick still stands.
+    /// </summary>
+    Task<Result<bool>> KickParticipantByUserAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId,
+        CancellationToken ct = default);
+
     Task<Result<Guid>> TransferHostAsync(
         Guid translationRoomId,
         Guid requestedByUserId,

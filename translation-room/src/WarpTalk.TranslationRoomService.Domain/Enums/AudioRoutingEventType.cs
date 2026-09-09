@@ -49,6 +49,25 @@ public enum AudioRoutingEventType
     voice_clone_unavailable,
     voice_clone_recovered,
 
+    /// <summary>
+    /// tts_worker finished cloning a speaker's voice and cached it. INFORMATIONAL — it announces
+    /// that a clone now exists and moves no route between states.
+    ///
+    /// Deliberately NOT folded into <see cref="voice_clone_recovered"/>, which is the recovery half
+    /// of <see cref="voice_clone_unavailable"/> and pulls a route out of STANDARD_VOICE back to
+    /// BROADCASTING. This event's payload carries a speakerId — not a participantId or a userId —
+    /// so AudioRouteEventProcessor cannot narrow it to one participant and falls through to every
+    /// route in the room. Treating it as a recovery would let one speaker's clone finishing drag
+    /// every other speaker's route out of its fallback.
+    ///
+    /// It was absent for the same reason stt_unavailable was. WT-429 added the two names it found
+    /// in the dead-letter queue; tts_worker began publishing this one the day after that fix
+    /// landed, so it inherited the identical "Unknown event type." failure and was dead-lettered
+    /// 19 times between 16 and 20 Aug 2026. A hand-listed contract test cannot catch a name that
+    /// did not exist when the list was written.
+    /// </summary>
+    voice_clone_ready,
+
     // Billing integration events
     token_exhausted,
     token_recovered,

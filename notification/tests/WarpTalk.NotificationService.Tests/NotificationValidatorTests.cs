@@ -122,6 +122,45 @@ public class NotificationValidatorTests
         Assert.True(result.IsSuccess);
     }
 
+    // Its own test rather than another InlineData above: this type carries four fields, and the
+    // lifecycle payload carries two. Registered here in the same commit as its producer — the
+    // fifth type to be added, and the first not to spend a while being silently discarded.
+    [Fact]
+    public void Validate_ActionItemAssignedPayload_IsAccepted()
+    {
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            room_id = "019ff9e1-e3e2-7024-99b7-6e37c6a18392",
+            room_title = "Sprint review",
+            action_item_id = "019ff9e1-e3e2-7024-99b7-6e37c6a18393",
+            task = "Viết release note"
+        });
+
+        var result = NotificationValidator.Validate(
+            NotificationConstants.TypeActionItemAssigned,
+            "Title", "Content", "http://localhost/room", payload);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void Validate_ActionItemAssignedWithoutItsTask_IsRejected()
+    {
+        // A "you were given a task" notification with no task on it has nothing to show.
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            room_id = "019ff9e1-e3e2-7024-99b7-6e37c6a18392",
+            room_title = "Sprint review",
+            action_item_id = "019ff9e1-e3e2-7024-99b7-6e37c6a18393"
+        });
+
+        var result = NotificationValidator.Validate(
+            NotificationConstants.TypeActionItemAssigned,
+            "Title", "Content", "http://localhost/room", payload);
+
+        Assert.False(result.IsSuccess);
+    }
+
     [Theory]
     [InlineData(NotificationConstants.TypeMeetingStarted)]
     [InlineData(NotificationConstants.TypeMeetingSummaryReady)]

@@ -41,8 +41,34 @@ public class RedisVoicePreviewQueue : IVoicePreviewQueue
         _logger = logger;
     }
 
+    /// <summary>
+    /// The primary subtag, lower-cased: "vi-VN" -> "vi", "en_US" -> "en", "vi" -> "vi".
+    ///
+    /// WHY THIS EXISTS AND IS NOT COSMETIC
+    ///     The other end of this key is Python, and `_handle_preview_request` writes its answer
+    ///     under `base_language(language)` — it has always done so. Anything sent here with a
+    ///     region therefore renders correctly, is cached correctly, and is then waited for under
+    ///     a key nobody will ever write: "voice:preview:{id}:vi-VN" against an answer sitting at
+    ///     "voice:preview:{id}:vi".
+    ///
+    ///     That is WT-632. The library-voice rows send a bare code and worked; the "Your voices"
+    ///     rows send the profile's stored language, which is a locale tag ("vi-VN"), and timed
+    ///     out on every press forever — while paying for a fresh Cartesia render each time,
+    ///     because the cache read could not hit either. The unit tests all passed a bare "vi"
+    ///     against a mocked queue, so nothing above this line could see it.
+    ///
+    ///     Normalized HERE rather than in the service because this class is the half of the
+    ///     contract that names the key. Callers should not have to know its shape.
+    /// </summary>
+    private static string BaseLanguage(string language)
+    {
+        var trimmed = language?.Trim() ?? string.Empty;
+        var separator = trimmed.IndexOfAny(new[] { '-', '_' });
+        return (separator < 0 ? trimmed : trimmed[..separator]).ToLowerInvariant();
+    }
+
     private static string KeyFor(string voiceId, string language) =>
-        $"{ResultKeyPrefix}{voiceId}:{language}";
+        $"{ResultKeyPrefix}{voiceId}:{BaseLanguage(language)}";
 
     public async Task<VoicePreview?> TryGetAsync(
         string voiceId, string language, CancellationToken ct = default)
@@ -90,7 +116,9 @@ public class RedisVoicePreviewQueue : IVoicePreviewQueue
                 new NameValueEntry[]
                 {
                     new("voice_id", voiceId),
-                    new("language", language),
+                    // Sent in the same shape the answer is keyed by, so the request and the key
+                    // it will be waited for under cannot disagree.
+                    new("language", BaseLanguage(language)),
                 },
                 maxLength: RequestStreamMaxLength,
                 useApproximateMaxLength: true);

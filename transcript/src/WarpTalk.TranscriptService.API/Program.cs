@@ -56,12 +56,19 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptReadAccess,
     WarpTalk.TranscriptService.Application.Authorization.TranscriptReadAccess>();
 
+// WT-605: who may Pause/Resume Transcript — host-only, separate from the read predicate above
+// so widening read access can never silently widen who can stop recording.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptPauseAccess,
+    WarpTalk.TranscriptService.Application.Authorization.TranscriptPauseAccess>();
+
 // --- Application Services ---
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
 builder.Services.AddScoped<IGlossaryService, GlossaryService>();
 builder.Services.AddScoped<IGlobalGlossaryService, GlobalGlossaryService>();
 builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
+builder.Services.AddScoped<ITranscriptTranslationBackfillService, TranscriptTranslationBackfillService>();
+builder.Services.AddScoped<ITranscriptRecordingService, TranscriptRecordingService>();
 
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]

@@ -225,7 +225,19 @@ public static class BillingMessageConstants
 
         public static class Titles
         {
+            /// <summary>
+            /// WT-599: one title per ACTION, because every subscription event used to carry this
+            /// one.
+            ///
+            /// Start a plan, change it, cancel it — the bell showed "Subscription Updated" for all
+            /// three, so a workspace's billing history read as a column of identical rows and a
+            /// cancellation was indistinguishable from a renewal at a glance. The body always said
+            /// which one it was; nobody reads the body of a row that looks like the nine above it.
+            /// </summary>
             public const string SubscriptionUpdated = "Subscription Updated";
+
+            public const string SubscriptionStarted = "Subscription Started";
+            public const string SubscriptionCancelled = "Subscription Cancelled";
             public const string PlanUpdated = "System Plan Update";
             public const string RatesUpdated = "AI Service Rates Updated";
             public const string OverageStarted = "Workspace Overage Alert";
@@ -303,6 +315,13 @@ public static class BillingMessageConstants
         /// axis entirely. A subscription can be healthy AND cancelled, or suspended AND renewing.
         /// </summary>
         public const string BillingSubscriptionNotCancelled = "This subscription is not cancelled, so there is nothing to reactivate.";
+
+        /// <summary>
+        /// WT-599: the exact inverse of <see cref="BillingSubscriptionNotCancelled"/>. Cancelling
+        /// leaves the row live until the period ends, so a second cancel finds the same row and
+        /// used to go through — re-notifying the owner every time.
+        /// </summary>
+        public const string BillingSubscriptionAlreadyCancelled = "This subscription is already cancelled. It stays active until the current period ends.";
 
         /// <summary>
         /// The cancellation already took effect: the paid period is over, so there is no live

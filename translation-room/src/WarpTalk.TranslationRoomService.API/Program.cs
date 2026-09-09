@@ -30,6 +30,7 @@ using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.API.Workers;
 using WarpTalk.TranslationRoomService.Infrastructure.Redis;
 using WarpTalk.TranslationRoomService.Infrastructure.Storage;
+using WarpTalk.TranslationRoomService.Infrastructure.Documents;
 using StackExchange.Redis;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -86,6 +87,9 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 // WT-327: recurring bookings. Repository-per-entity, like every other repository above — there
 // is no generic on IUnitOfWork and no Repository<T>() factory.
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
+builder.Services.AddScoped<IMeetingMinutesRepository, MeetingMinutesRepository>();
+builder.Services.AddScoped<IMeetingActionItemRepository, MeetingActionItemRepository>();
+builder.Services.AddScoped<IMeetingMinutesShareRepository, MeetingMinutesShareRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -96,7 +100,25 @@ builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
 builder.Services.AddScoped<ITranslationRoomDirectoryService, TranslationRoomDirectoryService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
+builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
+builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
+builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MinutesDocumentWriter>();
+
+// DOCX -> PDF. Optional by design: a deployment with no GOTENBERG_URL still serves Word files,
+// and the PDF button says the format is unavailable instead of 500ing. The URL is read here
+// rather than injected as options because it decides whether the converter exists at all.
+builder.Services.AddHttpClient(nameof(GotenbergPdfConverter), client =>
+{
+    // Generous: LibreOffice cold-starts on the first document after the container comes up.
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
+builder.Services.AddSingleton<IDocumentPdfConverter>(provider => new GotenbergPdfConverter(
+    provider.GetRequiredService<IHttpClientFactory>(),
+    provider.GetRequiredService<ILogger<GotenbergPdfConverter>>(),
+    builder.Configuration["Gotenberg:Url"] ?? Environment.GetEnvironmentVariable("GOTENBERG_URL")));
+builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
+builder.Services.AddScoped<IMeetingActionItemService, MeetingActionItemService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();
 builder.Services.AddScoped<IRecordingCompletedStreamMessageHandler, RecordingCompletedStreamMessageHandler>();
 builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();

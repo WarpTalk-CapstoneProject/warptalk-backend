@@ -29,6 +29,15 @@ public class MeetingChatMessageDto
     public string? FileName { get; set; }
     public long? FileSizeBytes { get; set; }
     public string? ContentType { get; set; }
+
+    /// <summary>
+    /// Sources this answer cited, as the stored JSON array: [{marker, kind, title, ref?}].
+    ///
+    /// Relayed as a string rather than re-modelled here. The shape is owned by
+    /// ai_assistant_worker/citations.py and rendered by the client; a third copy of it in this
+    /// service would be one more place to forget when a source kind is added.
+    /// </summary>
+    public string? SourcesJson { get; set; }
 }
 
 public class SendMeetingChatMessageRequest

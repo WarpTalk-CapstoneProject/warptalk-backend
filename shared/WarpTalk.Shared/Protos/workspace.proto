@@ -115,6 +115,10 @@ message GetWorkspaceSettingsResponse {
   // EMPTY MEANS UNRESTRICTED, exactly as it does on the workspace side. A caller must branch on
   // "no entries" before filtering, or every workspace that never set a policy is locked out.
   repeated string allowed_target_languages = 7;
+  // Workspace policy for invoking account-scoped MCP plugins inside WarpBot conversations.
+  // Plugin installations and OAuth tokens remain personal; this only gates usage in a
+  // workspace-scoped chat.
+  bool allow_any_plugins = 8;
 }
 
 message GetWorkspacePreflightRequest {

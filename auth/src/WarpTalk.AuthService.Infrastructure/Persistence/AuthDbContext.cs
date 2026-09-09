@@ -482,7 +482,28 @@ public partial class AuthDbContext : DbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
 
-            entity.HasOne(d => d.VoiceProfile).WithMany()
+            // WithMany(p => p.VoiceConsents), NOT the parameterless WithMany().
+            //
+            // VoiceProfile.VoiceConsents exists. Declaring this side with a bare WithMany() said
+            // the principal has no navigation back, so convention discovered that collection as a
+            // SECOND, separate relationship — and VoiceProfileId was already spoken for by this
+            // one, so EF invented a shadow foreign key for it: VoiceProfileId1.
+            //
+            // A shadow property belongs to the entity type, so it went into the SELECT list of
+            // every read of this table:
+            //
+            //     42703: column v.VoiceProfileId1 does not exist
+            //
+            // Which meant UserServiceGrpc.HasVoiceCloneConsent threw on every call, for every
+            // user. Both callers of it fail closed by design — ShouldSeedVoiceCloneAsync catches
+            // and seeds `false`, SetVoiceCloneConsentAsync reads the throw as "not granted" — so
+            // voice cloning could not be switched on by any path, and said so only at `warn`.
+            // Production, 18 Aug: users holding GRANTED consent AND voice_clone_enabled=true still
+            // had every route at false and every dub rendered in a stock voice.
+            //
+            // The VoiceSample relationship immediately below has always named its collection. This
+            // one was the odd one out.
+            entity.HasOne(d => d.VoiceProfile).WithMany(p => p.VoiceConsents)
                 .HasForeignKey(d => d.VoiceProfileId)
                 .HasConstraintName("voice_consents_voice_profile_id_fkey");
         });

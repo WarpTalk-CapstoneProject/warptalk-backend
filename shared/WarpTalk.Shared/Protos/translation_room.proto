@@ -15,6 +15,18 @@ service TranslationRoomService {
   // host-gated operation — so a transfer that does not reach here is a transfer that silently
   // undoes itself the next time the old host rejoins.
   rpc TransferRoomHost (TransferRoomHostRequest) returns (TransferRoomHostResponse);
+
+  // WT-564: the second write, and it exists for the same reason as TransferRoomHost above.
+  //
+  // KICKED is a TERMINAL status stored here, and it is what JoinTranslationRoomAsync checks
+  // (BR-010) before letting anybody back into a room. The kick ACTION is owned and authorized by
+  // MeetingService, whose own kick evicted the participant from LiveKit, deactivated its local
+  // participant row and revoked the meeting invitation — and never touched this service. The
+  // roster row was therefore left CONNECTED, becoming DISCONNECTED when the socket dropped, which
+  // the rejoin path reads as "already admitted" and waves straight back in.
+  //
+  // A kick that does not reach here is not a kick; it is a disconnection the person can undo.
+  rpc KickRoomParticipant (KickRoomParticipantRequest) returns (KickRoomParticipantResponse);
 }
 
 message GetTranslationRoomRequest {
@@ -42,6 +54,51 @@ message GetTranslationRoomResponse {
   // must treat a response from an older server (or a stale cached proto) as fail-open and
   // re-fetch rather than trust the default.
   bool requires_approval = 11;
+  // WT-525: which kind of meeting this is (TranslationRoomTypes). Meeting Service needs it to
+  // gate the bridge-token endpoint, which mints a LiveKit token for a participant identity that
+  // is NOT the caller — something no other endpoint does, and something that must be impossible
+  // in an ordinary room. Deriving "is this a bridge" from anything softer than the room's own
+  // stored type would make that gate guessable.
+  //
+  // proto3 defaults this to "" on a response from an older server, and readers MUST treat empty
+  // as "not a bridge" rather than falling back to a permissive default: the failure this guards
+  // is minting a second identity into someone else's meeting.
+  string translation_room_type = 12;
+  // WT-587: whether this meeting is to be written down at all. TranscriptService's persistence
+  // consumer gates every INSERT on it; false means captions and translation still run and nothing
+  // reaches transcript_segments.
+  //
+  // `optional` — i.e. real field presence — rather than a bare bool, and that is the whole point
+  // of the field's shape. proto3 defaults a bare bool to FALSE, and FALSE here means "discard this
+  // meeting's record". A reader talking to an older server, or holding a stale generated proto,
+  // would have read that default as a deliberate instruction to stop recording every room in the
+  // system, silently and irreversibly. With presence, absent means "this server predates the
+  // field", which the reader answers by persisting — the direction that loses nothing.
+  //
+  // Compare requires_approval above, which has the same proto3 default problem in the harmless
+  // direction and documents a re-fetch instead. Data loss does not get to be a fail-open case.
+  optional bool save_transcript = 13;
+  // The host AFTER any transfer — TranslationRoom.EffectiveHostId, not the booker in `hostId`.
+  //
+  // `hostId` above is the raw HostId column and deliberately stays that way: it is what booked the
+  // room and several readers want exactly that. But every HOST-GATED decision in this service asks
+  // `IsHostedBy`, which is EffectiveHostId, so a consumer comparing against `hostId` disagrees with
+  // this service about who the host is the moment a room is handed over. TranscriptService was
+  // doing precisely that in FinalizeTranscriptAsync: after a transfer the new host was refused and
+  // the departed booker could still lock the record.
+  //
+  // Empty from an older server. A reader MUST fall back to `hostId` then rather than treating
+  // "no effective host" as "nobody is the host", which would refuse every host action.
+  string effective_host_id = 14;
+  // WT-480: who this meeting's outputs are shared with — one of ArtifactAccessLevels
+  // (HOST_ONLY, ALL_PARTICIPANTS). TranscriptService needs it because the transcript is one of
+  // the three things the host's Publish control claims to cover, and it was the one that never
+  // consulted the setting.
+  //
+  // Empty means an older server, and the reader must treat that as HOST_ONLY — the same direction
+  // ArtifactAccessHelper.ReadArtifactAccessLevel fails in for an unparseable blob. An
+  // authorization input is not a fail-open case, so absent must never widen access.
+  string artifact_access = 15;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host
@@ -61,6 +118,20 @@ message TransferRoomHostResponse {
   // The host this replaced, so the caller can name both sides in the realtime event without a
   // second read. Empty when the room had never been transferred and the booker was still running it.
   string previous_host_user_id = 1;
+}
+
+message KickRoomParticipantRequest {
+  string room_id = 1;
+  // The USER, not the participant row: MeetingService knows who it evicted, not which row on this
+  // service records them.
+  string participant_user_id = 2;
+  string requested_by_user_id = 3;
+}
+
+message KickRoomParticipantResponse {
+  // False when the person had no roster row to terminate — the kick still succeeded, and saying so
+  // lets the caller tell "nothing to do" apart from "refused".
+  bool kicked = 1;
 }
 
 message GetParticipantsByRoomIdRequest {

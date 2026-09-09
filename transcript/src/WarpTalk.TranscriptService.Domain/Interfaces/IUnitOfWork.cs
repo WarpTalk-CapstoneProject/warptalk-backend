@@ -18,6 +18,7 @@ public interface IUnitOfWork : IDisposable
     ITranslationContentRepository TranslationContents { get; }
     ISegmentTranslationLinkRepository SegmentTranslationLinks { get; }
     IAudioDubbingRepository AudioDubbings { get; }
+    ITranscriptPauseWindowRepository TranscriptPauseWindows { get; }
 
     /// <summary>
     /// Atomically advances a transcript for one new segment: increments last_sequence_order,

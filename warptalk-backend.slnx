@@ -5,6 +5,7 @@
     <Project Path="assistant/src/WarpTalk.AssistantService.Application/WarpTalk.AssistantService.Application.csproj" />
     <Project Path="assistant/src/WarpTalk.AssistantService.Domain/WarpTalk.AssistantService.Domain.csproj" />
     <Project Path="assistant/src/WarpTalk.AssistantService.Infrastructure/WarpTalk.AssistantService.Infrastructure.csproj" />
+    <Project Path="assistant/tests/WarpTalk.AssistantService.Tests/WarpTalk.AssistantService.Tests.csproj" />
   </Folder>
   <Folder Name="/auth/" />
   <Folder Name="/auth/src/">

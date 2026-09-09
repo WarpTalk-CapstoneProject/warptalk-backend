@@ -18,8 +18,16 @@ public static class TranscriptConsumerPollingPolicy
     public const int RecoveryBatchSize = 10;
     public const long MaxDeliveryAttempts = 5;
 
+    /// <remarks>
+    /// <c>translate:backfill_results</c> carries post-meeting translations of lines the live
+    /// pipeline never covered (see TranscriptTranslationBackfillService). It is a separate stream
+    /// from <c>translate:results</c> for one reason: tts_worker reads that one, so publishing a
+    /// backfill there would synthesise and bill speech for every line of a meeting that already
+    /// ended. The payload is identical, which is why it classifies as <see cref="TranscriptResultStreamKind.Translation"/>
+    /// and is persisted by the same code path.
+    /// </remarks>
     public static IReadOnlyList<string> InputStreams { get; } =
-        ["stt:results", "translate:results", "tts:results"];
+        ["stt:results", "translate:results", "translate:backfill_results", "tts:results"];
 
     public static TimeSpan DelayAfterPass(int messagesRead) =>
         messagesRead == 0 ? IdleDelay : TimeSpan.Zero;
@@ -29,6 +37,7 @@ public static class TranscriptConsumerPollingPolicy
         {
             "stt:results" => TranscriptResultStreamKind.Stt,
             "translate:results" => TranscriptResultStreamKind.Translation,
+            "translate:backfill_results" => TranscriptResultStreamKind.Translation,
             "tts:results" => TranscriptResultStreamKind.Tts,
             _ => TranscriptResultStreamKind.Unknown
         };

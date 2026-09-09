@@ -71,6 +71,14 @@ public partial class TranslationRoom
 
     public string TranslationRoomType { get; set; } = null!;
 
+    public string? ExternalProvider { get; set; }
+
+    public string? ExternalMeetingUrl { get; set; }
+
+    public string? ExternalCalendarEventId { get; set; }
+
+    public string? ExternalCalendarEventUrl { get; set; }
+
     public int MaxParticipants { get; set; }
 
     public string SourceLanguage { get; set; } = null!;

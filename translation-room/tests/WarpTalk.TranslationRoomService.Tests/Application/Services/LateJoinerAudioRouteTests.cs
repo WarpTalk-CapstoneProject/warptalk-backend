@@ -61,6 +61,7 @@ public class LateJoinerAudioRouteTests
             // No preference expressed: WT-401 seeding is pinned in VoiceCloneSeedingTests, and
             // leaving it silent here keeps every assertion below meaning what it meant before.
             NoVoicePreference(),
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
 
         _rooms.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))

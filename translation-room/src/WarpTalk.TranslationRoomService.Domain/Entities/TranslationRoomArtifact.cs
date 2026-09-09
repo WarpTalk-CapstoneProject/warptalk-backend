@@ -43,6 +43,16 @@ public partial class TranslationRoomArtifact
     public DateTime CreatedAt { get; set; }
 
     /// <summary>
+    /// When the artifact's CONTENT last changed. Moved by a summary rewrite, which replaces
+    /// `Content` in place — without it, "is this summary out of date?" could only ever answer yes,
+    /// because regenerating would not clear the comparison.
+    ///
+    /// NULL for artifacts written before the column existed. Read NULL as UNKNOWN and fall back to
+    /// <see cref="CreatedAt"/>; reading it as "never updated" would be a claim.
+    /// </summary>
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
     /// WT-473: when the recording BEGAN, in UTC. Null for artifacts that are not recordings, and
     /// for recordings made before this column existed.
     ///

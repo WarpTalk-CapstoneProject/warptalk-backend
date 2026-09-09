@@ -60,6 +60,19 @@ public static class TranslationRoomParticipantMapper
         // closed their live connection. Admission belongs to the participant's room
         // membership, not to each LiveKit connection, so a reconnect must not send them
         // through the waiting room again. INVITED still represents a first admission.
+        //
+        // WT-563: THAT SENTENCE IS ONLY TRUE BECAUSE NOTHING UNADMITTED CAN REACH THOSE STATES.
+        //
+        // It was not true, and the gap was an approval bypass. TranslationRoomParticipantService
+        // wrote LEFT for a WAITING row when the tab closed — clearing the lobby queue, which is
+        // reasonable on its own — and this branch then read that LEFT as proof the host had said
+        // yes. Knock, refresh, and you were in a requires-approval room nobody let you into.
+        //
+        // The fix is at the source rather than here: a participant who was never admitted now
+        // returns to INVITED, and the paths that mark a room's occupants DISCONNECTED no longer
+        // touch the lobby. So an unadmitted row can only ever be INVITED or WAITING, and the
+        // shortcut below is sound again — which is what lets somebody who genuinely left a
+        // meeting walk back into it without queueing a second time.
         if (participant.Status == TranslationRoomParticipantStatuses.Disconnected ||
             participant.Status == TranslationRoomParticipantStatuses.Left)
         {

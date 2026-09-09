@@ -20,7 +20,17 @@ public record CreateCheckoutSessionRequest(
     /// this server-side against billing_pricing_config, and <see cref="Amount"/> is overwritten
     /// with the result — a client that names its own price would be naming its own exchange rate.
     /// </summary>
-    int Credits = 0
+    int Credits = 0,
+    /// <summary>
+    /// WT-545: the email of the account that started this checkout, stamped by the API from the
+    /// caller's token — never sent by the client. Stripe locks its email field to it, so the
+    /// hosted page belongs to the buyer's account instead of collecting whatever address the
+    /// person holding a forwarded link types in.
+    ///
+    /// Empty is tolerated (an account with no email claim still gets to pay); Stripe simply
+    /// falls back to asking.
+    /// </summary>
+    string BuyerEmail = ""
 ) : IWorkspaceScopedRequest;
 public record StripePaymentEventRequest(
     string StripeSessionId,

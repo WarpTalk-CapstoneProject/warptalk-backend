@@ -77,6 +77,47 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     }
 
     /// <inheritdoc />
+    public async Task<Result<bool>> KickParticipantByUserAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId,
+        CancellationToken ct = default)
+    {
+        var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (room == null)
+            return Result.Failure<bool>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        // Re-checked here rather than trusted from MeetingService, for the same reason
+        // TransferHostAsync re-checks it: host authority is READ out of this service's tables on
+        // every join and every host-gated operation, so this service is the one that has to agree
+        // a kick was legitimate.
+        if (!room.IsHostedBy(requestedByUserId))
+            return Result.Failure<bool>(TranslationRoomConstants.ErrorOnlyHostCanKick, ErrorCodes.Forbidden);
+
+        if (room.IsHostedBy(participantUserId))
+            return Result.Failure<bool>(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
+
+        var participant = await _participantRepository.GetByRoomAndUserAsync(
+            translationRoomId, participantUserId, ct);
+
+        // Nothing to terminate. Not an error: MeetingService evicted somebody this service never
+        // recorded, and reporting a failure would make the host retry a kick that already worked.
+        if (participant == null)
+            return Result.Success(false);
+
+        // Idempotent — the host can press kick twice, and MeetingService retries.
+        if (participant.Status == TranslationRoomParticipantStatuses.Kicked)
+            return Result.Success(true);
+
+        participant.Status = TranslationRoomParticipantStatuses.Kicked;
+        participant.UpdatedAt = DateTime.UtcNow;
+        _participantRepository.Update(participant);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Result.Success(true);
+    }
+
+    /// <inheritdoc />
     public async Task<Result<Guid>> TransferHostAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
