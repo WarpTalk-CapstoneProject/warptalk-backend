@@ -141,6 +141,12 @@ public static class NotificationValidator
             }
         },
         {
+            NotificationConstants.TypeWorkspaceMemberRemoved, new PayloadSchema
+            {
+                RequiredFields = { { "workspace_id", JsonValueKind.String }, { "workspace_name", JsonValueKind.String } }
+            }
+        },
+        {
             // WT-521, back to the member who asked. Both outcomes carry the same shape, because
             // the member needs the same two facts either way: which workspace, and what happened.
             NotificationConstants.TypeWorkspaceLeaveApproved, new PayloadSchema

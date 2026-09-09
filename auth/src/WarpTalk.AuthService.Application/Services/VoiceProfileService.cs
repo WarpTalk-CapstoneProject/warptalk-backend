@@ -56,6 +56,15 @@ public class VoiceProfileService : IVoiceProfileService
     /// </summary>
     private const string LibraryVoiceProvider = "cartesia";
 
+    /// <summary>
+    /// Keep in sync with AuthDbContext: auth.voice_profiles.display_name is varchar(100).
+    ///
+    /// Catalogue names come from the TTS worker via Redis, not from a request, so there is no
+    /// validator standing between them and the column — a truncation here is the only guard.
+    /// </summary>
+    private const int DisplayNameMaxLength = 100;
+
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IVoiceSampleStorage _storage;
     private readonly IVoiceCatalogDirectory _voiceCatalog;
@@ -171,7 +180,7 @@ public class VoiceProfileService : IVoiceProfileService
             return false;
         }
 
-        var catalog = await _voiceCatalog.GetAsync(language.Trim(), ct);
+        var catalog = await _voiceCatalog.GetAsync(language, ct);
         return catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
     }
 
@@ -217,9 +226,13 @@ public class VoiceProfileService : IVoiceProfileService
             {
                 // Said plainly rather than waited out. Nobody asked for this render, so no answer
                 // is coming and holding the request open for the timeout would only look broken.
+                //
+                // ServiceUnavailable, not InvalidState: the queue could not be reached, which says
+                // nothing about the voice. A client that reads the code has to be able to tell
+                // "come back in a minute" apart from "this voice cannot be previewed".
                 return Result.Failure<byte[]>(
                     "Voice previews are unavailable right now.",
-                    ErrorCodes.InvalidState);
+                    ErrorCodes.ServiceUnavailable);
             }
 
             var rendered = await _previewQueue.WaitAsync(voiceId, language, ct);
@@ -228,9 +241,14 @@ public class VoiceProfileService : IVoiceProfileService
                 // A real outcome, not a failure of the render: it may still land, and the next
                 // press of the button is served from the cache instantly. Worded so that trying
                 // again reads as the sensible next step, because it is.
+                //
+                // This branch used to carry InvalidState, which contradicted its own message and
+                // sent WT-649's reporter looking for a broken voice. Nothing here reads
+                // VoiceProfile.Status at all — the only way to arrive is WaitAsync polling out the
+                // 12-second RenderTimeout, so the message was the honest half and the code was not.
                 return Result.Failure<byte[]>(
                     "The preview is taking longer than expected. Try again in a moment.",
-                    ErrorCodes.InvalidState);
+                    ErrorCodes.ServiceUnavailable);
             }
 
             return AsResult(rendered);
@@ -250,13 +268,151 @@ public class VoiceProfileService : IVoiceProfileService
     /// as an empty success — a play button that silently plays nothing is the state this whole
     /// feature exists to remove.
     /// </summary>
-    private static Result<byte[]> AsResult(VoicePreview preview) =>
-        preview.Audio is { Length: > 0 }
-            ? Result.Success(preview.Audio)
-            : Result.Failure<byte[]>(
-                preview.Error ?? "The preview could not be rendered.",
-                ErrorCodes.InvalidState);
+    private static Result<byte[]> AsResult(VoicePreview preview)
+    {
+        if (preview.Audio is { Length: > 0 })
+        {
+            return Result.Success(preview.Audio);
+        }
 
+        var (message, code) = PreviewFailure(preview.ErrorCode);
+        return Result.Failure<byte[]>(message, code);
+    }
+
+    /// <summary>
+    /// What to tell somebody whose preview did not render.
+    ///
+    /// The provider's own wording is deliberately NOT used. This used to return
+    /// <c>preview.Error</c> verbatim, which meant a Cartesia SDK exception went out over the wire
+    /// to a play button:
+    ///
+    ///     "Error code: 404 - {'error_code': 'voice_not_found', 'message': 'The requested voice
+    ///      was not found.', 'title': 'Voice not found', 'request_id': 'e9d42fe9-…'}"
+    ///
+    /// The worker truncated that to 200 characters before sending it, under a comment correctly
+    /// observing that a stack trace is not a message for a person — a shorter stack trace is
+    /// still a stack trace. It now sends a CODE instead, and the sentence is chosen here.
+    ///
+    /// An unrecognised or absent code falls back to the generic line rather than to the
+    /// provider's text, which is the whole point: a message nobody has written for this audience
+    /// must never reach it, including from a worker version this build has not seen.
+    /// </summary>
+    /// <remarks>
+    /// The CODE is chosen here too, not just the sentence. Answering every one of these with
+    /// InvalidState would reproduce WT-649's actual complaint one branch over: a provider we
+    /// cannot reach is not a voice in a bad state, and a client keying off the code would read
+    /// "something is wrong with this voice" when the honest answer is "come back shortly".
+    /// </remarks>
+    private static (string Message, string Code) PreviewFailure(string? errorCode) => errorCode switch
+    {
+        // The voice itself is the problem — a state, and InvalidState is the truthful code.
+        "VOICE_NOT_FOUND" =>
+            ("This voice is no longer available from the provider.", ErrorCodes.InvalidState),
+        "VOICE_NOT_RENDERABLE" =>
+            ("This voice cannot be previewed.", ErrorCodes.InvalidState),
+        "NO_AUDIO" =>
+            ("The provider returned no audio for this voice.", ErrorCodes.InvalidState),
+
+        // The provider is the problem. Nothing here says anything about the voice, so neither
+        // should the code.
+        "PROVIDER_BUSY" =>
+            ("Voice previews are busy right now. Try again in a moment.", ErrorCodes.ServiceUnavailable),
+        "PROVIDER_UNREACHABLE" or "PROVIDER_UNAVAILABLE" or "PROVIDER_REJECTED" =>
+            ("Voice previews are unavailable right now.", ErrorCodes.ServiceUnavailable),
+
+        // Unknown: say only what is known. It did not render, and we do not know whose fault.
+        _ => ("The preview could not be rendered.", ErrorCodes.InvalidState),
+    };
+
+    /// <summary>
+    /// The name to store for a library voice, or null when the catalogue has nothing worth showing.
+    ///
+    /// Null rather than the id, deliberately. RedisVoiceCatalogDirectory already falls back to
+    /// `entry.Name ?? entry.Id` when the worker publishes a voice without a name, so Name is
+    /// sometimes the UUID itself — persisting that would move WT-649's bug one layer down and make
+    /// it look like real data. A null display name is honest, and the client can say so.
+    /// </summary>
+    private static string? ToDisplayName(VoiceCatalogItemDto voice)
+    {
+        var name = voice.Name?.Trim();
+
+        if (string.IsNullOrEmpty(name) || string.Equals(name, voice.Id, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return name.Length <= DisplayNameMaxLength ? name : name[..DisplayNameMaxLength];
+    }
+
+    public async Task<Result<VoiceSampleContent>> GetSampleAsync(
+        Guid userId, Guid profileId, CancellationToken ct = default)
+    {
+        try
+        {
+            var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            var profile = profiles.FirstOrDefault(p => p.Id == profileId && p.DeletedAt == null);
+
+            // NotFound rather than Forbidden for a profile that is not theirs. Telling somebody
+            // "that exists but is not yours" is how a list of ids gets enumerated.
+            if (profile is null)
+            {
+                return Result.Failure<VoiceSampleContent>(
+                    "That voice profile could not be found.", ErrorCodes.NotFound);
+            }
+
+            var samples = await _unitOfWork.VoiceSampleRepository.FindAsync(
+                v => v.VoiceProfileId == profileId && v.DeletedAt == null, "", ct);
+
+            // The newest recording, and only one that still HAS its audio: contains_raw_audio goes
+            // false when a sample has been reduced to its embedding, and the row outlives the file.
+            var sample = samples
+                .Where(v => v.ContainsRawAudio && !string.IsNullOrWhiteSpace(v.FileUrl))
+                .OrderByDescending(v => v.CreatedAt)
+                .FirstOrDefault();
+
+            if (sample is null)
+            {
+                // Distinct from NotFound above: the profile is theirs, there is simply nothing to
+                // play — a library pick has no recording behind it, and neither does a clone whose
+                // audio has been discarded.
+                return Result.Failure<VoiceSampleContent>(
+                    "There is no recording stored for this voice.", ErrorCodes.InvalidState);
+            }
+
+            await using var stream = await _storage.ReadAsync(sample.FileUrl!, ct);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+
+            var extension = Path.GetExtension(sample.FileUrl) is { Length: > 0 } ext ? ext : ".wav";
+            return Result.Success(new VoiceSampleContent(
+                buffer.ToArray(),
+                ContentTypeFor(extension),
+                $"{profile.DisplayName ?? "voice-sample"}{extension}"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error reading the voice sample for profile {ProfileId}.", profileId);
+            return Result.Failure<VoiceSampleContent>(
+                "That recording could not be read.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
+        }
+    }
+
+    /// <summary>
+    /// The media type for a stored sample, from the extension it was saved under.
+    ///
+    /// CreateProfileAsync keeps the uploader's extension and validates the upload against
+    /// AllowedContentTypes, so this is reversing a decision already made rather than sniffing.
+    /// </summary>
+    private static string ContentTypeFor(string extension) => extension.ToLowerInvariant() switch
+    {
+        ".wav" => "audio/wav",
+        ".mp3" or ".mpeg" => "audio/mpeg",
+        ".m4a" or ".mp4" => "audio/mp4",
+        ".ogg" => "audio/ogg",
+        ".webm" => "audio/webm",
+        _ => "application/octet-stream",
+    };
     /// <summary>
     /// Whether this row is a PICK of a catalogue voice rather than a voice of the person's own.
     ///
@@ -292,6 +448,10 @@ public class VoiceProfileService : IVoiceProfileService
 
         try
         {
+            // The catalogue entry we validate against is also the only place a library voice has a
+            // human name, so keep it rather than asking whether it exists and dropping it. Written
+            // to DisplayName below, it is what stops the UI falling back to the Cartesia UUID.
+
             // Reject an id that is not actually on offer for this language. Without this the
             // stored preference would be round-tripped into SetVoicePreference and silently
             // produce the wrong voice — or none — deep inside the TTS worker.
@@ -356,7 +516,7 @@ public class VoiceProfileService : IVoiceProfileService
                 // a null name and an "upload" source until somebody changes their choice, and
                 // there is no cheaper moment to correct it than the one where we are already
                 // writing the row and already hold the catalogue entry.
-                existing.DisplayName = chosen!.Name;
+                existing.DisplayName = ToDisplayName(chosen!);
                 existing.Source = VoiceProfileSources.Library;
                 existing.Language = language;
                 existing.IsActive = true;
@@ -376,7 +536,7 @@ public class VoiceProfileService : IVoiceProfileService
                 // Presence" rather than a provider UUID when the catalogue cache has expired.
                 // It is a label for a pointer, not a name somebody chose — Source is what says
                 // which of those this row is.
-                DisplayName = chosen!.Name,
+                DisplayName = ToDisplayName(chosen!),
                 Language = language,
                 Provider = LibraryVoiceProvider,
                 Source = VoiceProfileSources.Library,

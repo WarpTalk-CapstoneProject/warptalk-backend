@@ -83,7 +83,7 @@ public static class MeetingMinutesDrafter
             OpenedAt = FirstJoin(attended),
             ClosedAt = room.EndedAt,
             ScheduledAt = room.ScheduledAt,
-            Agenda = null,
+            Agenda = AgendaFrom(room),
             Attendance = BuildAttendance(participants, attended),
             Sections = BuildSections(summaryJson, carriedOver),
             // The language the meeting was actually held in, so a bilingual document can say
@@ -186,6 +186,24 @@ public static class MeetingMinutesDrafter
             .Where(entry => !string.IsNullOrWhiteSpace(entry))
             .ToList();
     }
+
+    /// <summary>
+    /// Chương trình họp, taken from what the organiser wrote when they booked the room.
+    ///
+    /// There is no agenda field on a room: an agenda given at booking is folded into the
+    /// description, so that is the only place one can be. It is copied WITH ITS PROVENANCE ON THE
+    /// LINE — a booking description is what somebody planned to discuss, not a programme the
+    /// meeting formally adopted, and printing it bare under "CHƯƠNG TRÌNH HỌP" would upgrade a
+    /// note into a resolution. The secretary can rewrite it; that is what the field is for.
+    ///
+    /// A room booked with no description still yields null, and the document prints the blank a
+    /// paper form would have. Inventing an agenda out of the transcript would be guessing at what
+    /// the meeting was FOR from what it happened to cover.
+    /// </summary>
+    private static string? AgendaFrom(TranslationRoom room) =>
+        string.IsNullOrWhiteSpace(room.Description)
+            ? null
+            : $"Theo mô tả cuộc họp khi đặt lịch:\n{room.Description!.Trim()}";
 
     /// <summary>When the meeting was called to order, or null when nobody ever joined.</summary>
     private static DateTime? FirstJoin(IReadOnlyCollection<TranslationRoomParticipant> attended)

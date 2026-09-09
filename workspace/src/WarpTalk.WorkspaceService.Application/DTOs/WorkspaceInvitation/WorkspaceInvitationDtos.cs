@@ -1,11 +1,26 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
 
 public record InviteMemberRequest(
-    [Required][EmailAddress] string Email,
+    // StringLength as well as EmailAddress: workspace_invitations.email is varchar(320), and
+    // [EmailAddress] happily accepts an address far longer than that, so the only thing standing
+    // between a long one and the column was Postgres.
+    //
+    // The attributes stay on the CONSTRUCTOR PARAMETER, which is where they land by default on a
+    // positional record. Moving them to [property:] looks tidier and is wrong: ASP.NET throws
+    // outright — "validation metadata defined on property 'RoleName' that will be ignored ... must
+    // be associated with the constructor parameter" — so every invite returned a 500 instead of
+    // being validated. Found by calling the endpoint; nothing in the build or the unit tests said
+    // a word about it.
+    //
+    // The cost is that Validator.TryValidateObject cannot see these, since it reflects over
+    // properties. That is why InviteMemberRequestValidationTests reads the parameter metadata
+    // directly rather than running the validator.
+    [Required][EmailAddress][StringLength(WorkspaceConstants.InvitationEmailMaxLength)] string Email,
     [Required] string RoleName,
     string? MembershipType = null
 );

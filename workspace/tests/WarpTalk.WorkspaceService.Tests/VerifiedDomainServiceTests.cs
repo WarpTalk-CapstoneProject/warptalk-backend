@@ -104,6 +104,58 @@ public class VerifiedDomainServiceTests
             .Returns(new User { Id = _userId, Email = email });
     }
 
+    /// <summary>
+    /// Shape and size are checked before ownership, because until now neither was checked at all:
+    /// the service asked only whether the domain was a known public one and whether somebody else
+    /// had claimed it, so free text of any length reached the column that decides who counts as an
+    /// internal member.
+    /// </summary>
+    [Theory]
+    [InlineData("not a domain")]
+    [InlineData("enterprise")]
+    [InlineData("http://enterprise.com")]
+    [InlineData("owner@enterprise.com")]
+    [InlineData("enterprise..com")]
+    public async Task AddDomainAsync_ShouldFail_WhenTheDomainIsNotShapedLikeOne(string domain)
+    {
+        SetupWorkspace();
+        SetupMember(_ownerRoleId);
+        SetupCallerEmail("owner@enterprise.com");
+
+        var result = await _service.AddDomainAsync(_workspaceId, domain, _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainInvalidFormat, result.Error);
+    }
+
+    [Fact]
+    public async Task AddDomainAsync_ShouldFail_WhenTheDomainIsOverTheColumnLength()
+    {
+        SetupWorkspace();
+        SetupMember(_ownerRoleId);
+        SetupCallerEmail("owner@enterprise.com");
+
+        // Well formed on purpose, so length is the only thing wrong with it.
+        var domain = new string('a', WorkspaceConstants.VerifiedDomainMaxLength + 1 - ".com".Length) + ".com";
+
+        var result = await _service.AddDomainAsync(_workspaceId, domain, _userId);
+
+        Assert.Equal(WorkspaceConstants.VerifiedDomainMaxLength + 1, domain.Length);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainTooLong, result.Error);
+    }
+
+    [Theory]
+    [InlineData("enterprise.com")]
+    [InlineData("mail.enterprise.co.uk")]
+    [InlineData("my-company.io")]
+    public void IsValidDomainName_ShouldAcceptOrdinaryCorporateDomains(string domain)
+    {
+        // The guard must not have narrowed what a real workspace can claim.
+        Assert.True(WarpTalk.WorkspaceService.Domain.ValueObjects.EmailAddress.IsValidDomainName(domain));
+    }
+
     [Fact]
     public async Task AddDomainAsync_ShouldSucceed_WhenValidCorporateDomain_ByOwner()
     {

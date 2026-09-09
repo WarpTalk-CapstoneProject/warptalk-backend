@@ -38,6 +38,11 @@ public class MeetingMinutesService : IMeetingMinutesService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly IMeetingMinutesDocumentWriter _documentWriter;
+    /// <summary>
+    /// Null in a deployment with no office engine to convert with. PDF is a convenience on top of
+    /// a document that already downloads, so its absence must not stop the service starting.
+    /// </summary>
+    private readonly IDocumentPdfConverter? _pdfConverter;
     /// <summary>Nullable, matching TranslationRoomService: a deployment without it still runs.</summary>
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
     private readonly string _frontendBaseUrl;
@@ -49,11 +54,13 @@ public class MeetingMinutesService : IMeetingMinutesService
         IMeetingMinutesDocumentWriter documentWriter,
         ILogger<MeetingMinutesService> logger,
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
-        IOptions<AppSettings>? appSettings = null)
+        IOptions<AppSettings>? appSettings = null,
+        IDocumentPdfConverter? pdfConverter = null)
     {
         _unitOfWork = unitOfWork;
         _workspaceMemberDirectory = workspaceMemberDirectory;
         _documentWriter = documentWriter;
+        _pdfConverter = pdfConverter;
         _notificationClient = notificationClient;
         _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl?.TrimEnd('/') ?? "http://localhost:3000";
         _logger = logger;
@@ -585,8 +592,8 @@ public class MeetingMinutesService : IMeetingMinutesService
         return Result.Success(await ToDtoAsync(revision, ct));
     }
 
-    public async Task<Result<MinutesExportFile>> ExportDocxAsync(
-        Guid roomId, Guid userId, string? userEmail, string? template = null,
+    public async Task<Result<MinutesExportFile>> ExportAsync(
+        Guid roomId, Guid userId, string? userEmail, string? template, string format,
         CancellationToken ct = default)
     {
         // Deliberately the same gate as reading the minutes on screen, not the write gate.
@@ -599,7 +606,20 @@ public class MeetingMinutesService : IMeetingMinutesService
                 current.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, current.ErrorCode);
         }
 
-        var minutes = current.Value!;
+        return await RenderAsync(current.Value!, template, format, ct);
+    }
+
+    /// <summary>
+    /// The document as a file, in the layout and the format asked for.
+    ///
+    /// The .docx is the original and the PDF is a CONVERSION of it, never a second layout: two
+    /// renderers would agree on the day they were written and drift from then on, and a signed
+    /// record whose Word copy and PDF copy differ is worse than having no PDF at all. The PDF of
+    /// a template is therefore exactly the .docx of that template, printed.
+    /// </summary>
+    private async Task<Result<MinutesExportFile>> RenderAsync(
+        MeetingMinutesDto minutes, string? template, string format, CancellationToken ct)
+    {
         var content = TryReadContent(minutes.Content);
         if (content == null)
         {
@@ -612,17 +632,392 @@ public class MeetingMinutesService : IMeetingMinutesService
         // Normalised here rather than at the controller so every caller — the HTTP endpoint
         // today, a scheduled circulation tomorrow — gets the same default and the same
         // tolerance of an unrecognised value.
-        var chosen = MinutesTemplates.Normalise(template);
-        var bytes = _documentWriter.WriteDocx(minutes, content, chosen);
+        var docx = _documentWriter.WriteDocx(minutes, content, MinutesTemplates.Normalise(template));
 
-        // The minutes number is the file name, because that is what the recipient will file it
-        // under. Version only appears once there is more than one, so an ordinary document does
-        // not arrive looking like a revision.
-        var suffix = minutes.Version > 1 ? $"-v{minutes.Version}" : string.Empty;
+        // Number first, then the meeting's own name: the number is the record's identity, but a
+        // folder of BB-2026-0001, -0002, -0003 tells the person looking for last week's sprint
+        // review nothing, and they open all three.
+        if (!string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Success(new MinutesExportFile(
+                docx,
+                MinutesFileName.For(minutes.MinutesNo, content.MeetingTitle, minutes.Version, "docx"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        }
+
+        var pdf = _pdfConverter is { IsConfigured: true }
+            ? await _pdfConverter.ToPdfAsync(docx, "minutes.docx", ct)
+            : null;
+
+        if (pdf == null)
+        {
+            // Said plainly rather than dressed as a server error: the Word file still downloads,
+            // and that is what the caller should be told to do.
+            return Result.Failure<MinutesExportFile>(
+                MeetingMinutesConstants.ErrorSharePdfUnavailable, ErrorCodes.ServiceUnavailable);
+        }
+
         return Result.Success(new MinutesExportFile(
-            bytes,
-            $"{minutes.MinutesNo}{suffix}.docx",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+            pdf,
+            MinutesFileName.For(minutes.MinutesNo, content.MeetingTitle, minutes.Version, "pdf"),
+            "application/pdf"));
+    }
+
+    // ------------------------------------------------------------------ sharing
+
+    public async Task<Result<MinutesShareDto>> GetOrCreateShareAsync(
+        Guid roomId, Guid userId, CancellationToken ct = default)
+    {
+        var gate = await AuthorizeManageAsync(roomId, userId, ct);
+        if (!gate.IsSuccess)
+        {
+            return Result.Failure<MinutesShareDto>(
+                gate.Error ?? MeetingMinutesConstants.ErrorRoomNotFound, gate.ErrorCode);
+        }
+
+        var link = await _unitOfWork.MeetingMinutesShareRepository.GetByRoomIdAsync(roomId, ct);
+        if (link == null)
+        {
+            // INVITED_ONLY on creation. Opening the share dialog must never be the act that
+            // publishes a document.
+            var now = DateTime.UtcNow;
+            link = new MeetingMinutesShareLink
+            {
+                // v7 like every other id this service mints: time-ordered, so rows written
+                // together stay together in the index.
+                Id = Guid.CreateVersion7(),
+                TranslationRoomId = roomId,
+                WorkspaceId = gate.Value!.WorkspaceId,
+                Token = MinutesShareAccess.NewToken(),
+                AccessMode = MeetingMinutesConstants.ShareModeInvitedOnly,
+                AllowDownload = true,
+                CreatedAt = now,
+                CreatedBy = userId,
+                UpdatedAt = now,
+                UpdatedBy = userId
+            };
+
+            await _unitOfWork.MeetingMinutesShareRepository.AddLinkAsync(link, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+
+        return Result.Success(await ToShareDtoAsync(link, ct));
+    }
+
+    public async Task<Result<MinutesShareDto>> UpdateShareAsync(
+        Guid roomId, Guid userId, UpdateMinutesShareRequest request, CancellationToken ct = default)
+    {
+        if (request.AccessMode != null && !MinutesShareAccess.IsKnownMode(request.AccessMode))
+        {
+            // Guarded here rather than trusted: an unrecognised mode in the column reads back as
+            // "not public", and a link nobody can open looks like data loss.
+            return Result.Failure<MinutesShareDto>(
+                MeetingMinutesConstants.ErrorShareModeUnknown, ErrorCodes.ValidationError);
+        }
+
+        var existing = await GetOrCreateShareAsync(roomId, userId, ct);
+        if (!existing.IsSuccess) return existing;
+
+        var link = await _unitOfWork.MeetingMinutesShareRepository.GetByRoomIdAsync(roomId, ct);
+        if (link == null)
+        {
+            return Result.Failure<MinutesShareDto>(
+                MeetingMinutesConstants.ErrorShareLinkNotFound, ErrorCodes.NotFound);
+        }
+
+        var widened = request.AccessMode == MeetingMinutesConstants.ShareModeAnyoneWithLink
+            && link.AccessMode != MeetingMinutesConstants.ShareModeAnyoneWithLink;
+
+        if (request.AccessMode != null) link.AccessMode = request.AccessMode;
+        if (request.AllowDownload.HasValue) link.AllowDownload = request.AllowDownload.Value;
+        if (request.ExpiresAt.HasValue) link.ExpiresAt = request.ExpiresAt;
+
+        // Only CHOOSING A MODE brings a revoked link back, and it comes back on the token the
+        // revoke already rotated to, so the URL somebody was sent stays dead. Toggling downloads
+        // or an expiry must not resurrect sharing as a side effect: a host who has just killed a
+        // link and then adjusts a setting has not asked to publish the document again.
+        if (request.AccessMode != null)
+        {
+            link.RevokedAt = null;
+            link.RevokedBy = null;
+        }
+
+        link.UpdatedAt = DateTime.UtcNow;
+        link.UpdatedBy = userId;
+
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        if (widened)
+        {
+            // Logged at warning because it is the one action here that cannot be undone for
+            // anybody who already has the URL. The product warns the person; this is the record.
+            _logger.LogWarning(
+                "Minutes for room {RoomId} were opened to anyone with the link by {UserId}",
+                roomId, userId);
+        }
+
+        return Result.Success(await ToShareDtoAsync(link, ct));
+    }
+
+    public async Task<Result<MinutesShareDto>> RevokeShareAsync(
+        Guid roomId, Guid userId, CancellationToken ct = default)
+    {
+        var gate = await AuthorizeManageAsync(roomId, userId, ct);
+        if (!gate.IsSuccess)
+        {
+            return Result.Failure<MinutesShareDto>(
+                gate.Error ?? MeetingMinutesConstants.ErrorRoomNotFound, gate.ErrorCode);
+        }
+
+        var link = await _unitOfWork.MeetingMinutesShareRepository.GetByRoomIdAsync(roomId, ct);
+        if (link == null)
+        {
+            return Result.Failure<MinutesShareDto>(
+                MeetingMinutesConstants.ErrorShareLinkNotFound, ErrorCodes.NotFound);
+        }
+
+        // The token is replaced, not flagged. Revoke means the URL in somebody's inbox stops
+        // working, and a row that still holds the old string is one bug away from honouring it.
+        link.Token = MinutesShareAccess.NewToken();
+        link.RevokedAt = DateTime.UtcNow;
+        link.RevokedBy = userId;
+        link.UpdatedAt = DateTime.UtcNow;
+        link.UpdatedBy = userId;
+
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        _logger.LogInformation("Share link for minutes of room {RoomId} revoked by {UserId}", roomId, userId);
+
+        return Result.Success(await ToShareDtoAsync(link, ct));
+    }
+
+    public async Task<Result<MinutesShareDto>> AddSharePersonAsync(
+        Guid roomId, Guid userId, string email, CancellationToken ct = default)
+    {
+        if (!LooksLikeEmail(email))
+        {
+            return Result.Failure<MinutesShareDto>(
+                MeetingMinutesConstants.ErrorShareEmailInvalid, ErrorCodes.ValidationError);
+        }
+
+        // Adding somebody creates the link if it does not exist yet: "share with Nhi" is one act
+        // to the person doing it, and asking them to press two buttons is asking them to forget
+        // the second.
+        var share = await GetOrCreateShareAsync(roomId, userId, ct);
+        if (!share.IsSuccess) return share;
+
+        var repository = _unitOfWork.MeetingMinutesShareRepository;
+        if (!await repository.HasGrantAsync(roomId, email, ct))
+        {
+            await repository.AddGrantAsync(
+                new MeetingMinutesShareGrant
+                {
+                    Id = Guid.CreateVersion7(),
+                    TranslationRoomId = roomId,
+                    Email = email,
+                    GrantedBy = userId,
+                    CreatedAt = DateTime.UtcNow
+                },
+                ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+
+        var link = await repository.GetByRoomIdAsync(roomId, ct);
+        return link == null
+            ? Result.Failure<MinutesShareDto>(
+                MeetingMinutesConstants.ErrorShareLinkNotFound, ErrorCodes.NotFound)
+            : Result.Success(await ToShareDtoAsync(link, ct));
+    }
+
+    public async Task<Result<MinutesShareDto>> RemoveSharePersonAsync(
+        Guid roomId, Guid userId, string email, CancellationToken ct = default)
+    {
+        var gate = await AuthorizeManageAsync(roomId, userId, ct);
+        if (!gate.IsSuccess)
+        {
+            return Result.Failure<MinutesShareDto>(
+                gate.Error ?? MeetingMinutesConstants.ErrorRoomNotFound, gate.ErrorCode);
+        }
+
+        var repository = _unitOfWork.MeetingMinutesShareRepository;
+        await repository.RemoveGrantAsync(roomId, email, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        var link = await repository.GetByRoomIdAsync(roomId, ct);
+        return link == null
+            ? Result.Failure<MinutesShareDto>(
+                MeetingMinutesConstants.ErrorShareLinkNotFound, ErrorCodes.NotFound)
+            : Result.Success(await ToShareDtoAsync(link, ct));
+    }
+
+    public async Task<Result<SharedMinutesDto>> GetSharedAsync(
+        string token, Guid? viewerUserId, string? viewerEmail, CancellationToken ct = default)
+    {
+        var opened = await OpenLinkAsync(token, viewerUserId, viewerEmail, ct);
+        if (!opened.IsSuccess)
+        {
+            return Result.Failure<SharedMinutesDto>(opened.Error!, opened.ErrorCode);
+        }
+
+        var link = opened.Value!;
+        var minutes = await _unitOfWork.MeetingMinutesRepository
+            .GetCurrentByRoomIdAsync(link.TranslationRoomId, ct);
+
+        if (minutes == null)
+        {
+            return Result.Failure<SharedMinutesDto>(
+                MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
+        }
+
+        // The link does not outrank the document's own lifecycle: a draft nobody has signed is not
+        // published, and a share link must not be the way one gets published. InvalidState rather
+        // than Forbidden — the holder's link is fine, the document is not ready — so the page can
+        // say "not signed yet" instead of "you are not allowed".
+        if (!MinutesShareAccess.IsServable(minutes.Status))
+        {
+            return Result.Failure<SharedMinutesDto>(
+                MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.InvalidState);
+        }
+
+        return Result.Success(new SharedMinutesDto(
+            await ToDtoAsync(minutes, ct), link.AccessMode, link.AllowDownload));
+    }
+
+    public async Task<Result<MinutesExportFile>> ExportSharedAsync(
+        string token, Guid? viewerUserId, string? viewerEmail, string? template, string format,
+        CancellationToken ct = default)
+    {
+        var opened = await OpenLinkAsync(token, viewerUserId, viewerEmail, ct);
+        if (!opened.IsSuccess)
+        {
+            return Result.Failure<MinutesExportFile>(opened.Error!, opened.ErrorCode);
+        }
+
+        var link = opened.Value!;
+        if (!link.AllowDownload)
+        {
+            return Result.Failure<MinutesExportFile>(
+                MeetingMinutesConstants.ErrorShareDownloadDisabled, ErrorCodes.Forbidden);
+        }
+
+        var minutes = await _unitOfWork.MeetingMinutesRepository
+            .GetCurrentByRoomIdAsync(link.TranslationRoomId, ct);
+
+        if (minutes == null)
+        {
+            return Result.Failure<MinutesExportFile>(
+                MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
+        }
+
+        // Same rule as reading it on screen. A download that worked while the page refused would
+        // be the leak with an extra step.
+        if (!MinutesShareAccess.IsServable(minutes.Status))
+        {
+            return Result.Failure<MinutesExportFile>(
+                MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.InvalidState);
+        }
+
+        return await RenderAsync(await ToDtoAsync(minutes, ct), template, format, ct);
+    }
+
+    /// <summary>
+    /// Resolve a token to the link it names, or to the reason it does not open.
+    ///
+    /// The one place the sharing rule is applied, so a reader and a downloader can never disagree
+    /// about who is allowed in.
+    /// </summary>
+    private async Task<Result<MeetingMinutesShareLink>> OpenLinkAsync(
+        string token, Guid? viewerUserId, string? viewerEmail, CancellationToken ct)
+    {
+        var link = await _unitOfWork.MeetingMinutesShareRepository.GetByTokenAsync(token, ct);
+
+        // A deleted meeting takes its link with it. Deletion is soft here, so nothing about the
+        // row would have stopped a public URL from carrying on serving the minutes of a meeting
+        // the host had already removed — and "delete the meeting" has to mean that too, or the
+        // deletion is only true inside the app.
+        if (link != null && !await RoomIsLiveAsync(link.TranslationRoomId, ct))
+        {
+            link = null;
+        }
+
+        // Named on the share list, or already entitled to the minutes by the ordinary room rules:
+        // a restricted link widens who may read, it never narrows it for the people who were
+        // at the meeting.
+        var mayRead = false;
+        if (link != null && viewerUserId.HasValue)
+        {
+            mayRead = !string.IsNullOrWhiteSpace(viewerEmail)
+                && await _unitOfWork.MeetingMinutesShareRepository
+                    .HasGrantAsync(link.TranslationRoomId, viewerEmail!, ct);
+
+            if (!mayRead)
+            {
+                mayRead = await CanReadRoomAsync(link.TranslationRoomId, viewerUserId.Value, viewerEmail, ct);
+            }
+        }
+
+        return MinutesShareAccess.Decide(link, viewerUserId.HasValue, mayRead, DateTime.UtcNow) switch
+        {
+            ShareDecision.Granted => Result.Success(link!),
+            ShareDecision.SignInRequired => Result.Failure<MeetingMinutesShareLink>(
+                MeetingMinutesConstants.ErrorUnauthorizedRead, ErrorCodes.Unauthorized),
+            ShareDecision.Forbidden => Result.Failure<MeetingMinutesShareLink>(
+                MeetingMinutesConstants.ErrorUnauthorizedRead, ErrorCodes.Forbidden),
+            _ => Result.Failure<MeetingMinutesShareLink>(
+                MeetingMinutesConstants.ErrorShareLinkNotFound, ErrorCodes.NotFound)
+        };
+    }
+
+    /// <summary>Whether the meeting behind a link still exists — the same test every other read makes.</summary>
+    private async Task<bool> RoomIsLiveAsync(Guid roomId, CancellationToken ct) =>
+        await _unitOfWork.TranslationRoomRepository
+            .Query()
+            .AnyAsync(r => r.Id == roomId && r.DeletedAt == null && r.IsActive, ct);
+
+    private async Task<bool> CanReadRoomAsync(
+        Guid roomId, Guid userId, string? userEmail, CancellationToken ct)
+    {
+        return await _unitOfWork.TranslationRoomRepository
+            .Query()
+            .Where(r => r.Id == roomId && r.DeletedAt == null && r.IsActive)
+            .AnyAsync(RoomReadAccess.IsReadableBy(userId, userEmail), ct);
+    }
+
+    private async Task<MinutesShareDto> ToShareDtoAsync(
+        MeetingMinutesShareLink link, CancellationToken ct)
+    {
+        var people = await _unitOfWork.MeetingMinutesShareRepository
+            .GetGrantsAsync(link.TranslationRoomId, ct);
+
+        // A revoked link has no address. Returning the rotated token would put a dead URL on
+        // screen that looks exactly like a live one.
+        var live = link.RevokedAt == null;
+
+        return new MinutesShareDto(
+            live ? link.Token : string.Empty,
+            live ? $"{_frontendBaseUrl}/minutes/shared/{link.Token}" : string.Empty,
+            link.AccessMode,
+            link.AllowDownload,
+            link.ExpiresAt,
+            link.RevokedAt,
+            people.Select(grant => new MinutesSharePersonDto(grant.Email, grant.CreatedAt)).ToList());
+    }
+
+    /// <summary>
+    /// Enough of a check to catch a typo, and no more. Address validation beyond this rejects real
+    /// addresses, and the invitation is not a security boundary — the grant is matched on exact
+    /// text, so a mistyped address simply never matches anybody.
+    /// </summary>
+    private static bool LooksLikeEmail(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email) || email.Length > 320) return false;
+
+        var trimmed = email.Trim();
+        var at = trimmed.IndexOf('@');
+        return at > 0
+            && at < trimmed.Length - 1
+            && trimmed.IndexOf('@', at + 1) < 0
+            && !trimmed.Contains(' ');
     }
 
     // ------------------------------------------------------------------ internals

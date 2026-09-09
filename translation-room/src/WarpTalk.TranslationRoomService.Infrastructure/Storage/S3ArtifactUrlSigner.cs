@@ -10,13 +10,11 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
 {
     private readonly IAmazonS3? _s3;
     private readonly Protocol _protocol = Protocol.HTTPS;
-
     /// <summary>
-    /// The configured S3 endpoint, kept so an already-resolved <c>http(s)://</c> object URL can be
-    /// recognised as OURS and re-signed. Null whenever <see cref="_s3"/> is null (no credentials) or
-    /// the configured endpoint is not an absolute URI.
+    /// The bucket LiveKit Egress uploads into. Read here so an <c>https://</c> location can be
+    /// recognised as ours — see <see cref="TryResolveObject"/>.
     /// </summary>
-    private readonly Uri? _endpoint;
+    private readonly string? _bucket;
 
     public S3ArtifactUrlSigner(IConfiguration configuration, IHostEnvironment environment)
     {
@@ -24,6 +22,7 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
         var secretKey = configuration["LiveKit:Egress:S3:Secret"];
         var endpoint = configuration["LiveKit:Egress:S3:Endpoint"];
         var region = configuration["LiveKit:Egress:S3:Region"];
+        _bucket = configuration["LiveKit:Egress:S3:Bucket"]?.Trim();
 
         if (environment.IsProduction() &&
             (string.IsNullOrWhiteSpace(accessKey) ||
@@ -37,11 +36,10 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
         if (string.IsNullOrWhiteSpace(accessKey) || string.IsNullOrWhiteSpace(secretKey))
             return;
 
-        if (Uri.TryCreate(endpoint, UriKind.Absolute, out var endpointUri))
+        if (Uri.TryCreate(endpoint, UriKind.Absolute, out var endpointUri) &&
+            endpointUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
         {
-            _endpoint = endpointUri;
-            if (endpointUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
-                _protocol = Protocol.HTTP;
+            _protocol = Protocol.HTTP;
         }
 
         var config = new AmazonS3Config
@@ -53,81 +51,28 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
         _s3 = new AmazonS3Client(accessKey, secretKey, config);
     }
 
-    /// <summary>
-    /// Presigns the stored artifact URL for <paramref name="lifetime"/>.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// WT-655: this used to presign only <c>s3://bucket/key</c> and, for every other shape, hand the
-    /// stored URL straight back. LiveKit egress stores <c>fileResults[].location</c>, which is an
-    /// <c>https://…</c> object URL, so recordings took that fall-through path and the web got a bare
-    /// link to a private bucket: the bucket answered 403 and the <c>&lt;video&gt;</c> element failed
-    /// with nothing in the log. Returning an unsigned URL is never an acceptable fallback here — the
-    /// bucket is private, so an unsigned link cannot work, and because it LOOKS like a URL it makes a
-    /// configuration fault indistinguishable from success all the way out to the player. A URL this
-    /// class cannot sign is a fault, and it is thrown so the caller logs it.
-    /// </para>
-    /// <para>
-    /// Both addressing styles are accepted for our own endpoint because the client runs with
-    /// <c>ForcePathStyle = true</c> (so it writes <c>https://endpoint/bucket/key</c>) while some
-    /// S3-compatible gateways report the virtual-host form <c>https://bucket.endpoint/key</c> back.
-    /// Host and port identify the endpoint; the scheme is not compared, because egress may report
-    /// http for an endpoint we address over https (or the reverse) and the scheme we sign with is
-    /// <see cref="_protocol"/>, taken from configuration rather than from the stored URL.
-    /// </para>
-    /// </remarks>
     public Task<string> CreateDownloadUrlAsync(
         string storedUrl,
         TimeSpan lifetime,
         CancellationToken ct = default)
     {
         if (!Uri.TryCreate(storedUrl, UriKind.Absolute, out var uri))
+            throw new InvalidOperationException("Artifact URL is not absolute.");
+
+        if (!TryResolveObject(uri, out var bucket, out var key))
         {
+            // NOT "return it as it is". This method exists to mint a credentialed link to private
+            // object storage, and an unsigned one is never a correct answer to that: either the
+            // object is private and the answer does not work, or it is public and the answer hands
+            // out a permanent link to a meeting recording. Refusing says which artifact is
+            // unreadable and why, in a log, instead of rendering a broken <video> element.
             throw new InvalidOperationException(
-                $"Artifact URL is not absolute ('{storedUrl}'), so it names no bucket or object key " +
-                "to sign. A container-local egress path is the usual cause: the recording was written " +
-                "to the egress container's filesystem instead of being uploaded to S3.");
-        }
-
-        string bucket;
-        string key;
-
-        if (uri.Scheme.Equals("s3", StringComparison.OrdinalIgnoreCase))
-        {
-            bucket = uri.Host;
-            key = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
-        }
-        else if (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-                 uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
-        {
-            if (_endpoint is null)
-            {
-                throw new InvalidOperationException(
-                    "S3 signing credentials are not configured, so the object URL " +
-                    $"'{uri.GetLeftPart(UriPartial.Path)}' cannot be checked against this service's " +
-                    "S3 endpoint or signed.");
-            }
-
-            if (!TryResolveOwnObjectUrl(uri, _endpoint, out bucket, out key))
-            {
-                throw new InvalidOperationException(
-                    $"Artifact URL '{uri.GetLeftPart(UriPartial.Path)}' is on a foreign host: it does " +
-                    $"not point at this service's configured S3 endpoint ('{_endpoint.Host}:{_endpoint.Port}'), " +
-                    "so this service holds no credentials that could sign it.");
-            }
-        }
-        else
-        {
-            throw new InvalidOperationException(
-                $"Artifact URL scheme '{uri.Scheme}' is not supported; expected s3:// or an http(s) " +
-                "object URL on this service's configured S3 endpoint.");
+                $"Artifact URL '{uri.Scheme}://{uri.Host}' does not belong to the configured "
+                + "LiveKit Egress bucket, so no download link can be signed for it.");
         }
 
         if (_s3 is null)
             throw new InvalidOperationException("S3 signing credentials are not configured.");
-
-        if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(key))
-            throw new InvalidOperationException("Artifact S3 URL must contain a bucket and object key.");
 
         var signed = _s3.GetPreSignedURL(new GetPreSignedUrlRequest
         {
@@ -141,46 +86,71 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
     }
 
     /// <summary>
-    /// Splits an <c>http(s)</c> object URL into bucket and key when — and only when — it addresses
-    /// the configured endpoint. Returns false for anything else, so the caller can fail loudly
-    /// instead of handing back a link nobody can open.
+    /// The bucket and object key behind a stored artifact URL, in either of the two shapes that
+    /// reach this row.
     /// </summary>
-    private static bool TryResolveOwnObjectUrl(Uri uri, Uri endpoint, out string bucket, out string key)
+    /// <remarks>
+    /// WT-644 — WHY <c>https://</c> IS HANDLED AT ALL.
+    ///
+    /// This used to sign only <c>s3://bucket/key</c> and hand anything else back verbatim. Nothing
+    /// ever writes an <c>s3://</c> URL. <c>RecordingCompletedEventProcessor</c> is the ONLY writer
+    /// of a non-null <c>FileUrl</c> (ArtifactsFinalizer passes null for every artifact it creates),
+    /// and the value it stores is <c>EgressInfo.fileResults[].location</c> — which for an S3 or R2
+    /// destination is the uploader's own HTTPS object URL, not a scheme our code chose.
+    ///
+    /// So every real recording took the passthrough branch. What the player received was
+    /// <c>https://&lt;account&gt;.r2.cloudflarestorage.com/warptalk-recordings/…</c> — the S3 API
+    /// endpoint, which serves nothing without a signature — and the &lt;video&gt; element got a 401.
+    /// That is the "no player" half of the reported bug, and it is broken playback rather than a
+    /// leak ONLY because R2's S3 endpoint is never public; against a bucket that had been made
+    /// world-readable the identical code would have been handing out permanent links instead.
+    ///
+    /// Attribution is by BUCKET rather than by host: the same bucket is reachable path-style
+    /// (<c>https://endpoint/bucket/key</c>, which is what force_path_style produces — see
+    /// LiveKitEgressService.BuildS3Output) and virtual-host style
+    /// (<c>https://bucket.endpoint/key</c>, which AWS produces), and the bucket name is the one
+    /// thing both spellings agree on and that we can check against our own configuration.
+    /// </remarks>
+    private bool TryResolveObject(Uri uri, out string bucket, out string key)
     {
         bucket = string.Empty;
         key = string.Empty;
 
-        // Ports are compared only when BOTH sides state one. Uri.Port invents a default from the
-        // scheme — 443 for https, 80 for http — so comparing it unconditionally would reject
-        // `http://endpoint/bucket/key` against an endpoint configured as `https://endpoint`, which is
-        // exactly the scheme mismatch the remarks above promise to tolerate. A stated port (minio on
-        // 9000) still has to match: that one is a real address, not a default filled in for us.
-        if (!uri.IsDefaultPort && !endpoint.IsDefaultPort && uri.Port != endpoint.Port)
-            return false;
-
-        // Path-style (what ForcePathStyle writes): https://endpoint/bucket/key…
-        if (uri.Host.Equals(endpoint.Host, StringComparison.OrdinalIgnoreCase))
+        // s3://bucket/key — the shape our own tests and any hand-written row use. The authority IS
+        // the bucket, so nothing has to be recognised.
+        if (uri.Scheme.Equals("s3", StringComparison.OrdinalIgnoreCase))
         {
-            // Split the bucket off BEFORE unescaping: a key may legitimately contain an escaped
-            // '%2F', which must stay part of the key rather than becoming a path separator.
-            var path = uri.AbsolutePath.TrimStart('/');
-            var separator = path.IndexOf('/');
-            if (separator <= 0 || separator == path.Length - 1)
-                return false;
+            bucket = uri.Host;
+            key = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
+            return !string.IsNullOrWhiteSpace(bucket) && !string.IsNullOrWhiteSpace(key);
+        }
 
-            bucket = Uri.UnescapeDataString(path[..separator]);
-            key = Uri.UnescapeDataString(path[(separator + 1)..]);
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_bucket)) return false;
+
+        var path = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
+
+        // Path style: https://<endpoint>/<bucket>/<key>
+        var pathPrefix = _bucket + "/";
+        if (path.StartsWith(pathPrefix, StringComparison.Ordinal) && path.Length > pathPrefix.Length)
+        {
+            bucket = _bucket;
+            key = path[pathPrefix.Length..];
             return true;
         }
 
-        // Virtual-host style: https://bucket.endpoint/key…
-        var suffix = "." + endpoint.Host;
-        if (uri.Host.Length > suffix.Length &&
-            uri.Host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        // Virtual-host style: https://<bucket>.<endpoint>/<key>
+        if (uri.Host.StartsWith(_bucket + ".", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(path))
         {
-            bucket = uri.Host[..^suffix.Length];
-            key = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
-            return key.Length > 0;
+            bucket = _bucket;
+            key = path;
+            return true;
         }
 
         return false;

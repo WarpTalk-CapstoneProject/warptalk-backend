@@ -10,6 +10,7 @@ using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.Shared;
 using Xunit;
 
 namespace WarpTalk.AuthService.Tests;
@@ -150,6 +151,8 @@ public class VoicePreviewTests
         var result = await Preview(CatalogVoiceId);
 
         Assert.False(result.IsSuccess);
+        // The queue could not be reached, which says nothing about the voice.
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
         // Nobody asked for this render, so no answer is coming — waiting the timeout out would
         // only make an immediate "unavailable" look like a slow success.
         await _previews.DidNotReceive().WaitAsync(
@@ -169,18 +172,108 @@ public class VoicePreviewTests
 
         Assert.False(result.IsSuccess);
         Assert.False(string.IsNullOrWhiteSpace(result.Error));
+        // WT-649: this used to be InvalidState, which contradicted the message sitting next to it
+        // and read as "there is something wrong with this voice". Nothing on this path looks at the
+        // profile's state at all — the render simply did not arrive inside RenderTimeout.
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
     }
+
+    // The locale-tag key mismatch that made every preview of an uploaded voice time out is
+    // WT-632, and it landed on development (#345) while this branch was open. It is fixed in
+    // RedisVoicePreviewQueue — the half of the contract that names the key — and pinned by
+    // Infrastructure/VoicePreviewKeyShapeTests. The two tests that used to live here asserted it
+    // against a MOCKED queue, so they were asserting that the service normalises, which is now
+    // the wrong layer and would fight that fix rather than protect it.
 
     [Fact]
     public async Task A_rendered_failure_is_reported_and_never_played_as_empty_audio()
     {
         _previews.TryGetAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
-            .Returns(new VoicePreview(null, "cartesia refused this voice"));
+            .Returns(new VoicePreview(null, "cartesia refused this voice", "VOICE_NOT_RENDERABLE"));
 
         var result = await Preview(CatalogVoiceId);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal("cartesia refused this voice", result.Error);
+        Assert.Equal("This voice cannot be previewed.", result.Error);
+    }
+
+    /// <summary>
+    /// This test used to assert the opposite — that the provider's own wording was handed
+    /// straight to the caller. That is how a Cartesia SDK exception reached a play button:
+    ///
+    ///     "Error code: 404 - {'error_code': 'voice_not_found', ..., 'request_id': 'e9d42fe9-…'}"
+    ///
+    /// A request id and a Python dict, shown to somebody who pressed play. The provider's text is
+    /// for the log; the sentence comes from the code.
+    /// </summary>
+    [Fact]
+    public async Task The_providers_own_wording_never_reaches_the_caller()
+    {
+        const string providerText =
+            "Error code: 404 - {'error_code': 'voice_not_found', 'request_id': 'e9d42fe9'}";
+        _previews.TryGetAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
+            .Returns(new VoicePreview(null, providerText, "VOICE_NOT_FOUND"));
+
+        var result = await Preview(CatalogVoiceId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("This voice is no longer available from the provider.", result.Error);
+        Assert.DoesNotContain("request_id", result.Error!);
+        Assert.DoesNotContain("Error code", result.Error!);
+    }
+
+    [Fact]
+    public async Task An_unrecognised_code_falls_back_to_the_generic_line_not_the_providers_text()
+    {
+        // The case that matters for deploy order and for any future worker: a code this build has
+        // never seen must NOT cause the provider's wording to be shown instead.
+        _previews.TryGetAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
+            .Returns(new VoicePreview(null, "Traceback (most recent call last): …", "SOMETHING_NEW"));
+
+        var result = await Preview(CatalogVoiceId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("The preview could not be rendered.", result.Error);
+        Assert.DoesNotContain("Traceback", result.Error!);
+    }
+
+    [Fact]
+    public async Task A_missing_code_also_falls_back_rather_than_leaking()
+    {
+        // An older worker sends no code at all. Same rule.
+        _previews.TryGetAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
+            .Returns(new VoicePreview(null, "cartesia: 500 internal", null));
+
+        var result = await Preview(CatalogVoiceId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("The preview could not be rendered.", result.Error);
+    }
+
+    /// <summary>
+    /// The code has to follow the cause, not just the sentence. Answering a provider outage with
+    /// InvalidState is WT-649's original complaint reproduced one branch over: it tells a client
+    /// keying off the code that something is wrong with the VOICE.
+    /// </summary>
+    [Theory]
+    [InlineData("VOICE_NOT_FOUND", ErrorCodes.InvalidState)]
+    [InlineData("VOICE_NOT_RENDERABLE", ErrorCodes.InvalidState)]
+    [InlineData("NO_AUDIO", ErrorCodes.InvalidState)]
+    [InlineData("PROVIDER_BUSY", ErrorCodes.ServiceUnavailable)]
+    [InlineData("PROVIDER_UNREACHABLE", ErrorCodes.ServiceUnavailable)]
+    [InlineData("PROVIDER_UNAVAILABLE", ErrorCodes.ServiceUnavailable)]
+    [InlineData("PROVIDER_REJECTED", ErrorCodes.ServiceUnavailable)]
+    [InlineData("SOMETHING_NEW", ErrorCodes.InvalidState)]
+    public async Task The_error_code_names_whose_fault_it_was(string workerCode, string expectedCode)
+    {
+        _previews.TryGetAsync(CatalogVoiceId, "vi", Arg.Any<CancellationToken>())
+            .Returns(new VoicePreview(null, "provider text nobody should see", workerCode));
+
+        var result = await Preview(CatalogVoiceId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(expectedCode, result.ErrorCode);
+        Assert.DoesNotContain("provider text", result.Error!);
     }
 
     [Fact]

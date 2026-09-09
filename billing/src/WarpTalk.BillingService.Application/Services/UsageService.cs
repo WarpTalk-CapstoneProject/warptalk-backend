@@ -62,7 +62,12 @@ public class UsageService : IUsageService
 
             var settlementRequest = request.ToSettlementRequest(sub);
             var rateResult = await _rateCardResolver.ResolveRateCardAsync(
-                settlementRequest.ChargeType, settlementRequest.Unit, "VND", null, null, cancellationToken);
+                settlementRequest.ChargeType,
+                settlementRequest.Unit,
+                PaymentConstants.Currencies.VndAccounting,
+                null,
+                null,
+                cancellationToken);
 
             if (rateResult.IsSuccess && rateResult.Value != null)
             {

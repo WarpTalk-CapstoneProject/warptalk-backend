@@ -1,6 +1,7 @@
 using System.Linq;
 using WarpTalk.AuthService.API.Validators;
 using WarpTalk.AuthService.Application.DTOs;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -65,5 +66,43 @@ public class LoginRequestValidatorTests
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, e => e.PropertyName == "Email" && e.ErrorMessage == ApiMessageConstants.ValidationMessages.EmailRequired);
         Assert.Contains(result.Errors, e => e.PropertyName == "Password" && e.ErrorMessage == ApiMessageConstants.ValidationMessages.PasswordRequired);
+    }
+
+    /// <summary>
+    /// The 10,000-character case is the point of this test. Login is unauthenticated, so whatever
+    /// it accepts is what an anonymous caller can make the server hold and hash on demand; the
+    /// rule has to reject it outright rather than let it through to the hasher.
+    /// </summary>
+    [Fact]
+    public void Validate_ShouldFail_WhenPasswordIsOverTheLengthLimit()
+    {
+        // Arrange
+        var justOver = new string('a', UserConstants.PasswordMaxLength + 1);
+        var absurd = new string('a', 10_000);
+
+        // Act
+        var justOverResult = _validator.Validate(new LoginRequest("test.user@gmail.com", justOver, null, null));
+        var absurdResult = _validator.Validate(new LoginRequest("test.user@gmail.com", absurd, null, null));
+
+        // Assert
+        Assert.False(justOverResult.IsValid);
+        Assert.Contains(justOverResult.Errors, e => e.PropertyName == "Password" && e.ErrorMessage == ApiMessageConstants.ValidationMessages.PasswordMaxLength);
+        Assert.False(absurdResult.IsValid);
+        Assert.Contains(absurdResult.Errors, e => e.PropertyName == "Password" && e.ErrorMessage == ApiMessageConstants.ValidationMessages.PasswordMaxLength);
+    }
+
+    [Fact]
+    public void Validate_ShouldFail_WhenEmailIsOverTheLengthLimit()
+    {
+        // Arrange
+        const string domain = "@example.com";
+        var email = new string('a', UserConstants.EmailMaxLength + 1 - domain.Length) + domain;
+
+        // Act
+        var result = _validator.Validate(new LoginRequest(email, "password123", null, null));
+
+        // Assert
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.PropertyName == "Email" && e.ErrorMessage == ApiMessageConstants.ValidationMessages.EmailMaxLength);
     }
 }
