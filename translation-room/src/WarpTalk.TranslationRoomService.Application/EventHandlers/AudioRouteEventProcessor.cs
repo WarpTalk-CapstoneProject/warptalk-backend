@@ -140,6 +140,8 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                 }
             }
 
+            var finalizationQueued = false;
+
             if (routesToUpdate.Any())
             {
                 await _routeRepository.UpdateRoutesAsync(routesToUpdate, ct);
@@ -159,13 +161,14 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                 //
                 // A participant-scoped ENDING still tears the leaver's routes down; it just no
                 // longer speaks for the meeting. The room-scoped publish at the real end reaches
-                // this same line with targetParticipantId == null, and ArtifactsReconciliationWorker
-                // sweeps ENDED rooms with no artifacts as the fallback — so nothing is finalized
-                // late, only nothing is finalized early.
+                // this same line with targetParticipantId == null — and when it moved no route at
+                // all, the block further down queues the same finalization off the room's own
+                // ENDED status, so nothing is finalized early and nothing is left unfinalized.
                 if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.ENDING.ToString())
                     && targetParticipantId == null)
                 {
                     _finalizationQueue.QueueFinalization(roomId);
+                    finalizationQueued = true;
                 }
 
                 if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.COMPLETED.ToString()))
@@ -180,6 +183,48 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                     {
                         _logger.LogError(ex, "Failed to perform proactive Redis cleanup for Room {RoomId} on route completion", roomId);
                     }
+                }
+            }
+
+            // THE MEETING THAT HAD NO ROUTES TO END.
+            //
+            // Everything above this line is keyed on a ROUTE having changed, and routes only
+            // exist once somebody pressed Start Translation (GenerateRoutesAsync runs in
+            // StartTranslationRoomAsync — the same fact WT-314 records twenty lines down). A
+            // transcript-only meeting, a single-language room, and a room where translation was
+            // stopped before the host ended it all reach this method with nothing in
+            // routesToUpdate, so finalization was never queued for them AT ALL: no transcript
+            // artifact, no summary artifact, and therefore nothing for the summary chain to fill
+            // in later. That is the "0 artifacts beside a full transcript" report.
+            //
+            // The comment above says ArtifactsReconciliationWorker covers this and that "nothing
+            // is finalized late, only nothing is finalized early". The first half is true and the
+            // second is not: that sweep waits a 10-minute grace period and then runs every 5
+            // minutes, so those meetings were finalized up to a quarter of an hour after they
+            // ended — past the 15-minute window the room page polls in (shouldPollRoomHistory),
+            // which is why the page said "Generating summary…" until it was reloaded by hand. The
+            // sweep stays as the backstop for finalizations that were queued and lost; it is not
+            // the trigger.
+            //
+            // GATED ON THE ROOM BEING **ENDED**, read back rather than assumed. session_ends is
+            // also published room-scoped by Cancel and Expire (PublishTerminalLifecycleAsync),
+            // and those are reachable only from SCHEDULED/WAITING — a meeting that never
+            // happened. Finalizing one would write two empty artifacts and ring
+            // MEETING_SUMMARY_READY for a meeting nobody attended. EndTranslationRoomAsync
+            // persists ENDED before it publishes this event, so the status is already durable
+            // when this reads it.
+            if (!finalizationQueued
+                && originalEventType == AudioRoutingEventType.session_ends
+                && targetParticipantId == null)
+            {
+                var endedRoom = await _roomRepository.GetByIdAsync(roomId, ct);
+                if (endedRoom != null
+                    && string.Equals(endedRoom.Status, RoomStatus.ENDED.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "Room {RoomId} ended with no audio route to end; queueing finalization directly.",
+                        roomId);
+                    _finalizationQueue.QueueFinalization(roomId);
                 }
             }
 

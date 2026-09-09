@@ -1170,6 +1170,37 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    /// <summary>
+    /// EXPIRED was the one ending with no clock on it.
+    ///
+    /// Cancel sets EndedAt, End sets EndedAt, Expire set only UpdatedAt — and UpdatedAt moves for
+    /// reasons that have nothing to do with a meeting being over, which is exactly why both
+    /// reconciliation sweeps read EndedAt instead. An expired room was therefore invisible to
+    /// anything asking when it stopped, and its history row had a blank end.
+    /// </summary>
+    [Fact]
+    public async Task ExpireTranslationRoomAsync_RecordsWhenTheRoomStopped()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "SCHEDULED",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var before = DateTime.UtcNow;
+        var result = await _service.ExpireTranslationRoomAsync(roomId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("EXPIRED");
+        room.EndedAt.Should().NotBeNull();
+        room.EndedAt!.Value.Should().BeOnOrAfter(before).And.BeOnOrBefore(DateTime.UtcNow);
+    }
+
     [Fact]
     public async Task ExpireTranslationRoomAsync_PublishesSessionEnds_SoTheIngressBotIsReleased()
     {

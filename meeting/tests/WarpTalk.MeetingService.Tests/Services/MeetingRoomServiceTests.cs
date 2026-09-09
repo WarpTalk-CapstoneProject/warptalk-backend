@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -301,8 +302,13 @@ public class MeetingRoomServiceTests
             Times.Once);
     }
 
+    /// <summary>
+    /// WT-644. Stop reports the recording as stopped — capture really has ended — but it must NOT
+    /// erase <c>ActiveEgressId</c>, which is the only durable record that a recording is still
+    /// being finalised and owes us an artifact.
+    /// </summary>
     [Fact]
-    public async Task SetRecordingAsync_StopsEgress_AndClearsEgressId()
+    public async Task SetRecordingAsync_StopsEgress_ButKeepsTheEgressIdUntilTheRecordingLands()
     {
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
@@ -323,9 +329,104 @@ public class MeetingRoomServiceTests
         var result = await _sut.SetRecordingAsync(translationRoomId, hostId, "stop");
 
         Assert.True(result.IsSuccess);
+        // What the person who pressed the button is told, and what the row remembers, are
+        // deliberately different things.
         Assert.False(result.Value!.Recording);
-        Assert.Null(meetingRoom.ActiveEgressId);
+        Assert.Null(result.Value.EgressId);
+        Assert.Equal("egress-123", meetingRoom.ActiveEgressId);
         roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+    }
+
+    /// <summary>
+    /// WT-644 — THE WHOLE POINT OF KEEPING THE ID, END TO END.
+    ///
+    /// The user-visible bug was a finished meeting whose record page showed no recording and
+    /// Artifacts (0). The webhook half of that is fixed elsewhere (EgressCompletion matches the
+    /// room by name when Stop got there first). This is the other half: a webhook that NEVER
+    /// ARRIVES — the failure WT-371 #8 built the reconciliation sweep for, when the LiveKit
+    /// project had no webhook configured at all.
+    ///
+    /// EgressReconciliationService selects rooms with <c>ActiveEgressId != null</c>. While Stop
+    /// nulled that column, the sweep's own predicate excluded every recording that had been
+    /// stopped through the UI — which is to say, all of them — so the fallback could not fire on
+    /// the only path that ever needed it. This runs the REAL stop and then the REAL sweep over a
+    /// repository that honours the predicate, and fails on the production code as it stood.
+    /// </summary>
+    [Fact]
+    public async Task AStoppedRecordingIsStillCompletedByTheSweep_WhenTheWebhookNeverArrives()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ActiveHostId = hostId,
+            ProviderRoomName = "room-1",
+            ActiveEgressId = "egress-123",
+            Status = "IN_PROGRESS",
+            UpdatedAt = DateTime.UtcNow.AddMinutes(-20)
+        };
+
+        // Compiled, not "return the room for anything". A mock that answers every predicate with
+        // the same row cannot tell a working sweep from a broken one — the sweep's bug WAS its
+        // predicate.
+        var rooms = new[] { meetingRoom };
+        var roomRepoMock = new Mock<IMeetingRoomRepository>();
+        roomRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<MeetingRoom, bool>> predicate, string _, CancellationToken _) =>
+                rooms.FirstOrDefault(predicate.Compile()));
+        roomRepoMock
+            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<MeetingRoom, bool>> predicate, string _, CancellationToken _) =>
+                rooms.Where(predicate.Compile()).ToList());
+        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+        _egressServiceMock
+            .Setup(e => e.StopEgressAsync("egress-123", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(true));
+
+        var stop = await _sut.SetRecordingAsync(translationRoomId, hostId, "stop");
+        Assert.True(stop.IsSuccess);
+
+        // LiveKit finished the upload. No webhook was ever delivered, so the sweep is the only
+        // thing left that can turn it into an artifact.
+        using var finished = JsonDocument.Parse(
+            """
+            {
+              "egressId": "egress-123",
+              "status": "EGRESS_COMPLETE",
+              "fileResults": [ { "location": "s3://recordings/room-1.mp4", "size": 2048 } ]
+            }
+            """);
+        _egressServiceMock
+            .Setup(e => e.GetEgressAsync("egress-123", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<JsonElement?>(finished.RootElement.Clone()));
+
+        var sweep = new EgressReconciliationService(
+            _unitOfWorkMock.Object,
+            _egressServiceMock.Object,
+            new EgressCompletion(_unitOfWorkMock.Object, _redisServiceMock.Object),
+            Mock.Of<ILogger<EgressReconciliationService>>());
+
+        var result = await sweep.ReconcileAsync(DateTime.UtcNow);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, result.Value);
+        // The recording now exists as far as the rest of the system is concerned, and the room has
+        // stopped holding the egress.
+        Assert.Null(meetingRoom.ActiveEgressId);
+        _redisServiceMock.Verify(
+            r => r.PublishStreamMessageAsync("meeting:domain-events", It.IsAny<Dictionary<string, string>>()),
+            Times.Once);
     }
 
     // Recording is no longer host-only. It is a thing the people in the room do, and the person

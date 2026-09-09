@@ -142,12 +142,7 @@ public class ArtifactsReconciliationWorker : BackgroundService
         // EndedAt is the only honest clock here. A room's UpdatedAt moves for reasons that have
         // nothing to do with the meeting being over.
         var abandoned = await unitOfWork.TranslationRoomRepository.FindAsync(
-            room =>
-                TranslationRoomConstants.TerminalStatuses.Contains(room.Status)
-                && room.EndedAt != null
-                && room.EndedAt < queuedBefore
-                && room.EndedAt > endedAfter
-                && !room.TranslationRoomArtifacts.Any(),
+            ArtifactsReconciliationPolicy.AbandonedRooms(queuedBefore, endedAfter),
             "TranslationRoomArtifacts",
             ct);
 
@@ -237,11 +232,7 @@ public class ArtifactsReconciliationWorker : BackgroundService
         // Bounded the same way the sweep above is: recently-ended rooms only. An old meeting is
         // not waiting on a summary, and re-publishing history to Knowledge is not free.
         var candidates = await unitOfWork.TranslationRoomRepository.FindAsync(
-            room =>
-                TranslationRoomConstants.TerminalStatuses.Contains(room.Status)
-                && room.EndedAt != null
-                && room.EndedAt > endedAfter
-                && room.TranslationRoomArtifacts.Any(),
+            ArtifactsReconciliationPolicy.RecentlyEndedWithArtifacts(endedAfter),
             "TranslationRoomArtifacts",
             ct);
 
@@ -284,13 +275,14 @@ public class ArtifactsReconciliationWorker : BackgroundService
                     ? hit.Value.ToString()
                     : null;
 
-            var structuredJson = Field("structured");
-            var summaryContent = Field("summary");
-            var actionItems = Field("action_items");
+            // Through MeetingSummaryHash, not literals. This read used to ask for "structured" and
+            // "summary"; ai_assistant_worker writes "structured_json" and "content", so the
+            // recovery never saw the summary it exists to recover — and on a meeting that DID have
+            // action items (the one name that happened to match) it rebuilt the artifact from
+            // those alone and then deleted the key, losing the summary outright.
+            var (summaryContent, actionItems, structuredJson) = MeetingSummaryHash.Read(Field);
 
-            if (string.IsNullOrWhiteSpace(structuredJson)
-                && string.IsNullOrWhiteSpace(summaryContent)
-                && string.IsNullOrWhiteSpace(actionItems))
+            if (!MeetingSummaryHash.HasAnything(summaryContent, actionItems, structuredJson))
             {
                 // The key exists but holds nothing usable. Leave it: the AI worker may still be
                 // mid-write, and deleting it here would recreate the very race this repairs.

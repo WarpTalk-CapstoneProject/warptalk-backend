@@ -21,9 +21,17 @@ business meeting source of truth in Translation Room Service.
 - Live room join, participant presence, host controls, chat, recording, and
   transcript behavior.
 - Public contracts for retained Meeting Service functionality.
-- Database `warptalk_meeting`, schema `meeting`, and existing RTC table/column
-  names.
+- Database `warptalk_meeting`, schema `meeting`, and the existing RTC *table*
+  names `rtc_stream_participants` and `rtc_session_revocations`.
 - Service-to-service communication channels and deployment topology.
+
+One column name does change, and it is breaking:
+`meeting_tracks.meeting_participant_id` is renamed to `rtc_stream_participant_id`
+in the same migration, because the committed C# mapping requires the new name.
+The old and new names never coexist, so an older Meeting Service build cannot
+write `meeting_tracks` after the migration runs. See the "Out of scope" /
+"Explicitly in scope" section of `specs/spec-wt-603-meeting-runtime-cleanup.md`
+and the WT-603 note in `warptalk-infrastructure/deploy/production/README.md`.
 
 Removing Polls, Q&A, and Breakouts is an approved product-scope reduction, not
 a behavior-preserving rename. The retained runtime behavior must remain
