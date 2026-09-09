@@ -307,6 +307,129 @@ public class MinutesTemplateChoiceTests
     }
 
     [Fact]
+    public void The_global_sections_are_numbered_without_a_gap_when_nothing_was_moved()
+    {
+        // A document that runs 1, 2, 3, 5, 6 reads as one with a page missing. Motions are omitted
+        // when nobody moved anything, so the numbers behind them have to close up.
+        var text = TextOf(new MinutesDocumentWriter().WriteDocx(
+            Minutes(), Content(), MinutesTemplates.GlobalEn));
+
+        text.Should().Contain("4. ADJOURNMENT");
+        text.Should().Contain("5. CERTIFICATION");
+        text.Should().NotContain("6. ");
+    }
+
+    [Fact]
+    public void Motions_take_their_own_number_and_push_the_rest_down()
+    {
+        var content = Content();
+        content.Votes = new List<MinutesVote>
+        {
+            new() { Topic = "Adopt the Q4 budget", ForCount = 5, AgainstCount = 1, AbstainCount = 2 }
+        };
+
+        var text = TextOf(new MinutesDocumentWriter().WriteDocx(
+            Minutes(), content, MinutesTemplates.GlobalEn));
+
+        text.Should().Contain("4. MOTIONS AND RESOLUTIONS");
+        text.Should().Contain("5. ADJOURNMENT");
+        text.Should().Contain("6. CERTIFICATION");
+    }
+
+    [Fact]
+    public void Markdown_in_the_narrative_is_rendered_in_both_templates()
+    {
+        // warptalk-ai writes the overview in Markdown. Printed raw it puts hash marks and
+        // asterisks into a document somebody signs — in either layout.
+        var content = Content();
+        content.Sections.Insert(0, new MinutesSection
+        {
+            Key = "summary",
+            Kind = "paragraph",
+            Text = string.Join(
+                Environment.NewLine,
+                "## Meeting Summary",
+                "- Accuracy is **80%**.",
+                "  - Add **500 questions**.")
+        });
+
+        var writer = new MinutesDocumentWriter();
+        foreach (var template in new[] { MinutesTemplates.GlobalEn, MinutesTemplates.VnNd30 })
+        {
+            var text = TextOf(writer.WriteDocx(Minutes(), content, template));
+
+            text.Should().NotContain("#");
+            text.Should().NotContain("**");
+            // Rendered, not stripped: every word still reaches the page.
+            text.Should().Contain("Meeting Summary");
+            text.Should().Contain("Accuracy is 80%.");
+            text.Should().Contain("Add 500 questions.");
+        }
+    }
+
+    [Fact]
+    public void The_global_certification_block_is_the_international_one()
+    {
+        // Rule, printed name, capacity, date — in that order, under the sentence the signature
+        // attests to. The Vietnamese block puts the role above the name; this one must not.
+        var text = TextOf(new MinutesDocumentWriter().WriteDocx(
+            Minutes(status: "DRAFT"), Content(), MinutesTemplates.GlobalEn));
+
+        text.Should().Contain("true and correct record");
+        text.Should().Contain("Secretary");
+        text.Should().Contain("Chair of the meeting");
+        text.Should().Contain("Date:");
+        // An unsigned block says so, rather than leaving a reader to notice an empty date.
+        text.Should().Contain("(not signed)");
+    }
+
+    [Fact]
+    public void A_signed_certification_carries_the_date_it_was_signed()
+    {
+        var text = TextOf(new MinutesDocumentWriter().WriteDocx(
+            Minutes(), Content(), MinutesTemplates.GlobalEn));
+
+        text.Should().Contain("Date: 2026-03-10");
+        text.Should().NotContain("(not signed)");
+    }
+
+    [Fact]
+    public void The_control_block_says_what_the_record_was_made_from_and_in_how_many_languages()
+    {
+        // "What is this a record OF" is the question a document control block exists to answer,
+        // and a reader weighing a line needs to know before reading it whether they are looking at
+        // what was said or at a machine's rendering of it.
+        var content = Content();
+        content.PrimaryLanguage = "vi";
+        content.Translations = new Dictionary<string, List<MinutesSection>>
+        {
+            ["en"] = new() { new() { Key = "summary", Kind = "paragraph", Text = "Reviewed the sprint." } },
+            ["ja"] = new() { new() { Key = "summary", Kind = "paragraph", Text = "スプリントを確認した。" } }
+        };
+
+        var text = TextOf(new MinutesDocumentWriter().WriteDocx(
+            Minutes(), content, MinutesTemplates.GlobalEn));
+
+        text.Should().Contain("Source record");
+        text.Should().Contain("Transcript of this meeting");
+        text.Should().Contain("Translations");
+        text.Should().Contain("2 (en, ja)");
+        text.Should().Contain("machine-translated");
+    }
+
+    [Fact]
+    public void The_adjournment_records_the_hour_and_claims_nothing_else()
+    {
+        // "There being no further business" describes a room this service was not in, and would
+        // print identically on a meeting that simply ran out of time.
+        var text = TextOf(new MinutesDocumentWriter().WriteDocx(
+            Minutes(), Content(), MinutesTemplates.GlobalEn));
+
+        text.Should().Contain("The meeting was adjourned at 2026-03-10T10:05:00Z");
+        text.Should().NotContain("no further business");
+    }
+
+    [Fact]
     public void Each_template_sets_the_page_up_the_way_its_form_requires()
     {
         // Nghị định 30 asks for a 30mm left margin — 1701 twips — and it is the measurement that

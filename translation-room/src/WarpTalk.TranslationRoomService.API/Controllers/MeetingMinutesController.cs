@@ -104,29 +104,110 @@ public class MeetingMinutesController : ControllerBase
     /// failing: see MinutesTemplates.Normalise.
     /// </summary>
     [HttpGet("export.docx")]
-    public async Task<IActionResult> ExportDocx(
-        Guid roomId, [FromQuery] string? template = null, CancellationToken ct = default)
+    public Task<IActionResult> ExportDocx(
+        Guid roomId, [FromQuery] string? template = null, CancellationToken ct = default) =>
+        ExportAsync(roomId, template, "docx", ct);
+
+    /// <summary>
+    /// The same document as a PDF.
+    ///
+    /// A conversion of the .docx that <see cref="ExportDocx"/> would have handed over — not a
+    /// second rendering of the minutes. One layout, so the file somebody prints and the file
+    /// somebody edits cannot disagree, and <paramref name="template"/> means the same thing here.
+    /// </summary>
+    [HttpGet("export.pdf")]
+    public Task<IActionResult> ExportPdf(
+        Guid roomId, [FromQuery] string? template = null, CancellationToken ct = default) =>
+        ExportAsync(roomId, template, "pdf", ct);
+
+    private async Task<IActionResult> ExportAsync(
+        Guid roomId, string? template, string format, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _minutesService.ExportDocxAsync(
-            roomId, userId.Value, User.GetEmail(), template, ct);
+        var result = await _minutesService.ExportAsync(
+            roomId, userId.Value, User.GetEmail(), template, format, ct);
 
-        if (!result.IsSuccess)
-        {
-            return result.ErrorCode switch
-            {
-                ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
-                ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
-                ErrorCodes.InvalidState => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
-                _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))
-            };
-        }
-
-        var file = result.Value!;
-        return File(file.Bytes, file.ContentType, file.FileName);
+        return result.IsSuccess
+            ? File(result.Value!.Bytes, result.Value!.ContentType, result.Value!.FileName)
+            : Fail(result.Error, result.ErrorCode);
     }
+
+    // ------------------------------------------------------------------ sharing
+
+    /// <summary>
+    /// The share dialog's state, creating the link on first ask.
+    ///
+    /// Host authority: who may read a record is the host's decision. The link is created
+    /// INVITED_ONLY, so opening this dialog never publishes anything.
+    /// </summary>
+    [HttpGet("share")]
+    public async Task<IActionResult> GetShare(Guid roomId, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        return RespondShare(await _minutesService.GetOrCreateShareAsync(roomId, userId.Value, ct));
+    }
+
+    /// <summary>Change the mode, downloads or expiry. Omitted fields are left as they are.</summary>
+    [HttpPatch("share")]
+    public async Task<IActionResult> UpdateShare(
+        Guid roomId, [FromBody] UpdateMinutesShareRequest request, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        return RespondShare(await _minutesService.UpdateShareAsync(roomId, userId.Value, request, ct));
+    }
+
+    /// <summary>Kill the link. The URL already sent stops working and is not re-issued.</summary>
+    [HttpDelete("share")]
+    public async Task<IActionResult> RevokeShare(Guid roomId, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        return RespondShare(await _minutesService.RevokeShareAsync(roomId, userId.Value, ct));
+    }
+
+    [HttpPost("share/people")]
+    public async Task<IActionResult> AddSharePerson(
+        Guid roomId, [FromBody] AddMinutesSharePersonRequest request, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        return RespondShare(
+            await _minutesService.AddSharePersonAsync(roomId, userId.Value, request.Email, ct));
+    }
+
+    /// <summary>Email in the query string, not the path: an address contains characters a route does not.</summary>
+    [HttpDelete("share/people")]
+    public async Task<IActionResult> RemoveSharePerson(
+        Guid roomId, [FromQuery] string email, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        return RespondShare(await _minutesService.RemoveSharePersonAsync(roomId, userId.Value, email, ct));
+    }
+
+    private IActionResult RespondShare(Result<MinutesShareDto> result) =>
+        result.IsSuccess ? Ok(result.Value) : Fail(result.Error, result.ErrorCode);
+
+    /// <summary>One place the error codes become status codes, so two endpoints cannot disagree.</summary>
+    private IActionResult Fail(string? error, string? code) => code switch
+    {
+        ErrorCodes.NotFound => NotFound(new ApiErrorResponse(error, code)),
+        ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(error, code)),
+        ErrorCodes.Unauthorized => StatusCode(401, new ApiErrorResponse(error, code)),
+        ErrorCodes.InvalidState => BadRequest(new ApiErrorResponse(error, code)),
+        ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(error, code)),
+        ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(error, code)),
+        _ => StatusCode(500, new ApiErrorResponse(error, code))
+    };
 
     private IActionResult Respond(Result<MeetingMinutesDto> result)
     {

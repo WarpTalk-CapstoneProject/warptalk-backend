@@ -31,9 +31,10 @@ public class MeetingMinutesContent
     public DateTime? ScheduledAt { get; set; }
 
     /// <summary>
-    /// Chương trình họp. Null on a draft: there is no agenda field on a room — an agenda given at
-    /// booking is folded into the description — so this is the secretary's to fill rather than
-    /// something to guess at from prose.
+    /// Chương trình họp. Prefilled from the room's booking description when there is one, carrying
+    /// a line that says that is what it is — there is no agenda field on a room, and a booking
+    /// description is a plan, not a programme the meeting adopted. Null when the room was booked
+    /// without one: the secretary fills it, rather than the draft guessing an agenda out of prose.
     /// </summary>
     [JsonPropertyName("agenda")]
     public string? Agenda { get; set; }
