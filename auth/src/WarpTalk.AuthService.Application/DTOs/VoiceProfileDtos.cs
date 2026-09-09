@@ -28,7 +28,17 @@ public record VoiceProfileDto(
     string? ProviderVoiceId = null,
     string? ConsentStatus = null,
     string? ConsentTextVersion = null,
-    DateTime? ConsentGrantedAt = null
+    DateTime? ConsentGrantedAt = null,
+    /// <summary>
+    /// What this row IS — see VoiceProfileSources. "upload" and "in_meeting" are voices of this
+    /// person's; "library" is their pick of a public catalogue voice, kept in the same table.
+    ///
+    /// Exposed because the client cannot work it out from anything else here. Provider is
+    /// "cartesia" for a pick and for an upload that has finished cloning, so a page filtering on
+    /// provider listed somebody's catalogue pointer among their own recordings and showed them
+    /// its provider id as their chosen voice.
+    /// </summary>
+    string? Source = null
 );
 
 /// <summary>One selectable voice from the provider's public library.</summary>

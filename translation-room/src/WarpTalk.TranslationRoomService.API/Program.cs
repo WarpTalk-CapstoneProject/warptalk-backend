@@ -89,6 +89,7 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
 builder.Services.AddScoped<IMeetingMinutesRepository, MeetingMinutesRepository>();
 builder.Services.AddScoped<IMeetingActionItemRepository, MeetingActionItemRepository>();
+builder.Services.AddScoped<IMeetingMinutesShareRepository, MeetingMinutesShareRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -102,7 +103,20 @@ builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAud
 builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
 builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
-builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MeetingMinutesDocxWriter>();
+builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MinutesDocumentWriter>();
+
+// DOCX -> PDF. Optional by design: a deployment with no GOTENBERG_URL still serves Word files,
+// and the PDF button says the format is unavailable instead of 500ing. The URL is read here
+// rather than injected as options because it decides whether the converter exists at all.
+builder.Services.AddHttpClient(nameof(GotenbergPdfConverter), client =>
+{
+    // Generous: LibreOffice cold-starts on the first document after the container comes up.
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
+builder.Services.AddSingleton<IDocumentPdfConverter>(provider => new GotenbergPdfConverter(
+    provider.GetRequiredService<IHttpClientFactory>(),
+    provider.GetRequiredService<ILogger<GotenbergPdfConverter>>(),
+    builder.Configuration["Gotenberg:Url"] ?? Environment.GetEnvironmentVariable("GOTENBERG_URL")));
 builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
 builder.Services.AddScoped<IMeetingActionItemService, MeetingActionItemService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();

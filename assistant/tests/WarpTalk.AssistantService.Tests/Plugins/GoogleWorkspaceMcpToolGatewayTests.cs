@@ -13,6 +13,10 @@ namespace WarpTalk.AssistantService.Tests.Plugins;
 
 public class GoogleWorkspaceMcpToolGatewayTests
 {
+    // Post-split key. What makes this gateway the right one for a row is its provider, not its
+    // key, so these fixtures deliberately no longer name the retired google_workspace row.
+    private const string GoogleDriveKey = "google_drive";
+
     [Fact]
     public async Task ExecuteAsync_SearchDrive_UsesPersonalAccessTokenAndReturnsFiles()
     {
@@ -47,7 +51,7 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveSearchTool(),
             new PluginConnection
             {
@@ -58,7 +62,7 @@ public class GoogleWorkspaceMcpToolGatewayTests
             },
             new McpToolExecutionRequest(
                 Guid.NewGuid(),
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_search",
                 new JsonObject { ["query"] = "roadmap", ["limit"] = 5 },
                 null,
@@ -89,12 +93,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveSearchTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_search",
                 new JsonObject { ["query"] = "roadmap" },
                 null,
@@ -133,12 +137,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveSearchTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_search",
                 new JsonObject { ["query"] = "roadmap" },
                 null,
@@ -177,12 +181,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveSearchTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_search",
                 new JsonObject { ["query"] = "roadmap" },
                 null,
@@ -229,12 +233,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveGetFileTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_get_file",
                 new JsonObject { ["fileId"] = "doc-1" },
                 null,
@@ -275,12 +279,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             Options.Create(new GoogleWorkspaceApiOptions { DriveFilesEndpoint = "https://google.test/drive/v3/files" }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveGetFileTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_get_file",
                 new JsonObject { ["fileId"] = "binary-1" },
                 null,
@@ -305,12 +309,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             Options.Create(new GoogleWorkspaceApiOptions()));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveGetFileTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_get_file",
                 new JsonObject(),
                 null,
@@ -351,12 +355,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             DriveGetFileTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_drive_get_file",
                 new JsonObject { ["fileId"] = "text-1" },
                 null,
@@ -401,12 +405,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             MeetCreateTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_calendar_create_meet_event",
                 new JsonObject
                 {
@@ -471,12 +475,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             }));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             MeetCreateTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_calendar_create_meet_event",
                 new JsonObject
                 {
@@ -506,12 +510,12 @@ public class GoogleWorkspaceMcpToolGatewayTests
             Options.Create(new GoogleWorkspaceApiOptions()));
 
         var result = await sut.ExecuteAsync(
-            GoogleWorkspaceDefinition(),
+            GoogleDriveDefinition(),
             MeetCreateTool(),
             new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
             new McpToolExecutionRequest(
                 null,
-                PluginConstants.GoogleWorkspace,
+                GoogleDriveKey,
                 "google_calendar_create_meet_event",
                 new JsonObject { ["summary"] = "Customer sync" },
                 null,
@@ -522,13 +526,99 @@ public class GoogleWorkspaceMcpToolGatewayTests
         Assert.Equal(PluginConstants.ErrorCodes.UnknownTool, result.ErrorCode);
     }
 
-    private static PluginDefinitionDto GoogleWorkspaceDefinition()
+    // ---- WT-646: the gateway serves a provider, not one catalog row --------------------------
+
+    [Theory]
+    [InlineData("google_drive")]
+    [InlineData("google_calendar")]
+    [InlineData("google_meet")]
+    public async Task ExecuteAsync_ServesEveryGoogleCatalogRow(string pluginKey)
+    {
+        // Before WT-646 this compared the key against 'google_workspace'. After the split that
+        // matched none of the three live rows, so every Google tool call answered unknown_plugin.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new JsonObject { ["files"] = new JsonArray() }),
+            }));
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            httpClient,
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions
+            {
+                DriveFilesEndpoint = "https://google.test/drive/v3/files",
+            }));
+
+        var result = await sut.ExecuteAsync(
+            GoogleDefinition(pluginKey, PluginConstants.Providers.Google),
+            DriveSearchTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                pluginKey,
+                "google_drive_search",
+                new JsonObject { ["query"] = "roadmap" },
+                null,
+                null,
+                null));
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RefusesARowFromAnotherProvider()
+    {
+        // The assertion that has to survive the loosening: this gateway calls Google's APIs with
+        // whatever token it is handed, so a row belonging to anyone else must be turned away
+        // before the token is used.
+        var protector = Substitute.For<IPluginCredentialProtector>();
+        var sut = new GoogleWorkspaceMcpToolGateway(
+            new HttpClient(new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))),
+            protector,
+            Options.Create(new GoogleWorkspaceApiOptions()));
+
+        var result = await sut.ExecuteAsync(
+            GoogleDefinition("remote_app", "remote_app"),
+            DriveSearchTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                "remote_app",
+                "google_drive_search",
+                new JsonObject { ["query"] = "roadmap" },
+                null,
+                null,
+                null));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.UnknownPlugin, result.ErrorCode);
+        // And crucially, the stored token was never even decrypted.
+        protector.DidNotReceive().Unprotect(Arg.Any<string>());
+    }
+
+    private static PluginDefinitionDto GoogleDefinition(string pluginKey, string provider)
     {
         return new PluginDefinitionDto(
             Guid.NewGuid(),
-            PluginConstants.GoogleWorkspace,
-            "Google Workspace",
-            "Work across Drive and Calendar.",
+            pluginKey,
+            provider,
+            pluginKey,
+            pluginKey,
+            null,
+            [],
+            []);
+    }
+
+    private static PluginDefinitionDto GoogleDriveDefinition()
+    {
+        return new PluginDefinitionDto(
+            Guid.NewGuid(),
+            GoogleDriveKey,
+            PluginConstants.Providers.Google,
+            "Google Drive",
+            "Search your Google Drive and read the contents of a file.",
             null,
             [],
             []);
@@ -538,7 +628,7 @@ public class GoogleWorkspaceMcpToolGatewayTests
     {
         return new McpToolDescriptorDto(
             "google_drive_search",
-            PluginConstants.GoogleWorkspace,
+            GoogleDriveKey,
             "Search Google Drive",
             "Search files in Google Drive.",
             PluginConstants.ToolEffect.Read,
@@ -550,7 +640,7 @@ public class GoogleWorkspaceMcpToolGatewayTests
     {
         return new McpToolDescriptorDto(
             "google_drive_get_file",
-            PluginConstants.GoogleWorkspace,
+            GoogleDriveKey,
             "Read Google Drive file",
             "Read supported text content from a Google Drive file.",
             PluginConstants.ToolEffect.Read,
@@ -562,7 +652,7 @@ public class GoogleWorkspaceMcpToolGatewayTests
     {
         return new McpToolDescriptorDto(
             "google_calendar_create_meet_event",
-            PluginConstants.GoogleWorkspace,
+            GoogleDriveKey,
             "Create Google Meet meeting",
             "Create a Google Calendar event with a Google Meet link.",
             PluginConstants.ToolEffect.Write,

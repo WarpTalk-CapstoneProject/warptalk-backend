@@ -21,6 +21,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The admin catalog surface is defined by its controller: which policy gates each action, and
+         which route template each action claims. Both are assertions about the API assembly, so the
+         tests need it. -->
+    <ProjectReference Include="..\..\src\WarpTalk.AssistantService.API\WarpTalk.AssistantService.API.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.AssistantService.Application\WarpTalk.AssistantService.Application.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.AssistantService.Domain\WarpTalk.AssistantService.Domain.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.AssistantService.Infrastructure\WarpTalk.AssistantService.Infrastructure.csproj" />

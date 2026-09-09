@@ -178,6 +178,28 @@ public class WorkspaceGrpcServiceTests
         Assert.True(response.UseGlobalGlossary);
     }
 
+    /// <summary>
+    /// The whole of a workspace's plugin policy on the wire is this one flag. It is what the
+    /// assistant's guard reads, so it has to survive the mapping in both directions.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetWorkspaceSettings_CarriesAllowAnyPlugins(bool allowAnyPlugins)
+    {
+        _workspaceDirectory
+            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
+                15, true, false, true, true, new[] { "vi" },
+                AllowAnyPlugins: allowAnyPlugins)));
+
+        var response = await _service.GetWorkspaceSettings(
+            new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
+            _context);
+
+        Assert.Equal(allowAnyPlugins, response.AllowAnyPlugins);
+    }
+
     [Fact]
     public async Task GetWorkspaceSettings_ThrowsNotFound_WhenLookupFails()
     {

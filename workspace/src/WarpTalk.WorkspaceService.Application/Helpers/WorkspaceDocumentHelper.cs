@@ -13,6 +13,48 @@ public static class WorkspaceDocumentHelper
             : WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
     }
 
+    /// <summary>
+    /// The canonical confidentiality level for a caller-supplied value, or null when the value is
+    /// not one this system recognises.
+    ///
+    /// WHY THIS HAS TO EXIST
+    ///     `ConfidentialityLevel` is a free-text column, and both write paths — upload and PATCH —
+    ///     stored whatever arrived. Every READER, though, asks exactly one question:
+    ///     <c>WorkspaceDocumentExtensions.IsRestricted</c>, which is an equality test against the
+    ///     literal "restricted".
+    ///
+    ///     So a document labelled "confidential", "secret", "internal-only" — or "restricted "
+    ///     with one trailing space — is stored as the caller asked, displayed as the caller
+    ///     asked, and read by every policy check as NOT restricted. It then passes
+    ///     `DocumentSecurityGuardrailHelper.HasBasicIndexEligibility`, is embedded into the vector
+    ///     store, and becomes answerable by the assistant. The label says confidential and the
+    ///     boundary does not exist.
+    ///
+    ///     Trimmed and lower-cased before comparing, so a value that differs only in whitespace or
+    ///     case is accepted as the level it plainly means rather than silently downgraded.
+    ///     Anything else is REFUSED at the boundary rather than normalised to a default: guessing
+    ///     that "secret" meant public_internal would be the same failure with better manners, and
+    ///     guessing it meant restricted would let a typo lock a document nobody can unlock.
+    /// </summary>
+    public static string? NormalizeConfidentialityLevel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var normalized = value.Trim().ToLowerInvariant();
+
+        if (normalized == WorkspaceDocumentConstants.SensitiveConfidentialityLevel)
+            return WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+
+        if (normalized == WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel)
+            return WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
+
+        return null;
+    }
+
+    /// <summary>The two values a document may carry, for an error message that names them.</summary>
+    public static string SupportedConfidentialityLevels =>
+        $"{WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel}, {WorkspaceDocumentConstants.SensitiveConfidentialityLevel}";
+
     // Helper method to generate the storage key for a document
     public static string GenerateStorageKey(Guid workspaceId, Guid documentId, string fileExtension)
     {

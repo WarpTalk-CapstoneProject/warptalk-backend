@@ -43,11 +43,26 @@ public partial class TranslationRoomDbContext : DbContext
     /// <summary>Commitments from an approved biên bản, as rows somebody can be assigned.</summary>
     public virtual DbSet<MeetingActionItem> MeetingActionItems { get; set; }
 
+    /// <summary>The sharing state of a room's biên bản: one link, its mode, whether it is live.</summary>
+    public virtual DbSet<MeetingMinutesShareLink> MeetingMinutesShareLinks { get; set; }
+
+    /// <summary>People invited by email to read a room's biên bản.</summary>
+    public virtual DbSet<MeetingMinutesShareGrant> MeetingMinutesShareGrants { get; set; }
+
 
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // A built-in Postgres function made visible to LINQ. Not a schema object and not business
+        // logic: it adds nothing to the database and maps one-to-one onto SQL that already exists
+        // there. See PostgresJsonFunctions for why the minutes library needs it.
+        modelBuilder
+            .HasDbFunction(typeof(PostgresJsonFunctions)
+                .GetMethod(nameof(PostgresJsonFunctions.JsonbExtractPathText))!)
+            .HasName("jsonb_extract_path_text")
+            .IsBuiltIn();
+
         modelBuilder
             .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
             .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
@@ -417,7 +432,12 @@ public partial class TranslationRoomDbContext : DbContext
 
             entity.ToTable("meeting_minutes", "translation_room");
 
-            entity.HasIndex(e => new { e.WorkspaceId, e.MinutesNo }, "meeting_minutes_workspace_no_idx")
+            // Mirrors 20260906090000_minutes_number_is_unique_per_version.sql, which replaced the
+            // old (workspace_id, minutes_no) index. `version` is in the key because a revision
+            // keeps the number of the document it revises; a new document is always version 1, so
+            // two chains still cannot claim one number and the allocation race still collides here.
+            entity.HasIndex(e => new { e.WorkspaceId, e.MinutesNo, e.Version },
+                    "meeting_minutes_workspace_no_version_idx")
                 .IsUnique();
 
             entity.HasIndex(e => e.TranslationRoomId, "meeting_minutes_one_current_per_room_idx")
@@ -484,6 +504,77 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasForeignKey(d => d.TranslationRoomId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("meeting_minutes_translation_room_id_fkey");
+        });
+
+        modelBuilder.Entity<MeetingMinutesShareLink>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("meeting_minutes_share_links_pkey");
+
+            entity.ToTable("meeting_minutes_share_links", "translation_room");
+
+            // One sharing state per room, the way a document has one share dialog. Two links
+            // could otherwise disagree about the mode, and revoking one would leave the other live.
+            entity.HasIndex(e => e.TranslationRoomId, "meeting_minutes_share_links_room_idx")
+                .IsUnique();
+
+            entity.HasIndex(e => e.Token, "meeting_minutes_share_links_token_idx")
+                .IsUnique();
+
+            // Every column named explicitly — a missing HasColumnName does not fail at startup,
+            // it 500s every SELECT over the table. MappedColumnNamesTests pins this.
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.Token)
+                .HasMaxLength(64)
+                .HasComment("URL-safe random secret. Rotated on revoke.")
+                .HasColumnName("token");
+            entity.Property(e => e.AccessMode)
+                .HasMaxLength(24)
+                .HasDefaultValueSql("'INVITED_ONLY'::character varying")
+                .HasColumnName("access_mode");
+            entity.Property(e => e.AllowDownload)
+                .HasDefaultValue(true)
+                .HasColumnName("allow_download");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.RevokedAt).HasColumnName("revoked_at");
+            entity.Property(e => e.RevokedBy).HasColumnName("revoked_by");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<MeetingMinutesShareGrant>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("meeting_minutes_share_grants_pkey");
+
+            entity.ToTable("meeting_minutes_share_grants", "translation_room");
+
+            entity.HasIndex(e => new { e.TranslationRoomId, e.Email },
+                    "meeting_minutes_share_grants_room_email_idx")
+                .IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.Email)
+                .HasMaxLength(320)
+                .HasComment("Lower-cased on write.")
+                .HasColumnName("email");
+            entity.Property(e => e.GrantedBy).HasColumnName("granted_by");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
         });
 
         modelBuilder.Entity<TranslationRoomArtifact>(entity =>

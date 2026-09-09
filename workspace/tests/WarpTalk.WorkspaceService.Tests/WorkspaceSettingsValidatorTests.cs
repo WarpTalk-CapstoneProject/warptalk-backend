@@ -1,5 +1,6 @@
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Validators;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;
@@ -94,4 +95,5 @@ public class WorkspaceSettingsValidatorTests
         Assert.False(result.IsValid);
         Assert.Contains("verifiedDomains", result.Errors.Keys);
     }
+
 }

@@ -206,6 +206,44 @@ public class TranscriptReadAccessTests
         }
     }
 
+    /// <summary>
+    /// The sharing policy is about a FINISHED meeting's record. While the meeting is still running
+    /// this same endpoint is what catches a late joiner up on the part they missed — and they are
+    /// in the room, listening to the captions, as it refuses them the transcript of what they are
+    /// hearing. Withholding a record from somebody currently being told its contents protects
+    /// nobody, and every room left on the HOST_ONLY default would do it.
+    /// </summary>
+    [Fact]
+    public async Task LiveMeeting_LetsAParticipantCatchUp_WhateverTheSharingPolicySays()
+    {
+        var participant = Guid.NewGuid();
+        var (service, transcript, client) = CreateQueryService(
+            host: Guid.NewGuid(), participants: new[] { participant });
+        client.RoomStatus = "IN_PROGRESS";
+        client.ArtifactAccess = "HOST_ONLY";
+
+        var result = await service.GetTranscriptAsync(transcript.Id, participant);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    /// <summary>
+    /// And a live room is not a way in for somebody who was never there.
+    /// </summary>
+    [Fact]
+    public async Task LiveMeeting_StillRefusesAStranger()
+    {
+        var (service, transcript, client) = CreateQueryService(
+            host: Guid.NewGuid(), participants: new[] { Guid.NewGuid() });
+        client.RoomStatus = "IN_PROGRESS";
+        client.ArtifactAccess = "ALL_PARTICIPANTS";
+
+        var result = await service.GetTranscriptAsync(transcript.Id, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
     private static (TranscriptQueryService Service, Transcript Transcript, FakeRoomClient Client) CreateQueryService(
         Guid host, IReadOnlyCollection<Guid> participants)
     {
@@ -264,6 +302,14 @@ public class TranscriptReadAccessTests
         /// <summary>Empty unless a test hands the room over, matching the wire default.</summary>
         public string EffectiveHostId { get; set; } = string.Empty;
 
+        /// <summary>
+        /// The room's lifecycle status. The sharing policy only governs a meeting that has ended.
+        ///
+        /// Named RoomStatus, not Status: a member called Status on this class would shadow
+        /// Grpc.Core.Status for the whole type, and Call() below needs the gRPC one.
+        /// </summary>
+        public string RoomStatus { get; set; } = "ENDED";
+
         public bool RoomMissing { get; set; }
         public int ParticipantLookups { get; private set; }
 
@@ -283,7 +329,7 @@ public class TranscriptReadAccessTests
                 EffectiveHostId = EffectiveHostId,
                 ArtifactAccess = ArtifactAccess,
                 Title = "Room",
-                Status = "ENDED"
+                Status = RoomStatus
             });
         }
 
