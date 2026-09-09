@@ -65,4 +65,21 @@ public interface IVoiceProfileService
     /// be a way to sample another person's voice.
     /// </summary>
     Task<Result<byte[]>> PreviewVoiceAsync(Guid userId, PreviewVoiceRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// The recording this person uploaded, exactly as they uploaded it.
+    ///
+    /// WHY THIS EXISTS BESIDE PreviewVoiceAsync
+    ///     A preview is the CLONE speaking — what other people will hear. This is the original.
+    ///     Hearing one without the other says nothing: "is this a good clone of me?" is a question
+    ///     about the distance between the two, and until now the product only ever played one of
+    ///     them.
+    ///
+    /// WHY IT IS SCOPED HARD TO THE OWNER
+    ///     This is a recording of somebody's voice, held because they agreed to have it cloned —
+    ///     not published. It is returned only to the account that uploaded it, and a profile
+    ///     belonging to anybody else is answered NotFound rather than Forbidden, so the endpoint
+    ///     cannot be used to discover which profile ids exist.
+    /// </summary>
+    Task<Result<VoiceSampleContent>> GetSampleAsync(Guid userId, Guid profileId, CancellationToken ct = default);
 }
