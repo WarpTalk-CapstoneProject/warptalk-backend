@@ -51,6 +51,7 @@ public sealed class RedisSubscriberStopHostResilienceTests
         var service = new TranslationRoomRedisSubscriberService(
             FailingRedis(),
             HubContext<TranslationRoomHub>(),
+            new TranscriptPauseState(FailingRedis(), Mock.Of<ILogger<TranscriptPauseState>>()),
             logger.Object);
 
         await StartAndStopAsync(service, logger);

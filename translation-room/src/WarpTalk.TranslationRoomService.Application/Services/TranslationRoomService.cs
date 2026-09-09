@@ -2118,10 +2118,21 @@ public class TranslationRoomService : ITranslationRoomService
                     return Result.Success();
                 }
 
+                // WT-605: EndedAt rides along. TranscriptService listens for this command to close
+                // a transcript pause window the meeting ended in the middle of, and it must stamp
+                // the window with the instant the ROOM ended — not with the clock at the moment its
+                // own consumer happened to run. The two differ by however long the message queued
+                // or the consumer was down, and the difference is printed in the saved record as
+                // the length of the paused stretch.
+                //
+                // Round-trip "O" and UTC, because the reader parses it; the Gateway relay ignores
+                // the extra field (System.Text.Json drops unknown members), so nothing downstream
+                // has to be deployed in step with this.
                 var endedPayload = JsonSerializer.Serialize(new
                 {
                     Command = "RoomEnded",
-                    RoomId = translationRoomId.ToString()
+                    RoomId = translationRoomId.ToString(),
+                    EndedAt = translationRoom.EndedAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
                 });
                 await _redisStateRepository.PublishAsync(GatewayCommandsChannel, endedPayload);
             }

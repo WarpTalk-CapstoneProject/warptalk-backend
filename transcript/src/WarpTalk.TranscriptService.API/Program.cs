@@ -69,6 +69,9 @@ builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 builder.Services.AddScoped<ITranscriptTranslationBackfillService, TranscriptTranslationBackfillService>();
 builder.Services.AddScoped<ITranscriptRecordingService, TranscriptRecordingService>();
+// WT-605: lets the pause-window read path show a window the room ended in the middle of as
+// ending when the room did, rather than as "paused right now" forever.
+builder.Services.AddScoped<ITranslationRoomEndTime, TranslationRoomEndTime>();
 
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
@@ -81,6 +84,10 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
+// WT-605: closes a pause window the meeting ended in the middle of. Without it an open window
+// means "paused right now" forever, and the saved record tells tomorrow's reader the transcript
+// is being held at this very moment.
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranslationRoomEndedConsumer>();
 
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);

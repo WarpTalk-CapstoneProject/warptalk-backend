@@ -827,6 +827,48 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    /// <summary>
+    /// WT-605. The RoomEnded message carries the room's own end time, because TranscriptService
+    /// listens for it to close a transcript pause window the meeting ended in the middle of.
+    ///
+    /// Its clock is not a substitute for this value. The gap between the two is queue lag plus
+    /// however long that consumer was down, and the gap is printed to whoever reads the record
+    /// afterwards as extra minutes of a pause that never happened.
+    /// </summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_PublishesTheRoomsOwnEndTimeAlongsideRoomEnded()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{\"requires_approval\":true}" };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(roomId, default)).ReturnsAsync(new List<TranslationRoomParticipant>());
+
+        string? published = null;
+        _mockRedisStateRepository
+            .Setup(r => r.PublishAsync("warptalk:translation-room:commands", It.IsAny<string>()))
+            .Callback<string, string>((_, payload) => published = payload)
+            .ReturnsAsync(1L);
+
+        var result = await _service.EndTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        published.Should().NotBeNull();
+
+        using var envelope = System.Text.Json.JsonDocument.Parse(published!);
+        var endedAt = envelope.RootElement.GetProperty("EndedAt").GetString();
+        endedAt.Should().NotBeNullOrWhiteSpace();
+
+        // Round-trip UTC, and the same instant the row was stamped with — the reader parses this
+        // string and writes it straight into transcript.transcript_pause_windows.ended_at.
+        DateTime.Parse(
+            endedAt!,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal)
+            .Should().BeCloseTo(room.EndedAt!.Value, TimeSpan.FromSeconds(1));
+    }
+
     [Fact]
     public async Task EndTranslationRoomAsync_StillEndsTheRoom_WhenTheRelayPublishFails()
     {
