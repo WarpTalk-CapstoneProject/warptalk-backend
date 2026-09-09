@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 
@@ -14,7 +15,7 @@ namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class UsageRateCardRepository : IUsageRateCardRepository
 {
-    private const string DefaultCurrency = "VND";
+    private const string DefaultCurrency = PaymentConstants.Currencies.VndAccounting;
     private const string UpsertNotes = "Updated from admin pricing controls";
 
     private readonly BillingDbContext _context;
@@ -27,12 +28,19 @@ public class UsageRateCardRepository : IUsageRateCardRepository
 
     public async Task<IReadOnlyList<UsageRateCardDto>> GetActiveRateCardsAsync(CancellationToken cancellationToken = default)
     {
+        // "Active" has to mean here what it means to the database. The partial unique
+        // index ux_usage_rate_card_active_lookup is defined over (identity) WHERE
+        // is_active AND effective_to IS NULL; filtering on effective_to alone let a
+        // deactivated-but-still-open row come back as active, and the settlement
+        // resolver that consumes this list would then price real usage with a rate an
+        // admin had switched off. is_active was written but never read (WT-208).
+        //
         // Ordering matches the previous SQL: the coalesced-to-empty columns sort
         // first, then the nullable language codes. PostgreSQL already sorts NULLs
         // last for ASC, so the old explicit NULLS LAST was redundant.
         var rows = await _context.UsageRateCards
             .AsNoTracking()
-            .Where(e => e.EffectiveTo == null)
+            .Where(e => e.IsActive && e.EffectiveTo == null)
             .OrderBy(e => e.ChargeType)
             .ThenBy(e => e.Unit ?? string.Empty)
             .ThenBy(e => e.Provider ?? string.Empty)
@@ -52,14 +60,18 @@ public class UsageRateCardRepository : IUsageRateCardRepository
 
     public async Task<UsageRateCardDto> UpsertRateCardAsync(UpsertUsageRateCardRequest request, CancellationToken cancellationToken = default)
     {
-        // Rate cards are append-only: supersede the current active row for this
-        // identity, then insert the new priced row. The unique index
+        // Rate cards are append-only: supersede the current open row for this identity,
+        // then insert the new priced row. The unique index
         // ux_usage_rate_card_active_lookup allows at most one such row, but the
         // loop keeps this correct if historical data ever violated that.
         var supersededAt = DateTime.UtcNow;
 
+        // Close every open row for the identity, not just the active ones. The partial
+        // unique index only covers is_active rows, so an inactive row left with
+        // effective_to NULL never collided and never got superseded — those rows piled
+        // up and made resolution order-dependent between equally "open" duplicates.
         var current = await FilterByIdentity(_context.UsageRateCards, request)
-            .Where(e => e.IsActive && e.EffectiveTo == null)
+            .Where(e => e.EffectiveTo == null)
             .ToListAsync(cancellationToken);
 
         foreach (var row in current)
@@ -101,6 +113,31 @@ public class UsageRateCardRepository : IUsageRateCardRepository
         // INSERT's RETURNING clause, which is what the previous hand-written
         // RETURNING list was doing.
         return ToDto(inserted);
+    }
+
+    /// <summary>
+    /// Retires one rate-card row. Closing it (effective_to = now) as well as clearing
+    /// is_active keeps the row out of both the active lookup and the "open row" set the
+    /// next upsert supersedes, so a retired rate can never resurface. The row itself is
+    /// never deleted — historical transactions reference it through
+    /// credit_transaction.pricing_rate_card_id.
+    /// </summary>
+    public async Task<UsageRateCardDto?> DeactivateRateCardAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var row = await _context.UsageRateCards
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
+
+        if (row is null)
+            return null;
+
+        if (!row.IsActive && row.EffectiveTo is not null)
+            return ToDto(row);
+
+        row.IsActive = false;
+        row.EffectiveTo ??= DateTime.UtcNow;
+
+        await _context.SaveChangesAsync(cancellationToken);
+        return ToDto(row);
     }
 
     public async Task<decimal> ReadPricingConfigValueAsync(string key, decimal defaultValue, CancellationToken cancellationToken = default)

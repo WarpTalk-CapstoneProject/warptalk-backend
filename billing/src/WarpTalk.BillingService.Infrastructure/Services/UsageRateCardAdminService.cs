@@ -6,13 +6,14 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
 
 public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 {
-    private const string DefaultCurrency = "VND";
+    private const string DefaultCurrency = PaymentConstants.Currencies.VndAccounting;
     private const string FxRateConfigKey = "fx_rate_usd_vnd";
     private const string CreditValueConfigKey = "credit_value_vnd";
     private const string MinimumPricePerCreditVndConfigKey = "minimum_price_per_credit_vnd";
@@ -106,6 +107,87 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             await _repository.RollbackTransactionAsync(cancellationToken);
             _logger.LogError(ex, "Error updating usage rate card");
             return Result.Failure<UsageRateCardDto>("Unable to update usage rate card.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Retires a published rate so it stops pricing new usage. Deliberately not a delete:
+    /// settled transactions point back at the row through pricing_rate_card_id, and the
+    /// snapshotted unit price on those transactions must stay explainable.
+    /// </summary>
+    public async Task<Result<UsageRateCardDto>> DeactivateRateCardAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        if (id == Guid.Empty)
+            return Result.Failure<UsageRateCardDto>("A rate-card id is required.", ErrorCodes.ValidationError);
+
+        try
+        {
+            await _repository.BeginTransactionAsync(cancellationToken);
+
+            var retired = await _repository.DeactivateRateCardAsync(id, cancellationToken);
+            if (retired is null)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>($"Rate card {id} was not found.", ErrorCodes.NotFound);
+            }
+
+            await _repository.CommitTransactionAsync(cancellationToken);
+            return Result.Success(retired);
+        }
+        catch (Exception ex)
+        {
+            await _repository.RollbackTransactionAsync(cancellationToken);
+            _logger.LogError(ex, "Error deactivating usage rate card {RateCardId}", id);
+            return Result.Failure<UsageRateCardDto>("Unable to deactivate the usage rate card.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Prices a proposed rate without publishing it. Read-only: no transaction, no writes.
+    /// Shares <see cref="RateCardPricingCalculator"/> with any server-side derivation, so
+    /// what the admin sees here is what the formula produces.
+    /// </summary>
+    public async Task<Result<RateCardPreviewDto>> PreviewRateCardAsync(
+        RateCardPreviewRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var fxRate = request.FxRateUsdVnd
+                ?? await _repository.ReadPricingConfigValueAsync(
+                    FxRateConfigKey, SubscriptionConstants.RateCardDefaults.FxRateUsdVnd, cancellationToken);
+            var creditValue = request.CreditValueVnd
+                ?? await _repository.ReadPricingConfigValueAsync(
+                    CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
+
+            var breakdown = RateCardPricingCalculator.Calculate(
+                request.ProviderUnitCostUsd,
+                fxRate,
+                request.MarkupMultiplier,
+                creditValue,
+                request.Quantity);
+
+            return Result.Success(new RateCardPreviewDto(
+                breakdown.UnitPriceCredits,
+                breakdown.CreditsCharged,
+                breakdown.CustomerPriceVnd,
+                breakdown.ProviderCostVnd,
+                breakdown.MarginVnd,
+                breakdown.MarginRatio,
+                fxRate,
+                creditValue,
+                PricingFormula));
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            // The calculator rejects inputs that cannot produce a price at all. That is a
+            // bad request from the admin, not a server fault.
+            return Result.Failure<RateCardPreviewDto>(ex.Message, ErrorCodes.ValidationError);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error previewing usage rate card pricing");
+            return Result.Failure<RateCardPreviewDto>("Unable to preview the rate card.", ErrorCodes.InternalServerError);
         }
     }
 
