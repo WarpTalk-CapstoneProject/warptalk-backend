@@ -28,6 +28,33 @@ internal static class TestWorkspacePluginPolicy
         return Guard(policyClient);
     }
 
-    public static WorkspacePluginGuard Guard(IWorkspacePluginPolicyClient policyClient) =>
-        new(policyClient);
+    /// <summary>
+    /// A guard whose policy client answers <paramref name="allowsPluginUsage"/> and whose
+    /// membership client reports the caller as <paramref name="isActiveMember"/>.
+    /// </summary>
+    public static WorkspacePluginGuard Guard(bool allowsPluginUsage, bool isActiveMember)
+    {
+        var policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
+        policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(allowsPluginUsage);
+        return Guard(policyClient, isActiveMember);
+    }
+
+    /// <summary>
+    /// Membership defaults to an active member, so a test that is about the policy does not have to
+    /// say so. The membership check is the caller's standing, not the workspace's rule, and a test
+    /// that stubbed it as "not a member" by omission would pass for the wrong reason.
+    /// </summary>
+    public static WorkspacePluginGuard Guard(
+        IWorkspacePluginPolicyClient policyClient,
+        bool isActiveMember = true)
+    {
+        var membershipClient = Substitute.For<IWorkspaceMembershipClient>();
+        membershipClient.GetMembershipAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(isActiveMember
+                ? new WorkspaceMembership(IsMember: true, RoleName: "Member", IsActive: true)
+                : WorkspaceMembership.None);
+
+        return new WorkspacePluginGuard(policyClient, membershipClient);
+    }
 }
