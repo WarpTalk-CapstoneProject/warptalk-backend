@@ -732,10 +732,16 @@ public class MeetingMinutesService : IMeetingMinutesService
         if (request.AllowDownload.HasValue) link.AllowDownload = request.AllowDownload.Value;
         if (request.ExpiresAt.HasValue) link.ExpiresAt = request.ExpiresAt;
 
-        // Turning sharing back on after a revoke uses the token the revoke already rotated to, so
-        // the URL somebody was sent stays dead.
-        link.RevokedAt = null;
-        link.RevokedBy = null;
+        // Only CHOOSING A MODE brings a revoked link back, and it comes back on the token the
+        // revoke already rotated to, so the URL somebody was sent stays dead. Toggling downloads
+        // or an expiry must not resurrect sharing as a side effect: a host who has just killed a
+        // link and then adjusts a setting has not asked to publish the document again.
+        if (request.AccessMode != null)
+        {
+            link.RevokedAt = null;
+            link.RevokedBy = null;
+        }
+
         link.UpdatedAt = DateTime.UtcNow;
         link.UpdatedBy = userId;
 
@@ -863,6 +869,16 @@ public class MeetingMinutesService : IMeetingMinutesService
                 MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
         }
 
+        // The link does not outrank the document's own lifecycle: a draft nobody has signed is not
+        // published, and a share link must not be the way one gets published. InvalidState rather
+        // than Forbidden — the holder's link is fine, the document is not ready — so the page can
+        // say "not signed yet" instead of "you are not allowed".
+        if (!MinutesShareAccess.IsServable(minutes.Status))
+        {
+            return Result.Failure<SharedMinutesDto>(
+                MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.InvalidState);
+        }
+
         return Result.Success(new SharedMinutesDto(
             await ToDtoAsync(minutes, ct), link.AccessMode, link.AllowDownload));
     }
@@ -891,6 +907,14 @@ public class MeetingMinutesService : IMeetingMinutesService
         {
             return Result.Failure<MinutesExportFile>(
                 MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
+        }
+
+        // Same rule as reading it on screen. A download that worked while the page refused would
+        // be the leak with an extra step.
+        if (!MinutesShareAccess.IsServable(minutes.Status))
+        {
+            return Result.Failure<MinutesExportFile>(
+                MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.InvalidState);
         }
 
         return await RenderAsync(await ToDtoAsync(minutes, ct), template, format, ct);
