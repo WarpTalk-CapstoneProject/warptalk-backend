@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,6 +12,9 @@ public interface IUsageRateCardRepository
     Task<IReadOnlyList<UsageRateCardDto>> GetActiveRateCardsAsync(CancellationToken cancellationToken = default);
     Task<bool> RateCardIdentityExistsAsync(UpsertUsageRateCardRequest request, CancellationToken cancellationToken = default);
     Task<UsageRateCardDto> UpsertRateCardAsync(UpsertUsageRateCardRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>Retires one row. Returns null when no row has that id.</summary>
+    Task<UsageRateCardDto?> DeactivateRateCardAsync(Guid id, CancellationToken cancellationToken = default);
     Task<decimal> ReadPricingConfigValueAsync(string key, decimal defaultValue, CancellationToken cancellationToken = default);
     Task UpsertPricingConfigValueAsync(string key, decimal value, CancellationToken cancellationToken = default);
     

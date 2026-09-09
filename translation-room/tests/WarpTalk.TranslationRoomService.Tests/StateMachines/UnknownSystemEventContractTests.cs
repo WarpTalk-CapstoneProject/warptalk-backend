@@ -76,8 +76,21 @@ public sealed class UnknownSystemEventContractTests
             @"event_type\s*[=:]\s*""(?<name>[a-z][a-z0-9_]*)""",
             RegexOptions.Compiled | RegexOptions.Singleline);
 
+        // IgnoreInaccessible, which the SearchOption overload does NOT give you: that overload
+        // asks for EnumerationOptions.Compatible, which throws to match .NET Framework, so one
+        // unreadable directory anywhere under warptalk-ai took this guard down. It did — a
+        // .pytest_cache whose ACL had been broken since July made this the only red test in the
+        // repository, on a machine where every worker source was perfectly readable.
+        //
+        // A guard over what the workers PUBLISH must not be answerable by the permissions on a
+        // cache directory. Skipping what cannot be read cannot hide a real regression either: a
+        // scan that reached nothing fails the Assert.NotEmpty below.
         var published = Directory
-            .EnumerateFiles(workerRoot, "*.py", SearchOption.AllDirectories)
+            .EnumerateFiles(workerRoot, "*.py", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+            })
             .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}.venv{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}tests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .SelectMany(file => publishedName.Matches(File.ReadAllText(file)).Select(m => m.Groups["name"].Value))

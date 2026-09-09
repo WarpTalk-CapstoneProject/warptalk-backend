@@ -45,3 +45,9 @@ Thumbs.db
 .env
 *.local
 appsettings.Development.json
+
+## Locally uploaded voice samples
+# Recordings of somebody's actual voice, written by the local stack when the
+# voice-profile upload is exercised. They are biometric data belonging to
+# whoever recorded them, not fixtures, and must never reach a remote.
+**/uploads/

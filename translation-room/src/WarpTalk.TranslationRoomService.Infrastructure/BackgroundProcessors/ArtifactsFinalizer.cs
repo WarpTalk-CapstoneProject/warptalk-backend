@@ -602,9 +602,13 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
         while (true)
         {
-            var content = await _redisStateRepo.HashGetAsync(summaryKey, "content");
-            var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, "action_items");
-            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
+            // Field names via MeetingSummaryHash, not spelled here. ArtifactsReconciliationWorker
+            // reads the same three fields to decide whether a meeting still needs finalising, and
+            // a name that drifts between the two readers is a summary that exists for one and not
+            // the other.
+            var content = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.Content);
+            var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.ActionItems);
+            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.StructuredJson);
 
             if (!string.IsNullOrWhiteSpace(content)
                 || !string.IsNullOrWhiteSpace(actionItems)

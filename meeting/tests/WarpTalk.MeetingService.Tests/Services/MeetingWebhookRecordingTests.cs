@@ -182,6 +182,80 @@ public sealed class MeetingWebhookRecordingTests
         Assert.Null(ReadEnvelope(published).Payload.StartedAt);
     }
 
+    /// <summary>
+    /// WT-644 — the ordinary way a recording ends, and the way it used to be lost.
+    ///
+    /// MeetingRoomService.SetRecordingAsync stops the egress and clears ActiveEgressId in the same
+    /// request. LiveKit's egress_ended webhook arrives seconds later, by which time the id it
+    /// carries matches no row — so a handler that could only look up by ActiveEgressId returned
+    /// RoomNotFound, published nothing, and the record page had no recording to play or download.
+    /// Pressing Stop was the main path through the UI, so this was most recordings.
+    /// </summary>
+    [Fact]
+    public async Task EgressEnded_StillPublishes_WhenStopAlreadyClearedTheActiveEgressId()
+    {
+        var room = NewRecordingRoom();
+        room.ActiveEgressId = null; // The Stop button got here first.
+        var unitOfWork = CreateUnitOfWork(room);
+        var (redis, published) = CaptureRedis();
+        var sut = CreateService(unitOfWork.Object, redis.Object);
+
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "event": "egress_ended",
+              "egressInfo": {
+                "egressId": "EG_123",
+                "roomName": "room-123",
+                "startedAt": 1786962240000000000,
+                "fileResults": [ { "location": "s3://recordings/room-123.mp4", "size": 4096 } ]
+              }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        var envelope = ReadEnvelope(published);
+        Assert.Equal("s3://recordings/room-123.mp4", envelope.Payload.FileUrl);
+        Assert.Equal(room.TranslationRoomId, envelope.Payload.TranslationRoomId);
+    }
+
+    /// <summary>
+    /// The other half of the name fallback: it must not cancel a recording it is not about.
+    ///
+    /// A room matched by NAME may already have started a SECOND recording, and the webhook for the
+    /// first one finishing its upload must leave that live egress alone. Clearing unconditionally
+    /// was safe only while the lookup could match nothing but the current egress.
+    /// </summary>
+    [Fact]
+    public async Task EgressEnded_LeavesADifferentRunningEgressAlone()
+    {
+        var room = NewRecordingRoom();
+        room.ActiveEgressId = "EG_SECOND"; // A new recording is already running.
+        var unitOfWork = CreateUnitOfWork(room);
+        var (redis, published) = CaptureRedis();
+        var sut = CreateService(unitOfWork.Object, redis.Object);
+
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "event": "egress_ended",
+              "egressInfo": {
+                "egressId": "EG_123",
+                "roomName": "room-123",
+                "fileResults": [ { "location": "s3://recordings/room-123.mp4" } ]
+              }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("EG_SECOND", room.ActiveEgressId);
+        Assert.Equal("s3://recordings/room-123.mp4", ReadEnvelope(published).Payload.FileUrl);
+    }
+
     private static MeetingRoom NewRecordingRoom() => new()
     {
         Id = Guid.NewGuid(),
@@ -309,6 +383,19 @@ public sealed class MeetingWebhookRecordingTests
             Times.Never);
     }
 
+    /// <summary>
+    /// WT-644 — THE PREDICATE IS EVALUATED, and that is the point of this helper.
+    ///
+    /// It used to return <paramref name="room"/> for any query at all. Every "does the webhook find
+    /// the right room" assertion in this file was therefore vacuous: the handler could look the room
+    /// up by a column that no longer held the value it was looking for, and the stub would hand the
+    /// room over anyway. That is exactly what happened in production — a stopped recording clears
+    /// ActiveEgressId, the egress_ended webhook looked ONLY at ActiveEgressId, found nothing, and
+    /// the meeting ended with no recording artifact — while these tests stayed green.
+    ///
+    /// Compiling the expression is all it takes for the stub to answer the question the real
+    /// repository answers.
+    /// </summary>
     private static Mock<IUnitOfWork> CreateUnitOfWork(MeetingRoom room)
     {
         var roomRepository = new Mock<IMeetingRoomRepository>();
@@ -316,7 +403,8 @@ public sealed class MeetingWebhookRecordingTests
                 It.IsAny<Expression<Func<MeetingRoom, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(room);
+            .ReturnsAsync((Expression<Func<MeetingRoom, bool>> predicate, string _, CancellationToken _) =>
+                predicate.Compile()(room) ? room : null);
 
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(work => work.MeetingRoomRepository).Returns(roomRepository.Object);

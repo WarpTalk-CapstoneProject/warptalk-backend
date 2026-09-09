@@ -7,6 +7,8 @@ public interface IUsageRateCardAdminService
 {
     Task<Result<IReadOnlyList<UsageRateCardDto>>> GetActiveRateCardsAsync(CancellationToken cancellationToken = default);
     Task<Result<UsageRateCardDto>> UpsertRateCardAsync(UpsertUsageRateCardRequest request, CancellationToken cancellationToken = default);
+    Task<Result<UsageRateCardDto>> DeactivateRateCardAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<Result<RateCardPreviewDto>> PreviewRateCardAsync(RateCardPreviewRequest request, CancellationToken cancellationToken = default);
     Task<Result<PricingConfigDto>> GetPricingConfigAsync(CancellationToken cancellationToken = default);
     Task<Result<PricingConfigDto>> UpdatePricingConfigAsync(UpdatePricingConfigRequest request, CancellationToken cancellationToken = default);
 }

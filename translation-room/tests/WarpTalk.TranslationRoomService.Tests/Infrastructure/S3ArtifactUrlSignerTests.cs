@@ -43,6 +43,78 @@ public sealed class S3ArtifactUrlSignerTests
             () => new S3ArtifactUrlSigner(configuration, environment.Object));
     }
 
+    /// <summary>
+    /// WT-644 — THE SHAPE A REAL RECORDING ACTUALLY ARRIVES IN.
+    ///
+    /// Nothing writes <c>s3://</c>. RecordingCompletedEventProcessor is the only writer of a
+    /// non-null FileUrl and it stores <c>EgressInfo.fileResults[].location</c> verbatim, which for
+    /// an S3/R2 destination is the uploader's HTTPS object URL. The signer used to hand exactly
+    /// that back unsigned, so the &lt;video&gt; element on the record page fetched R2's S3 API
+    /// endpoint with no credentials and got a 401 — no player, for every recording ever made.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_SignsThePathStyleHttpsLocationLiveKitReturns()
+    {
+        using var signer = Signer("https://r2.example.test");
+
+        var url = await signer.CreateDownloadUrlAsync(
+            "https://r2.example.test/warptalk-recordings/recordings/room-123-20260908.mp4",
+            TimeSpan.FromMinutes(15));
+
+        Assert.Contains("X-Amz-Signature=", url);
+        Assert.Contains("recordings/room-123-20260908.mp4", url);
+        // The bucket must not end up doubled into the key — path style already carries it.
+        Assert.DoesNotContain("warptalk-recordings/warptalk-recordings", url);
+    }
+
+    /// <summary>AWS's own spelling of the same object, which has the bucket in the host.</summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_SignsTheVirtualHostStyleHttpsLocation()
+    {
+        using var signer = Signer("https://r2.example.test");
+
+        var url = await signer.CreateDownloadUrlAsync(
+            "https://warptalk-recordings.r2.example.test/recordings/room-123.mp4",
+            TimeSpan.FromMinutes(15));
+
+        Assert.Contains("X-Amz-Signature=", url);
+        Assert.Contains("recordings/room-123.mp4", url);
+    }
+
+    /// <summary>
+    /// A URL this service cannot attribute to its own bucket must be REFUSED, not passed through.
+    /// Passing it through is either a link that does not work (private object) or a permanent,
+    /// un-expiring link to a meeting recording (public object) — and this method's whole job is to
+    /// mint short-lived credentialed links.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_RefusesAUrlOutsideTheConfiguredBucket()
+    {
+        using var signer = Signer("https://r2.example.test");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => signer.CreateDownloadUrlAsync(
+                "https://someone-elses-host.example/public/room-123.mp4",
+                TimeSpan.FromMinutes(15)));
+    }
+
+    private static S3ArtifactUrlSigner Signer(string endpoint)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["LiveKit:Egress:S3:AccessKey"] = "test-access-key",
+                ["LiveKit:Egress:S3:Secret"] = "test-secret-key",
+                ["LiveKit:Egress:S3:Endpoint"] = endpoint,
+                ["LiveKit:Egress:S3:Region"] = "auto",
+                ["LiveKit:Egress:S3:Bucket"] = "warptalk-recordings"
+            })
+            .Build();
+        var environment = new Mock<IHostEnvironment>();
+        environment.SetupGet(item => item.EnvironmentName).Returns("Development");
+        return new S3ArtifactUrlSigner(configuration, environment.Object);
+    }
+
     [Fact]
     public async Task CreateDownloadUrlAsync_PreservesHttpForLocalS3CompatibleEndpoint()
     {

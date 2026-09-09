@@ -24,6 +24,21 @@ public record EmailAddress
     private static readonly Regex EmailRegex =
         new(@"^(?i)[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", RegexOptions.Compiled);
 
+    /// <summary>
+    /// The domain half of <see cref="EmailRegex"/>, on its own — at least one label, a dot, and a
+    /// TLD of two or more letters.
+    ///
+    /// Shape only, as everywhere else in this codebase: it says "this is a domain name", not "this
+    /// domain exists". Ownership is what the consent and verification steps are for. It exists
+    /// because a verified domain used to be accepted as free text, so anything at all could be
+    /// stored in the column that decides who counts as an internal member.
+    /// </summary>
+    private static readonly Regex DomainRegex =
+        new(@"^(?i)[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}$", RegexOptions.Compiled);
+
+    public static bool IsValidDomainName(string? domain) =>
+        !string.IsNullOrWhiteSpace(domain) && DomainRegex.IsMatch(domain.Trim());
+
     public string Value { get; }
     public string LocalPart { get; }
     public string Domain { get; }

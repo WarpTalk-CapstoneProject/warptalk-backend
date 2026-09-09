@@ -348,6 +348,11 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             await _eventPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, executingUserId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // WT-521 — after the commit. Being removed from a workspace is otherwise discovered
+            // by finding a page you could open yesterday now returns 403, which reads as a broken
+            // product rather than as a decision somebody made.
+            await NotifyMemberRemovedAsync(workspaceId, memberUserId, ct);
+
             return Result.Success();
         }
         catch (Exception ex)
@@ -484,6 +489,47 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     }
 
     /// <summary>
+    /// WT-521 — tells somebody they were removed from a workspace.
+    ///
+    /// A separate type from the approved-leave notice on purpose: both end a membership, but only
+    /// one of them was the person's own idea, and telling somebody "you have left" when they were
+    /// removed states something untrue about their own actions.
+    ///
+    /// Best-effort and post-commit, like every other notification on this service.
+    /// </summary>
+    private async Task NotifyMemberRemovedAsync(Guid workspaceId, Guid memberUserId, CancellationToken ct)
+    {
+        if (_notificationClient == null) return;
+
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            var workspaceName = workspace?.Name ?? "a workspace";
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = memberUserId.ToString(),
+                Type = WorkspaceNotificationTypes.MemberRemoved,
+                Title = $"You were removed from {workspaceName}",
+                Body = $"An administrator removed you from {workspaceName}. You no longer have access to it.",
+                // Not a link into the workspace — they cannot open it any more.
+                ActionUrl = "/workspace",
+            };
+            request.Metadata.Add("workspace_id", workspaceId.ToString());
+            request.Metadata.Add("workspace_name", workspaceName);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not notify user {UserId} that they were removed from workspace {WorkspaceId}; the removal itself is committed.",
+                memberUserId, workspaceId);
+        }
+    }
+
+    /// <summary>
     /// Rings the bell for the person whose permissions just moved — a Notification Center row and
     /// the realtime toast in one call (NotificationGrpcServiceImpl persists and Redis-publishes).
     ///
@@ -508,7 +554,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var request = new WarpTalk.Shared.Protos.SendNotificationRequest
             {
                 UserId = memberUserId.ToString(),
-                Type = "WORKSPACE_ROLE_CHANGED",
+                Type = WorkspaceNotificationTypes.RoleChanged,
                 Title = $"Your role in {workspaceName} changed",
                 Body = $"You are now {newRole} (previously {previousRole}). Your permissions apply from your next request.",
                 ActionUrl = workspace?.Slug is { Length: > 0 } slug ? $"/{slug}" : "/",

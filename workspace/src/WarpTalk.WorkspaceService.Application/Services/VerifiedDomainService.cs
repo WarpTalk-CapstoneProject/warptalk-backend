@@ -65,6 +65,22 @@ public class VerifiedDomainService : IVerifiedDomainService
             // 3. Normalise and validate domain
             domain = domain.Trim().ToLowerInvariant();
 
+            // Shape and size, before anything asks whether it is public or already claimed. Until
+            // now the only checks were "is it a well-known public domain" and "has somebody else
+            // taken it" — so free text of any length was storable in the column that decides who
+            // counts as an internal member, and an over-long one failed inside Postgres.
+            if (domain.Length > WorkspaceConstants.VerifiedDomainMaxLength)
+            {
+                return Result.Failure<VerifiedDomainDto>(
+                    WorkspaceConstants.Errors.VerifiedDomainTooLong, ErrorCodes.ValidationError);
+            }
+
+            if (!EmailAddress.IsValidDomainName(domain))
+            {
+                return Result.Failure<VerifiedDomainDto>(
+                    WorkspaceConstants.Errors.VerifiedDomainInvalidFormat, ErrorCodes.ValidationError);
+            }
+
             if (EmailAddress.IsPublicDomainName(domain))
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
 
