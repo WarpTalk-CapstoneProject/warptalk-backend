@@ -8,6 +8,7 @@ using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.AssistantService.Domain.Exceptions;
 using WarpTalk.AssistantService.Domain.Entities;
 
 namespace WarpTalk.AssistantService.Infrastructure.OAuth;
@@ -264,7 +265,7 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
     /// </remarks>
     private static string RequireConfigured(string value, string optionName, string environmentKey) =>
         string.IsNullOrWhiteSpace(value)
-            ? throw new InvalidOperationException(
+            ? throw new PluginNotConfiguredException(
                 $"Google Workspace OAuth is not configured: Plugins__GoogleWorkspace__OAuth__{optionName} is empty. "
                 + $"Set {environmentKey} in the deployment environment.")
             : value;

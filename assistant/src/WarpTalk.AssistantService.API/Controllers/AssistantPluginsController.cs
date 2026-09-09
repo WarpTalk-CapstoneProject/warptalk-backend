@@ -1,6 +1,7 @@
 using System.Web;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Domain.Constants;
@@ -129,14 +130,23 @@ public class AssistantPluginsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <remarks>
+    /// <c>client=desktop</c> says the caller is the Electron shell rather than a browser tab. It is
+    /// sealed into the OAuth state here and read back at the callback, because by then the consent
+    /// has happened in the system browser and nothing else on that request says where it started.
+    /// </remarks>
     [HttpGet("{pluginKey}/connect-url")]
     [ProducesResponseType(typeof(PluginConnectUrlDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(string), StatusCodes.Status403Forbidden)]
-    public async Task<IActionResult> GetConnectUrl(string pluginKey, [FromQuery] Guid? workspaceId, CancellationToken ct)
+    public async Task<IActionResult> GetConnectUrl(
+        string pluginKey,
+        [FromQuery] string? client,
+        [FromQuery] Guid? workspaceId,
+        CancellationToken ct)
     {
-        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, workspaceId, ct);
+        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, client, workspaceId, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
@@ -150,9 +160,11 @@ public class AssistantPluginsController : ControllerBase
     /// <remarks>
     /// The provider redirects the end user's browser straight at this gateway URL, so the response
     /// has to be a redirect back into the app rather than a JSON body: nothing renders raw API JSON
-    /// for a human. That holds for the unhappy paths too, which is what
-    /// <see cref="CallbackRedirect"/> is for - a 429 from the provider, a cancelled consent and an
-    /// expired state all have to end as a page, never as an exception escaping the action.
+    /// for a human. That holds for the unhappy paths too, which is what <see cref="LandingUrl"/>
+    /// is for - a 429 from the provider, a cancelled consent and an expired state all have to end
+    /// as a page, never as an exception escaping the action. The app still re-fetches connection
+    /// status on arrival, so the query string decides only which sentence to show - never what the
+    /// connection actually is.
     /// </remarks>
     /// <remarks>
     /// Every <c>kind='mcp'</c> plugin shares this one redirect URI. A Client ID Metadata Document
@@ -175,13 +187,13 @@ public class AssistantPluginsController : ControllerBase
         [FromQuery] string? iss,
         CancellationToken ct)
     {
-        var pluginKey = _connectionService.ReadPluginKeyFromState(state);
+        var hint = _connectionService.ReadFlowHint(state);
 
-        var refusal = ClassifyBeforeExchange(pluginKey, code, state, error);
-        if (refusal != null) return CallbackRedirect(pluginKey, refusal);
+        var refusal = ClassifyBeforeExchange(hint?.PluginKey, code, state, error);
+        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
 
-        return await CompleteCallbackAsync(
-            pluginKey,
+        return await CompleteAsync(
+            hint,
             () => _connectionService.CompleteMcpOAuthCallbackAsync(code!, state!, iss, ct));
     }
 
@@ -218,15 +230,16 @@ public class AssistantPluginsController : ControllerBase
         [FromQuery] string? error,
         CancellationToken ct)
     {
-        // No plugin key in the path, so the tile to send the user back to can only come from the
-        // state - which the provider returns even when it returns an error instead of a code.
-        var pluginKey = _connectionService.ReadPluginKeyFromState(state);
+        // No plugin key in the path, so the tile to send the user back to - and the surface to
+        // send them back on - can only come from the state, which the provider returns even when
+        // it returns an error instead of a code.
+        var hint = _connectionService.ReadFlowHint(state);
 
-        var refusal = ClassifyBeforeExchange(pluginKey, code, state, error);
-        if (refusal != null) return CallbackRedirect(pluginKey, refusal);
+        var refusal = ClassifyBeforeExchange(hint?.PluginKey, code, state, error);
+        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
 
-        return await CompleteCallbackAsync(
-            pluginKey,
+        return await CompleteAsync(
+            hint,
             () => _connectionService.CompleteProviderOAuthCallbackAsync(
                 PluginConstants.Providers.Google, code!, state!, ct));
     }
@@ -256,39 +269,19 @@ public class AssistantPluginsController : ControllerBase
         CancellationToken ct)
     {
         // The one callback whose path names the plugin, so the tile is known even for a state that
-        // will not unprotect.
-        var refusal = ClassifyBeforeExchange(pluginKey, code, state, error);
-        if (refusal != null) return CallbackRedirect(pluginKey, refusal);
+        // will not unprotect. The surface still is not: that only ever lived in the state.
+        var hint = _connectionService.ReadFlowHint(state)
+            ?? new PluginOAuthFlowHintDto(pluginKey, PluginConstants.OAuthClient.Web);
 
-        return await CompleteCallbackAsync(
-            pluginKey,
+        var refusal = ClassifyBeforeExchange(pluginKey, code, state, error);
+        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+
+        return await CompleteAsync(
+            hint,
             () => _connectionService.CompleteOAuthCallbackAsync(pluginKey, code!, state!, ct));
     }
 
     // ---- the callback outcome contract -------------------------------------------------------
-
-    /// <summary>
-    /// The query-string vocabulary the plugins page reads off its own URL. Short, stable slugs: the
-    /// page turns them into sentences, so nothing here is prose and nothing here is a provider's
-    /// own error string.
-    /// </summary>
-    private static class CallbackError
-    {
-        /// <summary>The user pressed Cancel on the consent screen. Not a fault - do not alarm them.</summary>
-        public const string AccessDenied = "access_denied";
-
-        /// <summary>The state was missing, expired, tampered with, or names a different plugin than the path.</summary>
-        public const string InvalidState = "invalid_state";
-
-        /// <summary>The state named a plugin the catalog no longer serves.</summary>
-        public const string UnknownPlugin = "unknown_plugin";
-
-        /// <summary>The provider returned an error instead of a code, and it was not a cancellation.</summary>
-        public const string ProviderError = "provider_error";
-
-        /// <summary>Everything after the redirect: the token exchange, or storing the grant, failed.</summary>
-        public const string ExchangeFailed = "exchange_failed";
-    }
 
     /// <summary>
     /// The refusals that can be decided from the query string alone, before anything is exchanged.
@@ -297,22 +290,23 @@ public class AssistantPluginsController : ControllerBase
     /// The <c>error</c> parameter is the one every version of these actions used to only test for
     /// emptiness. Google sends <c>error=access_denied</c> with no code when the user cancels, so
     /// trying to exchange in that case would post an empty code and turn a deliberate choice into a
-    /// provider failure.
+    /// provider failure - and then tell the user something went wrong when nothing did.
     /// </remarks>
     private static string? ClassifyBeforeExchange(string? pluginKey, string? code, string? state, string? error)
     {
         if (!string.IsNullOrWhiteSpace(error))
         {
             return string.Equals(error, "access_denied", StringComparison.Ordinal)
-                ? CallbackError.AccessDenied
-                : CallbackError.ProviderError;
+                ? PluginConstants.ErrorCodes.AccessDenied
+                : PluginConstants.ErrorCodes.ProviderUnavailable;
         }
 
-        if (string.IsNullOrWhiteSpace(state) || pluginKey == null) return CallbackError.InvalidState;
+        if (string.IsNullOrWhiteSpace(state) || pluginKey == null)
+            return PluginConstants.ErrorCodes.PermissionDenied;
 
         // A response with neither an error nor a code is not something any provider should send;
         // there is nothing to exchange either way.
-        return string.IsNullOrWhiteSpace(code) ? CallbackError.ProviderError : null;
+        return string.IsNullOrWhiteSpace(code) ? PluginConstants.ErrorCodes.ProviderUnavailable : null;
     }
 
     /// <summary>
@@ -320,22 +314,18 @@ public class AssistantPluginsController : ControllerBase
     /// redirect.
     /// </summary>
     /// <remarks>
-    /// The catch-all is deliberate and is the point of the whole helper: the caller is a browser
-    /// mid-redirect, so an unhandled exception here is a raw API error page shown to a person who
-    /// has just consented. Anything unexpected is reported as <c>exchange_failed</c>, which is the
-    /// truthful summary from the user's side - the connection did not complete and connecting again
-    /// is the thing to try.
+    /// The service already reports its own failures as an outcome rather than throwing, so the
+    /// catch-all here is the second line rather than the first: the caller is a browser
+    /// mid-redirect, and an exception escaping this action is a raw API error page shown to a
+    /// person who has just consented. It costs four lines to make that impossible.
     /// </remarks>
-    private async Task<IActionResult> CompleteCallbackAsync(
-        string? pluginKey,
-        Func<Task<Result<PluginConnectionStatusDto>>> complete)
+    private async Task<IActionResult> CompleteAsync(
+        PluginOAuthFlowHintDto? hint,
+        Func<Task<PluginOAuthCallbackOutcomeDto>> complete)
     {
         try
         {
-            var result = await complete();
-            return result.IsSuccess
-                ? CallbackRedirect(result.Value!.PluginKey, errorCode: null)
-                : CallbackRedirect(pluginKey, CallbackErrorFor(result.ErrorCode));
+            return Redirect(LandingUrl(await complete()));
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -343,49 +333,75 @@ public class AssistantPluginsController : ControllerBase
                 e,
                 "Completing the OAuth callback for plugin {PluginKey} threw; the user is being redirected "
                     + "back to the plugins page.",
-                pluginKey);
-            return CallbackRedirect(pluginKey, CallbackError.ExchangeFailed);
+                hint?.PluginKey);
+            return Redirect(RefusedUrl(hint, PluginConstants.ErrorCodes.ProviderUnavailable));
         }
     }
 
     /// <summary>
-    /// Maps a domain error code onto the redirect vocabulary.
+    /// Where a finished callback sends the browser.
     /// </summary>
     /// <remarks>
-    /// The default is not laziness: the set of slugs is a contract with the plugins page, so a
-    /// domain code that gains no slug of its own has to collapse into the generic one rather than
-    /// invent a sixth value the page has never heard of. From the user's side "the connection did
-    /// not complete" is also all that separates the remaining cases.
+    /// Through <c>/connect/{provider}/callback</c> rather than straight to the plugins page,
+    /// because the consent may have been given somewhere the app that asked for it cannot see -
+    /// the system browser for the desktop app, a second tab for the web one. That page is the only
+    /// place that can hand the user back across that gap, and for the plain case it simply forwards
+    /// to the plugins page with the same query.
+    /// <para>
+    /// The provider comes from the outcome and never from the request, so a state that did not
+    /// survive lands on the plugins page instead of on a path an attacker could choose.
+    /// </para>
     /// </remarks>
-    private static string CallbackErrorFor(string? errorCode) => errorCode switch
+    private string LandingUrl(PluginOAuthCallbackOutcomeDto outcome)
     {
-        PluginConstants.ErrorCodes.UnknownPlugin => CallbackError.UnknownPlugin,
-        PluginConstants.ErrorCodes.PermissionDenied => CallbackError.InvalidState,
-        _ => CallbackError.ExchangeFailed,
-    };
+        var query = new Dictionary<string, string?> { ["status"] = outcome.Status };
+        if (!string.IsNullOrWhiteSpace(outcome.PluginKey)) query["plugin"] = outcome.PluginKey;
+        if (!string.IsNullOrWhiteSpace(outcome.Reason)) query["reason"] = outcome.Reason;
+        if (outcome.Client == PluginConstants.OAuthClient.Desktop) query["client"] = outcome.Client;
+
+        // Only on a failure, and only the id the logs are already keyed by: it is the one thing a
+        // user can quote that turns "it did not work" into a line an operator can find.
+        if (outcome.Status == PluginConstants.CallbackStatus.Error && CorrelationId is { Length: > 0 } reference)
+            query["ref"] = reference;
+
+        var path = string.IsNullOrWhiteSpace(outcome.Provider)
+            ? $"{_appBaseUrl}/settings/plugins"
+            : $"{_appBaseUrl}/connect/{Uri.EscapeDataString(outcome.Provider)}/callback";
+
+        return QueryHelpers.AddQueryString(path, query);
+    }
 
     /// <summary>
-    /// The one place a callback ends: back on the plugins page, saying what happened.
+    /// Where a callback that never reached an exchange sends the browser.
     /// </summary>
     /// <remarks>
-    /// The page needs to tell a completed consent from a cancelled one, and re-fetching connection
-    /// status cannot: a cancelled consent and a failed exchange both leave the status exactly as it
-    /// was, so the page would show the tile unchanged with nothing said. Hence the outcome travels
-    /// in the query string.
+    /// Straight to the plugins page, not through the callback page: nothing was exchanged, so no
+    /// plugin was ever looked up and the provider is unknown. A desktop user therefore lands in
+    /// their browser rather than back in the app - the right trade for the one path where the user
+    /// has already decided not to connect, and the reason <c>client</c> is still passed on so the
+    /// page can say so.
     /// <para>
-    /// The plugin key is omitted when it could not be recovered - an unreadable state carries no
+    /// The plugin key is omitted when it could not be recovered: an unreadable state carries no
     /// key, and inventing one would point the page at the wrong tile.
     /// </para>
     /// </remarks>
-    private IActionResult CallbackRedirect(string? pluginKey, string? errorCode)
+    private string RefusedUrl(PluginOAuthFlowHintDto? hint, string reason)
     {
-        var query = HttpUtility.ParseQueryString(string.Empty);
-        if (!string.IsNullOrWhiteSpace(pluginKey)) query["plugin"] = pluginKey;
-        if (errorCode == null) query["connected"] = "1";
-        else query["error"] = errorCode;
+        var query = new Dictionary<string, string?>
+        {
+            ["status"] = PluginConstants.CallbackStatus.Error,
+            ["reason"] = reason,
+        };
+        if (CorrelationId is { Length: > 0 } reference) query["ref"] = reference;
+        if (!string.IsNullOrWhiteSpace(hint?.PluginKey)) query["plugin"] = hint.PluginKey;
+        if (hint?.Client == PluginConstants.OAuthClient.Desktop) query["client"] = hint.Client;
 
-        return Redirect($"{_appBaseUrl}/settings/plugins?{query}");
+        return QueryHelpers.AddQueryString($"{_appBaseUrl}/settings/plugins", query);
     }
+
+    /// <summary>The id this request's logs are already tagged with (see the middleware in Program).</summary>
+    private string CorrelationId =>
+        HttpContext.Items["CorrelationId"]?.ToString() is { Length: > 0 } id ? id : HttpContext.TraceIdentifier;
 
     [HttpDelete("{pluginKey}/connection")]
     [ProducesResponseType(StatusCodes.Status200OK)]

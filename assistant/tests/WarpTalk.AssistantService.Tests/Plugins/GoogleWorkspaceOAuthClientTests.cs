@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.AssistantService.Domain.Exceptions;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Infrastructure.OAuth;
 
@@ -241,7 +242,7 @@ public class GoogleWorkspaceOAuthClientTests
         var sut = CreateSut(new HttpClient(new StubHttpMessageHandler(_ =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))), clientId: "");
 
-        var ex = Assert.Throws<InvalidOperationException>(() => sut.BuildAuthorizationUrl(
+        var ex = Assert.Throws<PluginNotConfiguredException>(() => sut.BuildAuthorizationUrl(
             GoogleDrivePlugin(),
             [],
             "opaque-state",
@@ -268,7 +269,7 @@ public class GoogleWorkspaceOAuthClientTests
             })),
             clientSecret: "");
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ExchangeCodeAsync(
+        var ex = await Assert.ThrowsAsync<PluginNotConfiguredException>(() => sut.ExchangeCodeAsync(
             GoogleDrivePlugin(),
             "authorization-code",
             new PluginOAuthStateDto(Guid.NewGuid(), GoogleDriveKey)));
