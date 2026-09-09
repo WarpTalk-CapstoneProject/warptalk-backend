@@ -35,6 +35,9 @@ public class MeetingMinutesDocxWriterTests
         Id: Guid.NewGuid(),
         TranslationRoomId: Guid.NewGuid(),
         MinutesNo: "BB-2026-0007",
+        // The projection of content.meetingTitle. The writers print the content's copy, not this
+        // one, so it is set to the same string rather than left null.
+        MeetingTitle: "Sprint review",
         Status: status,
         Version: version,
         IsCurrent: true,

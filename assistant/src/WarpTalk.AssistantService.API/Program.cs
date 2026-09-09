@@ -67,6 +67,9 @@ try
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
     builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
+    // The operator-side lifecycle of a catalog row. Separate from the installation service because
+    // it writes the global catalog rather than one user's own rows, and is gated accordingly.
+    builder.Services.AddScoped<IPluginCatalogAdminService, PluginCatalogAdminService>();
     builder.Services.AddScoped<IMcpConfirmationTokenService, McpConfirmationTokenService>();
     builder.Services.AddScoped<PluginConnectionService>();
     builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());
@@ -74,6 +77,12 @@ try
     builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
     builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
     builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
+    builder.Services.AddScoped<IWorkspaceMembershipClient, WorkspaceMembershipGrpcClient>();
+    // WT-646. The single place a workspace's plugin policy is applied - the catalog, install,
+    // connect and execute paths all judge through this rather than reading the snapshot themselves,
+    // so the null-versus-empty allowlist rule exists once.
+    builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
+    builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
     // has no official remote MCP server for Drive/Calendar.

@@ -21,11 +21,15 @@ namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 public interface IMeetingMinutesDocumentWriter
 {
     /// <summary>
-    /// The .docx bytes for one minutes document.
+    /// The .docx bytes for one minutes document, set in the requested layout.
     ///
     /// Takes the parsed content rather than the raw JSON so that a document which fails to parse
     /// cannot reach the renderer at all — it would otherwise produce a file with a number, a
     /// signature block, and nothing in between.
+    ///
+    /// <paramref name="template"/> is a <see cref="Domain.Constants.MinutesTemplates"/> key and
+    /// selects presentation only. Both layouts render the same content: a reader comparing the
+    /// two files must find the same record, differently typeset, and never a different record.
     /// </summary>
-    byte[] WriteDocx(MeetingMinutesDto minutes, MeetingMinutesContent content);
+    byte[] WriteDocx(MeetingMinutesDto minutes, MeetingMinutesContent content, string template);
 }

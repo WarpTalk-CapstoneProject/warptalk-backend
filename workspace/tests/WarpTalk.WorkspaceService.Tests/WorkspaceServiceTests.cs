@@ -1414,6 +1414,51 @@ public class WorkspaceServiceTests
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// WT-646. A workspace owner configures exactly one thing about plugins: whether members may
+    /// use them here. It is Owner-or-Admin like the rest of this endpoint, NOT owner-only —
+    /// putting it behind the owner-only gate would revoke, with no announcement, a permission
+    /// every Admin already has.
+    /// </summary>
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenAdminTurnsAllowAnyPluginsOff()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = true,
+            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
+        };
+        var requested = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30,
+            new List<string>(), true, false, null, false)
+        {
+            AllowAnyPlugins = false
+        };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(admin);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _workspaceRepository.UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        Assert.True(result.IsSuccess);
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(
+            workspaceId,
+            Arg.Is<WorkspaceConfiguration>(c => !c.AllowAnyPlugins),
+            userId,
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAdmin()
     {

@@ -9,11 +9,18 @@ using DocumentFormat.OpenXml.Wordprocessing;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Documents;
 
 /// <summary>
-/// A biên bản as a Word document, in the order Vietnamese practice reads it.
+/// A biên bản as a Word document, in the order Vietnamese practice reads it —
+/// <see cref="MinutesTemplates.VnNd30"/>.
+///
+/// One of two layouts over the same content; <see cref="GlobalMinutesDocxWriter"/> is the other,
+/// and <see cref="MinutesDocumentWriter"/> chooses between them. This class is not the fallback:
+/// for a domestic filing it is the correct form, and a reader who expects it will reject anything
+/// else.
 ///
 /// THE ORDER IS THE SPEC
 ///     Đơn vị → số biên bản → tên biên bản → thời gian và địa điểm → thành phần tham dự → vắng mặt
@@ -32,7 +39,7 @@ namespace WarpTalk.TranslationRoomService.Infrastructure.Documents;
 ///     paper form would have — rather than as today's date, which is the single most dangerous
 ///     thing a document generator can do to a record with legal weight.
 /// </summary>
-public class MeetingMinutesDocxWriter : IMeetingMinutesDocumentWriter
+public class MeetingMinutesDocxWriter
 {
     /// <summary>The blank a paper form leaves for something nobody has filled in.</summary>
     private const string Blank = "…………………";
@@ -57,6 +64,9 @@ public class MeetingMinutesDocxWriter : IMeetingMinutesDocumentWriter
             WriteVotes(body, content);
             WriteClosing(body, content);
             WriteSignatures(body, minutes);
+
+            // Last child of the body, which is where Word looks for it.
+            body.AppendChild(PageSetup());
 
             main.Document.Save();
         }
@@ -377,15 +387,39 @@ public class MeetingMinutesDocxWriter : IMeetingMinutesDocumentWriter
 
     // ------------------------------------------------------------------ primitives
 
+    /// <summary>
+    /// A4 portrait with the margins Nghị định 30/2020 specifies: 30mm left, 20mm right, 20mm top,
+    /// 20mm bottom. In twips (1mm = 56.7): 1701 left, 1134 the rest.
+    ///
+    /// The left margin is the one that is actually checked. It is the binding edge on a filed
+    /// Vietnamese document, and a copy set with Word's default 25mm comes back from the văn thư.
+    /// </summary>
+    private static SectionProperties PageSetup() => new(
+        new PageSize { Width = 11906U, Height = 16838U },
+        new PageMargin
+        {
+            Top = 1134,
+            Bottom = 1134,
+            Left = 1701U,
+            Right = 1134U,
+            Header = 567U,
+            Footer = 567U,
+            Gutter = 0U
+        });
+
     private static Paragraph Line(
         string text,
-        int size = 22,
+        int size = 26,
         bool bold = false,
         bool italic = false,
         bool indent = false,
         JustificationValues? alignment = null)
     {
-        var runProperties = new RunProperties(new FontSize { Val = size.ToString(CultureInfo.InvariantCulture) });
+        // Times New Roman 13 is the body face Nghị định 30 asks for; 26 half-points is 13pt.
+        // Callers that pass an explicit size are setting a heading or a footnote relative to it.
+        var runProperties = new RunProperties(
+            new RunFonts { Ascii = "Times New Roman", HighAnsi = "Times New Roman", ComplexScript = "Times New Roman" },
+            new FontSize { Val = size.ToString(CultureInfo.InvariantCulture) });
         if (bold) runProperties.AppendChild(new Bold());
         if (italic) runProperties.AppendChild(new Italic());
 

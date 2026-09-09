@@ -13,6 +13,16 @@ public record MeetingMinutesDto(
     Guid Id,
     Guid TranslationRoomId,
     string MinutesNo,
+    /// <summary>
+    /// A DISPLAY name, read out of the document's own body: the title the meeting was held under
+    /// when this version was drawn up, or null when none was recorded.
+    ///
+    /// The record's identity is <see cref="MinutesNo"/> — that is what the database keys on and
+    /// what a reader files it under. This is only what to put on a card, and it is deliberately
+    /// NOT the room's current title: renaming a room must not retitle a document somebody signed.
+    /// Null means "not recorded"; a caller showing a card falls back to the room title.
+    /// </summary>
+    string? MeetingTitle,
     string Status,
     int Version,
     bool IsCurrent,

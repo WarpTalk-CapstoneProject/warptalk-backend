@@ -48,6 +48,15 @@ public partial class TranslationRoomDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // A built-in Postgres function made visible to LINQ. Not a schema object and not business
+        // logic: it adds nothing to the database and maps one-to-one onto SQL that already exists
+        // there. See PostgresJsonFunctions for why the minutes library needs it.
+        modelBuilder
+            .HasDbFunction(typeof(PostgresJsonFunctions)
+                .GetMethod(nameof(PostgresJsonFunctions.JsonbExtractPathText))!)
+            .HasName("jsonb_extract_path_text")
+            .IsBuiltIn();
+
         modelBuilder
             .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
             .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
@@ -417,7 +426,12 @@ public partial class TranslationRoomDbContext : DbContext
 
             entity.ToTable("meeting_minutes", "translation_room");
 
-            entity.HasIndex(e => new { e.WorkspaceId, e.MinutesNo }, "meeting_minutes_workspace_no_idx")
+            // Mirrors 20260906090000_minutes_number_is_unique_per_version.sql, which replaced the
+            // old (workspace_id, minutes_no) index. `version` is in the key because a revision
+            // keeps the number of the document it revises; a new document is always version 1, so
+            // two chains still cannot claim one number and the allocation race still collides here.
+            entity.HasIndex(e => new { e.WorkspaceId, e.MinutesNo, e.Version },
+                    "meeting_minutes_workspace_no_version_idx")
                 .IsUnique();
 
             entity.HasIndex(e => e.TranslationRoomId, "meeting_minutes_one_current_per_room_idx")
