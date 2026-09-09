@@ -6,6 +6,7 @@ using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.AssistantService.Domain.Exceptions;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
@@ -50,6 +51,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     public async Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
         string pluginKey,
         Guid userId,
+        string? client = null,
         Guid? workspaceId = null,
         CancellationToken ct = default)
     {
@@ -88,13 +90,15 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         // Prepare, then seal, then build: the provider produces the secrets that must round-trip
         // (a PKCE verifier), those go inside the sealed state, and only then can a URL carrying
         // that state be assembled.
-        var flowState = oauthClient.PrepareState(plugin, new PluginOAuthStateDto(userId, pluginKey));
+        var flowState = oauthClient.PrepareState(
+            plugin,
+            new PluginOAuthStateDto(userId, pluginKey, Client: PluginConstants.OAuthClient.Normalize(client)));
         var state = _stateProtector.Protect(flowState);
         var url = oauthClient.BuildAuthorizationUrl(plugin, scopes, state, flowState);
         return Result.Success(new PluginConnectUrlDto(url));
     }
 
-    public async Task<Result<PluginConnectionStatusDto>> CompleteOAuthCallbackAsync(
+    public async Task<PluginOAuthCallbackOutcomeDto> CompleteOAuthCallbackAsync(
         string pluginKey,
         string code,
         string state,
@@ -102,14 +106,14 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     {
         var unprotected = UnprotectState(state);
         if (!unprotected.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+            return Failed(unprotected.ErrorCode!);
 
         var oauthState = unprotected.Value!;
 
         // A per-plugin callback path carries the key twice, so the two must agree: a mismatch means
         // the state does not belong to the URL it arrived on.
         if (!string.Equals(oauthState.PluginKey, pluginKey, StringComparison.Ordinal))
-            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
+            return Failed(PluginConstants.ErrorCodes.PermissionDenied, oauthState.Client);
 
         // Retired rows are allowed here and nowhere else. The only state that can arrive on this
         // path is one minted before the split, which names google_workspace - a row 20260907100000
@@ -125,7 +129,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     }
 
     /// <inheritdoc />
-    public async Task<Result<PluginConnectionStatusDto>> CompleteProviderOAuthCallbackAsync(
+    public async Task<PluginOAuthCallbackOutcomeDto> CompleteProviderOAuthCallbackAsync(
         string provider,
         string code,
         string state,
@@ -133,7 +137,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     {
         var unprotected = UnprotectState(state);
         if (!unprotected.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+            return Failed(unprotected.ErrorCode!);
 
         // The path names a provider, not a plugin, so the plugin key comes from the sealed state -
         // the same arrangement the MCP callback uses. What the path still contributes is a
@@ -142,7 +146,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         return await CompleteCallbackAsync(unprotected.Value!, code, ct, expectedProvider: provider);
     }
 
-    public async Task<Result<PluginConnectionStatusDto>> CompleteMcpOAuthCallbackAsync(
+    public async Task<PluginOAuthCallbackOutcomeDto> CompleteMcpOAuthCallbackAsync(
         string code,
         string state,
         string? issuer = null,
@@ -150,7 +154,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     {
         var unprotected = UnprotectState(state);
         if (!unprotected.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(unprotected.Error!, unprotected.ErrorCode);
+            return Failed(unprotected.ErrorCode!);
 
         // No key in the path to cross-check against - the protected state is the only source, which
         // is exactly why it is integrity-protected rather than merely opaque.
@@ -158,7 +162,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         var issuerCheck = ValidateIssuer(oauthState, issuer);
         if (!issuerCheck.IsSuccess)
-            return Result.Failure<PluginConnectionStatusDto>(issuerCheck.Error!, issuerCheck.ErrorCode);
+            return Failed(issuerCheck.ErrorCode!, oauthState.Client);
 
         return await CompleteCallbackAsync(oauthState, code, ct);
     }
@@ -189,12 +193,17 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     }
 
     /// <inheritdoc />
-    public string? ReadPluginKeyFromState(string? state)
+    public PluginOAuthFlowHintDto? ReadFlowHint(string? state)
     {
         if (string.IsNullOrWhiteSpace(state)) return null;
 
         var unprotected = UnprotectState(state);
-        return unprotected.IsSuccess ? unprotected.Value!.PluginKey : null;
+        if (!unprotected.IsSuccess) return null;
+
+        var oauthState = unprotected.Value!;
+        return new PluginOAuthFlowHintDto(
+            oauthState.PluginKey,
+            PluginConstants.OAuthClient.Normalize(oauthState.Client));
     }
 
     /// <summary>
@@ -214,6 +223,21 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         }
     }
 
+    /// <summary>
+    /// The shared tail of every callback: redeem the code, store the grant, and say what happened.
+    /// </summary>
+    /// <remarks>
+    /// Everything runs inside one <c>catch</c>. The exchange calls a provider over the network with
+    /// credentials read from configuration, and the write that follows touches the database - so an
+    /// empty client secret, a provider outage and a failed save all end here. Before this, each of
+    /// them escaped as an exception and reached the user as a JSON error page on the API domain,
+    /// because a callback's caller is a browser following a redirect and has nowhere to put one.
+    /// <para>
+    /// The provider's own words go to the log and nowhere else: whatever went wrong - a 429, a 503,
+    /// a redirect_uri_mismatch, an empty body - has to reach the user as a page they can act on,
+    /// and the redirect they follow must not carry a provider's error text.
+    /// </para>
+    /// </remarks>
     /// <param name="route">
     /// Which redirect URI the browser came back on. It has to be repeated on the token request, so
     /// this travels all the way down to the OAuth client rather than being decided there.
@@ -222,7 +246,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
     /// Whether a catalog row with <c>is_active=false</c> may complete this callback. True only on
     /// the legacy path, where the state predates the row's retirement.
     /// </param>
-    private async Task<Result<PluginConnectionStatusDto>> CompleteCallbackAsync(
+    private async Task<PluginOAuthCallbackOutcomeDto> CompleteCallbackAsync(
         PluginOAuthStateDto oauthState,
         string code,
         CancellationToken ct,
@@ -231,125 +255,185 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         bool includeRetiredPlugin = false)
     {
         var pluginKey = oauthState.PluginKey;
+        var client = PluginConstants.OAuthClient.Normalize(oauthState.Client);
+        string? provider = null;
 
-        var plugin = includeRetiredPlugin
-            ? await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey, ct: ct)
-            : await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
-        if (plugin == null)
-            return Result.Failure<PluginConnectionStatusDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
-
-        // Same shape as the per-plugin route's key cross-check: when the path carries an identity
-        // too, it and the state have to agree. Collapses to the same opaque error, so a prober
-        // cannot tell a wrong provider from a forged state.
-        if (expectedProvider != null
-            && !string.Equals(plugin.Provider, expectedProvider, StringComparison.Ordinal))
-            return Result.Failure<PluginConnectionStatusDto>("Invalid OAuth state.", PluginConstants.ErrorCodes.PermissionDenied);
-
-        var installed = await _unitOfWork.PluginInstallationRepository.AnyAsync(
-            i => i.UserId == oauthState.UserId
-                && i.PluginId == plugin.Id
-                && i.Status == PluginConstants.InstallationStatus.Installed,
-            ct);
-
-        if (!installed)
-            return Result.Failure<PluginConnectionStatusDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
-
-        PluginOAuthTokenDto token;
         try
         {
-            token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, route, ct);
+            var plugin = includeRetiredPlugin
+                ? await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey, ct: ct)
+                : await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
+            if (plugin == null)
+                return Failed(PluginConstants.ErrorCodes.UnknownPlugin, client, pluginKey: pluginKey);
+
+            provider = plugin.Provider;
+
+            // Same shape as the per-plugin route's key cross-check: when the path carries an
+            // identity too, it and the state have to agree. Collapses to the same opaque error, so
+            // a prober cannot tell a wrong provider from a forged state.
+            if (expectedProvider != null
+                && !string.Equals(plugin.Provider, expectedProvider, StringComparison.Ordinal))
+                return Failed(PluginConstants.ErrorCodes.PermissionDenied, client, provider, pluginKey);
+
+            var installed = await _unitOfWork.PluginInstallationRepository.AnyAsync(
+                i => i.UserId == oauthState.UserId
+                    && i.PluginId == plugin.Id
+                    && i.Status == PluginConstants.InstallationStatus.Installed,
+                ct);
+
+            if (!installed)
+                return Failed(PluginConstants.ErrorCodes.PluginNotInstalled, client, provider, pluginKey);
+
+            var token = await OAuthClientFor(plugin).ExchangeCodeAsync(plugin, code, oauthState, route, ct);
+
+            // By provider, not by plugin. A user who already consented to Google through Drive and
+            // is now connecting Calendar comes back here with the same grant: this has to find that
+            // row and widen it, not insert a second one that the (user_id, provider) unique
+            // constraint would reject.
+            var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
+                c => c.UserId == oauthState.UserId && c.Provider == plugin.Provider, ct: ct);
+            var now = DateTime.UtcNow;
+            var canReuseStoredRefreshToken = connection is
+            {
+                Status: PluginConstants.ConnectionStatus.Connected,
+                EncryptedRefreshToken: not null
+            } && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken);
+
+            if (connection == null)
+            {
+                connection = new PluginConnection
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = oauthState.UserId,
+                    // Identity. NOT NULL with no database default, so omitting it here fails the
+                    // insert at runtime rather than at compile time.
+                    Provider = plugin.Provider,
+                    // Provenance: which catalog row sent the user to consent. Set once, on the row
+                    // that created the connection, and deliberately not rewritten on a later
+                    // reconnect through a sibling plugin - "first obtained through" is the only
+                    // thing it claims.
+                    PluginId = plugin.Id,
+                    CreatedAt = now,
+                };
+                await _unitOfWork.PluginConnectionRepository.AddAsync(connection, ct);
+            }
+            else
+            {
+                _unitOfWork.PluginConnectionRepository.Update(connection);
+            }
+
+            connection.ProviderAccountId = token.ProviderAccountId;
+            connection.ProviderEmail = token.ProviderEmail;
+            connection.ScopesJson = JsonSerializer.Serialize(token.GrantedScopes);
+            connection.UpdatedAt = now;
+
+            if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
+            {
+                connection.Status = PluginConstants.ConnectionStatus.Expired;
+                connection.EncryptedAccessToken = null;
+                connection.EncryptedRefreshToken = null;
+                connection.AccessTokenExpiresAt = null;
+                connection.TokenRotatedAt = null;
+                await _unitOfWork.SaveChangesAsync(ct);
+
+                // A consent that came back without a refresh token leaves nothing to act with
+                // later. The row is honest about that (`expired`), and the user is told to connect
+                // again rather than shown a success they cannot use.
+                return new PluginOAuthCallbackOutcomeDto(
+                    PluginConstants.CallbackStatus.Error,
+                    PluginConstants.ErrorCodes.ConnectionRequired,
+                    provider,
+                    pluginKey,
+                    client,
+                    new PluginConnectionStatusDto(
+                        pluginKey,
+                        connection.Status,
+                        connection.ProviderEmail,
+                        token.GrantedScopes));
+            }
+
+            connection.Status = PluginConstants.ConnectionStatus.Connected;
+            connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
+            if (!string.IsNullOrWhiteSpace(token.RefreshToken))
+                connection.EncryptedRefreshToken = _credentialProtector.Protect(token.RefreshToken);
+            connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
+            connection.TokenRotatedAt = now;
+
+            await SyncToolManifestAsync(plugin, connection, now, ct);
+
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return new PluginOAuthCallbackOutcomeDto(
+                ScopeOutcome(plugin, token.GrantedScopes),
+                null,
+                provider,
+                pluginKey,
+                client,
+                new PluginConnectionStatusDto(
+                    pluginKey,
+                    connection.Status,
+                    connection.ProviderEmail,
+                    token.GrantedScopes));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // The caller here is a browser redirect, not an API client: whatever went wrong - a 429,
-            // a 503, a redirect_uri_mismatch, an empty body - has to end as a page the user can act
-            // on, and an exception would end as a raw error page instead. The provider's own words
-            // go to the log, which is the only place they belong: the redirect the user follows must
-            // not carry them.
-            _logger.LogWarning(
+            var reason = Classify(ex);
+            _logger.LogError(
                 ex,
-                "Exchanging the authorization code for plugin {PluginKey} failed; the user is being sent "
-                    + "back to the plugins page and can try connecting again.",
-                plugin.PluginKey);
-
-            return Result.Failure<PluginConnectionStatusDto>(
-                "The provider could not complete the connection. Try connecting again in a moment.",
-                PluginConstants.ErrorCodes.ProviderUnavailable);
-        }
-
-        // By provider, not by plugin. A user who already consented to Google through Drive and is
-        // now connecting Calendar comes back here with the same grant: this has to find that row
-        // and widen it, not insert a second one that the (user_id, provider) unique constraint
-        // would reject.
-        var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
-            c => c.UserId == oauthState.UserId && c.Provider == plugin.Provider, ct: ct);
-        var now = DateTime.UtcNow;
-        var canReuseStoredRefreshToken = connection is
-        {
-            Status: PluginConstants.ConnectionStatus.Connected,
-            EncryptedRefreshToken: not null
-        } && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken);
-
-        if (connection == null)
-        {
-            connection = new PluginConnection
-            {
-                Id = Guid.NewGuid(),
-                UserId = oauthState.UserId,
-                // Identity. NOT NULL with no database default, so omitting it here fails the
-                // insert at runtime rather than at compile time.
-                Provider = plugin.Provider,
-                // Provenance: which catalog row sent the user to consent. Set once, on the row
-                // that created the connection, and deliberately not rewritten on a later reconnect
-                // through a sibling plugin - "first obtained through" is the only thing it claims.
-                PluginId = plugin.Id,
-                CreatedAt = now,
-            };
-            await _unitOfWork.PluginConnectionRepository.AddAsync(connection, ct);
-        }
-        else
-        {
-            _unitOfWork.PluginConnectionRepository.Update(connection);
-        }
-
-        connection.ProviderAccountId = token.ProviderAccountId;
-        connection.ProviderEmail = token.ProviderEmail;
-        connection.ScopesJson = JsonSerializer.Serialize(token.GrantedScopes);
-        connection.UpdatedAt = now;
-
-        if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
-        {
-            connection.Status = PluginConstants.ConnectionStatus.Expired;
-            connection.EncryptedAccessToken = null;
-            connection.EncryptedRefreshToken = null;
-            connection.AccessTokenExpiresAt = null;
-            connection.TokenRotatedAt = null;
-            await _unitOfWork.SaveChangesAsync(ct);
-
-            return Result.Success(new PluginConnectionStatusDto(
+                "Plugin OAuth callback could not be completed for {PluginKey} ({Reason}); the user is "
+                    + "being sent back to the plugins page.",
                 pluginKey,
-                connection.Status,
-                connection.ProviderEmail,
-                token.GrantedScopes));
+                reason);
+            return Failed(reason, client, provider, pluginKey);
         }
-
-        connection.Status = PluginConstants.ConnectionStatus.Connected;
-        connection.EncryptedAccessToken = _credentialProtector.Protect(token.AccessToken);
-        if (!string.IsNullOrWhiteSpace(token.RefreshToken))
-            connection.EncryptedRefreshToken = _credentialProtector.Protect(token.RefreshToken);
-        connection.AccessTokenExpiresAt = token.AccessTokenExpiresAt;
-        connection.TokenRotatedAt = now;
-
-        await SyncToolManifestAsync(plugin, connection, now, ct);
-
-        await _unitOfWork.SaveChangesAsync(ct);
-
-        return Result.Success(new PluginConnectionStatusDto(
-            pluginKey,
-            connection.Status,
-            connection.ProviderEmail,
-            token.GrantedScopes));
     }
+
+    /// <summary>
+    /// Connected, or connected-but-narrower than the plugin asked for.
+    /// </summary>
+    /// <remarks>
+    /// The same subset test the plugins page uses to decide whether a tile counts as connected, so
+    /// the redirect and the tile cannot disagree about the grant the user just gave.
+    /// </remarks>
+    private static string ScopeOutcome(Plugin plugin, IReadOnlyList<string> grantedScopes)
+    {
+        var granted = new HashSet<string>(grantedScopes, StringComparer.Ordinal);
+        return PluginScopeMapper.FromJson(plugin.RequiredScopesJson).All(granted.Contains)
+            ? PluginConstants.CallbackStatus.Connected
+            : PluginConstants.CallbackStatus.Partial;
+    }
+
+    /// <summary>
+    /// Which of the three sentences the user should read.
+    /// </summary>
+    /// <remarks>
+    /// Only <see cref="PluginNotConfiguredException"/> earns the configuration reason, and it exists
+    /// for exactly this test. Classifying on <c>InvalidOperationException</c> would have caught the
+    /// OAuth clients' own "Google refused the code" as a configuration fault, because that is the
+    /// type they throw too - and then told an operator to go set a variable that was already set.
+    /// <para>
+    /// Everything else degrades to transient. Being wrong that way costs the user a retry; being
+    /// wrong the other way tells them to retry something that will fail identically forever.
+    /// </para>
+    /// </remarks>
+    private static string Classify(Exception ex) => ex switch
+    {
+        PluginNotConfiguredException => PluginConstants.ErrorCodes.ProviderConfiguration,
+        _ => PluginConstants.ErrorCodes.ProviderUnavailable,
+    };
+
+    private static PluginOAuthCallbackOutcomeDto Failed(
+        string reason,
+        string? client = null,
+        string? provider = null,
+        string? pluginKey = null) =>
+        new(
+            PluginConstants.CallbackStatus.Error,
+            reason,
+            provider,
+            pluginKey,
+            PluginConstants.OAuthClient.Normalize(client),
+            null);
 
     /// <summary>
     /// Refreshes the cached tool set for an MCP-backed row, using the connection just established.

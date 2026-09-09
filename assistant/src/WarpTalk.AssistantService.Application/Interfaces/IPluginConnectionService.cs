@@ -5,6 +5,11 @@ namespace WarpTalk.AssistantService.Application.Interfaces;
 
 public interface IPluginConnectionService
 {
+    /// <param name="client">
+    /// Which surface is asking - see <see cref="Domain.Constants.PluginConstants.OAuthClient"/>.
+    /// It is sealed into the state here so the callback can tell, several minutes and one external
+    /// browser later, whether it has to hand the user back to the desktop app.
+    /// </param>
     /// <param name="workspaceId">
     /// The workspace the connect is being started from, when there is one. WT-646: a plugin the
     /// workspace's policy excludes is refused here rather than at the callback, which has no
@@ -14,6 +19,7 @@ public interface IPluginConnectionService
     Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
         string pluginKey,
         Guid userId,
+        string? client = null,
         Guid? workspaceId = null,
         CancellationToken ct = default);
 
@@ -36,7 +42,11 @@ public interface IPluginConnectionService
     /// its route, and the option that holds the old URI go with it.
     /// </para>
     /// </remarks>
-    Task<Result<PluginConnectionStatusDto>> CompleteOAuthCallbackAsync(string pluginKey, string code, string state, CancellationToken ct = default);
+    Task<PluginOAuthCallbackOutcomeDto> CompleteOAuthCallbackAsync(
+        string pluginKey,
+        string code,
+        string state,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Completes a callback for a <c>native</c> plugin on the provider-scoped redirect URI,
@@ -58,7 +68,7 @@ public interface IPluginConnectionService
     /// provider of the plugin named in <c>state</c>, so a state minted for one provider cannot be
     /// redeemed on another's callback.
     /// </param>
-    Task<Result<PluginConnectionStatusDto>> CompleteProviderOAuthCallbackAsync(
+    Task<PluginOAuthCallbackOutcomeDto> CompleteProviderOAuthCallbackAsync(
         string provider,
         string code,
         string state,
@@ -80,24 +90,26 @@ public interface IPluginConnectionService
     /// compared against the issuer recorded before the redirect, which is what closes
     /// authorization-server mix-up.
     /// </param>
-    Task<Result<PluginConnectionStatusDto>> CompleteMcpOAuthCallbackAsync(
+    Task<PluginOAuthCallbackOutcomeDto> CompleteMcpOAuthCallbackAsync(
         string code,
         string state,
         string? issuer = null,
         CancellationToken ct = default);
+
     /// <summary>
-    /// The plugin key sealed inside an OAuth state, or <c>null</c> when the state is missing or
-    /// cannot be read.
+    /// The little a caller outside this service may learn from a sealed OAuth state, or
+    /// <c>null</c> when the state is missing or cannot be read.
     /// </summary>
     /// <remarks>
-    /// A callback that fails has no result to take a plugin key from, and the user still has to
-    /// land back on the tile they started from. The provider-scoped and MCP callbacks have no key
-    /// in their path, so the state is the only place left to ask - including when the provider came
-    /// back with <c>error=access_denied</c> and no code at all, which it does return the state
-    /// with. <c>null</c> is the answer that says the key is not recoverable, and the caller reports
-    /// that as an invalid state rather than guessing.
+    /// A callback that never got as far as an exchange has no outcome to take a plugin key from,
+    /// and the user still has to land back on the tile they started from - on the surface they
+    /// started from. The provider-scoped and MCP callbacks have no key in their path, so the state
+    /// is the only place left to ask, including when the provider came back with
+    /// <c>error=access_denied</c> and no code at all, which it does return the state with.
+    /// <c>null</c> is the answer that says nothing is recoverable, and the caller reports that as
+    /// an invalid state rather than guessing.
     /// </remarks>
-    string? ReadPluginKeyFromState(string? state);
+    PluginOAuthFlowHintDto? ReadFlowHint(string? state);
 
     Task<Result<PluginConnectionStatusDto>> GetStatusAsync(string pluginKey, Guid userId, CancellationToken ct = default);
     Task<Result> DisconnectAsync(string pluginKey, Guid userId, CancellationToken ct = default);

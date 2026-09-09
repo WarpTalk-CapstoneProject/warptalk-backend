@@ -1,12 +1,14 @@
 using System.Linq.Expressions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
+using WarpTalk.AssistantService.Domain.Exceptions;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
 
@@ -149,9 +151,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
-        Assert.Equal("user@example.com", result.Value.ProviderEmail);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
+        Assert.Equal("user@example.com", result.Connection.ProviderEmail);
         await _connectionRepository.Received(1)
             .AddAsync(
                 Arg.Is<PluginConnection>(connection =>
@@ -198,8 +200,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
         Assert.Equal(PluginConstants.ConnectionStatus.Connected, expiredConnection.Status);
         Assert.Equal("protected:new-access-token", expiredConnection.EncryptedAccessToken);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
@@ -227,8 +229,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Reason);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Connection!.Status);
         await _connectionRepository.Received(1)
             .AddAsync(
                 Arg.Is<PluginConnection>(connection =>
@@ -273,8 +276,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Reason);
+        Assert.Equal(PluginConstants.ConnectionStatus.Expired, result.Connection!.Status);
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, expiredConnection.Status);
         Assert.Null(expiredConnection.EncryptedAccessToken);
         Assert.Null(expiredConnection.EncryptedRefreshToken);
@@ -305,8 +309,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
         Assert.Equal("protected:new-access-token", connected.EncryptedAccessToken);
         Assert.Equal("protected:refresh-token", connected.EncryptedRefreshToken);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
@@ -570,7 +574,7 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
         await _connectionRepository.Received(1).FirstOrDefaultAsync(
             Arg.Is<Expression<Func<PluginConnection, bool>>>(predicate =>
                 // The grant obtained through the Drive row is the one Calendar has to find.
@@ -613,7 +617,7 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
         await _connectionRepository.DidNotReceive()
             .AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
         _connectionRepository.Received(1).Update(existing);
@@ -640,7 +644,7 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
         await _connectionRepository.Received(1).AddAsync(
             Arg.Is<PluginConnection>(connection =>
                 connection.Provider == PluginConstants.Providers.Google
@@ -699,8 +703,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut().CompleteProviderOAuthCallbackAsync(
             PluginConstants.Providers.Google, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(GoogleCalendarKey, result.Value!.PluginKey);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(GoogleCalendarKey, result.Connection!.PluginKey);
         await _pluginRepository.Received(1).FirstOrDefaultAsync(
             Arg.Is<Expression<Func<Plugin, bool>>>(predicate =>
                 predicate.Compile().Invoke(new Plugin { PluginKey = GoogleCalendarKey, IsActive = true })
@@ -720,10 +724,9 @@ public class PluginConnectionServiceTests
         var result = await CreateSut().CompleteProviderOAuthCallbackAsync(
             PluginConstants.Providers.Google, "oauth-code", "state-token");
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Reason);
         // Same opaque message the forged-state path returns, so a prober cannot tell the two apart.
-        Assert.Equal("Invalid OAuth state.", result.Error);
         await _oauthClient.DidNotReceive().ExchangeCodeAsync(
             Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>());
     }
@@ -736,8 +739,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut().CompleteProviderOAuthCallbackAsync(
             PluginConstants.Providers.Google, "oauth-code", "tampered-state");
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Reason);
         await _oauthClient.DidNotReceive().ExchangeCodeAsync(
             Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>());
     }
@@ -767,8 +770,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(RetiredWorkspaceKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
         await _pluginRepository.Received(1).FirstOrDefaultAsync(
             Arg.Is<Expression<Func<Plugin, bool>>>(predicate =>
                 predicate.Compile().Invoke(new Plugin { PluginKey = RetiredWorkspaceKey, IsActive = false })),
@@ -860,34 +863,40 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.ErrorCode);
-        // Google's own words go to the log, never into anything the user is handed.
-        Assert.DoesNotContain("rateLimitExceeded", result.Error!, StringComparison.Ordinal);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderUnavailable, result.Reason);
+        // Google's own words go to the log, never into anything the user is handed: the outcome
+        // carries a code and nothing that could hold a provider's error text.
+        Assert.Null(result.Connection);
         await _connectionRepository.DidNotReceive().AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public void ReadPluginKeyFromState_ReturnsTheSealedKey()
+    public void ReadFlowHint_ReturnsTheSealedKeyAndSurface()
     {
         // What a failed callback is addressed with: the provider-scoped route has no key in its
-        // path, so without this a cancelled consent could not name the tile it came from.
-        _stateProtector.Unprotect("state-token").Returns(new PluginOAuthStateDto(UserId, GoogleCalendarKey));
+        // path, so without this a cancelled consent could not name the tile it came from - nor
+        // which surface the user was on when they started.
+        _stateProtector.Unprotect("state-token").Returns(
+            new PluginOAuthStateDto(UserId, GoogleCalendarKey, Client: PluginConstants.OAuthClient.Desktop));
 
-        Assert.Equal(GoogleCalendarKey, CreateSut().ReadPluginKeyFromState("state-token"));
+        var hint = CreateSut().ReadFlowHint("state-token");
+
+        Assert.Equal(GoogleCalendarKey, hint!.PluginKey);
+        Assert.Equal(PluginConstants.OAuthClient.Desktop, hint.Client);
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("tampered-state")]
-    public void ReadPluginKeyFromState_ReturnsNull_WhenTheStateCannotBeRead(string? state)
+    public void ReadFlowHint_ReturnsNull_WhenTheStateCannotBeRead(string? state)
     {
         _stateProtector.Unprotect("tampered-state")
             .Returns<PluginOAuthStateDto>(_ => throw new InvalidOperationException("bad payload"));
 
-        Assert.Null(CreateSut().ReadPluginKeyFromState(state));
+        Assert.Null(CreateSut().ReadFlowHint(state));
     }
 
     [Fact]
@@ -901,8 +910,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Reason);
         await _oauthClient.DidNotReceive().ExchangeCodeAsync(
             Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>());
     }
@@ -1081,7 +1090,7 @@ public class PluginConnectionServiceTests
             .Returns(true);
         _workspaceAllowsPlugins = false;
 
-        var result = await CreateSut().GetConnectUrlAsync(GoogleCalendarKey, UserId, WorkspaceId);
+        var result = await CreateSut().GetConnectUrlAsync(GoogleCalendarKey, UserId, workspaceId: WorkspaceId);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
@@ -1161,8 +1170,8 @@ public class PluginConnectionServiceTests
         var result = await CreateSut()
             .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.Status);
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
     }
 
     [Fact]
@@ -1200,6 +1209,98 @@ public class PluginConnectionServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
         Assert.Null(connection.EncryptedRefreshToken);
+    }
+
+    /// <summary>
+    /// The failure that reached production as a JSON error page: an empty client secret made the
+    /// token exchange throw, and nothing between there and the browser caught it.
+    /// </summary>
+    /// <remarks>
+    /// Its own reason, not the generic one, because the answer differs in kind. "Try again" is
+    /// wrong advice for a secret that is not set - it sends the user round the consent screen for
+    /// as long as they are willing.
+    /// </remarks>
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsConfigurationError_WhenTheExchangeThrowsBecauseWeAreNotConfigured()
+    {
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledPlugin(plugin);
+        _oauthClient.ExchangeCodeAsync(
+                plugin,
+                "oauth-code",
+                Arg.Any<PluginOAuthStateDto>(),
+                Arg.Any<PluginOAuthCallbackRoute>(),
+                Arg.Any<CancellationToken>())
+            .ThrowsAsync(new PluginNotConfiguredException(
+                "Google Workspace OAuth is not configured: Plugins__GoogleWorkspace__OAuth__ClientSecret is empty."));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderConfiguration, result.Reason);
+        Assert.Equal(PluginConstants.Providers.Google, result.Provider);
+        Assert.Null(result.Connection);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The user unticked a scope on the provider's consent screen. The grant is real, so this is
+    /// not an error - but the page has to say which half is missing rather than show a tile that
+    /// reads "Connect" immediately after a successful connect.
+    /// </summary>
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsPartial_WhenConsentGrantedFewerScopesThanRequired()
+    {
+        var plugin = GoogleDrivePlugin();
+        plugin.RequiredScopesJson =
+            """["https://www.googleapis.com/auth/drive.readonly","https://www.googleapis.com/auth/drive.file"]""";
+        ConfigureInstalledPlugin(plugin);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(plugin, ["https://www.googleapis.com/auth/drive.readonly"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Partial, result.Status);
+        Assert.Null(result.Reason);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Connection!.Status);
+    }
+
+    /// <summary>
+    /// The surface has to survive the round trip inside the sealed state: by the time the callback
+    /// runs, the consent has happened in a system browser or a second tab, and nothing else on that
+    /// request remembers which app asked.
+    /// </summary>
+    [Fact]
+    public async Task GetConnectUrlAsync_SealsTheCallingSurfaceIntoTheState()
+    {
+        ConfigureInstalledPlugin(GoogleDrivePlugin());
+
+        await CreateSut().GetConnectUrlAsync(
+            GoogleDriveKey,
+            UserId,
+            PluginConstants.OAuthClient.Desktop);
+
+        _stateProtector.Received(1).Protect(
+            Arg.Is<PluginOAuthStateDto>(state => state.Client == PluginConstants.OAuthClient.Desktop));
+    }
+
+    [Fact]
+    public async Task GetConnectUrlAsync_TreatsAnUnrecognisedSurfaceAsWeb()
+    {
+        // Not deep-linking is the safe direction: an unknown value must never become a link that
+        // opens a desktop app.
+        ConfigureInstalledPlugin(GoogleDrivePlugin());
+
+        await CreateSut().GetConnectUrlAsync(GoogleDriveKey, UserId, "kiosk");
+
+        _stateProtector.Received(1).Protect(
+            Arg.Is<PluginOAuthStateDto>(state => state.Client == PluginConstants.OAuthClient.Web));
     }
 
     private PluginConnectionService CreateSut()

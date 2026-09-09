@@ -10,6 +10,7 @@ using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.AssistantService.Domain.Exceptions;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Infrastructure.Mcp;
 
@@ -445,7 +446,7 @@ public class McpOAuthClient : IPluginOAuthClient
 
     private static string Require(string? value, Plugin plugin, string what) =>
         string.IsNullOrWhiteSpace(value)
-            ? throw new InvalidOperationException(
+            ? throw new PluginNotConfiguredException(
                 $"Plugin '{plugin.PluginKey}' has no {what}; provisioning must run before the OAuth flow.")
             : value;
 }
