@@ -148,6 +148,29 @@ public class MeetingMinutesService : IMeetingMinutesService
                 && m.IsCurrent
                 && readableRoomIds.Contains(m.TranslationRoomId));
 
+        // #344 closed this on GetCurrentAsync and left the door beside it open.
+        //
+        // That change made an unsigned draft readable only by the people who can act on it, on the
+        // grounds that a machine wrote it and nobody has checked a word. This list is the same
+        // documents one door wider — room-read across a whole workspace, no status filter — and
+        // every row carries its entire Content (see GetWorkspaceMinutesRequest, which sets a small
+        // page size for exactly that reason). So somebody holding unaccepted email invitations to a
+        // few rooms could page through the drafts of all of them.
+        //
+        // The per-room gate asks RoomHostAccess, which cannot come along: workspace Owner/Admin is
+        // a gRPC answer and EF has no translation for it. What SQL can answer is the room's own
+        // host columns, so an Owner/Admin sees somebody else's draft on the room's Minutes tab but
+        // not in the library listing. That asymmetry is the cost of keeping the wide door narrow,
+        // and it errs in the direction the narrow door already errs in.
+        var hostedRoomIds = _unitOfWork.TranslationRoomRepository
+            .Query()
+            .Where(r => r.WorkspaceId == workspaceId
+                && (r.HostId == userId || r.ActiveHostId == userId))
+            .Select(r => r.Id);
+
+        query = query.Where(m => m.Status != MeetingMinutesConstants.StatusDraft
+            || hostedRoomIds.Contains(m.TranslationRoomId));
+
         if (!string.IsNullOrWhiteSpace(request.Status))
         {
             var status = request.Status.Trim().ToUpperInvariant();
