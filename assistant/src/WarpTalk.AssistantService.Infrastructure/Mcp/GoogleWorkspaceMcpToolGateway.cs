@@ -50,7 +50,11 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         // Not dispatch - IPluginProviderResolver already picked this gateway from Plugin.Kind. This
         // is an invariant assertion, and it stays: the endpoints below come from Google-specific
         // options, so another provider routed here would have its user's token sent to Google.
-        if (!string.Equals(plugin.Key, PluginConstants.GoogleWorkspace, StringComparison.Ordinal))
+        //
+        // Asserted on Provider, not on Key. There are three Google catalog rows since
+        // 20260907100000 and there will be more; the thing that makes this gateway the right one
+        // for all of them is that they talk to Google, which is exactly what Provider says.
+        if (!string.Equals(plugin.Provider, PluginConstants.Providers.Google, StringComparison.Ordinal))
             return Failure(PluginConstants.ErrorCodes.UnknownPlugin, "Unsupported plugin.");
 
         if (string.IsNullOrWhiteSpace(connection.EncryptedAccessToken))

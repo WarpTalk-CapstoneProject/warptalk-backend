@@ -269,10 +269,29 @@ public class MeetingMinutesDrafterTests
     [Fact]
     public void TheAgendaIsLeftForTheSecretaryRatherThanGuessedAt()
     {
+        // A room booked with nothing written about it has no agenda to copy, and inventing one
+        // out of the transcript would guess what the meeting was FOR from what it covered.
         var content = Parse(MeetingMinutesDrafter.BuildContent(
             Room(), new List<TranslationRoomParticipant>(), """{"summary": "Talked."}"""));
 
         content.Agenda.Should().BeNull();
+    }
+
+    [Fact]
+    public void TheBookingDescriptionFillsTheAgendaAndSaysThatIsWhatItIs()
+    {
+        // There is no agenda field on a room, so the booking description is the only place a
+        // programme can be — but it is a plan, not something the meeting adopted, and printing it
+        // bare under "CHƯƠNG TRÌNH HỌP" would upgrade a note into a resolution.
+        var room = Room();
+        room.Description = "1. Rà soát sprint\n2. Kế hoạch phát hành";
+
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            room, new List<TranslationRoomParticipant>(), """{"summary": "Talked."}"""));
+
+        content.Agenda.Should().Contain("khi đặt lịch");
+        content.Agenda.Should().Contain("1. Rà soát sprint");
+        content.Agenda.Should().Contain("2. Kế hoạch phát hành");
     }
 
     [Fact]

@@ -469,7 +469,15 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var ownerOnlyPolicyChanged = currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
+
+            // The owner-only settings. Everything else on this endpoint is Owner-or-Admin, already
+            // established above; these are the ones an Admin may read but not change.
+            //
+            // AllowAnyPlugins is NOT among them. It stays Owner-or-Admin as it has always been:
+            // making it owner-only here would revoke, with no announcement, a permission every
+            // Admin currently has.
+            var ownerOnlyPolicyChanged =
+                currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
             if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);

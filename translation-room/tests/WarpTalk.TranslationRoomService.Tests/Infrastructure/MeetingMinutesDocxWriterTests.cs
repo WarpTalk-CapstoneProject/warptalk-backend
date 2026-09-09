@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Wordprocessing;
 using FluentAssertions;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Infrastructure.Documents;
@@ -31,16 +32,21 @@ public class MeetingMinutesDocxWriterTests
         int version = 1,
         string? secretary = "Ngô Xuân Hạnh Nhi",
         string? chair = "Huỳnh Thái Tú",
-        int edits = 3) => new(
+        int edits = 3,
+        string? engine = "warptalk-ai/meeting-summary",
+        int? transcriptVersion = 4) => new(
         Id: Guid.NewGuid(),
         TranslationRoomId: Guid.NewGuid(),
         MinutesNo: "BB-2026-0007",
+        // The projection of content.meetingTitle. The writers print the content's copy, not this
+        // one, so it is set to the same string rather than left null.
+        MeetingTitle: "Sprint review",
         Status: status,
         Version: version,
         IsCurrent: true,
         PreviousMinutesId: null,
-        BasedOnTranscriptVersion: null,
-        DraftedByEngine: "warptalk-ai/meeting-summary",
+        BasedOnTranscriptVersion: transcriptVersion,
+        DraftedByEngine: engine,
         DraftedAt: Closed,
         SecretaryParticipantId: Guid.NewGuid(),
         SecretaryName: secretary,
@@ -334,6 +340,121 @@ public class MeetingMinutesDocxWriterTests
 
         text.Should().NotContain("[en]");
         text.Should().NotContain("[vi]");
+    }
+
+    [Fact]
+    public void MarkdownInTheNarrativeIsRenderedRatherThanPrintedAsSource()
+    {
+        // warptalk-ai writes the overview in Markdown. Printed raw it puts hash marks and
+        // asterisks into a document somebody signs.
+        var content = Content();
+        content.Sections[0].Text =
+            "## Meeting Summary\n\n### Chatbot\n- Độ chính xác đạt **80%**.\n  - Thêm **500 câu hỏi**.";
+
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), content));
+
+        text.Should().NotContain("#");
+        text.Should().NotContain("**");
+        // Rendered, not stripped: every word still reaches the page.
+        text.Should().Contain("Meeting Summary");
+        text.Should().Contain("Chatbot");
+        text.Should().Contain("Độ chính xác đạt 80%.");
+        text.Should().Contain("Thêm 500 câu hỏi.");
+    }
+
+    [Fact]
+    public void MarkdownEmphasisBecomesRealBoldText()
+    {
+        var content = Content();
+        content.Sections[0].Text = "Độ chính xác đạt **80%** trên toàn bộ câu hỏi.";
+
+        using var stream = new MemoryStream(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), content));
+        using var document = WordprocessingDocument.Open(stream, false);
+
+        var bold = document.MainDocumentPart!.Document!.Descendants<Run>()
+            .Where(run => run.RunProperties?.Bold != null)
+            .Select(run => run.InnerText);
+
+        bold.Should().Contain("80%");
+    }
+
+    [Fact]
+    public void TheDocumentIsTypesetLikeAnOfficialRecordRatherThanLeftOnWordsDefaults()
+    {
+        // Without a style part and a section, Word renders this as Calibri 11 on 1-inch margins —
+        // a memo, not a record somebody signs.
+        using var stream = new MemoryStream(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), Content()));
+        using var document = WordprocessingDocument.Open(stream, false);
+        var main = document.MainDocumentPart!;
+
+        var defaults = main.StyleDefinitionsPart?.Styles?.DocDefaults;
+        defaults!.RunPropertiesDefault!.RunPropertiesBaseStyle!.RunFonts!.Ascii!.Value
+            .Should().Be("Times New Roman");
+        defaults.RunPropertiesDefault.RunPropertiesBaseStyle.FontSize!.Val!.Value.Should().Be("26");
+
+        var margin = main.Document!.Body!.Descendants<PageMargin>().Single();
+        margin.Left!.Value.Should().Be(1701U); // 30mm binding edge
+        margin.Right!.Value.Should().Be(1134U);
+
+        var page = main.Document.Body.Descendants<PageSize>().Single();
+        page.Width!.Value.Should().Be(11906U); // A4
+
+        // A signed document that loses a page has to show it.
+        main.FooterParts.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void AMultilingualRecordSaysHowManyLanguagesItCarriesAndWhichAreTranslations()
+    {
+        var content = Content();
+        content.PrimaryLanguage = "vi";
+        content.Translations = new Dictionary<string, List<MinutesSection>>
+        {
+            ["en"] = new() { new() { Key = "summary", Kind = "paragraph", Text = "Reviewed the sprint." } },
+            ["ja"] = new() { new() { Key = "summary", Kind = "paragraph", Text = "スプリントを確認した。" } }
+        };
+
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), content));
+
+        text.Should().Contain("tiếng Việt (ngôn ngữ gốc của cuộc họp)");
+        text.Should().Contain("2 bản dịch");
+        text.Should().Contain("tiếng Anh");
+        text.Should().Contain("tiếng Nhật");
+        // A machine rendering that is not labelled as one ends up quoted as somebody's words.
+        text.Should().Contain("do máy dịch");
+    }
+
+    [Fact]
+    public void TheRecordNamesTheTranscriptItWasDraftedFrom()
+    {
+        // "Where did this come from" must be answerable from the page alone.
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), Content()));
+
+        text.Should().Contain("Cơ sở lập biên bản");
+        text.Should().Contain("phiên bản 4");
+        text.Should().Contain("[mm:ss]");
+    }
+
+    [Fact]
+    public void MinutesNoProgramDraftedClaimNoTranscriptBehindThem()
+    {
+        var text = TextOf(new MeetingMinutesDocxWriter().WriteDocx(
+            Minutes(engine: null, transcriptVersion: null), Content()));
+
+        text.Should().NotContain("Cơ sở lập biên bản");
+    }
+
+    [Fact]
+    public void ADraftDoesNotClaimItWasReadBackAndAdopted()
+    {
+        // Being read back and adopted is something that happens in the room. A draft printing it
+        // asserts a meeting event nobody has evidence of.
+        var draft = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(status: "DRAFT"), Content()));
+        var approved = TextOf(new MeetingMinutesDocxWriter().WriteDocx(Minutes(), Content()));
+
+        draft.Should().NotContain("thống nhất thông qua");
+        draft.Should().Contain("chưa được thông qua");
+        approved.Should().Contain("thống nhất thông qua");
     }
 
     [Fact]

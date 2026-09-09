@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Mappers;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
@@ -63,36 +64,6 @@ public class VoiceProfileService : IVoiceProfileService
     /// </summary>
     private const int DisplayNameMaxLength = 100;
 
-    /// <summary>
-    /// The bare language code the AI side keys everything by: "vi-VN" becomes "vi".
-    ///
-    /// WHY THIS EXISTS
-    ///     The TTS worker normalises every language it is handed (shared.lang.base_language) and
-    ///     then writes its answers — the preview result, the voice catalogue — under the NORMALISED
-    ///     key. This service did not normalise, so it asked under one key and read under another.
-    ///
-    ///     A voice profile stores a locale tag, because that is what the sign-up wizard collects.
-    ///     So previewing an uploaded voice sent language="vi-VN": the worker rendered the sample in
-    ///     1 second and wrote it to `voice:preview:{voice}:vi`, while this service polled
-    ///     `voice:preview:{voice}:vi-VN` for the full twelve seconds and then reported
-    ///     "The preview is taking longer than expected."
-    ///
-    ///     Nothing was slow. The answer was written to a key nobody was reading, every time, for
-    ///     every uploaded voice — which is why WT-649 was reported against production with exactly
-    ///     that message.
-    ///
-    /// WHY ONLY AT THE REDIS BOUNDARY
-    ///     The stored value stays a locale tag. The convention this system already follows is
-    ///     "store the locale, key by the base" — the web client compares profiles with its own
-    ///     bareLanguage() for the same reason. Normalising what is STORED would be a different
-    ///     change with a migration behind it.
-    /// </summary>
-    private static string BaseLanguage(string language)
-    {
-        var trimmed = language.Trim();
-        var separator = trimmed.IndexOfAny(new[] { '-', '_' });
-        return separator < 0 ? trimmed.ToLowerInvariant() : trimmed[..separator].ToLowerInvariant();
-    }
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly IVoiceSampleStorage _storage;
@@ -124,7 +95,7 @@ public class VoiceProfileService : IVoiceProfileService
             return Result.Failure<IReadOnlyList<VoiceCatalogItemDto>>("Language is required.", ErrorCodes.ValidationError);
         }
 
-        var voices = await _voiceCatalog.GetAsync(BaseLanguage(language), ct);
+        var voices = await _voiceCatalog.GetAsync(language, ct);
         return Result.Success(voices);
     }
 
@@ -209,7 +180,7 @@ public class VoiceProfileService : IVoiceProfileService
             return false;
         }
 
-        var catalog = await _voiceCatalog.GetAsync(BaseLanguage(language), ct);
+        var catalog = await _voiceCatalog.GetAsync(language, ct);
         return catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
     }
 
@@ -229,11 +200,6 @@ public class VoiceProfileService : IVoiceProfileService
             // judgement in one language than another — which is the whole point of listening.
             return Result.Failure<byte[]>("A language is required.", ErrorCodes.ValidationError);
         }
-
-        // Everything below keys Redis by this, and the worker keys its answers by the base code.
-        // A profile stores a locale tag ("vi-VN"), so without this the request and the answer
-        // land on two different keys and every preview of an uploaded voice times out.
-        language = BaseLanguage(language);
 
         // The same gate SetDubVoiceAsync applies, deliberately reused rather than restated: a
         // voice cloned from somebody's recording is theirs, and rendering audio from an id this
@@ -378,6 +344,24 @@ public class VoiceProfileService : IVoiceProfileService
         return name.Length <= DisplayNameMaxLength ? name : name[..DisplayNameMaxLength];
     }
 
+    /// <summary>
+    /// Whether this row is a PICK of a catalogue voice rather than a voice of the person's own.
+    ///
+    /// The source column is the answer and the legacy clause below is the transition. Rows
+    /// written before that column carried "library" have it at its "upload" default and are
+    /// recognised the only way that was ever available: a pointer row is the one row in this
+    /// table with no display name. Migration 20260908... backfills them, after which the second
+    /// clause is dead and can go.
+    ///
+    /// Nothing else separates the two. Provider is "cartesia" for a pick AND for an upload once
+    /// <see cref="CollectFinishedClonesAsync"/> has run, because a clone lives in the Cartesia
+    /// account too — which is how a person's own voice came to be read as their library pick.
+    /// </summary>
+    private static bool IsLibraryPick(VoiceProfile profile) =>
+        string.Equals(profile.Source, VoiceProfileSources.Library, StringComparison.Ordinal)
+        || (string.Equals(profile.Provider, LibraryVoiceProvider, StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(profile.DisplayName));
+
     public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Language))
@@ -385,7 +369,11 @@ public class VoiceProfileService : IVoiceProfileService
             return Result.Failure<VoiceProfileDto?>("Language is required.", ErrorCodes.ValidationError);
         }
 
-        var language = request.Language.Trim();
+        // Stored and compared as the bare code, which is what the catalogue is keyed by. Callers
+        // send both spellings — the library list sends "vi", a room sends "vi-VN" — and matching
+        // them with string.Equals meant the same preference could be written twice, once under
+        // each spelling, with only one of them ever found again.
+        var language = LanguageTag.Base(request.Language);
         var voiceId = request.VoiceId?.Trim();
         var clearing = string.IsNullOrEmpty(voiceId);
 
@@ -394,38 +382,43 @@ public class VoiceProfileService : IVoiceProfileService
             // The catalogue entry we validate against is also the only place a library voice has a
             // human name, so keep it rather than asking whether it exists and dropping it. Written
             // to DisplayName below, it is what stops the UI falling back to the Cartesia UUID.
-            string? voiceName = null;
 
             // Reject an id that is not actually on offer for this language. Without this the
             // stored preference would be round-tripped into SetVoicePreference and silently
             // produce the wrong voice — or none — deep inside the TTS worker.
+            //
+            // The matched entry is KEPT rather than tested and dropped: it carries the voice's
+            // name, and this is the one moment the catalogue is guaranteed warm — the person is
+            // choosing from a list they can see. Storing the name here is what lets the page name
+            // the voice later, when the cache may have expired.
+            VoiceCatalogItemDto? chosen = null;
             if (!clearing)
             {
-                // BaseLanguage, not the stored locale: the catalogue is written by the worker
-                // under the base code. `language` itself stays a locale tag because it is what
-                // gets persisted on the profile below.
-                var catalog = await _voiceCatalog.GetAsync(BaseLanguage(language), ct);
+                var catalog = await _voiceCatalog.GetAsync(language, ct);
                 if (catalog.Count == 0)
                 {
                     return Result.Failure<VoiceProfileDto?>(
                         "No voices are available for this language yet.",
                         ErrorCodes.InvalidState);
                 }
-                var match = catalog.FirstOrDefault(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
-                if (match is null)
+
+                chosen = catalog.FirstOrDefault(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
+                if (chosen is null)
                 {
                     return Result.Failure<VoiceProfileDto?>(
                         "That voice is not offered for this language.",
                         ErrorCodes.ValidationError);
                 }
-
-                voiceName = ToDisplayName(match);
             }
 
             var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            // IsLibraryPick, not the provider alone. Without it this finds the person's own
+            // cloned profile for the same language and the clearing branch below SOFT-DELETES IT.
+            // Until now only an accident of spelling stopped that: picks are stored bare ("vi")
+            // and uploads locale-tagged ("vi-VN"), so string.Equals missed. Normalising the
+            // language above removes that accident, so the real guard has to be here.
             var existing = profiles.FirstOrDefault(p =>
-                string.Equals(p.Provider, LibraryVoiceProvider, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(p.Language, language, StringComparison.OrdinalIgnoreCase));
+                IsLibraryPick(p) && LanguageTag.SameLanguage(p.Language, language));
 
             var now = DateTime.UtcNow;
 
@@ -450,8 +443,13 @@ public class VoiceProfileService : IVoiceProfileService
             if (existing != null)
             {
                 existing.EmbeddingRef = voiceId;
-                // Re-pointed at a different voice, so the old name would now be a lie.
-                existing.DisplayName = voiceName;
+                // Healed on the way past. A row written before this method named its picks keeps
+                // a null name and an "upload" source until somebody changes their choice, and
+                // there is no cheaper moment to correct it than the one where we are already
+                // writing the row and already hold the catalogue entry.
+                existing.DisplayName = ToDisplayName(chosen!);
+                existing.Source = VoiceProfileSources.Library;
+                existing.Language = language;
                 existing.IsActive = true;
                 existing.Status = "active";
                 existing.UpdatedAt = now;
@@ -465,9 +463,14 @@ public class VoiceProfileService : IVoiceProfileService
             {
                 Id = Guid.NewGuid(),
                 UserId = userId,
-                DisplayName = voiceName,
+                // The catalogue's own name for the voice, so the page can say "Linh - Soft
+                // Presence" rather than a provider UUID when the catalogue cache has expired.
+                // It is a label for a pointer, not a name somebody chose — Source is what says
+                // which of those this row is.
+                DisplayName = ToDisplayName(chosen!),
                 Language = language,
                 Provider = LibraryVoiceProvider,
+                Source = VoiceProfileSources.Library,
                 EmbeddingRef = voiceId,
                 Status = "active",
                 IsActive = true,
