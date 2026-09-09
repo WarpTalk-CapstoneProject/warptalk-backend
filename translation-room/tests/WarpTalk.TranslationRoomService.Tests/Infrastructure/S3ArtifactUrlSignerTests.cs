@@ -111,13 +111,19 @@ public sealed class S3ArtifactUrlSignerTests
     {
         using var signer = Signer("https://r2.example.test");
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => signer.CreateDownloadUrlAsync(
-                "/out/recordings/room-123.mp4",
-                TimeSpan.FromMinutes(15)));
+        const string storedUrl = "/out/recordings/room-123.mp4";
 
-        Assert.Contains("not absolute", error.Message);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => signer.CreateDownloadUrlAsync(storedUrl, TimeSpan.FromMinutes(15)));
+
+        // The property, not a particular sentence: whatever wording each platform reaches, it must
+        // not blame the bucket. Windows stops at "not absolute"; Linux parses the rooted path as a
+        // file:// URI and reaches the filesystem-path guard. Both are the right investigation.
         Assert.DoesNotContain("bucket", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            error.Message.Contains("not absolute", StringComparison.OrdinalIgnoreCase)
+                || error.Message.Contains("filesystem path", StringComparison.OrdinalIgnoreCase),
+            $"Expected a path-shaped cause, got: {error.Message}");
     }
 
     private static S3ArtifactUrlSigner Signer(string endpoint)
