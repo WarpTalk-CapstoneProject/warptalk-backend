@@ -1062,12 +1062,50 @@ public class MeetingRoomService : IMeetingRoomService
             if (!stopResult.IsSuccess)
                 return Result.Failure<RecordingStateDto>(stopResult.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
 
-            meetingRoom.ActiveEgressId = null;
+            // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
+            // THAT HAS NOT LANDED YET.
+            //
+            // StopEgress only asks LiveKit to stop; the file is still being finalised and uploaded
+            // for seconds to minutes afterwards, and the recording does not exist for us until the
+            // egress_ended webhook (or the sweep) turns it into an artifact. Nulling the column
+            // here threw away the only durable record that we are owed one:
+            //   - EgressCompletion can still match the room by ProviderRoomName, so a webhook that
+            //     ARRIVES is fine (that is the other half of WT-644), but
+            //   - EgressReconciliationService scans `ActiveEgressId != null`, so a webhook that is
+            //     LOST — the exact failure WT-371 #8 built the sweep for, when the LiveKit project
+            //     had no webhook configured at all — could never be recovered. The meeting simply
+            //     ended with no recording and nothing anywhere said so.
+            //
+            // So the column now means "an egress this room owns that has not been completed", and
+            // it is cleared by whoever completes it: EgressCompletion on the webhook (seconds), or
+            // the sweep on its next tick (two minutes) when the webhook never comes. A terminal
+            // FAILED/ABORTED egress clears it too — EgressCompletion clears before it checks for a
+            // file — so a failed recording cannot strand the room either.
+            //
+            // TWO KNOWN AND ACCEPTED CONSEQUENCES, both lasting only until the completion lands —
+            // seconds on the healthy path, at most one sweep tick when the webhook is lost:
+            //  1. JoinMeetingResponse.Recording is derived from this column, so somebody joining
+            //     in that window is told the meeting is being recorded when capture has in fact
+            //     ended. An over-warning in the safe direction.
+            //  2. The "start" branch above refuses while the column is set, so a host who stops
+            //     and immediately restarts is told "Recording is already in progress." — which is
+            //     nearly true (the previous file is still being finalised) and self-clears.
+            // Making either exact needs a second column to separate "still capturing" from "still
+            // owed an artifact", and that is a migration this fix deliberately avoids. The
+            // recording existing at all is worth more than the precision of a transient label.
+            //
+            // UpdatedAt is moved by hand because nothing else moves it: EgressReconciliationService
+            // measures its UnknownEgressGrace from this timestamp, and the stop is the honest
+            // origin for "we have been waiting for this completion since…".
+            meetingRoom.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
             await _unitOfWork.SaveChangesAsync();
 
             await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
 
+            // Reported as stopped regardless: capture HAS ended, which is what the person who
+            // pressed the button asked about. The retained id is bookkeeping they have no use for
+            // (see JoinMeetingResponse.Recording for why the id never leaves the server).
             return Result.Success(new RecordingStateDto { Recording = false, EgressId = null });
         }
 

@@ -41,8 +41,27 @@ Out of scope:
 
 - Renaming the database, schema, service, container image, or gateway route.
 - Moving chat, recording, transcript integration, or LiveKit runtime state.
-- Renaming the existing `meeting_tracks.meeting_participant_id` column. This
-  legacy physical column can be handled by a later expand-and-contract change.
+
+Explicitly *in* scope, and no longer deferred:
+
+- Renaming `meeting_tracks.meeting_participant_id` to `rtc_stream_participant_id`.
+  An earlier draft of this spec listed the rename as out of scope and deferred it
+  to a later expand-and-contract change. That is no longer accurate: the rename is
+  performed directly in
+  `meeting/database/migrations/20260903120000_remove_retired_collaboration_features.sql`,
+  together with the matching index and foreign-key constraint renames, because the
+  committed C# already depends on the new physical name. `MeetingTrack.RtcStreamParticipantId`
+  is mapped with `HasColumnName("rtc_stream_participant_id")` in `MeetingDbContext`,
+  so Meeting Service cannot start against a database that still has the old column.
+- This is a **breaking, non-backward-compatible schema change.** There is no
+  expand phase: the old and the new column name never coexist. A Meeting Service
+  build older than this release fails every write to `meeting_tracks` once the
+  migration has run, and this release's build fails every such write until it has.
+  `MeetingWebhookService.HandleTrackPublished` inserts into `meeting_tracks` on
+  each LiveKit `track_published` webhook, so the window between the migrator and
+  the new containers is not idle whenever a meeting is live. Deployment sequencing
+  and mitigation are documented in
+  `warptalk-infrastructure/deploy/production/README.md`, section "Deploy App".
 
 ## Functional and UI Specifications
 

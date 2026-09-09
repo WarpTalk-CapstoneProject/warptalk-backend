@@ -80,6 +80,13 @@ public static class NotificationConstants
     public const string TypeWorkspaceLeaveApproved = "WORKSPACE_LEAVE_APPROVED";
     public const string TypeWorkspaceLeaveRejected = "WORKSPACE_LEAVE_REJECTED";
 
+    /// <summary>
+    /// Somebody was removed from a workspace by an admin. Registered here in the same change
+    /// as its schema below — a constant without a schema entry is exactly how
+    /// WORKSPACE_ROLE_CHANGED spent months being logged as sent and discarded at validation.
+    /// </summary>
+    public const string TypeWorkspaceMemberRemoved = "WORKSPACE_MEMBER_REMOVED";
+
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
     public const string TypeSystem = "SYSTEM";

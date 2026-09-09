@@ -151,7 +151,12 @@ public class BillingAggregationWorker : BackgroundService
                 if (log.PricingRateCardId == null)
                 {
                     var rateResult = await rateCardResolver.ResolveRateCardAsync(
-                        log.ChargeType, log.Unit, "VND", log.SourceLanguageCode, log.TargetLanguageCode, stoppingToken);
+                        log.ChargeType,
+                        log.Unit,
+                        PaymentConstants.Currencies.VndAccounting,
+                        log.SourceLanguageCode,
+                        log.TargetLanguageCode,
+                        stoppingToken);
                     if (rateResult.IsSuccess && rateResult.Value != null)
                     {
                         log.PricingRateCardId = rateResult.Value.Id;

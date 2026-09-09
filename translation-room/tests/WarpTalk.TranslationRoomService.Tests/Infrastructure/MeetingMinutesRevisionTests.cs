@@ -99,7 +99,8 @@ public sealed class MeetingMinutesRevisionTests
             new TranslationRoomFeedbackRepository(_context),
             new TranslationRoomSeriesRepository(_context),
             _minutes,
-            new MeetingActionItemRepository(_context));
+            new MeetingActionItemRepository(_context),
+            new MeetingMinutesShareRepository(_context));
 
         _service = new MeetingMinutesService(
             unitOfWork,

@@ -85,7 +85,8 @@ public class WorkspaceMinutesLibraryTests : IAsyncLifetime
             new TranslationRoomFeedbackRepository(_dbContext),
             new TranslationRoomSeriesRepository(_dbContext),
             new MeetingMinutesRepository(_dbContext),
-            new MeetingActionItemRepository(_dbContext));
+            new MeetingActionItemRepository(_dbContext),
+            new MeetingMinutesShareRepository(_dbContext));
 
         _service = new MeetingMinutesService(
             unitOfWork,

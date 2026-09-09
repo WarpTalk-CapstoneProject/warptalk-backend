@@ -118,7 +118,132 @@ public sealed class TranslationRoomArtifactServiceTests
             unitOfWork.Object,
             NullLogger<TranslationRoomArtifactService>.Instance,
             signer.Object,
-            new Mock<IRedisStateRepository>().Object);
+            new Mock<IRedisStateRepository>().Object,
+            new Mock<IArtifactsFinalizationQueue>().Object);
+    }
+
+    /// <summary>
+    /// THE REWRITE THAT HAD NOWHERE TO LAND.
+    ///
+    /// SummaryResultConsumerWorker replaces the room's SUMMARY_EXPORT and refuses to invent one.
+    /// This method published the request anyway, so on a meeting that was never finalized — the
+    /// one showing no summary, which is exactly where a person presses Regenerate — the button
+    /// returned success, warptalk-ai spent an LLM call, and the consumer logged
+    /// "No summary artifact to rewrite" and dropped the result. Every press.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_QueuesFinalization_WhenTheMeetingWasNeverFinalized()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+
+        var service = CreateServiceForRoom(room, redis, queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        queue.Verify(item => item.QueueFinalization(room.Id), Times.Once);
+        // And no request published: there is nothing for the worker's answer to replace yet.
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// The normal path is untouched: a meeting with a summary artifact gets the request published
+    /// and nothing re-finalized.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_PublishesTheRequest_WhenASummaryArtifactExists()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+
+        var service = CreateServiceForRoom(room, redis, queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        queue.Verify(item => item.QueueFinalization(It.IsAny<Guid>()), Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A transcript with no summary is not a gap finalization can fill: FinalizeRoomArtifactsAsync
+    /// writes both in one save, so running it again would give the meeting a SECOND transcript
+    /// rather than its first summary. Said out loud instead of guessed at.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_RefusesToRefinalize_WhenOnlyTheSummaryIsMissing()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "TRANSCRIPT_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+
+        var service = CreateServiceForRoom(room, redis, queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "Bearer token");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
+        queue.Verify(item => item.QueueFinalization(It.IsAny<Guid>()), Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    private static TranslationRoom CreateEndedRoom(Guid hostId) => new()
+    {
+        Id = Guid.NewGuid(),
+        HostId = hostId,
+        WorkspaceId = Guid.NewGuid(),
+        Status = "ENDED",
+        TargetLanguages = "[]",
+        Settings = "{}"
+    };
+
+    private static TranslationRoomArtifactService CreateServiceForRoom(
+        TranslationRoom room,
+        Mock<IRedisStateRepository> redis,
+        Mock<IArtifactsFinalizationQueue> queue)
+    {
+        var roomRepository = new Mock<ITranslationRoomRepository>();
+        roomRepository
+            .Setup(repo => repo.FirstOrDefaultAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoom, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(work => work.TranslationRoomRepository).Returns(roomRepository.Object);
+
+        return new TranslationRoomArtifactService(
+            unitOfWork.Object,
+            NullLogger<TranslationRoomArtifactService>.Instance,
+            new Mock<IArtifactUrlSigner>().Object,
+            redis.Object,
+            queue.Object);
     }
 
     private static TranslationRoomArtifact CreateArtifact(Guid hostId)

@@ -1962,6 +1962,12 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToExpired, ErrorCodes.InvalidState);
 
             translationRoom.Status = "EXPIRED";
+            // EndedAt, like every other terminal transition sets it (Cancel at :1901, End at
+            // :2070). Leaving it null here made EXPIRED the one ending with no durable clock —
+            // invisible to anything that asks "when did this room stop", including both
+            // reconciliation sweeps, which read EndedAt precisely because UpdatedAt moves for
+            // reasons that have nothing to do with the meeting being over.
+            translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
