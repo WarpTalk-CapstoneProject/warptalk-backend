@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Collections.Generic;
 using System.Linq;
@@ -45,7 +45,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         _finalizationQueue = finalizationQueue;
     }
 
-    public async Task<Result> RegenerateSummaryAsync(
+    public async Task<Result<string>> RegenerateSummaryAsync(
         Guid roomId,
         Guid userId,
         string templateKey,
@@ -61,16 +61,16 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 ct);
 
             if (room == null)
-                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+                return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             // Same two gates as reading the artifacts, for the same reasons: there is nothing
             // to summarise until the meeting is over, and re-summarising exposes the whole
             // transcript to whoever asks.
             if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
-                return Result.Failure("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
+                return Result.Failure<string>("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
-                return Result.Failure("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
+                return Result.Failure<string>("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
 
             // A REWRITE NEEDS SOMETHING TO REWRITE.
             //
@@ -101,7 +101,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
                 if (hasTranscriptArtifact)
                 {
-                    return Result.Failure(
+                    return Result.Failure<string>(
                         "This meeting has a transcript but no summary artifact to rewrite. It needs to be finalized again, not re-summarised.",
                         ErrorCodes.InvalidState);
                 }
@@ -124,10 +124,13 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     roomId,
                     NormalizeTemplateKey(templateKey),
                     LanguageHelper.NormalizeLanguageCode(summaryLanguage));
-                return Result.Success();
+                // No request id, because this did not go out as a summary request: finalization is
+                // a different pipeline with a different answer. An empty id tells the caller there
+                // is nothing to ask about rather than handing it one that will never resolve.
+                return Result.Success(string.Empty);
             }
 
-            await QueueSummaryAsync(
+            var requestId = await QueueSummaryAsync(
                 room,
                 NormalizeTemplateKey(templateKey),
                 LanguageHelper.NormalizeLanguageCode(summaryLanguage) ?? string.Empty,
@@ -143,12 +146,63 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 templateKey,
                 LanguageHelper.NormalizeLanguageCode(summaryLanguage) is { Length: > 0 } code ? code : "as-spoken");
 
-            return Result.Success();
+            return Result.Success(requestId);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to queue summary regeneration for room {RoomId}", roomId);
-            return Result.Failure("Could not queue the summary rewrite.", ErrorCodes.InternalServerError);
+            return Result.Failure<string>("Could not queue the summary rewrite.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<SummaryRewriteStatusDto>> GetSummaryRewriteStatusAsync(
+        Guid roomId,
+        Guid userId,
+        string requestId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(requestId))
+            return Result.Failure<SummaryRewriteStatusDto>("A request id is required.", ErrorCodes.InvalidState);
+
+        var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+            r => r.Id == roomId,
+            "TranslationRoomParticipants,TranslationRoomArtifacts",
+            ct);
+
+        if (room == null)
+            return Result.Failure<SummaryRewriteStatusDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        // The same gate as reading the artifacts, because the failure text quotes what the worker
+        // found in this meeting's transcript — "This meeting has no saved transcript to summarise"
+        // is itself a fact about the meeting.
+        if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            return Result.Failure<SummaryRewriteStatusDto>("Unauthorized to read this room's artifacts.", ErrorCodes.Unauthorized);
+
+        var stored = await _redisStateRepo.StringGetAsync(
+            TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + requestId);
+
+        // NOTHING THERE IS "NOT YET", NEVER "DONE".
+        //
+        // The key is absent while the worker is still running, and absent again once it has
+        // expired or been evicted — Redis runs allkeys-lru, so an outcome nobody collected can
+        // simply be gone. Those are indistinguishable from here, and the honest answer to both is
+        // that we do not know yet. Reading an absent key as success would turn every eviction
+        // into a silent claim that the rewrite worked, which is the failure this whole endpoint
+        // exists to remove.
+        if (string.IsNullOrWhiteSpace(stored))
+            return Result.Success(new SummaryRewriteStatusDto { Status = "pending" });
+
+        try
+        {
+            var status = JsonSerializer.Deserialize<SummaryRewriteStatusDto>(stored);
+            return Result.Success(status ?? new SummaryRewriteStatusDto { Status = "pending" });
+        }
+        catch (JsonException ex)
+        {
+            // Written by the consumer in this same service, so this is a bug rather than bad
+            // input — but it must not take down the poll that the browser is depending on.
+            _logger.LogError(ex, "Unreadable summary rewrite status for request {RequestId}", requestId);
+            return Result.Success(new SummaryRewriteStatusDto { Status = "pending" });
         }
     }
 
@@ -317,7 +371,15 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     /// only the caller knows which act this was — the content of a Standup-in-Japanese summary
     /// looks identical whether the host chose it for the room or one reader asked to see it.
     /// </summary>
-    private async Task QueueSummaryAsync(
+    /// <summary>
+    /// Queue one summary request and return the id it went out under.
+    ///
+    /// WT-669: the id used to be generated into the dictionary and forgotten on the same line.
+    /// It is the only handle anybody has on a request once it is asynchronous — the worker
+    /// echoes it back on the result, so it is what lets an outcome find its way to the person
+    /// who asked rather than to a log.
+    /// </summary>
+    private async Task<string> QueueSummaryAsync(
         TranslationRoom room,
         string templateKey,
         string language,
@@ -325,10 +387,11 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         string delivery)
     {
         var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+        var requestId = Guid.NewGuid().ToString();
 
         await _redisStateRepo.StreamAddAsync(SummaryRequestStream, new Dictionary<string, string>
         {
-            ["request_id"] = Guid.NewGuid().ToString(),
+            ["request_id"] = requestId,
             ["room_id"] = room.Id.ToString(),
             ["workspace_id"] = room.WorkspaceId.ToString(),
             ["template_key"] = templateKey,
@@ -345,6 +408,8 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             ["delivery"] = delivery,
             ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
         });
+
+        return requestId;
     }
 
     private static string NormalizeTemplateKey(string? templateKey) =>

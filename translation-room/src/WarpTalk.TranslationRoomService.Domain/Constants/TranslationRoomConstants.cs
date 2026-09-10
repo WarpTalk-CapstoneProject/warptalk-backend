@@ -9,6 +9,27 @@ public static class TranslationRoomConstants
     /// </summary>
     public const string SummaryRequestStream = "assistant:summary_requests";
 
+    /// <summary>
+    /// WT-669 — where one rewrite's outcome waits for the person who asked for it.
+    ///
+    /// A rewrite is queued and answered asynchronously, so the reason it failed used to reach a
+    /// log and stop there: five different breakages all showed the requester the same motionless
+    /// panel. The consumer writes the outcome here under the request's own id, and the endpoint
+    /// the browser is already polling reads it back.
+    ///
+    /// Request-scoped state in a request-scoped place. It deliberately does NOT live on the room
+    /// or the artifact: one person's click is not part of what the meeting IS, and a rewrite that
+    /// failed must leave the summary it failed to replace exactly as it was (WT-530).
+    /// </summary>
+    public const string SummaryRewriteStatusKeyPrefix = "summary_rewrite:";
+
+    /// <summary>
+    /// Long enough to outlive the browser's own 90-second wait several times over, short enough
+    /// that a click nobody is waiting on any more does not linger. An expired key reads as
+    /// PENDING, never as success — see GetSummaryRewriteStatusAsync.
+    /// </summary>
+    public static readonly TimeSpan SummaryRewriteStatusTtl = TimeSpan.FromMinutes(15);
+
     // Terminal Statuses
     public static readonly string[] TerminalStatuses = new[]
     {
