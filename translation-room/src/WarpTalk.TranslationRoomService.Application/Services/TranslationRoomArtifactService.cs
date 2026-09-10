@@ -106,10 +106,24 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                         ErrorCodes.InvalidState);
                 }
 
+                // CARRYING WHAT THEY ASKED FOR, which is the whole difference between this
+                // working and appearing not to.
+                //
+                // The redirect is right — the meeting needs finalizing, not re-summarising — but
+                // it used to drop the shape and language on the way. The request returned
+                // success, a General summary arrived, and the picker snapped back to General, so
+                // from the host's side pressing "Standup" did nothing at all. And by this code's
+                // own reasoning this is the meeting they are MOST likely to press it on: the one
+                // showing no summary.
                 _logger.LogInformation(
-                    "Room {RoomId} has no artifacts at all; queueing finalization instead of a summary rewrite that would have nothing to land on.",
-                    roomId);
-                _finalizationQueue.QueueFinalization(roomId);
+                    "Room {RoomId} has no artifacts at all; queueing finalization in {TemplateKey}/{Language} instead of a summary rewrite that would have nothing to land on.",
+                    roomId,
+                    NormalizeTemplateKey(templateKey),
+                    LanguageHelper.NormalizeLanguageCode(summaryLanguage) is { Length: > 0 } asked ? asked : "as-spoken");
+                _finalizationQueue.QueueFinalization(
+                    roomId,
+                    NormalizeTemplateKey(templateKey),
+                    LanguageHelper.NormalizeLanguageCode(summaryLanguage));
                 return Result.Success();
             }
 
