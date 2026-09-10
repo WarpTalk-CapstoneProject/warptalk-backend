@@ -29,6 +29,35 @@ public class MeetingMinutesController : ControllerBase
         _minutesService = minutesService;
     }
 
+    /// <summary>
+    /// This meeting's proceedings in a language the document does not already carry.
+    ///
+    /// A GET that can cause work, for the same reason the summary's is: the alternative is three
+    /// calls to answer "show me this record in Japanese", and the work is cached and bounded by
+    /// the languages a room's readers actually ask for. It writes nothing to the document — the
+    /// biên bản, its number and its signatures are untouched.
+    ///
+    /// 200 with `status: "unavailable"` and a reason is a real answer, not an error: a document
+    /// its secretary has edited cannot honestly be translated from the summary, and a reader is
+    /// owed that sentence rather than an empty picker.
+    /// </summary>
+    [HttpGet("translation")]
+    public async Task<IActionResult> GetTranslation(
+        Guid roomId,
+        [FromQuery] string language,
+        CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        // Forwarded so that, if this has to generate, the summary is read as this caller through
+        // the endpoint they could already use — never a privileged bypass.
+        var bearerToken = Request.Headers["Authorization"].ToString();
+
+        return Respond<MinutesTranslationDto>(await _minutesService.GetTranslationAsync(
+            roomId, userId.Value, User.GetEmail(), language, bearerToken, ct));
+    }
+
     [HttpGet]
     public async Task<IActionResult> GetCurrent(Guid roomId, CancellationToken ct = default)
     {
@@ -208,6 +237,14 @@ public class MeetingMinutesController : ControllerBase
         ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(error, code)),
         _ => StatusCode(500, new ApiErrorResponse(error, code))
     };
+
+    /// <summary>
+    /// Ok, or the error code turned into a status. Generic because this controller answers with
+    /// three different payloads and the mapping must not be able to differ between them — which
+    /// is exactly what two hand-copied helpers were one edit away from.
+    /// </summary>
+    private IActionResult Respond<T>(Result<T> result) =>
+        result.IsSuccess ? Ok(result.Value) : Fail(result.Error, result.ErrorCode);
 
     private IActionResult Respond(Result<MeetingMinutesDto> result)
     {

@@ -294,6 +294,22 @@ public static class MeetingMinutesDrafter
     public static bool WouldProduceContent(string? summaryJson) =>
         BuildSections(summaryJson).Count > 0;
 
+    /// <summary>
+    /// The proceedings this summary would produce, for a caller that already holds a document and
+    /// wants the same body from a different summary — today, the same meeting summarised in a
+    /// language the biên bản does not carry.
+    ///
+    /// No carried-over items, deliberately, and it is not an oversight. Those are READ-THROUGHS of
+    /// commitments made in an EARLIER meeting: the text belongs to that meeting's record, and
+    /// re-translating a quotation is precisely what must not happen to one. A translated view
+    /// therefore covers this meeting's own proceedings and leaves a quoted commitment reading as
+    /// it was written.
+    ///
+    /// The caller is responsible for checking the result describes the SAME document — see
+    /// MeetingMinutesService.GetTranslationAsync, which refuses when the section keys differ.
+    /// </summary>
+    public static List<MinutesSection> SectionsFrom(string? summaryJson) => BuildSections(summaryJson);
+
     private static List<MinutesSection> BuildSections(
         string? summaryJson, IReadOnlyCollection<MeetingActionItem>? carriedOver = null)
     {
@@ -379,19 +395,6 @@ public static class MeetingMinutesDrafter
     }
 
     /// <summary>
-    /// The summary's translated copies, normalised into the same section shape as the original.
-    ///
-    /// WHY THIS IS NOT A MIRROR OF <see cref="BuildSections"/>
-    ///     The summary worker asks the model for {summary, decisions, actionItems} per language —
-    ///     three keys, not the template's full section set. So a technical meeting's "problems"
-    ///     and "options" have no translation and never will under the current contract. Returning
-    ///     only what exists keeps that visible; padding the gap with empty sections would make a
-    ///     document claim a translation it does not have.
-    ///
-    ///     The map is also model-produced and never defaulted upstream, so it can be absent from a
-    ///     multilingual room's summary entirely. Absent means "not produced", never "none".
-    /// </summary>
-    /// <summary>
     /// WT-665: the language the summary says it was written in, or null when it does not say.
     ///
     /// The AI worker records this rather than letting anything downstream detect it — a language
@@ -424,6 +427,19 @@ public static class MeetingMinutesDrafter
         }
     }
 
+    /// <summary>
+    /// The summary's translated copies, normalised into the same section shape as the original.
+    ///
+    /// WHY THIS IS NOT A MIRROR OF <see cref="BuildSections"/>
+    ///     The summary worker asks the model for {summary, decisions, actionItems} per language —
+    ///     three keys, not the template's full section set. So a technical meeting's "problems"
+    ///     and "options" have no translation and never will under the current contract. Returning
+    ///     only what exists keeps that visible; padding the gap with empty sections would make a
+    ///     document claim a translation it does not have.
+    ///
+    ///     The map is also model-produced and never defaulted upstream, so it can be absent from a
+    ///     multilingual room's summary entirely. Absent means "not produced", never "none".
+    /// </summary>
     private static Dictionary<string, List<MinutesSection>>? BuildTranslations(string? summaryJson)
     {
         if (string.IsNullOrWhiteSpace(summaryJson)) return null;

@@ -43,6 +43,31 @@ public interface IMeetingMinutesService
     /// belongs on that meeting's page; listing every version here would show the same minutes
     /// several times over, most of them wrong.
     /// </summary>
+    /// <summary>
+    /// This meeting's proceedings in a language the document does not already carry.
+    ///
+    /// <c>MeetingMinutesContent.Translations</c> holds the ROOM's target languages — the ones the
+    /// meeting was interpreted into while it happened. A reader of a language outside that set
+    /// has no version of the document at all, which is the case this answers: generated when
+    /// somebody asks, never in advance for a language nobody wanted.
+    ///
+    /// REFUSES RATHER THAN GUESSES, and the refusal is the point of the method.
+    ///     The body is rebuilt from the meeting's summary in the asked-for language. That is only
+    ///     a translation OF THIS DOCUMENT while the document still says what the summary says —
+    ///     so a biên bản the secretary has edited (<c>EditCountVsDraft &gt; 0</c>) is refused
+    ///     outright, and so is one whose sections no longer line up with the rebuilt ones. The
+    ///     alternative is showing a reader Japanese prose that the person who signed the document
+    ///     never wrote and would not recognise, on a record whose whole purpose is that somebody
+    ///     put their name to it.
+    /// </summary>
+    Task<Result<MinutesTranslationDto>> GetTranslationAsync(
+        Guid roomId,
+        Guid userId,
+        string? userEmail,
+        string language,
+        string? bearerToken,
+        CancellationToken ct = default);
+
     Task<Result<WorkspaceMinutesResponse>> ListForWorkspaceAsync(
         Guid workspaceId,
         GetWorkspaceMinutesRequest request,
