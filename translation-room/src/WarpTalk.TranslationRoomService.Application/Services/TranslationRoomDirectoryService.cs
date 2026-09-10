@@ -46,7 +46,8 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         // which GetTranslationRoomById does not read today but which keeps the two DTOs identical
         // rather than subtly divergent.
         return Result.Success(room.ToResponseDto(
-            await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct)));
+            await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct),
+            await _participantRepository.CountEverJoinedAsync(room.Id, ct)));
     }
 
     public async Task<Result<IReadOnlyList<TranslationRoomParticipantSummaryDto>>> GetParticipantsAsync(

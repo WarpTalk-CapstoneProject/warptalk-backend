@@ -163,7 +163,7 @@ public class MeetingTypeDefaultsTests
         };
 
         var room = Build(request);
-        var dto = room.ToResponseDto(participantCount: 2);
+        var dto = room.ToResponseDto(participantCount: 2, attendedCount: 5);
 
         room.ExternalProvider.Should().Be(TranslationRoomConstants.ExternalProviderGoogleMeet);
         room.ExternalMeetingUrl.Should().Be("https://meet.google.com/abc-defg-hij");
