@@ -600,12 +600,73 @@ public class PluginCatalogAdminServiceTests
         Assert.Contains("'effect'", result.Error!);
     }
 
+    [Fact]
+    public async Task UpdateAsync_EndsTheProvidersConnections_WhenTheServerUrlMovesToAnotherHost()
+    {
+        // McpToolGateway reads mcp_server_url on every call, so the moment this column changes every
+        // stored token becomes a credential for a party the user never consented to - and the next
+        // tool call would hand it over with the audit row recording an ordinary success.
+        var plugin = McpPlugin();
+        plugin.McpServerUrl = "https://old.test/mcp";
+        StubLookup(plugin);
+
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = AuditUserId,
+            PluginId = McpPluginId,
+            Provider = McpKey,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "enc:access",
+            EncryptedRefreshToken = "enc:refresh",
+            AccessTokenExpiresAt = DateTime.UtcNow.AddHours(1),
+        };
+        _connectionRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([connection]);
+
+        var result = await CreateSut().UpdateAsync(
+            McpKey,
+            new UpdatePluginCatalogRequest { McpServerUrl = "https://elsewhere.test/mcp" },
+            AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("https://elsewhere.test/mcp", plugin.McpServerUrl);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+        Assert.Null(connection.EncryptedRefreshToken);
+        Assert.Null(connection.AccessTokenExpiresAt);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_LeavesConnectionsAlone_WhenTheServerUrlIsResubmittedUnchanged()
+    {
+        // A read-modify-write from the admin form resends every field. Treating that as a move would
+        // log everyone out of a plugin because someone renamed its label.
+        var plugin = McpPlugin();
+        plugin.McpServerUrl = "https://old.test/mcp";
+        StubLookup(plugin);
+
+        var result = await CreateSut().UpdateAsync(
+            McpKey,
+            new UpdatePluginCatalogRequest { McpServerUrl = "https://old.test/mcp", Label = "Renamed" },
+            AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        await _connectionRepository.DidNotReceive().FindAsync(
+            Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
     // -----------------------------------------------------------------------------------------
     // Rediscover
     // -----------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task RediscoverAsync_ClearsCachedDiscoveryButKeepsAPreregisteredClient()
+    public async Task RediscoverAsync_ClearsCachedDiscovery_ButKeepsThePreregisteredClientAndTheRevokeEndpoint()
     {
         // A pre-registered client is an operator's own registration; it did not come from discovery,
         // and dropping it would turn "re-read the server" into "go and register the app again".
@@ -627,8 +688,16 @@ public class PluginCatalogAdminServiceTests
         Assert.True(result.IsSuccess);
         Assert.Null(plugin.OAuthAuthorizationEndpoint);
         Assert.Null(plugin.OAuthTokenEndpoint);
-        Assert.Null(plugin.OAuthRevokeEndpoint);
         Assert.Null(plugin.OAuthRegistrationEndpoint);
+
+        // The revoke endpoint is the one that survives, and this assertion used to say the
+        // opposite. The other three are read on the way INTO a new flow and provisioning refills
+        // them first. This one is read on the way OUT of an old flow, by DisconnectAsync, for users
+        // who connected long ago and are not about to connect again - and RevokeTokenAsync returns
+        // silently when it is blank while the disconnect path swallows that. Clearing it turned
+        // every Disconnect between a rediscovery and the next connect into a local delete, with the
+        // grant left live at the third party and the token we would have revoked it with gone.
+        Assert.Equal("https://old.test/revoke", plugin.OAuthRevokeEndpoint);
         Assert.Null(plugin.OAuthCimdSupported);
         Assert.Null(plugin.OAuthIssParameterSupported);
         Assert.Null(plugin.OAuthTokenEndpointAuthMethod);
