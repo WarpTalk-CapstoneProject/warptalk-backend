@@ -2,10 +2,14 @@ using System.Net;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using NSubstitute;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Interfaces;
+using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Infrastructure.Mcp;
+using WarpTalk.AssistantService.Infrastructure.OAuth;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -329,6 +333,116 @@ public class McpDiscoveryAndLadderIntegrationTests : IAsyncLifetime
 
         Assert.Equal(McpClientRegistrationOutcome.Unsupported, identity.Outcome);
         Assert.Contains("ClientMetadataUrl", identity.Detail);
+    }
+
+    // ---- the rung has to survive the step that comes after it ---------------------------------
+
+    /// <summary>
+    /// The whole point of resolving a client identity is the request that follows it, and until
+    /// this test existed nothing crossed that seam: <c>CimdClientRegistrar</c> was covered in
+    /// isolation, and the authorization URL was only ever built from a row a preregistered or DCR
+    /// rung had filled in.
+    /// </summary>
+    /// <remarks>
+    /// The gap was live. <see cref="McpClientRegistrationMapper.ApplyClientIdentity"/> stores null
+    /// for a CIMD client on purpose - the id is our metadata URL, which is configuration, not row
+    /// state - and <see cref="McpOAuthClient"/> then read the client id straight off the row. So
+    /// the rung resolved, the row was written exactly as designed, and the very next call threw
+    /// <c>PluginNotConfiguredException</c> on the null it had just been handed: a 500 on Connect
+    /// for every server that advertises CIMD, and only for those. Local deployments never saw it
+    /// because a blank ClientMetadataUrl disables the rung and everything falls through to DCR.
+    /// </remarks>
+    [Fact]
+    public async Task Cimd_ProducesAnAuthorizationUrl_CarryingOurMetadataUrlAsTheClientId()
+    {
+        const string metadataUrl = "https://warptalk.test/oauth/client-metadata/v1.json";
+
+        var metadata = (await Discovery().DiscoverAsync(McpPlugin())).Value!.AuthorizationServer;
+        var identity = await Cimd(metadataUrl).ResolveAsync(McpPlugin(), metadata);
+        Assert.Equal(McpClientRegistrationOutcome.Resolved, identity.Outcome);
+
+        // Exactly what a connect does: cache discovery, then record the identity, then build.
+        var plugin = McpPlugin();
+        McpClientRegistrationMapper.ApplyDiscovery(plugin, (await Discovery().DiscoverAsync(plugin)).Value!);
+        McpClientRegistrationMapper.ApplyClientIdentity(plugin, identity);
+
+        // The row is null here, and that is correct - the assertion guards the invariant this fix
+        // had to preserve rather than trade away.
+        Assert.Null(plugin.OAuthClientId);
+        Assert.Equal(PluginConstants.OAuthClientSource.Cimd, plugin.OAuthClientSource);
+
+        var oauthClient = OAuthClient(metadataUrl);
+        var flowState = oauthClient.PrepareState(plugin, new PluginOAuthStateDto(Guid.NewGuid(), plugin.PluginKey));
+
+        var url = oauthClient.BuildAuthorizationUrl(plugin, ["mcp:read"], "sealed-state", flowState);
+
+        // Decoded rather than substring-matched: the client id is a URL inside a query string, and
+        // asserting on one particular percent-encoding would fail the day the builder changes
+        // without the request being any different to the server that receives it.
+        var query = System.Web.HttpUtility.ParseQueryString(new Uri(url).Query);
+        Assert.Equal(metadataUrl, query["client_id"]);
+    }
+
+    /// <summary>
+    /// The same resolution has to survive the token request too, which is a separate seam: the
+    /// exchange and the refresh both load the row and call this client without ever running the
+    /// ladder, so a fix that only reached the authorization URL would move the 500 one step later.
+    /// </summary>
+    [Fact]
+    public async Task Cimd_AuthenticatesTheTokenRequest_AsAPublicClientWithOurMetadataUrl()
+    {
+        const string metadataUrl = "https://warptalk.test/oauth/client-metadata/v1.json";
+
+        var metadata = (await Discovery().DiscoverAsync(McpPlugin())).Value!.AuthorizationServer;
+        var identity = await Cimd(metadataUrl).ResolveAsync(McpPlugin(), metadata);
+
+        var plugin = McpPlugin();
+        McpClientRegistrationMapper.ApplyDiscovery(plugin, (await Discovery().DiscoverAsync(plugin)).Value!);
+        McpClientRegistrationMapper.ApplyClientIdentity(plugin, identity);
+
+        // A default-configured server leaves 'none' as the only method a document client can use,
+        // so the token request carries client_id in the form and no Authorization header.
+        Assert.Equal(PluginConstants.TokenEndpointAuthMethod.None, plugin.OAuthTokenEndpointAuthMethod);
+
+        var form = new Dictionary<string, string>();
+        var applied = ApplyClientAuthentication(OAuthClient(metadataUrl), plugin, form);
+
+        Assert.Null(applied);
+        Assert.Equal(metadataUrl, form["client_id"]);
+    }
+
+    /// <summary>
+    /// Reaches the private seam both public entry points share, so the two tests above assert the
+    /// same resolution rather than two coincidentally-agreeing implementations.
+    /// </summary>
+    private static System.Net.Http.Headers.AuthenticationHeaderValue? ApplyClientAuthentication(
+        McpOAuthClient client,
+        Plugin plugin,
+        Dictionary<string, string> form)
+    {
+        var method = typeof(McpOAuthClient).GetMethod(
+            "ApplyClientAuthentication",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        var args = new object?[] { plugin, form, null };
+        method.Invoke(client, args);
+        return (System.Net.Http.Headers.AuthenticationHeaderValue?)args[2];
+    }
+
+    private static McpOAuthClient OAuthClient(string metadataUrl)
+    {
+        var options = Options.Create(new McpClientOptions
+        {
+            ClientMetadataUrl = metadataUrl,
+            RedirectUri = "https://warptalk.test/api/v1/assistant/plugins/mcp/oauth/callback",
+        });
+
+        return new McpOAuthClient(
+            new HttpClient(),
+            options,
+            new ConfigurationMcpClientSigningKeyStore(options, NullLogger<ConfigurationMcpClientSigningKeyStore>.Instance),
+            Substitute.For<IPluginCredentialProtector>(),
+            NullLogger<McpOAuthClient>.Instance);
     }
 
     [Fact]

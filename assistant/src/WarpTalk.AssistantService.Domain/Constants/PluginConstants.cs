@@ -260,5 +260,30 @@ public static class PluginConstants
     public static class WorkspacePolicyMessages
     {
         public const string PluginsDisabled = "Workspace settings do not allow personal plugins in WarpBot.";
+
+        /// <summary>
+        /// A call that runs a plugin inside a conversation named no workspace to be judged against.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately a refusal rather than the permissive answer the personal surfaces get. The
+        /// plugins settings page has no workspace and must not be gated by one; a tool call always
+        /// happens inside a conversation that has one, so an absent workspace there is a malformed
+        /// request - and treating it as "no policy to apply" turns the workspace's only plugin
+        /// control into a field the caller can delete.
+        /// </remarks>
+        public const string WorkspaceRequired =
+            "This request must name the workspace the plugin is being used in.";
+
+        /// <summary>
+        /// The caller named a workspace they do not actively belong to.
+        /// </summary>
+        /// <remarks>
+        /// Without this, naming a workspace is naming a policy: a member of a workspace that has
+        /// turned plugins off could send the id of any workspace that has them on - their own
+        /// personal one will do - and be judged by that one instead. It also stops a caller from
+        /// stamping another workspace's id onto the audit trail.
+        /// </remarks>
+        public const string NotAWorkspaceMember =
+            "You are not an active member of the workspace named in this request.";
     }
 }

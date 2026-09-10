@@ -98,6 +98,34 @@ public sealed class S3ArtifactUrlSignerTests
                 TimeSpan.FromMinutes(15)));
     }
 
+    /// <summary>
+    /// WT-655 — the OTHER shape a failed egress leaves behind, and the one whose cause is easiest
+    /// to misread. When the upload never happened, `fileResults[].location` is absent and
+    /// EgressCompletion falls back to `filename`: a path inside the egress container, which names
+    /// no host and no bucket. It has to fail distinguishably from a foreign-host URL, because the
+    /// two call for completely different investigations — one is a broken upload, the other is a
+    /// misconfigured bucket.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_RejectsAContainerLocalPathWithItsOwnCause()
+    {
+        using var signer = Signer("https://r2.example.test");
+
+        const string storedUrl = "/out/recordings/room-123.mp4";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => signer.CreateDownloadUrlAsync(storedUrl, TimeSpan.FromMinutes(15)));
+
+        // The property, not a particular sentence: whatever wording each platform reaches, it must
+        // not blame the bucket. Windows stops at "not absolute"; Linux parses the rooted path as a
+        // file:// URI and reaches the filesystem-path guard. Both are the right investigation.
+        Assert.DoesNotContain("bucket", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            error.Message.Contains("not absolute", StringComparison.OrdinalIgnoreCase)
+                || error.Message.Contains("filesystem path", StringComparison.OrdinalIgnoreCase),
+            $"Expected a path-shaped cause, got: {error.Message}");
+    }
+
     private static S3ArtifactUrlSigner Signer(string endpoint)
     {
         var configuration = new ConfigurationBuilder()
