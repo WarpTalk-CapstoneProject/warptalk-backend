@@ -45,6 +45,12 @@ public class MeetingMinutesService : IMeetingMinutesService
     private readonly IDocumentPdfConverter? _pdfConverter;
     /// <summary>Nullable, matching TranslationRoomService: a deployment without it still runs.</summary>
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+    /// <summary>
+    /// Where a language the document does not carry comes from. Optional for the same reason the
+    /// notification client is: every other thing this service does works without it, and a
+    /// deployment that has not wired it should lose one read rather than fail to start.
+    /// </summary>
+    private readonly ITranslationRoomArtifactService? _summaryVariants;
     private readonly string _frontendBaseUrl;
     private readonly ILogger<MeetingMinutesService> _logger;
 
@@ -55,12 +61,14 @@ public class MeetingMinutesService : IMeetingMinutesService
         ILogger<MeetingMinutesService> logger,
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
         IOptions<AppSettings>? appSettings = null,
-        IDocumentPdfConverter? pdfConverter = null)
+        IDocumentPdfConverter? pdfConverter = null,
+        ITranslationRoomArtifactService? summaryVariants = null)
     {
         _unitOfWork = unitOfWork;
         _workspaceMemberDirectory = workspaceMemberDirectory;
         _documentWriter = documentWriter;
         _pdfConverter = pdfConverter;
+        _summaryVariants = summaryVariants;
         _notificationClient = notificationClient;
         _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl?.TrimEnd('/') ?? "http://localhost:3000";
         _logger = logger;
@@ -139,6 +147,161 @@ public class MeetingMinutesService : IMeetingMinutesService
         }
 
         return Result.Success(await ToDtoAsync(minutes, ct));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<MinutesTranslationDto>> GetTranslationAsync(
+        Guid roomId,
+        Guid userId,
+        string? userEmail,
+        string language,
+        string? bearerToken,
+        CancellationToken ct = default)
+    {
+        var wanted = LanguageHelper.NormalizeLanguageCode(language) ?? string.Empty;
+        if (wanted.Length == 0)
+        {
+            return Result.Failure<MinutesTranslationDto>(
+                "A language is required.", ErrorCodes.ValidationError);
+        }
+
+        // The document itself, through the read gate it already has. Reusing GetCurrentAsync
+        // rather than restating the rule is what stops this becoming a second, looser door onto
+        // an unsigned draft — that gate keeps a DRAFT with the people who can act on it, and a
+        // translation of a draft must be no more reachable than the draft.
+        var current = await GetCurrentAsync(roomId, userId, userEmail, ct);
+        if (!current.IsSuccess)
+        {
+            return Result.Failure<MinutesTranslationDto>(current.Error!, current.ErrorCode);
+        }
+
+        var minutes = current.Value!;
+        var content = JsonSerializer.Deserialize<MeetingMinutesContent>(minutes.Content, JsonOptions);
+        if (content == null)
+        {
+            return Result.Failure<MinutesTranslationDto>(
+                MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
+        }
+
+        // Already carried, because the room was interpreted into this language while it ran. The
+        // stored one wins over anything this method could produce: it was written beside the
+        // summary the document was drawn from, and it is what the DOCX has been printing.
+        if (content.Translations != null
+            && content.Translations.TryGetValue(wanted, out var carried)
+            && carried is { Count: > 0 })
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted, carried, MinutesTranslationStatus.Ready, null));
+        }
+
+        // A DOCUMENT SOMEBODY EDITED CANNOT BE TRANSLATED FROM THE SUMMARY.
+        //
+        // The body below is rebuilt out of the meeting's summary, which is only a translation of
+        // THIS document while the two still say the same thing. Once the secretary has corrected
+        // a line, the summary no longer contains what the document contains — and the reader
+        // would be shown prose the person who signed it never wrote, on the one artifact in this
+        // product whose entire value is that a named person stood behind its words.
+        //
+        // Refused with its reason rather than silently omitted: "this cannot be translated
+        // because a person edited it" is a fact the reader can act on, and an empty picker is not.
+        if (minutes.EditCountVsDraft > 0)
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                "This biên bản has been edited by its secretary, so it can only be read in the "
+                + "languages it was drawn up in. A translation would show words nobody signed."));
+        }
+
+        if (_summaryVariants == null)
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                "Reading this record in another language is not available on this deployment."));
+        }
+
+        var rendering = await _summaryVariants.GetOrQueueSummaryVariantAsync(
+            roomId,
+            userId,
+            ReadTemplateKey(content),
+            wanted,
+            bearerToken,
+            ct);
+
+        if (!rendering.IsSuccess)
+        {
+            // The meeting has no summary to translate from — which is a real state for a document
+            // drawn up and then had its summary artifact removed, and not something the reader
+            // can fix. Said plainly instead of surfaced as a failure.
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                "This meeting no longer has a summary to translate the record from."));
+        }
+
+        if (rendering.Value!.Status != SummaryVariantStatus.Ready)
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted, null, MinutesTranslationStatus.Generating, null));
+        }
+
+        var sections = MeetingMinutesDrafter.SectionsFrom(rendering.Value.Content);
+
+        // THE CHECK THAT MAKES THIS A TRANSLATION RATHER THAN A DIFFERENT DOCUMENT.
+        //
+        // The summary can be rewritten into another shape after minutes were drawn up, and then
+        // the rebuilt body has different sections from the one on the page. Printing that beside
+        // the document as "the same thing in Japanese" would be a claim of correspondence nobody
+        // checked — the exact failure `pairByCitation` refuses at the line level, applied here at
+        // the level of the document.
+        //
+        // Compared by KEY and not by count: a carried-over section exists in the document and is
+        // deliberately absent from the rebuild (see SectionsFrom), so counts legitimately differ.
+        var documentKeys = (content.Sections ?? new List<MinutesSection>())
+            .Select(section => section.Key)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.Ordinal);
+        var rebuiltKeys = sections.Select(section => section.Key).ToHashSet(StringComparer.Ordinal);
+
+        if (documentKeys.Count > 0 && !rebuiltKeys.IsSupersetOf(documentKeys))
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                "The meeting's summary has changed shape since this biên bản was drawn up, so a "
+                + "translation of it would not match the record."));
+        }
+
+        return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+            wanted, sections, MinutesTranslationStatus.Ready, null));
+    }
+
+    /// <summary>
+    /// Which summary shape this document was drawn from, so the rebuild asks for the same one.
+    ///
+    /// Read off the document's own section keys rather than stored: `MeetingMinutesContent` has
+    /// never recorded a template, and inventing a column for it would make every existing
+    /// document answer null. Standup, interview, demo and technical each declare sections no
+    /// other template has, so their presence identifies the shape; anything else is General,
+    /// which is what a document drawn before templates existed genuinely is.
+    /// </summary>
+    private static string ReadTemplateKey(MeetingMinutesContent content)
+    {
+        var keys = (content.Sections ?? new List<MinutesSection>())
+            .Select(section => section.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (keys.Contains("progress") || keys.Contains("blockers")) return "standup";
+        if (keys.Contains("strengths") || keys.Contains("concerns")) return "interview";
+        if (keys.Contains("shown") || keys.Contains("objections")) return "demo";
+        if (keys.Contains("problems") || keys.Contains("options")) return "technical";
+        if (keys.Contains("narrative")) return "traceable";
+        return "general";
     }
 
     /// <inheritdoc />

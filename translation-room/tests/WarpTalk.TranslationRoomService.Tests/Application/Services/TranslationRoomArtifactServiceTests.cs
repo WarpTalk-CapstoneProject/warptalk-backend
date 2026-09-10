@@ -143,7 +143,7 @@ public sealed class TranslationRoomArtifactServiceTests
         var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
 
         Assert.True(result.IsSuccess);
-        queue.Verify(item => item.QueueFinalization(room.Id), Times.Once);
+        queue.Verify(item => item.QueueFinalization(room.Id, "general", ""), Times.Once);
         // And no request published: there is nothing for the worker's answer to replace yet.
         redis.Verify(
             item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
@@ -174,10 +174,56 @@ public sealed class TranslationRoomArtifactServiceTests
         var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
 
         Assert.True(result.IsSuccess);
-        queue.Verify(item => item.QueueFinalization(It.IsAny<Guid>()), Times.Never);
+        queue.Verify(
+            item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
+            Times.Never);
         redis.Verify(
             item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
             Times.Once);
+    }
+
+    /// <summary>
+    /// THE SHAPE A PERSON ASKED FOR SURVIVES THE REDIRECT.
+    ///
+    /// This is the bug reported as "summary type không hoạt động", and it lived in the gap
+    /// between two correct decisions. Redirecting to finalization is right — the meeting needs
+    /// drawing up, not re-summarising. Finalizing in the default shape is right too, because a
+    /// finalizer cannot know a meeting was really a standup.
+    ///
+    /// But on THIS path the host had just said so, and their answer stopped at the redirect. The
+    /// request returned success, a General summary arrived, the picker snapped back to General,
+    /// and from the host's side pressing "Standup" did nothing at all — on the meeting this
+    /// method's own comments call the one they are most likely to press it on.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_CarriesTheChosenShapeIntoTheFinalizationItRedirectsTo()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+
+        var service = CreateServiceForRoom(room, new Mock<IRedisStateRepository>(), queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "standup", "ja", "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        queue.Verify(item => item.QueueFinalization(room.Id, "standup", "ja"), Times.Once);
+    }
+
+    /// <summary>
+    /// A locale tag is normalised on the way in, exactly as it is on the request-publishing path,
+    /// so the same choice cannot mean two things depending on which branch it took.
+    /// </summary>
+    [Fact]
+    public async Task TheRedirectNormalisesTheLanguageTheSameWayThePublishedRequestDoes()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+
+        var service = CreateServiceForRoom(room, new Mock<IRedisStateRepository>(), queue);
+        await service.RegenerateSummaryAsync(room.Id, hostId, "  STANDUP  ", "vi-VN", "Bearer token");
+
+        queue.Verify(item => item.QueueFinalization(room.Id, "standup", "vi"), Times.Once);
     }
 
     /// <summary>
