@@ -96,11 +96,13 @@ try
     builder.Services.Configure<GoogleWorkspaceOAuthOptions>(
         builder.Configuration.GetSection("Plugins:GoogleWorkspace:OAuth"));
     builder.Services.AddHttpClient<GoogleWorkspaceOAuthClient>();
-    builder.Services.AddHttpClient<McpToolGateway>();
+    builder.Services.AddHttpClient<McpToolGateway>()
+        .ConfigureMcpEgress(builder.Environment);
     builder.Services.AddKeyedScoped<IMcpToolGateway>(
         PluginConstants.PluginKind.Mcp,
         (sp, _) => sp.GetRequiredService<McpToolGateway>());
-    builder.Services.AddHttpClient<McpOAuthClient>();
+    builder.Services.AddHttpClient<McpOAuthClient>()
+        .ConfigureMcpEgress(builder.Environment);
     builder.Services.AddKeyedScoped<IPluginOAuthClient>(
         PluginConstants.PluginKind.Mcp,
         (sp, _) => sp.GetRequiredService<McpOAuthClient>());
@@ -116,10 +118,12 @@ try
     // without re-reading that requirement; McpClientRegistrationResolver trusts DI order and
     // performs no ordering of its own.
     builder.Services.Configure<McpClientOptions>(builder.Configuration.GetSection("Plugins:Mcp:Client"));
-    builder.Services.AddHttpClient<IMcpAuthorizationServerDiscovery, McpAuthorizationServerDiscovery>();
+    builder.Services.AddHttpClient<IMcpAuthorizationServerDiscovery, McpAuthorizationServerDiscovery>()
+        .ConfigureMcpEgress(builder.Environment);
     builder.Services.AddScoped<IMcpClientRegistrar, PreregisteredClientRegistrar>();
     builder.Services.AddScoped<IMcpClientRegistrar, CimdClientRegistrar>();
-    builder.Services.AddHttpClient<DynamicClientRegistrar>();
+    builder.Services.AddHttpClient<DynamicClientRegistrar>()
+        .ConfigureMcpEgress(builder.Environment);
     builder.Services.AddScoped<IMcpClientRegistrar>(
         sp => sp.GetRequiredService<DynamicClientRegistrar>());
     builder.Services.AddScoped<IMcpClientRegistrationResolver, McpClientRegistrationResolver>();
