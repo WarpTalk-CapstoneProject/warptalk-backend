@@ -24,6 +24,8 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomArtifact> TranslationRoomArtifacts { get; set; }
 
+    public virtual DbSet<TranslationRoomSummaryVariant> TranslationRoomSummaryVariants { get; set; }
+
     public virtual DbSet<TranslationRoomAudioRoute> TranslationRoomAudioRoutes { get; set; }
 
     public virtual DbSet<TranslationRoomSession> TranslationRoomSessions { get; set; }
@@ -872,6 +874,46 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasForeignKey(d => d.TranslationRoomId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("translation_room_invitations_translation_room_id_fkey");
+        });
+
+        modelBuilder.Entity<TranslationRoomSummaryVariant>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_summary_variants_pkey");
+
+            entity.ToTable("translation_room_summary_variants", "translation_room");
+
+            // Named so a violation is readable: this index is the whole cache contract, and a
+            // conflict on it means "somebody already generated this exact rendering", which the
+            // service handles by updating in place rather than by failing.
+            entity.HasIndex(e => new { e.TranslationRoomId, e.TemplateKey, e.Language })
+                .IsUnique()
+                .HasDatabaseName("ux_summary_variants_room_template_language");
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.TemplateKey)
+                .HasMaxLength(64)
+                .HasColumnName("template_key");
+            // Defaulted on BOTH sides. The column is NOT NULL DEFAULT '' and the property is
+            // initialised to string.Empty, because "as spoken" travels as an empty string the
+            // whole way — a null reaching here would be a different value to the unique index
+            // than the one the caller meant.
+            entity.Property(e => e.Language)
+                .HasMaxLength(16)
+                .HasDefaultValue(string.Empty)
+                .HasColumnName("language");
+            entity.Property(e => e.Content)
+                .HasColumnType("jsonb")
+                .HasColumnName("content");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+
+            entity.HasOne(d => d.TranslationRoom)
+                .WithMany()
+                .HasForeignKey(d => d.TranslationRoomId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("translation_room_summary_variants_translation_room_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);
