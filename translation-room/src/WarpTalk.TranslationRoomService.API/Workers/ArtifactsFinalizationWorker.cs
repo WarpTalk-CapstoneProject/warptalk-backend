@@ -48,11 +48,11 @@ public class ArtifactsFinalizationWorker : BackgroundService
 
         try
         {
-            await foreach (var roomId in _queue.ReadAllAsync(stoppingToken))
+            await foreach (var request in _queue.ReadAllAsync(stoppingToken))
             {
                 await concurrency.WaitAsync(stoppingToken);
                 running.RemoveAll(static task => task.IsCompleted);
-                running.Add(ProcessRoomAsync(roomId, stoppingToken, concurrency));
+                running.Add(ProcessRoomAsync(request, stoppingToken, concurrency));
             }
 
             await Task.WhenAll(running);
@@ -69,15 +69,18 @@ public class ArtifactsFinalizationWorker : BackgroundService
     }
 
     private async Task ProcessRoomAsync(
-        Guid roomId,
+        FinalizationRequest request,
         CancellationToken stoppingToken,
         SemaphoreSlim concurrency)
     {
+        var roomId = request.RoomId;
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
             var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizer>();
-            await finalizationService.ProcessRoomFinalizationAsync(roomId, stoppingToken);
+            await finalizationService.ProcessRoomFinalizationAsync(
+                        request.RoomId, request.TemplateKey, request.SummaryLanguage, stoppingToken);
 
             // The summary exists as of this line, and this is the only moment anything knows
             // that. Finalization is the last step of a meeting nobody is watching any more —
