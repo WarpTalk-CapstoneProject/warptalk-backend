@@ -7,6 +7,7 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Models;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
@@ -35,6 +36,68 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Read this meeting's summary in a shape and language, generating that rendering if nobody
+    /// has asked for it yet.
+    ///
+    /// A GET that can cause work, which is unusual enough to say why: the alternative is asking
+    /// every client to POST a request, poll, and then GET — three calls to answer "show me this
+    /// meeting in Japanese" — and the work is idempotent, cached, and bounded by the number of
+    /// (shape, language) pairs a room's readers actually pick. It never modifies what any other
+    /// reader sees, which is the property that separates it from the regenerate endpoint below.
+    /// </summary>
+    [HttpGet("rooms/{roomId}/summary")]
+    public async Task<IActionResult> GetSummary(
+        Guid roomId,
+        [FromQuery] string? template = null,
+        [FromQuery] string? language = null,
+        CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        // Forwarded for the same reason the rewrite forwards it: if this request has to generate,
+        // the worker reads the transcript as this caller and never through a privileged bypass.
+        var bearerToken = Request.Headers["Authorization"].ToString();
+
+        var result = await _artifactService.GetOrQueueSummaryVariantAsync(
+            roomId, userId.Value, template ?? "general", language, bearerToken, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        // 202 while it is being written, so a client can tell "come back in a moment" from
+        // "here it is" without inspecting the body — and so a cache never stores a pending
+        // answer as though it were the summary.
+        return result.Value!.Status == SummaryVariantStatus.Generating
+            ? Accepted(result.Value)
+            : Ok(result.Value);
+    }
+
+    /// <summary>Which renderings this room already holds, so a picker can show which are instant.</summary>
+    [HttpGet("rooms/{roomId}/summary/renderings")]
+    public async Task<IActionResult> GetSummaryRenderings(Guid roomId, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _artifactService.GetSummaryVariantsAsync(roomId, userId.Value, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
         return Ok(result.Value);
