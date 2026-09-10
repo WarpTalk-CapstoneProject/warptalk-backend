@@ -31,6 +31,12 @@ public class McpToolOrchestratorTests
     // stubbed verdict. What has to hold is that a given policy - and above all a null allowlist as
     // against an empty one - reaches the orchestrator's answer intact.
     private bool _workspaceAllowsPlugins = true;
+
+    /// <summary>
+    /// Whether the workspace service reports the caller as an active member of the workspace the
+    /// request names. Defaults to true so every test that is about something else keeps testing it.
+    /// </summary>
+    private bool _callerIsActiveMember = true;
     private readonly IPluginTokenRefresher _tokenRefresher = Substitute.For<IPluginTokenRefresher>();
     private readonly IMcpConfirmationTokenService _confirmationTokenService = Substitute.For<IMcpConfirmationTokenService>();
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
@@ -728,10 +734,14 @@ public class McpToolOrchestratorTests
     // ---- WT-646: the workspace gate on the tool path -------------------------------------------
 
     [Fact]
-    public async Task ListAvailableToolsAsync_IsUnaffectedByPolicy_WhenTheCallNamesNoWorkspace()
+    public async Task ListAvailableToolsAsync_OffersNothing_WhenTheCallNamesNoWorkspace()
     {
-        // WarpBot outside a workspace. Nothing to apply, and denying would take away access that
-        // works today.
+        // Was asserted the other way round, on the reasoning that WarpBot outside a workspace has
+        // no policy to apply. It does not run outside a workspace: ChatRequestMessage.workspace_id
+        // is non-optional and the worker sends it on both the discovery and the execute call. So an
+        // absent workspace here is not "no policy", it is a request that dropped the only field the
+        // policy is read from - and answering it with the full tool list is how a workspace with
+        // plugins switched off still had them offered to its members.
         _pluginRepository.FindAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
@@ -744,12 +754,17 @@ public class McpToolOrchestratorTests
             .Returns([
                 new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
             ]);
-        _workspaceAllowsPlugins = false;
+        // Set permissive on purpose: the refusal has to come from the missing workspace, not from
+        // the policy. With the old guard this test passed with the list populated either way.
+        _workspaceAllowsPlugins = true;
 
         var result = await CreateSut().ListAvailableToolsAsync(UserId, workspaceId: null);
 
+        // Still a success carrying an empty list, not a failure - the model must not be told the
+        // tools exist, and an error here would surface as a broken assistant rather than one that
+        // simply has no plugins to offer.
         Assert.True(result.IsSuccess);
-        Assert.NotEmpty(result.Value!);
+        Assert.Empty(result.Value!);
     }
 
     [Fact]
@@ -795,6 +810,59 @@ public class McpToolOrchestratorTests
 
         Assert.True(result.IsSuccess);
         Assert.True(result.Value!.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Refuses_WhenTheRequestNamesNoWorkspace()
+    {
+        // The bypass this gate was missing. workspaceId is an ordinary optional field of a body the
+        // caller composes, and the guard used to read "no workspace" as "no policy to apply" - so a
+        // member of a workspace with plugins switched off could run any tool they had installed and
+        // connected simply by dropping one key from the JSON.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+        _workspaceAllowsPlugins = false;
+
+        var result = await CreateSut().ExecuteAsync(
+            UserId,
+            Request("google_drive_search") with { WorkspaceId = null });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value.ErrorCode);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Refuses_WhenTheCallerDoesNotBelongToTheWorkspaceTheyNamed()
+    {
+        // Naming a workspace must not be the same as choosing a policy. Without the membership
+        // check, a member of a locked-down workspace could send the id of any workspace that
+        // permits plugins - their own personal one will do - and be judged by that one instead,
+        // while the audit row went to a workspace whose Owner has no reason to read it.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+        _workspaceAllowsPlugins = true;
+        _callerIsActiveMember = false;
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value.ErrorCode);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -859,7 +927,7 @@ public class McpToolOrchestratorTests
     /// constructor so a test can set the policy first and still get it applied.
     /// </summary>
     private WorkspacePluginGuard BuildGuard() =>
-        TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins);
+        TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins, _callerIsActiveMember);
 
     private McpToolExecutionRequest Request(string toolName)
     {
