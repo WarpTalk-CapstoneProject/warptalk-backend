@@ -44,7 +44,12 @@ public static class ArtifactMapper
             artifact.ConsentRequired,
             artifact.RetentionUntil,
             artifact.Status,
-            artifact.CreatedAt
+            artifact.CreatedAt,
+            // Passed straight through, null included. Null means "not known" — not a recording, or
+            // a recording that predates the column — and must NOT be coalesced to zero or to
+            // CreatedAt (which marks when egress finished, not when recording began). A caller
+            // reads null as "not seekable"; any substitute would seek to a wrong position instead.
+            artifact.RecordingStartedAt
         );
     }
 }

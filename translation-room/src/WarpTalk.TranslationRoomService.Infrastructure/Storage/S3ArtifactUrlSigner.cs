@@ -59,6 +59,24 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
         if (!Uri.TryCreate(storedUrl, UriKind.Absolute, out var uri))
             throw new InvalidOperationException("Artifact URL is not absolute.");
 
+        // WT-655 — a filesystem path is a BROKEN UPLOAD, and must not be reported as a bucket
+        // misconfiguration. When egress uploads nothing, EgressCompletion falls back from
+        // `fileResults[].location` to `filename`, which is a path inside the egress container.
+        //
+        // The check above does not catch it on the platform that matters. On Windows "/out/rec.mp4"
+        // is not an absolute URI and stops there; on Linux — where this service actually runs —
+        // .NET reads a rooted path as file:///out/rec.mp4, an absolute URI, so it sailed past and
+        // came out the other end as "does not belong to the configured LiveKit Egress bucket". That
+        // sends whoever reads the log to check bucket configuration that was never wrong, for a
+        // recording that was never uploaded. Two different faults, two different investigations.
+        if (uri.IsFile || string.IsNullOrEmpty(uri.Host))
+        {
+            throw new InvalidOperationException(
+                $"Artifact URL '{storedUrl}' is a filesystem path, not an object in storage. The "
+                + "recording was written inside the egress container and never uploaded, so there "
+                + "is nothing to sign.");
+        }
+
         if (!TryResolveObject(uri, out var bucket, out var key))
         {
             // NOT "return it as it is". This method exists to mint a credentialed link to private
