@@ -169,6 +169,96 @@ public class PluginConnectionServiceTests
     }
 
     [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsPartial_WhenTheGrantStopsCoveringAnInstalledSibling()
+    {
+        // Drive and Calendar both installed, one shared Google grant. The user reconnects through
+        // the CALENDAR tile and clears Drive's box on Google's consent screen, so the grant comes
+        // back carrying calendar.events and nothing else.
+        //
+        // Judged against the clicked plugin alone this answered `connected` - Calendar did get what
+        // it asked for - while Drive silently lost its access and went on rendering as Connected
+        // until a tool call failed mid-answer.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
+            ]);
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([GoogleDrivePlugin(), calendar]);
+        _oauthClient.ExchangeCodeAsync(calendar, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(
+                "google-user-id",
+                "user@example.com",
+                ["https://www.googleapis.com/auth/calendar.events"],
+                "access-token",
+                "refresh-token",
+                DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Partial, result.Status);
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_Refuses_WhenTheConsentIsForADifferentProviderAccount()
+    {
+        // A connection is keyed by provider and shared by every plugin of that provider, so a
+        // consent given with a second Google account does not add a row - it rewrites the one Drive,
+        // Calendar and Meet all read. Accepting it moved every tile to the new account at once and
+        // destroyed the previous refresh token here while leaving the grant live at Google, because
+        // nothing on this path revokes.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledPlugin(plugin);
+        var existing = ConnectedConnection();
+        existing.ProviderAccountId = "google-user-id";
+        existing.ProviderEmail = "work@example.com";
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(existing);
+        _oauthClient.ExchangeCodeAsync(plugin, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(
+                "a-different-google-user-id",
+                "personal@example.com",
+                ["https://www.googleapis.com/auth/drive.readonly"],
+                "other-access-token",
+                "other-refresh-token",
+                DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleDriveKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Error, result.Status);
+        Assert.Equal(PluginConstants.ErrorCodes.ProviderAccountMismatch, result.Reason);
+
+        // The connection the user already had is untouched, and nothing was written.
+        Assert.Equal("google-user-id", existing.ProviderAccountId);
+        Assert.Equal("work@example.com", existing.ProviderEmail);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+
+        // The refusal happens after the exchange, so a real grant exists at the provider for an
+        // account we are about to forget. Leaving it would hand the second account standing access
+        // that no WarpTalk row knows about and nothing can later revoke.
+        await _oauthClient.Received(1)
+            .RevokeTokenAsync(plugin, "other-refresh-token", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task CompleteOAuthCallbackAsync_ClearsExpiredStatus_WhenUserReconnects()
     {
         var plugin = GoogleDrivePlugin();

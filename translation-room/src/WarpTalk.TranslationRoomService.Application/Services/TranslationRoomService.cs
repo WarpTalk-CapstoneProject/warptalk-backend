@@ -574,7 +574,8 @@ public class TranslationRoomService : ITranslationRoomService
             // 5. Return mapped response. WT-280: seats are counted in the database, after the
             // host row above was committed, so a freshly created room correctly reports 1.
             return Result.Success(room.ToResponseDto(
-                await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct)));
+                await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct),
+                await _participantRepository.CountEverJoinedAsync(room.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -715,7 +716,8 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             return Result.Success(translationRoom.ToResponseDto(
-                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -811,11 +813,21 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (rooms.Count == 0) return Result.Success(new List<TranslationRoomListItemDto>());
 
+            var occurrenceIds = rooms.Select(r => r.Id).ToList();
             var occupancyByRoom = await _participantRepository.CountSeatHoldingParticipantsByRoomsAsync(
-                rooms.Select(r => r.Id).ToList(), ct);
+                occurrenceIds, ct);
+            // WT-662: a series is mostly read after its occurrences are over, and occupancy is 0
+            // for every one of those. Without this the list of past occurrences reported that
+            // nobody attended any of them.
+            var attendedByRoom = await _participantRepository.CountEverJoinedByRoomsAsync(
+                occurrenceIds, ct);
 
             return Result.Success(rooms
-                .Select(r => ToListItemDto(r, userId, occupancyByRoom.GetValueOrDefault(r.Id)))
+                .Select(r => ToListItemDto(
+                    r,
+                    userId,
+                    occupancyByRoom.GetValueOrDefault(r.Id),
+                    attendedCount: attendedByRoom.GetValueOrDefault(r.Id)))
                 .ToList());
         }
         catch (Exception ex)
@@ -1108,7 +1120,8 @@ public class TranslationRoomService : ITranslationRoomService
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
-                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)),
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                    await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)),
                 TranslationRoomParticipantMapper.ToDto(participant)
             ));
         }
@@ -1348,7 +1361,8 @@ public class TranslationRoomService : ITranslationRoomService
                 await PublishRouteReadinessAsync(translationRoomId, ct);
 
                 return Result.Success(translationRoom.ToResponseDto(
-                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                    await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
             }
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -1419,7 +1433,8 @@ public class TranslationRoomService : ITranslationRoomService
             await NotifyRoomStartedAsync(translationRoom, callerId, ct);
 
             return Result.Success(translationRoom.ToResponseDto(
-                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -1938,7 +1953,8 @@ public class TranslationRoomService : ITranslationRoomService
             await PublishTerminalLifecycleAsync(translationRoomId, "cancelling", ct);
 
             return Result.Success(translationRoom.ToResponseDto(
-                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -2654,6 +2670,16 @@ public class TranslationRoomService : ITranslationRoomService
                 g => g.Key,
                 g => g.Count(p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status)));
 
+        // WT-662: attendance, from the same materialised roster and for the same reason — history
+        // is every room that is already over, so occupancy above is 0 for all of them. No status
+        // filter (the question is who turned up) and DISTINCT by user (somebody who dropped and
+        // rejoined turned up once), matching CountEverJoinedByRoomsAsync exactly.
+        var attendedByRoom = participantEntities
+            .GroupBy(p => p.TranslationRoomId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(p => p.UserId).Distinct().Count());
+
         var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
             .Query()
             .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
@@ -2688,7 +2714,11 @@ public class TranslationRoomService : ITranslationRoomService
                 });
 
         var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
-                ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
+                ToListItemDto(
+                    room,
+                    userId,
+                    occupancyByRoom.GetValueOrDefault(room.Id),
+                    attendedCount: attendedByRoom.GetValueOrDefault(room.Id)),
                 participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
                 artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
             ))

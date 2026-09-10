@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared.Events;
@@ -10,11 +11,16 @@ public sealed class EgressCompletion : IEgressCompletion
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRedisService _redisService;
+    private readonly ILogger<EgressCompletion> _logger;
 
-    public EgressCompletion(IUnitOfWork unitOfWork, IRedisService redisService)
+    public EgressCompletion(
+        IUnitOfWork unitOfWork,
+        IRedisService redisService,
+        ILogger<EgressCompletion> logger)
     {
         _unitOfWork = unitOfWork;
         _redisService = redisService;
+        _logger = logger;
     }
 
     public async Task<EgressCompletionOutcome> ApplyAsync(JsonElement egressInfo, CancellationToken ct = default)
@@ -86,8 +92,33 @@ public sealed class EgressCompletion : IEgressCompletion
 
         // A failed or empty egress has no recording artifact. Clearing the id is still correct —
         // the room is not recording any more — but there is nothing to publish.
+        //
+        // WT-660: say WHY, using LiveKit's own two fields. Both callers previously reported this
+        // as one undifferentiated "finished with no recording file", which cannot tell apart:
+        //
+        //   * EGRESS_COMPLETE with an empty file list — we asked for something unrecordable, e.g.
+        //     the composite template never rendered.
+        //   * EGRESS_FAILED / EGRESS_ABORTED — LiveKit tried and broke, and `error` says how.
+        //   * EGRESS_LIMIT_REACHED — the plan's recording minutes ran out mid-meeting. Start-time
+        //     quota refusal is already handled with a real message in LiveKitEgressService; this
+        //     is the same wall hit later, and it was completely silent.
+        //
+        // Those need three different responses from whoever reads the log, and prod spent an
+        // investigation unable to choose between them because neither field was ever read. Logged
+        // here rather than in EgressReconciliationService so the webhook path — which until now
+        // logged nothing at all when it cleared — is covered by the same line.
         if (string.IsNullOrWhiteSpace(egressId) || string.IsNullOrWhiteSpace(fileUrl))
+        {
+            _logger.LogWarning(
+                "Egress {EgressId} for room {RoomName} produced no recording file. "
+                + "LiveKit status={Status}, error={Error}. No recording artifact will exist for it.",
+                egressId ?? "(none)",
+                roomName ?? "(unknown)",
+                ReadEgressStatus(egressInfo) ?? "(absent)",
+                ReadEgressError(egressInfo) ?? "(none)");
+
             return EgressCompletionOutcome.Cleared;
+        }
 
         var envelope = DomainEventEnvelope.Create(
             MeetingEventTypes.RecordingCompleted,
@@ -161,6 +192,49 @@ public sealed class EgressCompletion : IEgressCompletion
         && long.TryParse(value.GetString(), out var number)
             ? number
             : null;
+
+    /// <summary>
+    /// WT-660: LiveKit's <c>EgressStatus</c>, as a name whichever form it arrives in.
+    ///
+    /// Twirp JSON serialises a proto enum as its name, but the numeric form turns up too — the
+    /// same split <c>EgressReconciliationService.IsTerminal</c> already handles. Mapped to the
+    /// name here because the whole point is a log line a person reads: "3" says nothing,
+    /// "EGRESS_COMPLETE" and "EGRESS_LIMIT_REACHED" are different instructions.
+    /// </summary>
+    private static string? ReadEgressStatus(JsonElement egressInfo)
+    {
+        if (!egressInfo.TryGetProperty("status", out var status)) return null;
+
+        if (status.ValueKind == JsonValueKind.String) return status.GetString();
+
+        if (status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var ordinal))
+        {
+            // Proto ordinals, per livekit.EgressStatus.
+            return ordinal switch
+            {
+                0 => "EGRESS_STARTING",
+                1 => "EGRESS_ACTIVE",
+                2 => "EGRESS_ENDING",
+                3 => "EGRESS_COMPLETE",
+                4 => "EGRESS_FAILED",
+                5 => "EGRESS_ABORTED",
+                6 => "EGRESS_LIMIT_REACHED",
+                _ => ordinal.ToString(),
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// WT-660: LiveKit's own explanation, when it has one. Empty string is how the proto says
+    /// "no error", so it is normalised to null rather than logged as a blank.
+    /// </summary>
+    private static string? ReadEgressError(JsonElement egressInfo)
+    {
+        var error = TryGetString(egressInfo, "error");
+        return string.IsNullOrWhiteSpace(error) ? null : error;
+    }
 
     private static JsonElement? TryGetArray(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Array

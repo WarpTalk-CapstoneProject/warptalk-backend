@@ -193,6 +193,19 @@ public static class PluginConstants
         public const string AccessDenied = "access_denied";
 
         /// <summary>
+        /// The consent that came back belongs to a different account at the provider than the one
+        /// this user's existing connection holds.
+        /// </summary>
+        /// <remarks>
+        /// Its own code rather than <see cref="PermissionDenied"/>, because the remedy is specific
+        /// and the user can act on it: disconnect the account that is connected, then connect the
+        /// one you want. A connection is keyed by provider and shared by every plugin of that
+        /// provider, so accepting the second account would silently move Drive, Calendar and Meet
+        /// to it at once.
+        /// </remarks>
+        public const string ProviderAccountMismatch = "provider_account_mismatch";
+
+        /// <summary>
         /// Our own OAuth configuration is missing or wrong - an empty client secret, a client id
         /// the provider does not recognise. Separated from <see cref="ProviderUnavailable"/>
         /// because the two need opposite words: one tells the user to try again later, the other
@@ -247,5 +260,30 @@ public static class PluginConstants
     public static class WorkspacePolicyMessages
     {
         public const string PluginsDisabled = "Workspace settings do not allow personal plugins in WarpBot.";
+
+        /// <summary>
+        /// A call that runs a plugin inside a conversation named no workspace to be judged against.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately a refusal rather than the permissive answer the personal surfaces get. The
+        /// plugins settings page has no workspace and must not be gated by one; a tool call always
+        /// happens inside a conversation that has one, so an absent workspace there is a malformed
+        /// request - and treating it as "no policy to apply" turns the workspace's only plugin
+        /// control into a field the caller can delete.
+        /// </remarks>
+        public const string WorkspaceRequired =
+            "This request must name the workspace the plugin is being used in.";
+
+        /// <summary>
+        /// The caller named a workspace they do not actively belong to.
+        /// </summary>
+        /// <remarks>
+        /// Without this, naming a workspace is naming a policy: a member of a workspace that has
+        /// turned plugins off could send the id of any workspace that has them on - their own
+        /// personal one will do - and be judged by that one instead. It also stops a caller from
+        /// stamping another workspace's id onto the audit trail.
+        /// </remarks>
+        public const string NotAWorkspaceMember =
+            "You are not an active member of the workspace named in this request.";
     }
 }

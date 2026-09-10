@@ -120,6 +120,23 @@ public class MinutesShareAccessTests
     }
 
     [Fact]
+    public void ADraftIsNeverServedThroughALink()
+    {
+        // DRAFT to IN_REVIEW is a person signing their name. Until that happens the document is a
+        // model's output nobody has checked, and the ordinary read gate keeps it with the host —
+        // a share link that served one would walk straight around that rule.
+        MinutesShareAccess.IsServable(MeetingMinutesConstants.StatusDraft).Should().BeFalse();
+        MinutesShareAccess.IsServable("draft").Should().BeFalse();
+    }
+
+    [Fact]
+    public void ASignedOrApprovedDocumentIsServable()
+    {
+        MinutesShareAccess.IsServable(MeetingMinutesConstants.StatusInReview).Should().BeTrue();
+        MinutesShareAccess.IsServable(MeetingMinutesConstants.StatusApproved).Should().BeTrue();
+    }
+
+    [Fact]
     public void TokensAreUrlSafeUnguessableAndNeverRepeated()
     {
         var tokens = Enumerable.Range(0, 200).Select(_ => MinutesShareAccess.NewToken()).ToList();

@@ -48,4 +48,17 @@ public interface ITranslationRoomParticipantRepository : IGenericRepository<Tran
     Task<Dictionary<Guid, int>> CountEverJoinedByRoomsAsync(
         IReadOnlyCollection<Guid> roomIds,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-662: the same attendance figure as <see cref="CountEverJoinedByRoomsAsync"/>, for one
+    /// room.
+    ///
+    /// The room LIST has had this since WT-280 and the room DETAIL never did, so the detail page
+    /// fell back to the DTO's defaulted <c>AttendedCount = 0</c> and every finished meeting read
+    /// "0 attended" — twice, because the People panel's summary line reads the same field.
+    ///
+    /// DISTINCT by user, and no status filter, for the reasons given above: the question is who
+    /// turned up, and somebody who dropped and rejoined turned up once.
+    /// </summary>
+    Task<int> CountEverJoinedAsync(Guid roomId, CancellationToken ct = default);
 }
