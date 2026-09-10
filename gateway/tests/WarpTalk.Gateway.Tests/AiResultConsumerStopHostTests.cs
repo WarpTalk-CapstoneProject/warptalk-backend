@@ -79,6 +79,7 @@ public sealed class AiResultConsumerStopHostTests
             // Never reached: group creation fails before any room policy lookup happens.
             null!,
             null!,
+            new TranscriptPauseState(FailingRedis(), Mock.Of<ILogger<TranscriptPauseState>>()),
             logger.Object);
     }
 

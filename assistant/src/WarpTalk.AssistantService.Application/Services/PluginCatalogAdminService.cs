@@ -93,6 +93,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         // in the same scope calls SaveChangesAsync. Collecting the writes as closures keeps
         // "is this edit legal" and "apply this edit" from interleaving at all.
         var edits = new List<Action<Plugin>>();
+        var serverUrlChanged = false;
 
         if (request.Label is not null)
         {
@@ -147,6 +148,12 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
             }
             else
             {
+                // Repointing a live row at another host is not an edit to a label. Every user who
+                // connected did so for the server that was there before, and their bearer token
+                // travels on the next tool call to whatever is there now - with nothing warning
+                // them and the audit row recording an ordinary call. So the grants that were given
+                // for the old host stop being usable at the same moment the host changes.
+                serverUrlChanged = !string.Equals(plugin.McpServerUrl, serverUrl, StringComparison.Ordinal);
                 edits.Add(row => row.McpServerUrl = serverUrl);
             }
         }
@@ -181,6 +188,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
             return Invalid<PluginCatalogAdminDetailDto>(errors, PluginConstants.ErrorCodes.InvalidCatalogUpdate);
 
         foreach (var edit in edits) edit(plugin);
+
+        if (serverUrlChanged) await InvalidateProviderConnectionsAsync(plugin, ct);
 
         await StampAndSaveAsync(plugin, adminUserId, ct);
         return Result.Success(await ToDetailAsync(plugin, ct));
@@ -301,8 +310,21 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
 
         plugin.OAuthAuthorizationEndpoint = null;
         plugin.OAuthTokenEndpoint = null;
-        plugin.OAuthRevokeEndpoint = null;
         plugin.OAuthRegistrationEndpoint = null;
+
+        // OAuthRevokeEndpoint deliberately survives, alone among the four.
+        //
+        // The others are only read on the way into a NEW flow, and provisioning refills them before
+        // that flow starts. The revoke endpoint is read on the way OUT of an old one - by
+        // DisconnectAsync, for users who connected long ago and are not about to connect again.
+        // McpOAuthClient.RevokeTokenAsync returns silently when it is blank, and the disconnect
+        // path swallows that, so clearing it here turned every Disconnect between now and the next
+        // connect into a local delete: the row vanished, the UI said disconnected, and the grant
+        // stayed live at the third party with the token we had just thrown away.
+        //
+        // A stale endpoint is strictly better than none. Revocation is best-effort either way, so
+        // the worst case is a call that fails exactly as often as not making it - and the common
+        // case, a server that did not move its revocation endpoint, is a revoke that works.
 
         // These three are discovery output too - what the authorization server said about CIMD,
         // RFC 9207 and token-endpoint auth. Leaving them behind while clearing the endpoints would
@@ -444,6 +466,47 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         // No IsActive filter: a retired row is precisely what an operator comes here to inspect or
         // reinstate.
         return _unitOfWork.PluginRepository.FirstOrDefaultAsync(plugin => plugin.PluginKey == key, ct: ct);
+    }
+
+    /// <summary>
+    /// Ends the grants that were given for a server this row no longer points at.
+    /// </summary>
+    /// <remarks>
+    /// A user consented to one host and their bearer token is sent to whatever <c>mcp_server_url</c>
+    /// names at call time (<c>McpToolGateway</c> reads the column on every call), so the moment the
+    /// column changes, every stored token becomes a credential for the wrong party. Marking the
+    /// connections <c>revoked</c> and clearing the tokens means the next tool call asks for a
+    /// reconnect instead, and nothing is ever sent to the new host on the strength of consent given
+    /// for the old one.
+    /// <para>
+    /// No upstream revoke call. The endpoint on the row belongs to the server being left behind, and
+    /// reaching into it on an admin's edit would mean a best-effort network call inside a catalog
+    /// update - where a slow host turns a PATCH into a timeout. The user's grant at the old server
+    /// outlives this, which is worth saying out loud: it is a grant they can withdraw there, and one
+    /// this product can no longer reach.
+    /// </para>
+    /// <para>
+    /// By provider, not by plugin id: that is how a connection is keyed, and for an MCP row the
+    /// provider is the row's own key, so the set is exactly this row's users.
+    /// </para>
+    /// </remarks>
+    private async Task InvalidateProviderConnectionsAsync(Plugin plugin, CancellationToken ct)
+    {
+        var connections = await _unitOfWork.PluginConnectionRepository.FindAsync(
+            connection => connection.Provider == plugin.Provider,
+            ct: ct);
+
+        var now = DateTime.UtcNow;
+        foreach (var connection in connections)
+        {
+            connection.Status = PluginConstants.ConnectionStatus.Revoked;
+            connection.EncryptedAccessToken = null;
+            connection.EncryptedRefreshToken = null;
+            connection.AccessTokenExpiresAt = null;
+            connection.TokenRotatedAt = null;
+            connection.UpdatedAt = now;
+            _unitOfWork.PluginConnectionRepository.Update(connection);
+        }
     }
 
     private async Task StampAndSaveAsync(Plugin plugin, Guid adminUserId, CancellationToken ct)

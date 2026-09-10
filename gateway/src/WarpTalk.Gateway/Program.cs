@@ -180,6 +180,11 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 
+// WT-605. Singleton, and it has to be one: AiResultConsumerService reads the pause answer and
+// TranslationRoomRedisSubscriberService invalidates it. A per-scope instance would leave the
+// consumer holding a cache nobody can reach, and Resume would not take effect until it expired.
+builder.Services.AddSingleton<TranscriptPauseState>();
+
 // Member presence. Registered after the multiplexer above because it is Redis-backed rather
 // than kept in the connection manager: the Members page has to read who is online outside the
 // socket that produced it, and a second Gateway instance must not report only its own half.

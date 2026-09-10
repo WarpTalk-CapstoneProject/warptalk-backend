@@ -69,6 +69,9 @@ builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 builder.Services.AddScoped<ITranscriptTranslationBackfillService, TranscriptTranslationBackfillService>();
 builder.Services.AddScoped<ITranscriptRecordingService, TranscriptRecordingService>();
+// WT-605: lets the pause-window read path show a window the room ended in the middle of as
+// ending when the room did, rather than as "paused right now" forever.
+builder.Services.AddScoped<ITranslationRoomEndTime, TranslationRoomEndTime>();
 
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]

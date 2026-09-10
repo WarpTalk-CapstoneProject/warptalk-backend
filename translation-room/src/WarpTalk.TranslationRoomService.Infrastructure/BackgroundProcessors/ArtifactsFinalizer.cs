@@ -76,6 +76,13 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                         $"meeting:{roomId}:target_languages",
                         JsonSerializer.Serialize(targetLanguages),
                         TimeSpan.FromMinutes(10));
+
+                    // Same hint, same best-effort footing: the language the summary should come
+                    // out in, so the automatic one does not guess where the room already said.
+                    await _redisStateRepo.StringSetAsync(
+                        $"meeting:{roomId}:summary_language",
+                        LanguageHelper.NormalizeLanguageCode(room.SourceLanguage),
+                        TimeSpan.FromMinutes(10));
                 }
             }
             catch (Exception ex)
@@ -369,6 +376,10 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 // one because the transcript travels with the request.
                 ["bearer_token"] = string.Empty,
                 ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
+                // The room's declared language, not a guess from the words. This request exists
+                // because the live path produced nothing, so it is the FIRST summary this meeting
+                // gets — it must land in the same language a later rewrite would default to.
+                ["summary_language"] = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage),
                 ["transcript_text"] = citedTranscript,
                 ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
             });
