@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
@@ -414,7 +415,7 @@ public class MeetingRoomServiceTests
         var sweep = new EgressReconciliationService(
             _unitOfWorkMock.Object,
             _egressServiceMock.Object,
-            new EgressCompletion(_unitOfWorkMock.Object, _redisServiceMock.Object),
+            new EgressCompletion(_unitOfWorkMock.Object, _redisServiceMock.Object, NullLogger<EgressCompletion>.Instance),
             Mock.Of<ILogger<EgressReconciliationService>>());
 
         var result = await sweep.ReconcileAsync(DateTime.UtcNow);

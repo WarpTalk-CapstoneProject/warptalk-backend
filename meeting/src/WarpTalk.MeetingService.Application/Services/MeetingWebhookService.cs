@@ -36,6 +36,21 @@ public class MeetingWebhookService : IMeetingWebhookService
         _logger = logger;
     }
 
+    /// <summary>
+    /// WT-660: this returns false from four different places, and until now they were
+    /// indistinguishable from the outside — the caller turns any of them into one flat 401.
+    ///
+    /// Production is answering LiveKit 401 on ~105 of 108 webhook deliveries, so no egress_ended
+    /// has ever been processed and only the reconciliation sweep has completed a recording. The
+    /// investigation could not get past this method: a bad signature, a token with no body hash, a
+    /// body that changed in transit and a clock too far out all look identical in the log, and
+    /// each points somewhere completely different.
+    ///
+    /// So each refusal now says which one it was. Deliberately at Warning: a rejected webhook is
+    /// not routine, and the whole reason this was expensive to diagnose is that it was silent.
+    /// Nothing derived from the secret or the body is logged — the reason is the diagnostic, the
+    /// payload is not.
+    /// </summary>
     public bool ValidateWebhookToken(string token, string bodyText)
     {
         try
@@ -57,16 +72,57 @@ public class MeetingWebhookService : IMeetingWebhookService
             var jwtToken = handler.ReadJwtToken(token);
             var sha256Claim = jwtToken.Claims.FirstOrDefault(c => c.Type == "sha256")?.Value;
 
-            if (string.IsNullOrEmpty(sha256Claim)) return false;
+            if (string.IsNullOrEmpty(sha256Claim))
+            {
+                _logger.LogWarning(
+                    "Rejected a LiveKit webhook: its token carries no 'sha256' body-hash claim. "
+                    + "The signature itself was valid, so this is a sender that is not signing the "
+                    + "body — check what is posting to this endpoint.");
+                return false;
+            }
 
             using var sha256 = SHA256.Create();
             var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(bodyText));
             var computedHash = Convert.ToBase64String(hashBytes);
 
-            return sha256Claim == computedHash;
+            if (sha256Claim != computedHash)
+            {
+                // The signature verified, so the secret is right and the token is LiveKit's. The
+                // body therefore is not the one LiveKit hashed: something between them and this
+                // method changed it. Length is enough to tell a truncation from a re-encoding, and
+                // unlike the body itself it carries no meeting content.
+                _logger.LogWarning(
+                    "Rejected a LiveKit webhook: the body does not match the hash its token was "
+                    + "signed with. The signature was valid, so the secret is correct and the body "
+                    + "changed in transit. Received {ByteCount} bytes ({CharCount} chars).",
+                    Encoding.UTF8.GetByteCount(bodyText),
+                    bodyText.Length);
+                return false;
+            }
+
+            return true;
         }
-        catch
+        catch (SecurityTokenExpiredException ex)
         {
+            // Distinct from a bad signature because the answer is different: LiveKit retries a
+            // failed delivery with the ORIGINAL token, so one genuine failure turns into a long
+            // tail of expiries that are only a symptom. A first delivery expiring on arrival is
+            // the real finding — it means this host's clock is off by more than the 2-minute skew.
+            _logger.LogWarning(
+                "Rejected a LiveKit webhook: its token had expired ({Expires:o}, now {Now:o}). "
+                + "A retry of an already-failed delivery is expected to look like this; a FIRST "
+                + "delivery expiring means this host's clock is out by more than the allowed skew.",
+                ex.Expires,
+                DateTime.UtcNow);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Rejected a LiveKit webhook: its token failed signature validation. If this is "
+                + "every delivery, LiveKit is signing with a different secret than "
+                + "LiveKit:ApiSecret holds.");
             return false;
         }
     }

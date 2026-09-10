@@ -39,7 +39,10 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         // An empty list, not a refusal. This is what WarpBot may reach for in this conversation,
         // so in a workspace with plugins off the model never learns the tools exist and never
         // proposes an action that would be refused downstream.
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        //
+        // The in-workspace check, so an omitted or borrowed workspaceId cannot widen the list: this
+        // is a conversation, and a conversation has a workspace.
+        var permitted = await _workspacePluginGuard.CanUsePluginsInWorkspaceAsync(workspaceId, userId, ct);
         if (!permitted.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
@@ -75,7 +78,16 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         // policy - see PluginInstallationService.ListCatalogAsync - so this is what actually stops
         // the tool running, and it is checked on every call rather than at install time because
         // the policy can change between the two.
-        var policyCheck = await _workspacePluginGuard.CanUsePluginsAsync(request.WorkspaceId, ct);
+        //
+        // WorkspaceId is a field of a request the caller composes, so this asks the in-workspace
+        // question: absent is a refusal, not an absence, and the caller has to belong to the
+        // workspace they named. Omitting the field used to pass this gate outright, and the audit
+        // row it wrote carried workspace_id = NULL - so the calls that slipped past the policy were
+        // also the ones its Owner could not see.
+        var policyCheck = await _workspacePluginGuard.CanUsePluginsInWorkspaceAsync(
+            request.WorkspaceId,
+            userId,
+            ct);
         if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,

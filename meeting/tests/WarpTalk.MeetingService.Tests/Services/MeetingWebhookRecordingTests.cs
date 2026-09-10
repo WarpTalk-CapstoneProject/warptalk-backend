@@ -429,7 +429,7 @@ public sealed class MeetingWebhookRecordingTests
         return new MeetingWebhookService(
             unitOfWork,
             redis,
-            new EgressCompletion(unitOfWork, redis),
+            new EgressCompletion(unitOfWork, redis, NullLogger<EgressCompletion>.Instance),
             configuration,
             NullLogger<MeetingWebhookService>.Instance);
     }

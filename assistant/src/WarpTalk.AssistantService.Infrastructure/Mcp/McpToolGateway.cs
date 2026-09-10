@@ -60,7 +60,7 @@ public class McpToolGateway : IMcpToolGateway
             return Array.Empty<McpToolDescriptorDto>();
 
         return tools.EnumerateArray()
-            .Select(tool => ToDescriptor(plugin.Key, tool))
+            .Select(tool => ToDescriptor(plugin.Key, plugin.RequiredScopes, tool))
             .Where(tool => tool is not null)
             .Select(tool => tool!)
             .ToArray();
@@ -256,7 +256,10 @@ public class McpToolGateway : IMcpToolGateway
     /// not control, so the safe reading of silence is "this may write" - which routes the call
     /// through the confirmation gate rather than around it.
     /// </remarks>
-    private static McpToolDescriptorDto? ToDescriptor(string pluginKey, JsonElement tool)
+    private static McpToolDescriptorDto? ToDescriptor(
+        string pluginKey,
+        IReadOnlyList<string> pluginScopes,
+        JsonElement tool)
     {
         var name = ReadString(tool, "name");
         if (string.IsNullOrWhiteSpace(name)) return null;
@@ -276,7 +279,22 @@ public class McpToolGateway : IMcpToolGateway
             Label: ReadString(tool, "title") ?? name,
             Description: ReadString(tool, "description") ?? string.Empty,
             Effect: readOnly ? PluginConstants.ToolEffect.Read : PluginConstants.ToolEffect.Write,
-            RequiredScopes: Array.Empty<string>(),
+            // The row's own scopes, not an empty list.
+            //
+            // tools/list carries no scope information - MCP has no field for it - so there is
+            // nothing per-tool to read here. Returning nothing, though, quietly disabled the
+            // orchestrator's scope gate for every MCP plugin at once: it compares a tool's
+            // RequiredScopes against the connection's granted set, and an empty list is satisfied
+            // by any grant at all. A user who declined a permission on the consent screen was
+            // recorded as `partial` and then allowed to run every tool the plugin has, with the
+            // remote server's own 403 as the only thing left standing between them.
+            //
+            // Falling back to the plugin's declared scopes makes the gate mean what it says: this
+            // row asked for these scopes, so its tools need them. It is coarser than per-tool
+            // scopes would be - it refuses a read tool when a write scope is missing - but it
+            // refuses in the safe direction, and it is the only scope statement the catalog
+            // actually has.
+            RequiredScopes: pluginScopes,
             Parameters: parameters);
     }
 

@@ -49,6 +49,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         Guid roomId,
         Guid userId,
         string templateKey,
+        string? summaryLanguage,
         string? bearerToken,
         CancellationToken ct = default)
     {
@@ -105,33 +106,42 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                         ErrorCodes.InvalidState);
                 }
 
+                // CARRYING WHAT THEY ASKED FOR, which is the whole difference between this
+                // working and appearing not to.
+                //
+                // The redirect is right — the meeting needs finalizing, not re-summarising — but
+                // it used to drop the shape and language on the way. The request returned
+                // success, a General summary arrived, and the picker snapped back to General, so
+                // from the host's side pressing "Standup" did nothing at all. And by this code's
+                // own reasoning this is the meeting they are MOST likely to press it on: the one
+                // showing no summary.
                 _logger.LogInformation(
-                    "Room {RoomId} has no artifacts at all; queueing finalization instead of a summary rewrite that would have nothing to land on.",
-                    roomId);
-                _finalizationQueue.QueueFinalization(roomId);
+                    "Room {RoomId} has no artifacts at all; queueing finalization in {TemplateKey}/{Language} instead of a summary rewrite that would have nothing to land on.",
+                    roomId,
+                    NormalizeTemplateKey(templateKey),
+                    LanguageHelper.NormalizeLanguageCode(summaryLanguage) is { Length: > 0 } asked ? asked : "as-spoken");
+                _finalizationQueue.QueueFinalization(
+                    roomId,
+                    NormalizeTemplateKey(templateKey),
+                    LanguageHelper.NormalizeLanguageCode(summaryLanguage));
                 return Result.Success();
             }
 
-            var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
-
-            await _redisStateRepo.StreamAddAsync(SummaryRequestStream, new Dictionary<string, string>
-            {
-                ["request_id"] = Guid.NewGuid().ToString(),
-                ["room_id"] = roomId.ToString(),
-                ["workspace_id"] = room.WorkspaceId.ToString(),
-                ["template_key"] = string.IsNullOrWhiteSpace(templateKey) ? "general" : templateKey.Trim().ToLowerInvariant(),
-                // Forwarded so the worker reads the transcript AS THE CALLER, through the
-                // same authenticated endpoint they could already use — never a privileged
-                // bypass that would let a regeneration read more than its requester can.
-                ["bearer_token"] = bearerToken ?? string.Empty,
-                ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
-                ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
-            });
+            await QueueSummaryAsync(
+                room,
+                NormalizeTemplateKey(templateKey),
+                LanguageHelper.NormalizeLanguageCode(summaryLanguage) ?? string.Empty,
+                bearerToken,
+                // REPLACES the room's summary. This is the host deciding what the meeting's
+                // summary IS, which is a different act from a reader asking to see it in their
+                // own language — see GetOrQueueSummaryVariantAsync.
+                SummaryDelivery.Canonical);
 
             _logger.LogInformation(
-                "Queued summary regeneration for room {RoomId} with template {TemplateKey}",
+                "Queued summary regeneration for room {RoomId} with template {TemplateKey} in language {SummaryLanguage}",
                 roomId,
-                templateKey);
+                templateKey,
+                LanguageHelper.NormalizeLanguageCode(summaryLanguage) is { Length: > 0 } code ? code : "as-spoken");
 
             return Result.Success();
         }
@@ -140,6 +150,246 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             _logger.LogError(ex, "Failed to queue summary regeneration for room {RoomId}", roomId);
             return Result.Failure("Could not queue the summary rewrite.", ErrorCodes.InternalServerError);
         }
+    }
+
+    public async Task<Result<SummaryVariantDto>> GetOrQueueSummaryVariantAsync(
+        Guid roomId,
+        Guid userId,
+        string templateKey,
+        string? language,
+        string? bearerToken,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+                r => r.Id == roomId,
+                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                ct);
+
+            if (room == null)
+                return Result.Failure<SummaryVariantDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
+                return Result.Failure<SummaryVariantDto>("A summary is only available for a finished meeting.", ErrorCodes.InvalidState);
+
+            // The same gate the canonical summary is read behind. A rendering is the same
+            // meeting's content in another language — it must not be reachable by anyone the
+            // original is not.
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+                return Result.Failure<SummaryVariantDto>("Unauthorized to read this room's summary.", ErrorCodes.Unauthorized);
+
+            var wantedTemplate = NormalizeTemplateKey(templateKey);
+            var wantedLanguage = LanguageHelper.NormalizeLanguageCode(language) ?? string.Empty;
+
+            var canonical = room.TranslationRoomArtifacts
+                .Where(artifact => artifact.DeletedAt == null
+                    && string.Equals(artifact.ArtifactType, ArtifactType.SUMMARY_EXPORT.ToString(), StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(artifact => artifact.CreatedAt)
+                .FirstOrDefault();
+
+            // NOTHING TO RENDER FROM, AND SAYING SO BEATS SPENDING A MODEL CALL.
+            //
+            // RegenerateSummaryAsync learned this the expensive way: on a meeting that was never
+            // finalized the request succeeded, the worker read the transcript, spent an LLM call,
+            // and the consumer dropped the result because there was no artifact to replace. A
+            // rendering has the same precondition for the same reason — it is the published
+            // summary in another language, and a meeting with no published summary has no
+            // language to offer.
+            if (canonical == null)
+                return Result.Failure<SummaryVariantDto>(
+                    "This meeting has no summary yet, so there is nothing to read in another language.",
+                    ErrorCodes.InvalidState);
+
+            // Is this pair the one the host published? Read off the canonical's OWN stamped
+            // values rather than assuming general/as-spoken: a host who rewrote the meeting into
+            // Standup made Standup the published shape, and serving them a cached copy of their
+            // own summary would be a second row that drifts the moment they rewrite again.
+            if (MatchesStoredSummary(canonical.Content, wantedTemplate, wantedLanguage))
+            {
+                return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                    wantedTemplate,
+                    wantedLanguage,
+                    canonical.Content,
+                    IsCanonical: true,
+                    SummaryVariantStatus.Ready,
+                    canonical.UpdatedAt));
+            }
+
+            var cached = await _unitOfWork.TranslationRoomSummaryVariantRepository
+                .GetAsync(roomId, wantedTemplate, wantedLanguage, ct);
+
+            if (cached != null)
+            {
+                return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                    wantedTemplate,
+                    wantedLanguage,
+                    cached.Content,
+                    IsCanonical: false,
+                    SummaryVariantStatus.Ready,
+                    cached.UpdatedAt));
+            }
+
+            await QueueSummaryAsync(room, wantedTemplate, wantedLanguage, bearerToken, SummaryDelivery.Variant);
+
+            _logger.LogInformation(
+                "Queued a {TemplateKey}/{Language} rendering of room {RoomId}'s summary for the first reader who asked",
+                wantedTemplate,
+                wantedLanguage is { Length: > 0 } ? wantedLanguage : "as-spoken",
+                roomId);
+
+            return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                wantedTemplate,
+                wantedLanguage,
+                Content: null,
+                IsCanonical: false,
+                SummaryVariantStatus.Generating,
+                UpdatedAt: null));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to read a summary rendering for room {RoomId}", roomId);
+            return Result.Failure<SummaryVariantDto>("Could not read the summary.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<List<SummaryVariantSummaryDto>>> GetSummaryVariantsAsync(
+        Guid roomId,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+                r => r.Id == roomId,
+                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                ct);
+
+            if (room == null)
+                return Result.Failure<List<SummaryVariantSummaryDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+                return Result.Failure<List<SummaryVariantSummaryDto>>("Unauthorized to read this room's summary.", ErrorCodes.Unauthorized);
+
+            var listed = new List<SummaryVariantSummaryDto>();
+
+            var canonical = room.TranslationRoomArtifacts
+                .Where(artifact => artifact.DeletedAt == null
+                    && string.Equals(artifact.ArtifactType, ArtifactType.SUMMARY_EXPORT.ToString(), StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(artifact => artifact.CreatedAt)
+                .FirstOrDefault();
+
+            if (canonical != null)
+            {
+                var (template, language) = ReadStoredSummaryKey(canonical.Content);
+                // UpdatedAt is nullable on an artifact and only set once something rewrites it,
+                // so a summary written at finalization and never touched again has none. Its
+                // creation IS when it was written, which is the answer the staleness check wants.
+                listed.Add(new SummaryVariantSummaryDto(
+                    template, language, IsCanonical: true, canonical.UpdatedAt ?? canonical.CreatedAt));
+            }
+
+            var variants = await _unitOfWork.TranslationRoomSummaryVariantRepository
+                .GetByRoomIdAsync(roomId, ct);
+
+            listed.AddRange(variants.Select(variant => new SummaryVariantSummaryDto(
+                variant.TemplateKey,
+                variant.Language,
+                IsCanonical: false,
+                variant.UpdatedAt)));
+
+            return Result<List<SummaryVariantSummaryDto>>.Success(listed);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to list summary renderings for room {RoomId}", roomId);
+            return Result.Failure<List<SummaryVariantSummaryDto>>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// One place that publishes to `assistant:summary_requests`, so the two callers cannot drift
+    /// on the fields the worker reads.
+    ///
+    /// <paramref name="delivery"/> is what SummaryResultConsumerWorker routes on when the answer
+    /// comes back: `canonical` replaces the room's summary artifact, `variant` lands in the cache
+    /// beside it. It travels on the request rather than being re-derived from the result, because
+    /// only the caller knows which act this was — the content of a Standup-in-Japanese summary
+    /// looks identical whether the host chose it for the room or one reader asked to see it.
+    /// </summary>
+    private async Task QueueSummaryAsync(
+        TranslationRoom room,
+        string templateKey,
+        string language,
+        string? bearerToken,
+        string delivery)
+    {
+        var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+
+        await _redisStateRepo.StreamAddAsync(SummaryRequestStream, new Dictionary<string, string>
+        {
+            ["request_id"] = Guid.NewGuid().ToString(),
+            ["room_id"] = room.Id.ToString(),
+            ["workspace_id"] = room.WorkspaceId.ToString(),
+            ["template_key"] = templateKey,
+            // Forwarded so the worker reads the transcript AS THE CALLER, through the
+            // same authenticated endpoint they could already use — never a privileged
+            // bypass that would let a regeneration read more than its requester can.
+            ["bearer_token"] = bearerToken ?? string.Empty,
+            ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
+            // Normalised to a bare ISO 639-1 code, matching what the AI side keys its
+            // language names by: a room stores `vi-VN` and a picker sends `vi`, and a
+            // summary must not come out in a different language depending on which
+            // spelling reached it. Empty means the caller expressed no preference.
+            ["summary_language"] = language,
+            ["delivery"] = delivery,
+            ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
+        });
+    }
+
+    private static string NormalizeTemplateKey(string? templateKey) =>
+        string.IsNullOrWhiteSpace(templateKey) ? "general" : templateKey.Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// The (shape, language) a stored summary is actually in, read off the JSON the AI worker
+    /// stamped rather than inferred. `templateKey` has been written since WT-530 and
+    /// `summaryLanguage` since the language picker; a summary written before either reads as
+    /// general/as-spoken, which is exactly what it was.
+    /// </summary>
+    private static (string TemplateKey, string Language) ReadStoredSummaryKey(string? contentJson)
+    {
+        if (string.IsNullOrWhiteSpace(contentJson)) return ("general", string.Empty);
+
+        try
+        {
+            using var document = JsonDocument.Parse(contentJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return ("general", string.Empty);
+
+            var template = document.RootElement.TryGetProperty("templateKey", out var templateNode)
+                && templateNode.ValueKind == JsonValueKind.String
+                    ? NormalizeTemplateKey(templateNode.GetString())
+                    : "general";
+
+            var language = document.RootElement.TryGetProperty("summaryLanguage", out var languageNode)
+                && languageNode.ValueKind == JsonValueKind.String
+                    ? LanguageHelper.NormalizeLanguageCode(languageNode.GetString()) ?? string.Empty
+                    : string.Empty;
+
+            return (template, language);
+        }
+        catch (JsonException)
+        {
+            // A summary whose content will not parse is still the room's summary. Treating it as
+            // the default pair keeps it reachable rather than making every language request queue
+            // a generation against an artifact nobody can read.
+            return ("general", string.Empty);
+        }
+    }
+
+    private static bool MatchesStoredSummary(string? contentJson, string templateKey, string language)
+    {
+        var stored = ReadStoredSummaryKey(contentJson);
+        return stored.TemplateKey == templateKey && stored.Language == language;
     }
 
     public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, CancellationToken ct = default)

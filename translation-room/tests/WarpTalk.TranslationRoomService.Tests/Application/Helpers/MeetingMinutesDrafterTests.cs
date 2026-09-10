@@ -306,6 +306,46 @@ public class MeetingMinutesDrafterTests
     }
 
     [Fact]
+    public void ASummaryWrittenInAThirdLanguageSaysSoRatherThanNamingTheRoom()
+    {
+        // WT-665. `Sections` is built from the summary, so once a host can ask for the summary
+        // in a language the meeting was not held in, naming the room's source language labels
+        // the document as something it is not — and this field exists precisely to tell a
+        // bilingual reader which half is the original.
+        var summary = """{"summary": "第三四半期の債権を確定した。", "summaryLanguage": "ja"}""";
+
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), summary));
+
+        content.PrimaryLanguage.Should().Be("ja");
+    }
+
+    [Fact]
+    public void NobodyChoosingLeavesTheRoomsOwnLanguageAsTheAnswer()
+    {
+        // An empty `summaryLanguage` is how the AI worker records "nobody chose, the model
+        // followed the transcript" — and that is exactly the case where the room's source
+        // language is the honest label. It must not read as "unknown".
+        var summary = """{"summary": "Đã họp.", "summaryLanguage": ""}""";
+
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), summary));
+
+        content.PrimaryLanguage.Should().Be("vi");
+    }
+
+    [Fact]
+    public void ASummaryWrittenBeforeTheFieldExistedStillGetsALanguage()
+    {
+        // Every summary already in storage predates `summaryLanguage`. They were all written in
+        // the language of the transcript, so the room answers for them.
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(), new List<TranslationRoomParticipant>(), """{"summary": "Đã họp."}"""));
+
+        content.PrimaryLanguage.Should().Be("vi");
+    }
+
+    [Fact]
     public void TranslatedSectionsAreCarriedThroughInTheSameShape()
     {
         var summary = """

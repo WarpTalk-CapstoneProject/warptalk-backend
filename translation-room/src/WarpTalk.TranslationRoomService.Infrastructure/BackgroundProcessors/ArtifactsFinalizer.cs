@@ -54,7 +54,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         _knowledgeFactPublisher = knowledgeFactPublisher;
     }
 
-    public async Task ProcessRoomFinalizationAsync(Guid roomId, CancellationToken ct = default)
+    public async Task ProcessRoomFinalizationAsync(
+        Guid roomId,
+        string? templateKey = null,
+        string? summaryLanguage = null,
+        CancellationToken ct = default)
     {
         _logger.LogInformation("Processing graceful flush and finalization for room {RoomId}", roomId);
 
@@ -75,6 +79,13 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                     await _redisStateRepo.StringSetAsync(
                         $"meeting:{roomId}:target_languages",
                         JsonSerializer.Serialize(targetLanguages),
+                        TimeSpan.FromMinutes(10));
+
+                    // Same hint, same best-effort footing: the language the summary should come
+                    // out in, so the automatic one does not guess where the room already said.
+                    await _redisStateRepo.StringSetAsync(
+                        $"meeting:{roomId}:summary_language",
+                        LanguageHelper.NormalizeLanguageCode(room.SourceLanguage),
                         TimeSpan.FromMinutes(10));
                 }
             }
@@ -109,7 +120,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             {
                 // 3. Finalize Transcripts, Summaries, and Recording Artifacts in Parallel
                 _logger.LogInformation("Executing finalization tasks for room {RoomId}...", roomId);
-                await FinalizeRoomArtifactsAsync(roomId, ct);
+                await FinalizeRoomArtifactsAsync(roomId, templateKey, summaryLanguage, ct);
             }
             else
             {
@@ -122,7 +133,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         }
     }
 
-    private async Task FinalizeRoomArtifactsAsync(Guid roomId, CancellationToken ct = default)
+    private async Task FinalizeRoomArtifactsAsync(
+        Guid roomId,
+        string? templateKey = null,
+        string? summaryLanguage = null,
+        CancellationToken ct = default)
     {
         _logger.LogInformation("Starting artifacts finalization for Translation Room {RoomId}", roomId);
 
@@ -162,7 +177,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 // find one. See RequestSummaryFromTranscriptAsync.
                 if (summary.TimedOut)
                 {
-                    await RequestSummaryFromTranscriptAsync(roomId, transcript.CitedTranscript, ct);
+                    await RequestSummaryFromTranscriptAsync(
+                        roomId, transcript.CitedTranscript, templateKey, summaryLanguage, ct);
                 }
 
                 _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
@@ -338,7 +354,12 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// fail as well — the placeholder is already saved, the state transition still has to run, and
     /// the reader is no worse off than before this existed.
     /// </summary>
-    private async Task RequestSummaryFromTranscriptAsync(Guid roomId, string citedTranscript, CancellationToken ct)
+    private async Task RequestSummaryFromTranscriptAsync(
+        Guid roomId,
+        string citedTranscript,
+        string? templateKey,
+        string? summaryLanguage,
+        CancellationToken ct)
     {
         // Nothing to summarise is the ordinary case here: most meetings that time out are also
         // meetings nobody spoke in. Asking anyway would spend a model call to be told so.
@@ -362,13 +383,29 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 ["request_id"] = Guid.NewGuid().ToString(),
                 ["room_id"] = roomId.ToString(),
                 ["workspace_id"] = room.WorkspaceId.ToString(),
-                // The default shape. A finalizer cannot know a meeting was really a standup —
-                // that judgement is the host's, and rewriting into another template stays theirs.
-                ["template_key"] = "general",
+                // The default shape, UNLESS a person already told us otherwise.
+                //
+                // A finalizer cannot know a meeting was really a standup — that judgement is the
+                // host's. But on exactly one path the host has already made it: they pressed a
+                // shape on a meeting with no artifacts, and RegenerateSummaryAsync redirected
+                // their request here because there was nothing to rewrite. Dropping it there is
+                // what made the picker look broken — the request succeeded, a General summary
+                // arrived, and the control snapped back to General.
+                //
+                // Null still means nobody asked, which is every automatic path.
+                ["template_key"] = string.IsNullOrWhiteSpace(templateKey)
+                    ? "general"
+                    : templateKey.Trim().ToLowerInvariant(),
                 // Deliberately empty: there is no caller to act as, and the worker will not need
                 // one because the transcript travels with the request.
                 ["bearer_token"] = string.Empty,
                 ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
+                // The room's declared language, not a guess from the words. This request exists
+                // because the live path produced nothing, so it is the FIRST summary this meeting
+                // gets — it must land in the same language a later rewrite would default to.
+                ["summary_language"] = string.IsNullOrWhiteSpace(summaryLanguage)
+                    ? LanguageHelper.NormalizeLanguageCode(room.SourceLanguage)
+                    : LanguageHelper.NormalizeLanguageCode(summaryLanguage),
                 ["transcript_text"] = citedTranscript,
                 ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
             });

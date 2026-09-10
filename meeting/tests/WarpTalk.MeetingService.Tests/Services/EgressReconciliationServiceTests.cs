@@ -256,7 +256,7 @@ public sealed class EgressReconciliationServiceTests
         var sut = new EgressReconciliationService(
             unitOfWork.Object,
             egressService.Object,
-            new EgressCompletion(unitOfWork.Object, redis.Object),
+            new EgressCompletion(unitOfWork.Object, redis.Object, NullLogger<EgressCompletion>.Instance),
             NullLogger<EgressReconciliationService>.Instance);
 
         return (sut, unitOfWork, redis);

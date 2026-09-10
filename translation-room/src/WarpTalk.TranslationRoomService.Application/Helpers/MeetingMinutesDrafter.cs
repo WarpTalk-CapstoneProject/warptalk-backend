@@ -86,9 +86,20 @@ public static class MeetingMinutesDrafter
             Agenda = AgendaFrom(room),
             Attendance = BuildAttendance(participants, attended),
             Sections = BuildSections(summaryJson, carriedOver),
-            // The language the meeting was actually held in, so a bilingual document can say
-            // which half is the original instead of leaving a reader to infer it.
-            PrimaryLanguage = string.IsNullOrWhiteSpace(room.SourceLanguage) ? null : room.SourceLanguage,
+            // Which language THIS DOCUMENT's primary half is written in, so a bilingual reader
+            // knows which side is the original rather than inferring it.
+            //
+            // WT-665: it used to be the room's source language unconditionally, which was a
+            // guess that held only while a summary was always written in the language the
+            // meeting was held in. A host can now ask for the summary in a third language, and
+            // `Sections` above is built from that summary — so the document would have been
+            // labelled Vietnamese while its body was Japanese. The summary records what it was
+            // written in; asking it is the only way to be right.
+            //
+            // Empty `summaryLanguage` means nobody chose and the model followed the transcript,
+            // which is exactly when the room's source language IS the honest answer.
+            PrimaryLanguage = ReadSummaryLanguage(summaryJson)
+                ?? (string.IsNullOrWhiteSpace(room.SourceLanguage) ? null : room.SourceLanguage),
             Translations = BuildTranslations(summaryJson),
             // Votes are never inferred from the transcript. A count of who agreed has to come
             // from people pressing a button, because silence is not assent and "ừ" may be
@@ -283,6 +294,22 @@ public static class MeetingMinutesDrafter
     public static bool WouldProduceContent(string? summaryJson) =>
         BuildSections(summaryJson).Count > 0;
 
+    /// <summary>
+    /// The proceedings this summary would produce, for a caller that already holds a document and
+    /// wants the same body from a different summary — today, the same meeting summarised in a
+    /// language the biên bản does not carry.
+    ///
+    /// No carried-over items, deliberately, and it is not an oversight. Those are READ-THROUGHS of
+    /// commitments made in an EARLIER meeting: the text belongs to that meeting's record, and
+    /// re-translating a quotation is precisely what must not happen to one. A translated view
+    /// therefore covers this meeting's own proceedings and leaves a quoted commitment reading as
+    /// it was written.
+    ///
+    /// The caller is responsible for checking the result describes the SAME document — see
+    /// MeetingMinutesService.GetTranslationAsync, which refuses when the section keys differ.
+    /// </summary>
+    public static List<MinutesSection> SectionsFrom(string? summaryJson) => BuildSections(summaryJson);
+
     private static List<MinutesSection> BuildSections(
         string? summaryJson, IReadOnlyCollection<MeetingActionItem>? carriedOver = null)
     {
@@ -365,6 +392,39 @@ public static class MeetingMinutesDrafter
         }
 
         return sections;
+    }
+
+    /// <summary>
+    /// WT-665: the language the summary says it was written in, or null when it does not say.
+    ///
+    /// The AI worker records this rather than letting anything downstream detect it — a language
+    /// detector asked about three sentences gets it wrong often enough to matter, and the answer
+    /// was already known at the moment of writing. Null covers both "nobody chose" (the key is
+    /// present and empty, which is how every summary already in storage was produced) and a
+    /// summary written before the key existed.
+    /// </summary>
+    private static string? ReadSummaryLanguage(string? summaryJson)
+    {
+        if (string.IsNullOrWhiteSpace(summaryJson)) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(summaryJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+
+            if (!doc.RootElement.TryGetProperty("summaryLanguage", out var language) ||
+                language.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            var value = language.GetString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

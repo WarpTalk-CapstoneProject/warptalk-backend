@@ -140,10 +140,10 @@ public sealed class TranslationRoomArtifactServiceTests
         var redis = new Mock<IRedisStateRepository>();
 
         var service = CreateServiceForRoom(room, redis, queue);
-        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "Bearer token");
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
 
         Assert.True(result.IsSuccess);
-        queue.Verify(item => item.QueueFinalization(room.Id), Times.Once);
+        queue.Verify(item => item.QueueFinalization(room.Id, "general", ""), Times.Once);
         // And no request published: there is nothing for the worker's answer to replace yet.
         redis.Verify(
             item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
@@ -171,13 +171,129 @@ public sealed class TranslationRoomArtifactServiceTests
         var redis = new Mock<IRedisStateRepository>();
 
         var service = CreateServiceForRoom(room, redis, queue);
-        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "Bearer token");
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
 
         Assert.True(result.IsSuccess);
-        queue.Verify(item => item.QueueFinalization(It.IsAny<Guid>()), Times.Never);
+        queue.Verify(
+            item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
+            Times.Never);
         redis.Verify(
             item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
             Times.Once);
+    }
+
+    /// <summary>
+    /// THE SHAPE A PERSON ASKED FOR SURVIVES THE REDIRECT.
+    ///
+    /// This is the bug reported as "summary type không hoạt động", and it lived in the gap
+    /// between two correct decisions. Redirecting to finalization is right — the meeting needs
+    /// drawing up, not re-summarising. Finalizing in the default shape is right too, because a
+    /// finalizer cannot know a meeting was really a standup.
+    ///
+    /// But on THIS path the host had just said so, and their answer stopped at the redirect. The
+    /// request returned success, a General summary arrived, the picker snapped back to General,
+    /// and from the host's side pressing "Standup" did nothing at all — on the meeting this
+    /// method's own comments call the one they are most likely to press it on.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_CarriesTheChosenShapeIntoTheFinalizationItRedirectsTo()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+
+        var service = CreateServiceForRoom(room, new Mock<IRedisStateRepository>(), queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "standup", "ja", "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        queue.Verify(item => item.QueueFinalization(room.Id, "standup", "ja"), Times.Once);
+    }
+
+    /// <summary>
+    /// A locale tag is normalised on the way in, exactly as it is on the request-publishing path,
+    /// so the same choice cannot mean two things depending on which branch it took.
+    /// </summary>
+    [Fact]
+    public async Task TheRedirectNormalisesTheLanguageTheSameWayThePublishedRequestDoes()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+
+        var service = CreateServiceForRoom(room, new Mock<IRedisStateRepository>(), queue);
+        await service.RegenerateSummaryAsync(room.Id, hostId, "  STANDUP  ", "vi-VN", "Bearer token");
+
+        queue.Verify(item => item.QueueFinalization(room.Id, "standup", "vi"), Times.Once);
+    }
+
+    /// <summary>
+    /// A rewrite carries the language the requester asked for, normalised to the bare ISO 639-1
+    /// code the AI side keys its language names by.
+    ///
+    /// A room stores `vi-VN` and a picker sends `vi`. If the code that reached the worker
+    /// depended on which spelling the caller happened to use, the same request would produce a
+    /// summary in a language the prompt could not name — which reads to the model as no
+    /// instruction at all, and quietly restores the guessing this replaced.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_ForwardsTheChosenLanguage_NormalisedToItsBareCode()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        Dictionary<string, string>? published = null;
+        var redis = new Mock<IRedisStateRepository>();
+        redis
+            .Setup(item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, fields) => published = fields);
+
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "ja-JP", "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(published);
+        Assert.Equal("ja", published!["summary_language"]);
+    }
+
+    /// <summary>
+    /// Asking for no language is a real answer, not a missing one.
+    ///
+    /// It means "leave the language alone", which the AI side reads as "follow the transcript" —
+    /// the behaviour every summary already in storage was written under. The field is still sent,
+    /// empty, so the worker never has to tell an old message apart from a deliberate one.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_SendsAnEmptyLanguage_WhenTheCallerChoseNone()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        Dictionary<string, string>? published = null;
+        var redis = new Mock<IRedisStateRepository>();
+        redis
+            .Setup(item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, fields) => published = fields);
+
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(published);
+        Assert.Equal(string.Empty, published!["summary_language"]);
     }
 
     /// <summary>
@@ -202,7 +318,7 @@ public sealed class TranslationRoomArtifactServiceTests
         var redis = new Mock<IRedisStateRepository>();
 
         var service = CreateServiceForRoom(room, redis, queue);
-        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "Bearer token");
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);

@@ -81,6 +81,7 @@ builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomArtifactRepository>();
+builder.Services.AddScoped<ITranslationRoomSummaryVariantRepository, TranslationRoomSummaryVariantRepository>();
 builder.Services.AddScoped<ITranslationRoomSessionRepository, TranslationRoomSessionRepository>();
 builder.Services.AddScoped<ITranslationRoomInvitationRepository, TranslationRoomInvitationRepository>();
 builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFeedbackRepository>();

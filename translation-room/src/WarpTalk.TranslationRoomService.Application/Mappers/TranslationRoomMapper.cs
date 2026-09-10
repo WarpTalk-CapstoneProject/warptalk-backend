@@ -55,7 +55,18 @@ public static class TranslationRoomMapper
     /// argument rather than something read off <c>room.TranslationRoomParticipants</c>, because
     /// that navigation is not loaded on most paths and counting it silently yields 0.
     /// </summary>
-    public static TranslationRoomDto ToResponseDto(this TranslationRoom room, int participantCount)
+    /// <param name="attendedCount">
+    /// WT-662: how many distinct people have EVER been in this room. Required for exactly the
+    /// reason <paramref name="participantCount"/> is: the DTO defaults it to 0 (C# cannot make a
+    /// trailing record parameter required once the ones after it are optional), so a path that
+    /// forgets it reports "0 attended" on a finished meeting rather than failing. Making it
+    /// required HERE puts the compiler back in charge, because this mapper is the only way the
+    /// detail DTO gets built.
+    /// </param>
+    public static TranslationRoomDto ToResponseDto(
+        this TranslationRoom room,
+        int participantCount,
+        int attendedCount)
     {
         var settings = ReadSettings(room.Settings);
 
@@ -83,6 +94,7 @@ public static class TranslationRoomMapper
             // mistaken for the artifact list.
             Artifacts: null,
             SeriesId: room.SeriesId,
+            AttendedCount: attendedCount,
             ExternalProvider: room.ExternalProvider,
             ExternalMeetingUrl: room.ExternalMeetingUrl,
             ExternalCalendarEventId: room.ExternalCalendarEventId,
@@ -317,8 +329,11 @@ public static class TranslationRoomMapper
         };
     }
 
-    /// <inheritdoc cref="ToResponseDto(TranslationRoom, int)" path="/summary"/>
-    public static TranslationRoomDto ToHistoryDto(this TranslationRoom room, int participantCount)
+    /// <inheritdoc cref="ToResponseDto(TranslationRoom, int, int)" path="/summary"/>
+    public static TranslationRoomDto ToHistoryDto(
+        this TranslationRoom room,
+        int participantCount,
+        int attendedCount)
     {
         var settings = ReadSettings(room.Settings);
 
@@ -346,6 +361,7 @@ public static class TranslationRoomMapper
             participantCount,
             artifacts,
             room.SeriesId,
+            attendedCount,
             ExternalProvider: room.ExternalProvider,
             ExternalMeetingUrl: room.ExternalMeetingUrl,
             ExternalCalendarEventId: room.ExternalCalendarEventId,

@@ -11,6 +11,10 @@ using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using WarpTalk.TranslationRoomService.Domain.Constants;
+using WarpTalk.TranslationRoomService.Domain.Entities;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
 
@@ -122,6 +126,20 @@ public class SummaryResultConsumerWorker : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
+        // WHERE THIS ANSWER GOES, AND WHY THE REQUEST HAD TO SAY.
+        //
+        // `canonical` replaces the room's summary — the host deciding what the meeting's summary
+        // IS. `variant` lands in the cache beside it, because a reader asking to see the meeting
+        // in their own language must not change what anybody else sees. The two are
+        // indistinguishable from the content alone, which is exactly why the mode travels on the
+        // request; absent, it means canonical, so a message published before this field existed
+        // keeps the behaviour it was published under.
+        if (SummaryDelivery.OrDefault(fields.GetValueOrDefault("delivery")) == SummaryDelivery.Variant)
+        {
+            await ApplyVariantAsync(unitOfWork, roomId, content, ct);
+            return;
+        }
+
         var artifacts = await unitOfWork.TranslationRoomArtifactRepository
             .GetArtifactsByRoomIdAsync(roomId, ct);
 
@@ -157,6 +175,115 @@ public class SummaryResultConsumerWorker : BackgroundService
             "Rewrote the summary for room {RoomId} using template {TemplateKey}",
             roomId,
             fields.GetValueOrDefault("template_key", "general"));
+    }
+
+    /// <summary>
+    /// Stores one reader's rendering, keyed by the (shape, language) the AI stamped into the
+    /// content it just produced.
+    ///
+    /// The key is read from the CONTENT rather than from the request's own template_key and
+    /// summary_language, deliberately: the content's `templateKey` is what
+    /// `resolve_template` actually resolved to, and an unknown key falls back to General there.
+    /// Keying on what was asked for would file a General summary under "standup" and serve it
+    /// forever to anyone who picked Standup, which is the shape of bug that makes a picker look
+    /// like it does nothing.
+    ///
+    /// NOT re-indexed to the knowledge base, unlike a canonical rewrite. The Knowledge page and
+    /// WarpBot answer for the room, and the room has one summary; publishing every language into
+    /// the same room-derived chunk ids would have each rendering overwrite the last and leave
+    /// search answering in whichever language was read most recently.
+    /// </summary>
+    private async Task ApplyVariantAsync(
+        IUnitOfWork unitOfWork, Guid roomId, string content, CancellationToken ct)
+    {
+        var (templateKey, language) = ReadSummaryKey(content);
+
+        var existing = await unitOfWork.TranslationRoomSummaryVariantRepository
+            .GetAsync(roomId, templateKey, language, ct);
+
+        var now = DateTime.UtcNow;
+
+        if (existing == null)
+        {
+            await unitOfWork.TranslationRoomSummaryVariantRepository.AddAsync(
+                new TranslationRoomSummaryVariant
+                {
+                    Id = Guid.CreateVersion7(),
+                    TranslationRoomId = roomId,
+                    TemplateKey = templateKey,
+                    Language = language,
+                    Content = content,
+                    // Left null rather than carrying the requester. The row is readable by
+                    // everyone who may read the room's summary, so recording one person as its
+                    // owner would suggest a privacy boundary this cache does not have — and the
+                    // result message does not carry a user anyway.
+                    CreatedBy = null,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                },
+                ct);
+        }
+        else
+        {
+            existing.Content = content;
+            existing.UpdatedAt = now;
+            unitOfWork.TranslationRoomSummaryVariantRepository.Update(existing);
+        }
+
+        try
+        {
+            await unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex)
+        {
+            // Two readers asked for the same language at once and both found nothing cached.
+            // The unique index rejected the loser, which is correct — the winner's row is the
+            // same content — so this is a note, not a failure to redeliver.
+            _logger.LogInformation(
+                ex,
+                "A {TemplateKey}/{Language} rendering for room {RoomId} was already stored by a concurrent request",
+                templateKey,
+                language is { Length: > 0 } ? language : "as-spoken",
+                roomId);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Stored a {TemplateKey}/{Language} rendering of room {RoomId}'s summary",
+            templateKey,
+            language is { Length: > 0 } ? language : "as-spoken",
+            roomId);
+    }
+
+    /// <summary>
+    /// The (shape, language) a generated summary is in, as stamped by the AI worker. A content
+    /// that will not parse is filed as general/as-spoken — the same pair an older summary
+    /// without either key is, which is what it was.
+    /// </summary>
+    private static (string TemplateKey, string Language) ReadSummaryKey(string contentJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(contentJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return ("general", string.Empty);
+
+            var template = document.RootElement.TryGetProperty("templateKey", out var templateNode)
+                && templateNode.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(templateNode.GetString())
+                    ? templateNode.GetString()!.Trim().ToLowerInvariant()
+                    : "general";
+
+            var language = document.RootElement.TryGetProperty("summaryLanguage", out var languageNode)
+                && languageNode.ValueKind == JsonValueKind.String
+                    ? LanguageHelper.NormalizeLanguageCode(languageNode.GetString()) ?? string.Empty
+                    : string.Empty;
+
+            return (template, language);
+        }
+        catch (JsonException)
+        {
+            return ("general", string.Empty);
+        }
     }
 
     /// <summary>

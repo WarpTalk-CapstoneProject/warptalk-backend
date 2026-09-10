@@ -7,6 +7,7 @@ using System.Web;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
@@ -88,7 +89,7 @@ public class McpOAuthClient : IPluginOAuthClient
         PluginOAuthStateDto flowState)
     {
         var authorizationEndpoint = Require(plugin.OAuthAuthorizationEndpoint, plugin, "authorization endpoint");
-        var clientId = Require(plugin.OAuthClientId, plugin, "client id");
+        var clientId = ClientIdOf(plugin);
 
         var query = HttpUtility.ParseQueryString(string.Empty);
         query["response_type"] = "code";
@@ -279,7 +280,7 @@ public class McpOAuthClient : IPluginOAuthClient
     {
         authorizationHeader = null;
 
-        var clientId = Require(plugin.OAuthClientId, plugin, "client id");
+        var clientId = ClientIdOf(plugin);
         var method = plugin.OAuthTokenEndpointAuthMethod ?? PluginConstants.TokenEndpointAuthMethod.None;
 
         switch (method)
@@ -443,6 +444,47 @@ public class McpOAuthClient : IPluginOAuthClient
 
     private static string IssuerOf(Plugin plugin) =>
         new Uri(plugin.OAuthAuthorizationEndpoint!).GetLeftPart(UriPartial.Authority);
+
+    /// <summary>
+    /// The client id to present at the authorization server, for whichever rung resolved this row.
+    /// </summary>
+    /// <remarks>
+    /// Every rung but CIMD hands us a credential the row owns - issued by the provider's dynamic
+    /// registration, or typed in by an operator - so it is read from the row. A CIMD client owns
+    /// nothing: its client id <em>is</em> the URL of our published metadata document, which is
+    /// deployment configuration, and <see cref="McpClientRegistrationMapper.ApplyClientIdentity"/>
+    /// deliberately stores null rather than a copy so that moving the document (v1.json to v2.json,
+    /// a new API host) cannot leave rows pinned to an address that stopped serving it.
+    /// <para>
+    /// It is resolved here, in the one place all four legs of the flow pass through, rather than
+    /// threaded down from the provisioner. Only <c>GetConnectUrlAsync</c> runs the registration
+    /// ladder; the token exchange, the refresh and the revoke each load the row and go straight to
+    /// this client. An identity passed in at connect time would therefore be present for the
+    /// authorization URL and absent at exactly the call sites that need it next - which is the
+    /// shape of the bug this replaces, where the ladder resolved CIMD and the very next step threw
+    /// <see cref="PluginNotConfiguredException"/> on the null it had just written.
+    /// </para>
+    /// </remarks>
+    private string ClientIdOf(Plugin plugin) =>
+        string.Equals(plugin.OAuthClientSource, PluginConstants.OAuthClientSource.Cimd, StringComparison.Ordinal)
+            ? RequireClientMetadataUrl(plugin)
+            : Require(plugin.OAuthClientId, plugin, "client id");
+
+    /// <summary>
+    /// The configured metadata document URL, validated as a client identifier before it is sent.
+    /// </summary>
+    /// <remarks>
+    /// A row reaches here only by having resolved through <see cref="Mcp.CimdClientRegistrar"/>,
+    /// which checks the same URL - so an invalid one means the configuration changed underneath a
+    /// row that had already settled. Refusing with a message that names the setting beats sending
+    /// a malformed <c>client_id</c> the server rejects as an unrelated <c>invalid_client</c>.
+    /// </remarks>
+    private string RequireClientMetadataUrl(Plugin plugin) =>
+        ClientIdentifierUrl.IsValid(_options.ClientMetadataUrl)
+            ? _options.ClientMetadataUrl
+            : throw new PluginNotConfiguredException(
+                $"Plugin '{plugin.PluginKey}' is registered through a Client ID Metadata Document, but "
+                    + "Plugins:Mcp:Client:ClientMetadataUrl is not a usable client identifier URL.");
 
     private static string Require(string? value, Plugin plugin, string what) =>
         string.IsNullOrWhiteSpace(value)
