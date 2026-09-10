@@ -9,15 +9,15 @@ namespace WarpTalk.Shared;
 /// its name, value shape and lifetime are written down.
 ///
 /// A CROSS-REPO CONTRACT. Three processes touch this key and none of them share a database:
-/// TranscriptService writes it (Pause, Resume, room end), the Gateway reads it before it
+/// TranscriptService writes it (Pause sets, Resume deletes), the Gateway reads it before it
 /// broadcasts a transcript segment, and warptalk-ai reads it in ai_assistant_worker and
 /// suggestion_worker so a paused room's segments are skipped there too. Renaming it does not
 /// break a reader, it silently turns that reader's gate off — which is why the string is
 /// computed here rather than spelled out at five call sites. <see cref="ModelConfidence"/> exists
 /// for the same reason applied to a different shared rule.
 ///
-/// PRESENCE IS THE SIGNAL. The key exists ⇔ the room's transcript is paused. Resume and room end
-/// DELETE it; nothing ever writes a "false". A reader should test existence (Python:
+/// PRESENCE IS THE SIGNAL. The key exists ⇔ the room's transcript is paused. Resume DELETES it;
+/// nothing ever writes a "false". A reader should test existence (Python:
 /// <c>await redis.exists(key)</c>) and must never require the payload to parse — the JSON below is
 /// diagnostic, so an operator staring at Redis mid-incident can see when the pause started.
 ///
@@ -36,8 +36,16 @@ public static class TranscriptPauseKey
     /// Twelve hours: comfortably past any meeting anybody would sit through (an all-day workshop
     /// runs eight), and short enough that a flag orphaned by a lost Resume — Redis unreachable at
     /// exactly the wrong second, a pod killed mid-call — clears itself the same day rather than
-    /// outliving the meeting forever. The TTL is the backstop and not the lifecycle: Resume and
-    /// room end both delete the key explicitly, and the database keeps the window either way.
+    /// outliving the meeting forever. Resume deletes the key explicitly, and the database keeps
+    /// the window either way.
+    ///
+    /// THE TTL IS ALSO THE CLEANUP FOR A MEETING THAT ENDED WHILE PAUSED, and that is not an
+    /// oversight. Nothing deletes the key at room end — the flag simply expires. It is inert in
+    /// the meantime: the readers ask about it only while handling a segment of that room, ENDED is
+    /// terminal for a room (only PAUSED returns to IN_PROGRESS) so no later session inherits it,
+    /// and a straggler segment arriving after the end would be suppressed by it, which is the
+    /// answer the host asked for anyway. What the record shows is not built from this key at all —
+    /// see CloseWindowsLeftOpenByAFinishedRoomAsync, which reads the room's own end time.
     ///
     /// Deliberately unlike <c>AiPolicyTtl</c> (4h) next door, which caches an answer that cannot
     /// change during a meeting. This one can flip several times in a meeting, so it is written on

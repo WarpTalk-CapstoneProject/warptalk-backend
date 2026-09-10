@@ -148,19 +148,30 @@ public class TranscriptRecordingService : ITranscriptRecordingService
     /// is a lie that never expires: somebody opening the record next week is told the transcript is
     /// being held, at this moment, in a room nobody is in.
     ///
-    /// TranslationRoomEndedConsumer closes these at the moment the room ends and is the real fix.
-    /// This is the second net, and there are two things only it catches:
+    /// CORRECTED WHERE IT IS READ, RATHER THAN REPAIRED WHERE IT IS STORED — and deliberately
+    /// only here. A consumer on the RoomEnded announcement could stamp the row the moment the
+    /// meeting finished, and an earlier draft of this ticket had one. It was removed: pub/sub has
+    /// no backlog, so such a consumer can never be the only net anyway, and once this projection
+    /// exists (it has to, for the reasons below) the consumer buys nothing a reader can see. What
+    /// it costs is a hosted service running for the life of the process, and — worse — a second
+    /// home for the rule "an open window on a finished room ends when the room did", which is
+    /// exactly the kind of pair that drifts apart.
     ///
-    ///   * every row already in the table. Rooms ended while paused before that consumer existed,
-    ///     and their windows are open today. No migration can close them honestly — the transcript
+    /// Two things only a read-time projection catches at all:
+    ///
+    ///   * every row already in the table. Rooms ended while paused long before this ticket, and
+    ///     their windows are open today. No migration can close them honestly — the transcript
     ///     schema does not know when a room ended, and a migration confined to it (the rule this
     ///     repo's transcript/database/migrations/README states) could only stamp <c>now()</c> or
     ///     <c>started_at</c>, both of which invent a fact rather than recover one. Reaching across
     ///     into translationRoom's tables from a transcript migration would recover the right value
     ///     by breaking that rule and coupling the two services' deploy order, which is a worse
     ///     trade for a display detail.
-    ///   * a RoomEnded publish that was lost. Pub/sub has no backlog, so a consumer that was down
-    ///     for the second the room ended never hears about it and never will.
+    ///   * a RoomEnded publish that was lost, or one that arrived while this process was down.
+    ///
+    /// The room is the authority on when it ended, and it is asked at the only moment the answer
+    /// is needed. ENDED is terminal for a room (only PAUSED returns to IN_PROGRESS), so a window
+    /// closed this way can never be reopened by a later session of the same room.
     ///
     /// A PROJECTION, NOT A WRITE. The stored row keeps its null, and every reader of this endpoint
     /// gets the corrected value. Repairing the row here instead would put a write in a GET that

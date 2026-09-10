@@ -84,10 +84,6 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
-// WT-605: closes a pause window the meeting ended in the middle of. Without it an open window
-// means "paused right now" forever, and the saved record tells tomorrow's reader the transcript
-// is being held at this very moment.
-builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranslationRoomEndedConsumer>();
 
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);

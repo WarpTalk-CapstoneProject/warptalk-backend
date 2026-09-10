@@ -238,10 +238,10 @@ public class TranscriptRecordingServiceTests
     /// A still-open window on a room that has finished is READ as ending when the room did.
     /// </summary>
     /// <remarks>
-    /// TranslationRoomEndedConsumer closes these at the moment the room ends and is the real fix.
-    /// This is the second net, and it is the only one that reaches two cases: rows already in the
-    /// table from before that consumer existed, and a RoomEnded publish that was lost (pub/sub has
-    /// no backlog, so a consumer that was down for that second never hears about it).
+    /// The only place this is corrected. Closing the row from a RoomEnded consumer was considered
+    /// and dropped: pub/sub has no backlog, so it could never be the only net, and this projection
+    /// — which has to exist regardless, for the rows already in the table — makes it invisible to
+    /// every reader. See CloseWindowsLeftOpenByAFinishedRoomAsync's own remarks.
     ///
     /// A projection, not a repair: the stored row keeps its null. Writing here would put an
     /// unlocked update inside a GET any participant can call, for a fact this service does not own.
