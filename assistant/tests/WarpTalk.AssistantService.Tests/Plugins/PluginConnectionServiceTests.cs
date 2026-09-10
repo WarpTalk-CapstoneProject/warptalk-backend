@@ -250,6 +250,12 @@ public class PluginConnectionServiceTests
         Assert.Equal("google-user-id", existing.ProviderAccountId);
         Assert.Equal("work@example.com", existing.ProviderEmail);
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+
+        // The refusal happens after the exchange, so a real grant exists at the provider for an
+        // account we are about to forget. Leaving it would hand the second account standing access
+        // that no WarpTalk row knows about and nothing can later revoke.
+        await _oauthClient.Received(1)
+            .RevokeTokenAsync(plugin, "other-refresh-token", Arg.Any<CancellationToken>());
     }
 
     [Fact]

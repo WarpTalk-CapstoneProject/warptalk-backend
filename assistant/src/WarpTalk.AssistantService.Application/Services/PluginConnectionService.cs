@@ -312,6 +312,12 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
                     pluginKey,
                     oauthState.UserId);
 
+                // The refusal comes after the exchange, because the account is only knowable from
+                // the token response - so a real grant now exists at the provider for an account we
+                // are about to forget. Dropping it would leave the user's second account holding
+                // access to WarpTalk that WarpTalk has no record of and no later way to revoke.
+                await TryRevokeIssuedTokenAsync(plugin, token, ct);
+
                 return Failed(
                     PluginConstants.ErrorCodes.ProviderAccountMismatch,
                     client,
@@ -674,6 +680,44 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         _unitOfWork.PluginConnectionRepository.Update(connection);
         await _unitOfWork.SaveChangesAsync(ct);
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Best-effort revocation of a grant we obtained and then declined to keep.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="TryRevokeProviderTokenAsync"/>, which reads the encrypted tokens off
+    /// a stored connection: there is no connection here and there never will be one. The refresh
+    /// token is preferred for the same reason it is there - providers revoke the whole grant from
+    /// it, where an access token may only drop itself.
+    /// <para>
+    /// Swallows everything. The user is already being redirected to an error page that tells them
+    /// what to do; a provider having a bad minute must not turn that into a 500, and the grant left
+    /// behind is the same one they would have been left with before this call existed.
+    /// </para>
+    /// </remarks>
+    private async Task TryRevokeIssuedTokenAsync(
+        Plugin plugin,
+        PluginOAuthTokenDto token,
+        CancellationToken ct)
+    {
+        var revocable = string.IsNullOrWhiteSpace(token.RefreshToken)
+            ? token.AccessToken
+            : token.RefreshToken;
+        if (string.IsNullOrWhiteSpace(revocable)) return;
+
+        try
+        {
+            await OAuthClientFor(plugin).RevokeTokenAsync(plugin, revocable, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not revoke the grant from a refused {Provider} consent for plugin {PluginKey}.",
+                plugin.Provider,
+                plugin.PluginKey);
+        }
     }
 
     private async Task TryRevokeProviderTokenAsync(
