@@ -21,6 +21,11 @@ namespace WarpTalk.Gateway.Services;
 ///
 /// Design: AI Assistant runs on its own consumer group on stt:results,
 /// completely isolated from the Translation → TTS pipeline.
+///
+/// WT-605: the stt:results lane is gated on <see cref="TranscriptPauseState"/>. Nothing else is.
+/// Pause Transcript stops the record, not the conversation — translation, dubbing and subtitles
+/// keep flowing through a pause, and this file is the one place where confusing the two would be
+/// invisible until somebody noticed the captions had gone.
 /// </summary>
 public sealed class AiResultConsumerService : BackgroundService
 {
@@ -29,6 +34,7 @@ public sealed class AiResultConsumerService : BackgroundService
     private readonly IHubContext<TranslationRoomHub> _hubContext;
     private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceClient;
     private readonly WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient _roomClient;
+    private readonly TranscriptPauseState _transcriptPause;
     private readonly ILogger<AiResultConsumerService> _logger;
 
     private const string ConsumerGroupName = "gateway-consumers";
@@ -64,6 +70,7 @@ public sealed class AiResultConsumerService : BackgroundService
         IHubContext<TranslationRoomHub> hubContext,
         WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
         WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
+        TranscriptPauseState transcriptPause,
         ILogger<AiResultConsumerService> logger)
     {
         _streamService = streamService;
@@ -71,6 +78,7 @@ public sealed class AiResultConsumerService : BackgroundService
         _hubContext = hubContext;
         _workspaceClient = workspaceClient;
         _roomClient = roomClient;
+        _transcriptPause = transcriptPause;
         _logger = logger;
     }
 
@@ -307,6 +315,29 @@ public sealed class AiResultConsumerService : BackgroundService
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
                     if (string.IsNullOrEmpty(translationRoomId)) continue;
+
+                    // WT-605: the transcript is paused, so the words do not leave this server.
+                    //
+                    // This lane and this lane only. ConsumeTranslationResultsAsync below stays
+                    // ungated on purpose — captions and subtitles keep running through a pause, and
+                    // gating them would quietly turn Pause Transcript into Stop Translation, which
+                    // is the one thing this feature was built not to be.
+                    //
+                    // The web client also hides transcript lines while paused, because its subtitle
+                    // overlay and its transcript panel read one store. This is not that check
+                    // repeated: "the text never left the server" and "the client agreed to hide it"
+                    // are different promises, and the SignalR group holds clients this repo does not
+                    // ship — the desktop app, and anything else holding a room token.
+                    //
+                    // ACKNOWLEDGED even though it is dropped. An entry left unacked sits in the
+                    // pending list forever; TryRestoreConsumerGroupAsync only rebuilds a vanished
+                    // group and would never clear it, so a long pause would silently fill the PEL
+                    // for every room on this consumer.
+                    if (await _transcriptPause.IsPausedAsync(translationRoomId, ct))
+                    {
+                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "text") ?? "";
 

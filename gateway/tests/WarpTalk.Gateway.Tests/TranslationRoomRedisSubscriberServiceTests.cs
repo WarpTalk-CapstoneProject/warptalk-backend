@@ -20,6 +20,8 @@ public class TranslationRoomRedisSubscriberServiceTests
     private readonly Mock<ISubscriber> _subscriber = new();
     private readonly Mock<IHubClients> _clients = new();
     private readonly Mock<IClientProxy> _proxy = new();
+    private readonly Mock<IDatabase> _database = new();
+    private readonly TranscriptPauseState _transcriptPause;
     private readonly TranslationRoomRedisSubscriberService _service;
 
     private Func<RedisChannel, RedisValue, Task>? _handler;
@@ -28,6 +30,7 @@ public class TranslationRoomRedisSubscriberServiceTests
     {
         var redis = new Mock<IConnectionMultiplexer>();
         redis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(_subscriber.Object);
+        redis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(_database.Object);
 
         _subscriber
             .Setup(s => s.SubscribeAsync(
@@ -46,11 +49,112 @@ public class TranslationRoomRedisSubscriberServiceTests
         hubContext.Setup(c => c.Clients).Returns(_clients.Object);
         _clients.Setup(c => c.Group(It.IsAny<string>())).Returns(_proxy.Object);
 
+        _transcriptPause = new TranscriptPauseState(
+            redis.Object,
+            new Mock<ILogger<TranscriptPauseState>>().Object);
+
         _service = new TranslationRoomRedisSubscriberService(
             redis.Object,
             hubContext.Object,
+            _transcriptPause,
             new Mock<ILogger<TranslationRoomRedisSubscriberService>>().Object);
     }
+
+    // ── Pause Transcript (WT-605) ─────────────────────────────
+
+    /// <summary>
+    /// WT-605. TranscriptService ends up in the same position every other service on this channel
+    /// is in: it raises Pause over REST, the hub lives in another process, and without this relay
+    /// nobody in the room is told the transcript stopped being written down.
+    ///
+    /// A NEW event, not a reuse of TranslationStopped. That one means the AI workers stopped
+    /// translating and dubbing; this one means only the written record stopped growing while
+    /// everything people can hear and read carries on. Collapsing them would tell every client the
+    /// two are the same thing.
+    /// </summary>
+    [Fact]
+    public async Task TranscriptPaused_BroadcastsTranscriptPausedToTheRoomGroup()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(RedisChannel.Literal(Channel), Command("TranscriptPaused", roomId));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+
+        var sent = _proxy.Invocations
+            .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                        && (string)i.Arguments[0] == "TranscriptPaused")
+            .Select(i => (object[])i.Arguments[1])
+            .Single();
+
+        Assert.Equal(roomId.ToString(), Assert.Single(sent));
+
+        // And nothing that would read as "translation stopped" went out beside it.
+        Assert.DoesNotContain(
+            _proxy.Invocations,
+            i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                 && (string)i.Arguments[0] == "TranslationStopped");
+    }
+
+    [Fact]
+    public async Task TranscriptResumed_BroadcastsTranscriptResumedToTheRoomGroup()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(RedisChannel.Literal(Channel), Command("TranscriptResumed", roomId));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+
+        _proxy.Verify(
+            p => p.SendCoreAsync("TranscriptResumed", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// The relay is also what makes the Gateway's own transcript gate react to the button.
+    ///
+    /// AiResultConsumerService caches "is this room paused" for a few seconds so a busy room does
+    /// not cost one Redis read per sentence. That cache is only safe because this event clears it:
+    /// without the invalidation, Resume would move the banner for everyone and leave the transcript
+    /// empty until the cache aged out, which is the same bug this ticket fixed pointing the other
+    /// way.
+    /// </summary>
+    [Fact]
+    public async Task TranscriptResumed_InvalidatesTheGatewaysCachedPauseAnswer()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        var paused = true;
+        _database
+            .Setup(d => d.KeyExistsAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+            .ReturnsAsync(() => paused);
+
+        Assert.True(await _transcriptPause.IsPausedAsync(roomId.ToString(), CancellationToken.None));
+
+        paused = false;
+        await handler(RedisChannel.Literal(Channel), Command("TranscriptResumed", roomId));
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+
+        Assert.False(await _transcriptPause.IsPausedAsync(roomId.ToString(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TranscriptPaused_WithoutARoomId_BroadcastsNothing()
+    {
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new { Command = "TranscriptPaused", RoomId = "" })));
+
+        _clients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
+    }
+
+    private static RedisValue Command(string command, Guid roomId) =>
+        new(JsonSerializer.Serialize(new { Command = command, RoomId = roomId.ToString() }));
 
     /// <summary>
     /// WT-322. The meeting page has always registered a "TranslationRoomStarted" handler and

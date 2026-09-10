@@ -721,17 +721,26 @@ public class TranslationRoomHub : Hub
     // JSON — {"id": ..., "name": ..., "gender": ...} per entry.
     private sealed record VoiceCatalogEntry(string Id, string Name, string? Gender);
 
-    /// <summary>
-    /// Broadcast a live transcript segment to all translationRoom participants.
-    /// Called by the AI pipeline (via internal service) or directly by clients.
-    /// </summary>
-    public async Task SendTranscriptSegment(Guid translationRoomId, TranscriptSegmentDto segment)
-    {
-        var groupName = TranslationRoomGroupName(translationRoomId);
-
-        await Clients.Group(groupName)
-            .SendAsync("TranscriptSegmentReceived", segment);
-    }
+    // REMOVED: SendTranscriptSegment(Guid, TranscriptSegmentDto). WT-605.
+    //
+    // It broadcast "TranscriptSegmentReceived" to the whole room from whatever the caller passed,
+    // behind nothing but the class-level [Authorize]. No room membership check, no host check —
+    // so any signed-in account that knew a room id could put words in a named speaker's mouth in
+    // front of everyone, and could do it while the transcript was paused, which routes around
+    // every gate WT-605 added at once. Its own comment said it was "called by the AI pipeline (via
+    // internal service) or directly by clients", and neither is true: the pipeline reaches clients
+    // through AiResultConsumerService's stt:results consumer, and a sweep of warptalk-web and
+    // warptalk-desktop found no invoke of this name anywhere — only a row in the web repo's
+    // frontend/backend mapping table, which documents the hub rather than calling it.
+    //
+    // Deleted rather than authorized, because there is no correct version of it. Even restricted
+    // to the host it would let a person hand-author transcript lines attributed to someone else,
+    // and the transcript is evidence: it is exported, signed into minutes, and read back weeks
+    // later. Transcript text has exactly one legitimate origin, the STT pipeline, and it already
+    // has a route that does not pass through a client.
+    //
+    // If something ever genuinely needs to inject a segment, it belongs on the pipeline side of
+    // Redis, not on a hub method any browser console can reach.
 
     /// <summary>
     /// Send a chat message to all translationRoom participants.
