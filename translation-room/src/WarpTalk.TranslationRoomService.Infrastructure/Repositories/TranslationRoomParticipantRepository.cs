@@ -75,4 +75,17 @@ public class TranslationRoomParticipantRepository : GenericRepository<Translatio
             .Select(g => new { RoomId = g.Key, Attended = g.Select(p => p.UserId).Distinct().Count() })
             .ToDictionaryAsync(x => x.RoomId, x => x.Attended, ct);
     }
+
+    public async Task<int> CountEverJoinedAsync(Guid roomId, CancellationToken ct = default)
+    {
+        // Counted in the database, DISTINCT by UserId, for the same two reasons the grouped form
+        // gives: a participant who dropped and rejoined holds more than one row for this room and
+        // attended once, and materialising the roster to count it is what reported 0 for a room
+        // whose navigation was not loaded.
+        return await _dbSet
+            .Where(p => p.TranslationRoomId == roomId)
+            .Select(p => p.UserId)
+            .Distinct()
+            .CountAsync(ct);
+    }
 }
