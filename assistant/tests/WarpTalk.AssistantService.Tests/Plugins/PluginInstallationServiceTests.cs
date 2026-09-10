@@ -104,6 +104,52 @@ public class PluginInstallationServiceTests
     }
 
     [Fact]
+    public async Task InstallAsync_ReportsTheProvidersExistingConnection_NotNotConnected()
+    {
+        // Installing Calendar while the shared Google grant is already live. The response used to
+        // pass a hardcoded null connection, so it answered "not_connected" for a provider the user
+        // had already consented to - and a client that patches its tile from this response rather
+        // than refetching the catalog then offered Connect and sent them through a second consent.
+        //
+        // That second trip is not just wasted: consent replaces the shared grant's whole scope set,
+        // so it is also where Drive's access can be dropped.
+        var plugin = GoogleDrivePlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginInstallation?)null);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PluginConnection
+            {
+                Id = Guid.NewGuid(),
+                UserId = UserId,
+                PluginId = PluginId,
+                Provider = "google",
+                Status = PluginConstants.ConnectionStatus.Connected,
+                ProviderEmail = "user@example.com",
+                ScopesJson = """["https://www.googleapis.com/auth/drive.readonly"]""",
+            });
+
+        var result = await CreateSut().InstallAsync(GoogleDriveKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.ConnectionStatus);
+        Assert.Equal("user@example.com", result.Value.ConnectedAccountEmail);
+        // The granted scopes travel too, so a client can apply the same subset test the catalog
+        // listing does instead of trusting the status alone.
+        Assert.Contains("https://www.googleapis.com/auth/drive.readonly", result.Value.GrantedScopes);
+    }
+
+    [Fact]
     public async Task InstallAsync_AddsPersonalInstallation_WhenPluginIsKnownAndNotInstalled()
     {
         var plugin = GoogleDrivePlugin();

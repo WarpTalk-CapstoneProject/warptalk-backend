@@ -107,7 +107,22 @@ public class PluginInstallationService : IPluginInstallationService
         }
 
         await _unitOfWork.SaveChangesAsync(ct);
-        return Result.Success(PluginCatalogItemMapper.ToCatalogItem(PluginDefinitionMapper.ToDefinition(plugin), installation, null));
+
+        // By provider, the same way ListCatalogAsync reads it. Passing null here hardcoded
+        // "not_connected" into the response, so installing Calendar while Drive was already
+        // connected answered with a row that said Connect - and a client patching its tile from
+        // this response rather than refetching the catalog sent the user through a second Google
+        // consent for a grant they already held. That second trip is not merely wasted: consent
+        // replaces the shared grant's scopes, so it is also where Drive's access can be dropped.
+        var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
+            c => c.UserId == userId && c.Provider == plugin.Provider,
+            ct: ct);
+
+        return Result.Success(
+            PluginCatalogItemMapper.ToCatalogItem(
+                PluginDefinitionMapper.ToDefinition(plugin),
+                installation,
+                connection));
     }
 
     public async Task<Result> DisableAsync(string pluginKey, Guid userId, CancellationToken ct = default)

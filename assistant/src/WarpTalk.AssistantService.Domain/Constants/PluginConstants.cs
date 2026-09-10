@@ -193,6 +193,19 @@ public static class PluginConstants
         public const string AccessDenied = "access_denied";
 
         /// <summary>
+        /// The consent that came back belongs to a different account at the provider than the one
+        /// this user's existing connection holds.
+        /// </summary>
+        /// <remarks>
+        /// Its own code rather than <see cref="PermissionDenied"/>, because the remedy is specific
+        /// and the user can act on it: disconnect the account that is connected, then connect the
+        /// one you want. A connection is keyed by provider and shared by every plugin of that
+        /// provider, so accepting the second account would silently move Drive, Calendar and Meet
+        /// to it at once.
+        /// </remarks>
+        public const string ProviderAccountMismatch = "provider_account_mismatch";
+
+        /// <summary>
         /// Our own OAuth configuration is missing or wrong - an empty client secret, a client id
         /// the provider does not recognise. Separated from <see cref="ProviderUnavailable"/>
         /// because the two need opposite words: one tells the user to try again later, the other
