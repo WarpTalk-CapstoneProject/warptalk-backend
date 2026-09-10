@@ -49,6 +49,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         Guid roomId,
         Guid userId,
         string templateKey,
+        string? summaryLanguage,
         string? bearerToken,
         CancellationToken ct = default)
     {
@@ -125,13 +126,19 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 // bypass that would let a regeneration read more than its requester can.
                 ["bearer_token"] = bearerToken ?? string.Empty,
                 ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
+                // Normalised to a bare ISO 639-1 code, matching what the AI side keys its
+                // language names by: a room stores `vi-VN` and a picker sends `vi`, and a
+                // summary must not come out in a different language depending on which
+                // spelling reached it. Empty means the caller expressed no preference.
+                ["summary_language"] = LanguageHelper.NormalizeLanguageCode(summaryLanguage),
                 ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
             });
 
             _logger.LogInformation(
-                "Queued summary regeneration for room {RoomId} with template {TemplateKey}",
+                "Queued summary regeneration for room {RoomId} with template {TemplateKey} in language {SummaryLanguage}",
                 roomId,
-                templateKey);
+                templateKey,
+                LanguageHelper.NormalizeLanguageCode(summaryLanguage) is { Length: > 0 } code ? code : "as-spoken");
 
             return Result.Success();
         }

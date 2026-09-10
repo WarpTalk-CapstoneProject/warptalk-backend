@@ -1720,6 +1720,17 @@ public class TranslationRoomService : ITranslationRoomService
                 $"meeting:{room.Id}:target_languages",
                 JsonSerializer.Serialize(targetLanguages),
                 TimeSpan.FromHours(24));
+
+                // The language the automatic summary is written in, so the first one and any
+                // later rewrite agree. Without it the automatic summary guessed from the
+                // transcript while a rewrite obeyed the requester, and simply asking again for
+                // the shape you already had could silently change language. The room's declared
+                // source language is a fact this service holds; inferring it from the words is
+                // the guess this replaces.
+                await _redisStateRepository.StringSetAsync(
+                $"meeting:{room.Id}:summary_language",
+                LanguageHelper.NormalizeLanguageCode(room.SourceLanguage),
+                TimeSpan.FromHours(24));
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {

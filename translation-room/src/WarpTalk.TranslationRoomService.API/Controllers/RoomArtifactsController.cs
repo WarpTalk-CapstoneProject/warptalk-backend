@@ -61,6 +61,7 @@ public class RoomArtifactsController : ControllerBase
             roomId,
             userId.Value,
             request?.TemplateKey ?? "general",
+            request?.Language,
             bearerToken,
             ct);
 
@@ -98,4 +99,12 @@ public class RoomArtifactsController : ControllerBase
 }
 
 /// <summary>Which shape to rewrite the summary in. Unknown keys fall back to General.</summary>
-public record RegenerateSummaryRequest(string TemplateKey);
+/// <summary>
+/// What a rewrite is allowed to change: the shape, the language, or both.
+///
+/// <c>Language</c> is optional and stays optional. A client that omits it is saying "leave the
+/// language alone", which the AI side reads as "follow the transcript" — the behaviour every
+/// summary written before this field existed was produced under, so an older client keeps
+/// working unchanged rather than silently starting to translate.
+/// </summary>
+public record RegenerateSummaryRequest(string TemplateKey, string? Language = null);
