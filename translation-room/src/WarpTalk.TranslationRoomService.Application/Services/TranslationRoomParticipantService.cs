@@ -499,6 +499,73 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     }
 
     /// <summary>
+    /// The return half of <see cref="MarkParticipantDisconnectedAsync"/>, which promised that a
+    /// dropped socket "stays reversible when they reconnect" — and nothing reversed it. SignalR's
+    /// automatic reconnect re-enters through the hub's JoinTranslationRoom, which wrote no row, and
+    /// the client registers over REST only once per session. So after one network blip the row
+    /// said DISCONNECTED for the rest of a meeting the person was still in, and the idle reaper —
+    /// which reads that row — ended a sole participant's meeting from under them. Every
+    /// EXTERNAL_BRIDGE room is a sole participant.
+    ///
+    /// Deliberately narrow, because the hub publishes this on EVERY join:
+    ///   * DISCONNECTED only. It is the one status that proves the person already held a seat
+    ///     here. WAITING must stay in the lobby (a knock is not an admission — WT-563), LEFT
+    ///     re-enters through the REST join like anybody else, KICKED and REJECTED are terminal,
+    ///     and CONNECTED needs nothing.
+    ///   * A live room only. EndTranslationRoomAsync releases its seats by writing DISCONNECTED,
+    ///     so a late socket must not reseat anybody in an ENDED room.
+    ///   * The seat is re-acquired under the same cap the REST join applies, with the same host
+    ///     exemption. A full room leaves them DISCONNECTED, which is what they were.
+    /// </summary>
+    public async Task<Result> MarkParticipantReconnectedAsync(Guid translationRoomId, Guid requestedByUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            // No row is not an error here: a first hub join can race the REST registration that
+            // writes it, and there is nothing to restore either way.
+            var participant = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
+            if (participant?.Status != TranslationRoomParticipantStatuses.Disconnected)
+                return Result.Success();
+
+            var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (room == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            // RoomStatus names, not literals: this file carries no raw participant-status string
+            // (ParticipantStatusSpellingContractTests), and the room's WAITING is spelled the same.
+            if (room.Status is not (nameof(RoomStatus.IN_PROGRESS) or nameof(RoomStatus.WAITING) or nameof(RoomStatus.PAUSED)))
+                return Result.Success();
+
+            if (room.MaxParticipants > 0 && !room.IsHostedBy(requestedByUserId))
+            {
+                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoomId, ct);
+                if (seatsTaken >= room.MaxParticipants)
+                {
+                    _logger.LogInformation(
+                        "Not reseating {UserId} in {RoomId} on reconnect: the room is at its cap of {Cap}.",
+                        requestedByUserId,
+                        translationRoomId,
+                        room.MaxParticipants);
+                    return Result.Success();
+                }
+            }
+
+            participant.Status = TranslationRoomParticipantStatuses.Connected;
+            participant.UpdatedAt = DateTime.UtcNow;
+
+            _participantRepository.Update(participant);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while marking participant reconnected. RoomId: {RoomId}, UserId: {UserId}", translationRoomId, requestedByUserId);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedLeaveRoom, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
     /// WT-313. The one answer to "does this caller hold host-level authority over this room?":
     /// the room's own host, or an Owner/Admin of the workspace the room belongs to.
     /// </summary>

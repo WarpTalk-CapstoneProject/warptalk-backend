@@ -35,6 +35,17 @@ public interface ITranslationRoomParticipantRepository : IGenericRepository<Tran
         CancellationToken ct = default);
 
     /// <summary>
+    /// The real people in each room right now: seat holders, minus an EXTERNAL_BRIDGE room's
+    /// far-side stand-in (<see cref="Constants.RoomPresence"/>). This is what decides whether a
+    /// live room is empty enough to end; the seat count above still decides capacity.
+    ///
+    /// Rooms with nobody in them are absent from the result, as with the seat count.
+    /// </summary>
+    Task<Dictionary<Guid, int>> CountPeopleInRoomsAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// How many distinct people have EVER been in each room, whatever their status now.
     ///
     /// A different question from the one above, and the list needs both. Occupancy answers "who

@@ -4,6 +4,7 @@ using StackExchange.Redis;
 using System.Security.Claims;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 
@@ -302,6 +303,17 @@ public class TranslationRoomHub : Hub
             $"translationRoom:{translationRoomId}:speak_languages",
             userId,
             normalizedSpeakLanguage);
+
+        // The other half of participant-offline. A dropped socket is recorded as DISCONNECTED,
+        // and until now nothing recorded the return: SignalR's automatic reconnect comes back
+        // through THIS method, which wrote no participant row, and the client registers over REST
+        // only once per session. So a network blip left a participant DISCONNECTED for the rest of
+        // a meeting they were still in — and the idle reaper, reading that row, ended a sole
+        // participant's meeting under them. TranslationRoomService restores DISCONNECTED only, so
+        // an ordinary first join, a lobby knock or a kicked user changes nothing.
+        await db.PublishAsync(
+            RedisChannel.Literal(RealtimeConstants.RedisChannels.ParticipantOnline),
+            $"{roomIdStr}:{userId}");
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} joined translationRoom {TranslationRoomId} (speak={SpeakLanguage}, listen={ListenLanguage})",

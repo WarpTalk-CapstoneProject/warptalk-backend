@@ -21,4 +21,11 @@ public interface ITranslationRoomParticipantService
     /// so a backgrounded tab or a network blip erased someone who was still in the call.
     /// </summary>
     Task<Result> MarkParticipantDisconnectedAsync(Guid translationRoomId, Guid requestedByUserId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The participant's socket is back (the hub's JoinTranslationRoom). Undoes
+    /// <see cref="MarkParticipantDisconnectedAsync"/> and nothing else: only a DISCONNECTED row in
+    /// a live room is restored to CONNECTED.
+    /// </summary>
+    Task<Result> MarkParticipantReconnectedAsync(Guid translationRoomId, Guid requestedByUserId, CancellationToken ct = default);
 }
