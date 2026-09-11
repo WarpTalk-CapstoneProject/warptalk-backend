@@ -65,6 +65,18 @@ public static class ErrorCodes
     // ── TranslationRoom ──────────────────────────────────────────
     public const string TranslationRoomNotActive = "MEETING_NOT_ACTIVE";
 
+    // ── Workspace documents ──────────────────────────────
+    /// <summary>
+    /// This workspace already holds a document with identical bytes, and the caller has not said
+    /// what to do about it. WT-666.
+    /// </summary>
+    /// <remarks>
+    /// Its own code rather than a bare CONFLICT because the web must branch on it: this is the one
+    /// conflict whose answer is a dialog offering skip / replace / upload anyway, and matching on
+    /// the error SENTENCE to find it would break the first time the wording changed.
+    /// </remarks>
+    public const string DocumentDuplicateContent = "DOCUMENT_DUPLICATE_CONTENT";
+
     // ── Notification ─────────────────────────────────────
     public const string PreferencesNotFound = "PREFERENCES_NOT_FOUND";
 }

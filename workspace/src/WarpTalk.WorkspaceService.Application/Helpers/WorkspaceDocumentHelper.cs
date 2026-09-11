@@ -55,11 +55,72 @@ public static class WorkspaceDocumentHelper
     public static string SupportedConfidentialityLevels =>
         $"{WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel}, {WorkspaceDocumentConstants.SensitiveConfidentialityLevel}";
 
+    /// <summary>
+    /// The canonical source type for a caller-supplied value, or null when it is not one this
+    /// system recognises. WT-666.
+    /// </summary>
+    /// <remarks>
+    /// Same shape as <see cref="NormalizeConfidentialityLevel"/> and for the same reason: the
+    /// column was free text, every reader is an equality test, and an unrecognised value is
+    /// therefore a document no reader will ever match — invisible to the External-member meeting
+    /// exception, and meaningless in the API response.
+    ///
+    /// Trimmed and lower-cased rather than refused on case: "Upload" plainly means upload.
+    /// </remarks>
+    public static string? NormalizeSourceType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var normalized = value.Trim().ToLowerInvariant();
+        return WorkspaceDocumentConstants.SupportedSourceTypes.Contains(normalized, StringComparer.Ordinal)
+            ? normalized
+            : null;
+    }
+
+    /// <summary>The source types a document may carry, for an error message that names them.</summary>
+    public static string SupportedSourceTypes =>
+        string.Join(", ", WorkspaceDocumentConstants.SupportedSourceTypes);
+
+    /// <summary>
+    /// The canonical duplicate-handling strategy, or null when the caller asked for one that does
+    /// not exist. Absent means Reject — the safe default, which asks rather than assumes.
+    /// </summary>
+    public static string? NormalizeDuplicateStrategy(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return WorkspaceDocumentConstants.DuplicateStrategies.Reject;
+
+        var normalized = value.Trim().ToLowerInvariant();
+        return WorkspaceDocumentConstants.DuplicateStrategies.All.Contains(normalized, StringComparer.Ordinal)
+            ? normalized
+            : null;
+    }
+
+    /// <summary>The duplicate strategies a caller may ask for, for an error message that names them.</summary>
+    public static string SupportedDuplicateStrategies =>
+        string.Join(", ", WorkspaceDocumentConstants.DuplicateStrategies.All);
+
     // Helper method to generate the storage key for a document
     public static string GenerateStorageKey(Guid workspaceId, Guid documentId, string fileExtension)
     {
         var normalizedExtension = NormalizeExtension(fileExtension);
         return $"documents/{workspaceId}/{documentId}{normalizedExtension}";
+    }
+
+    /// <summary>
+    /// A storage key for one REVISION of a document, so re-uploading never overwrites the blob a
+    /// reviewer already read. WT-633.
+    /// </summary>
+    /// <remarks>
+    /// The plain key is <c>documents/{workspace}/{document}{ext}</c> — one path per document id.
+    /// Re-upload keeps the document id on purpose, so reusing that key would encrypt the new file
+    /// over the old one and the `previousStorageKey` written into the audit row would point at
+    /// bytes that no longer exist. A revision suffix keeps the superseded file addressable, which
+    /// is the whole of the ticket's "do not delete the physical file".
+    /// </remarks>
+    public static string GenerateRevisionStorageKey(Guid workspaceId, Guid documentId, string fileExtension, DateTime utcNow)
+    {
+        var normalizedExtension = NormalizeExtension(fileExtension);
+        return $"documents/{workspaceId}/{documentId}-r{utcNow:yyyyMMddHHmmssfff}{normalizedExtension}";
     }
 
     public static string NormalizeExtension(string? fileExtension)
