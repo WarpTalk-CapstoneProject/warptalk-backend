@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -108,20 +109,37 @@ public class SummaryResultConsumerWorker : BackgroundService
 
         if (!Guid.TryParse(fields.GetValueOrDefault("room_id"), out var roomId)) return;
 
+        var requestId = fields.GetValueOrDefault("request_id", string.Empty);
+
         var status = fields.GetValueOrDefault("status", string.Empty);
         if (!string.Equals(status, "completed", StringComparison.Ordinal))
         {
-            // A failure carries its reason, and it is the requester's answer — logged rather
-            // than written over a summary that is still perfectly good.
+            var error = fields.GetValueOrDefault("error", "no reason given");
+
+            // The reason still does not go anywhere near the stored summary — a rewrite that
+            // failed must leave the one it failed to replace exactly as it was (WT-530). It goes
+            // to the person who pressed the button instead, which is where it was addressed all
+            // along. Until WT-669 this line was the end of the road: the requester watched an
+            // unchanged panel for ninety seconds and was then told, in general terms, that
+            // something had not arrived.
             _logger.LogWarning(
                 "Summary rewrite for room {RoomId} failed: {Error}",
                 roomId,
-                fields.GetValueOrDefault("error", "no reason given"));
+                error);
+            await PublishOutcomeAsync(requestId, "failed", error);
             return;
         }
 
         var content = fields.GetValueOrDefault("content_json", string.Empty);
-        if (string.IsNullOrWhiteSpace(content)) return;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            // "completed" with nothing in it. Dropping it is right — there is nothing to write —
+            // but doing so in silence left the requester waiting on a summary that had already
+            // come and gone.
+            _logger.LogWarning("Summary rewrite for room {RoomId} completed with no content", roomId);
+            await PublishOutcomeAsync(requestId, "failed", "The rewrite came back empty.");
+            return;
+        }
 
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -137,6 +155,7 @@ public class SummaryResultConsumerWorker : BackgroundService
         if (SummaryDelivery.OrDefault(fields.GetValueOrDefault("delivery")) == SummaryDelivery.Variant)
         {
             await ApplyVariantAsync(unitOfWork, roomId, content, ct);
+            await PublishOutcomeAsync(requestId, "completed", null);
             return;
         }
 
@@ -154,6 +173,10 @@ public class SummaryResultConsumerWorker : BackgroundService
             // inventing one here would create an artifact the finalizer never made and whose
             // other columns nobody set.
             _logger.LogWarning("No summary artifact to rewrite for room {RoomId}", roomId);
+            await PublishOutcomeAsync(
+                requestId,
+                "failed",
+                "This meeting has no summary to rewrite. It needs to be finalized first.");
             return;
         }
 
@@ -175,6 +198,53 @@ public class SummaryResultConsumerWorker : BackgroundService
             "Rewrote the summary for room {RoomId} using template {TemplateKey}",
             roomId,
             fields.GetValueOrDefault("template_key", "general"));
+
+        // AFTER the save, never before. This is what the browser stops polling on, so publishing
+        // it earlier would mean a client refetching the artifact a moment before the new content
+        // reached it and reading the old summary as the answer.
+        await PublishOutcomeAsync(requestId, "completed", null);
+    }
+
+    /// <summary>
+    /// Leave one rewrite's outcome where the person who asked for it can find it.
+    ///
+    /// WT-669. A rewrite is queued, so its answer arrives long after the request returned 202 —
+    /// and until now every way it could go wrong ended at a log line. The requester saw one
+    /// thing for all of them: a panel that did not change.
+    ///
+    /// NEVER FATAL. This is how the outcome is REPORTED, not what the outcome IS: the summary is
+    /// already saved by the time this runs on the success path, and on the failure paths there
+    /// was nothing to save. A Redis that is down must not turn a rewrite that worked into an
+    /// exception that rolls the consumer's loop — the client still has its own deadline, and
+    /// falling back to that is a slower answer, not a wrong one.
+    /// </summary>
+    private async Task PublishOutcomeAsync(string requestId, string status, string? error)
+    {
+        // Empty when the message predates the id being carried through, or when the request came
+        // from somewhere that does not track one. Nothing to file it under, and inventing a key
+        // would leave a reply nobody is listening for.
+        if (string.IsNullOrWhiteSpace(requestId)) return;
+
+        try
+        {
+            // The DTO the reader deserializes into, not an anonymous shape that happens to look
+            // like it: System.Text.Json matches property names case-SENSITIVELY by default, so
+            // `new { status, error }` would round-trip into a DTO with both fields left at their
+            // defaults — a "pending" for every outcome, and nothing to say why.
+            var payload = JsonSerializer.Serialize(
+                new SummaryRewriteStatusDto { Status = status, Error = error });
+            await _redis.GetDatabase().StringSetAsync(
+                TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + requestId,
+                payload,
+                TranslationRoomConstants.SummaryRewriteStatusTtl);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not publish the outcome of summary rewrite {RequestId}; the client falls back to its own deadline",
+                requestId);
+        }
     }
 
     /// <summary>

@@ -14,6 +14,16 @@ public interface IRedisStateRepository
     Task<string?> HashGetAsync(string key, string field);
     Task<bool> WaitForSignalAsync(string channel, TimeSpan timeout, CancellationToken ct);
     Task<bool> StringSetAsync(string key, string value, TimeSpan? expiry = null);
+
+    /// <summary>
+    /// Write only if nobody holds this key, and say whether we won.
+    /// </summary>
+    /// <remarks>
+    /// A read followed by a write is not the same thing and cannot be made into it: two readers
+    /// asking for the same rendering in the same second would both see nothing and both queue.
+    /// The atomicity is the whole point of the method existing.
+    /// </remarks>
+    Task<bool> StringSetIfAbsentAsync(string key, string value, TimeSpan expiry);
     Task<string?> StringGetAsync(string key);
     Task<long> PublishAsync(string channel, string message);
 

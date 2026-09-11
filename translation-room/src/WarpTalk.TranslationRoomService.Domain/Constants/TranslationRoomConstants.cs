@@ -9,6 +9,49 @@ public static class TranslationRoomConstants
     /// </summary>
     public const string SummaryRequestStream = "assistant:summary_requests";
 
+    /// <summary>
+    /// WT-669 — where one rewrite's outcome waits for the person who asked for it.
+    ///
+    /// A rewrite is queued and answered asynchronously, so the reason it failed used to reach a
+    /// log and stop there: five different breakages all showed the requester the same motionless
+    /// panel. The consumer writes the outcome here under the request's own id, and the endpoint
+    /// the browser is already polling reads it back.
+    ///
+    /// Request-scoped state in a request-scoped place. It deliberately does NOT live on the room
+    /// or the artifact: one person's click is not part of what the meeting IS, and a rewrite that
+    /// failed must leave the summary it failed to replace exactly as it was (WT-530).
+    /// </summary>
+    public const string SummaryRewriteStatusKeyPrefix = "summary_rewrite:";
+
+    /// <summary>
+    /// Long enough to outlive the browser's own 90-second wait several times over, short enough
+    /// that a click nobody is waiting on any more does not linger. An expired key reads as
+    /// PENDING, never as success — see GetSummaryRewriteStatusAsync.
+    /// </summary>
+    public static readonly TimeSpan SummaryRewriteStatusTtl = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Which (room, shape, language) renderings are already being written, and under which request.
+    ///
+    /// Reading a meeting in another language is a GET that can queue work, and the client polls
+    /// that GET every four seconds while it waits. With nothing holding the place, every one of
+    /// those polls found no cached rendering and queued the whole job again — one click could
+    /// spend twenty model calls on the same paragraph. Two readers picking the same language in
+    /// the same second did it to each other for the same reason.
+    ///
+    /// The VALUE is the request id, not a flag. That is what lets a later poll ask what became of
+    /// the run already in progress instead of only knowing that one exists.
+    /// </summary>
+    public const string SummaryVariantInFlightKeyPrefix = "summary_variant_inflight:";
+
+    /// <summary>
+    /// Comfortably longer than writing a summary takes, and far shorter than
+    /// <see cref="SummaryRewriteStatusTtl"/>: this key only has to outlive the run it is holding
+    /// the place for. A worker that dies without answering leaves it behind, and it must expire
+    /// on its own rather than block that rendering until somebody notices.
+    /// </summary>
+    public static readonly TimeSpan SummaryVariantInFlightTtl = TimeSpan.FromMinutes(5);
+
     // Terminal Statuses
     public static readonly string[] TerminalStatuses = new[]
     {

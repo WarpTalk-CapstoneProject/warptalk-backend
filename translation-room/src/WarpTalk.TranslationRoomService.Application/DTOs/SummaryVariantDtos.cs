@@ -24,13 +24,20 @@ namespace WarpTalk.TranslationRoomService.Application.DTOs;
 /// against the transcript's own segments, which is why a variant has to carry its own timestamp
 /// rather than borrowing the canonical artifact's.
 /// </param>
+/// <param name="Error">
+/// Why this rendering is not coming, in the words the worker wrote. Set only alongside
+/// <see cref="SummaryVariantStatus.Failed"/>. Before it existed a rendering that failed could
+/// only keep answering "generating" until the client's own deadline turned it into a sentence
+/// that named nothing.
+/// </param>
 public record SummaryVariantDto(
     string TemplateKey,
     string Language,
     string? Content,
     bool IsCanonical,
     string Status,
-    DateTime? UpdatedAt);
+    DateTime? UpdatedAt,
+    string? Error = null);
 
 /// <summary>The renderings a room already holds, so a picker can say which choices are instant.</summary>
 /// <param name="TemplateKey">The shape this rendering is in.</param>
@@ -50,4 +57,13 @@ public static class SummaryVariantStatus
 
     /// <summary>Queued with the AI worker. The client refetches; nothing is wrong.</summary>
     public const string Generating = "generating";
+
+    /// <summary>
+    /// It is not coming, and <see cref="SummaryVariantDto.Error"/> says why.
+    ///
+    /// This status did not exist, and its absence was itself the bug: a rendering that failed had
+    /// no way to be anything but "generating", so the only end a reader ever saw was their own
+    /// client giving up after ninety seconds and saying something had not arrived.
+    /// </summary>
+    public const string Failed = "failed";
 }

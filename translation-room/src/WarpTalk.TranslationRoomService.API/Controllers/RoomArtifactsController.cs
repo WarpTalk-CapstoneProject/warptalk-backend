@@ -139,7 +139,38 @@ public class RoomArtifactsController : ControllerBase
         // Accepted, not Ok: the summary is not rewritten yet. It arrives over the artifacts
         // the client refetches, and saying "done" here would be a lie the UI then has to
         // work around.
-        return Accepted(new { message = "Summary rewrite queued." });
+        //
+        // WT-669 — the id goes with it. Everything after this point happens out of the caller's
+        // sight, and until they had something to ask about, every way it could go wrong looked
+        // to them like the button doing nothing. Empty when the request was redirected to
+        // finalization, which is a different pipeline with nothing to poll.
+        return Accepted(new { message = "Summary rewrite queued.", requestId = result.Value ?? string.Empty });
+    }
+
+    /// <summary>
+    /// What became of one rewrite. Polled by the client that asked for it, which is already
+    /// refetching this room on a timer while it waits.
+    /// </summary>
+    [HttpGet("rooms/{roomId}/summary/regenerate/{requestId}")]
+    public async Task<IActionResult> GetSummaryRewriteStatus(
+        Guid roomId,
+        string requestId,
+        CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _artifactService.GetSummaryRewriteStatusAsync(roomId, userId.Value, requestId, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
     }
 
     [HttpPost("{id}/consent")]

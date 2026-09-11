@@ -1,8 +1,9 @@
-using Microsoft.Extensions.Logging.Abstractions;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -326,6 +327,106 @@ public sealed class TranslationRoomArtifactServiceTests
         redis.Verify(
             item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
             Times.Never);
+    }
+
+    /// <summary>
+    /// WT-669: the id is the only handle the requester has on an answer that arrives later.
+    ///
+    /// It used to be generated straight into the stream dictionary and forgotten on the same
+    /// line, which is why every way a rewrite could fail reached a log and stopped there.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_HandsBackTheIdItQueuedTheRequestUnder()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var redis = new Mock<IRedisStateRepository>();
+        Dictionary<string, string>? published = null;
+        redis
+            .Setup(item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
+            .Callback((string _, Dictionary<string, string> fields) => published = fields)
+            .ReturnsAsync("1-0");
+
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "traceable", null, "Bearer t");
+
+        Assert.True(result.IsSuccess);
+        Assert.False(string.IsNullOrWhiteSpace(result.Value));
+        // The SAME id, not merely some id: the consumer files the outcome under what went out.
+        Assert.Equal(published!["request_id"], result.Value);
+    }
+
+    /// <summary>
+    /// An absent key means the answer has not arrived — never that it arrived and said yes.
+    ///
+    /// Redis runs allkeys-lru and the outcome carries a TTL, so "nothing there" covers both a
+    /// rewrite still running and an outcome nobody collected in time. Reading it as success
+    /// would turn every eviction into a silent claim that the rewrite worked, which is the exact
+    /// failure this endpoint exists to remove.
+    /// </summary>
+    [Fact]
+    public async Task GetSummaryRewriteStatusAsync_ReadsAnAbsentOutcomeAsPendingNotAsSuccess()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var redis = new Mock<IRedisStateRepository>();
+        redis.Setup(item => item.StringGetAsync(It.IsAny<string>())).ReturnsAsync((string?)null);
+
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.GetSummaryRewriteStatusAsync(room.Id, hostId, Guid.NewGuid().ToString());
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("pending", result.Value!.Status);
+        Assert.Null(result.Value.Error);
+    }
+
+    /// <summary>
+    /// The reason reaches the requester in the words the worker wrote, not as a category.
+    /// </summary>
+    [Fact]
+    public async Task GetSummaryRewriteStatusAsync_CarriesTheWorkersOwnReason()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        var requestId = Guid.NewGuid().ToString();
+        var redis = new Mock<IRedisStateRepository>();
+        redis
+            .Setup(item => item.StringGetAsync(
+                TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + requestId))
+            .ReturnsAsync("{\"Status\":\"failed\",\"Error\":\"This meeting has no saved transcript to summarise.\"}");
+
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.GetSummaryRewriteStatusAsync(room.Id, hostId, requestId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("failed", result.Value!.Status);
+        Assert.Equal("This meeting has no saved transcript to summarise.", result.Value.Error);
+    }
+
+    /// <summary>
+    /// The failure text quotes what the worker found in this meeting's transcript, so it is
+    /// behind the same gate as reading the artifacts themselves.
+    /// </summary>
+    [Fact]
+    public async Task GetSummaryRewriteStatusAsync_RefusesSomebodyWithNoAccessToTheRoom()
+    {
+        var room = CreateEndedRoom(Guid.NewGuid());
+        var redis = new Mock<IRedisStateRepository>();
+
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.GetSummaryRewriteStatusAsync(room.Id, Guid.NewGuid(), Guid.NewGuid().ToString());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+        redis.Verify(item => item.StringGetAsync(It.IsAny<string>()), Times.Never);
     }
 
     private static TranslationRoom CreateEndedRoom(Guid hostId) => new()

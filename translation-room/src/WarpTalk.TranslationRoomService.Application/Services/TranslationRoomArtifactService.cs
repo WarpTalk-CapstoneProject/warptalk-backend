@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Collections.Generic;
 using System.Linq;
@@ -45,7 +45,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         _finalizationQueue = finalizationQueue;
     }
 
-    public async Task<Result> RegenerateSummaryAsync(
+    public async Task<Result<string>> RegenerateSummaryAsync(
         Guid roomId,
         Guid userId,
         string templateKey,
@@ -61,16 +61,16 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 ct);
 
             if (room == null)
-                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+                return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             // Same two gates as reading the artifacts, for the same reasons: there is nothing
             // to summarise until the meeting is over, and re-summarising exposes the whole
             // transcript to whoever asks.
             if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
-                return Result.Failure("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
+                return Result.Failure<string>("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
-                return Result.Failure("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
+                return Result.Failure<string>("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
 
             // A REWRITE NEEDS SOMETHING TO REWRITE.
             //
@@ -101,7 +101,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
                 if (hasTranscriptArtifact)
                 {
-                    return Result.Failure(
+                    return Result.Failure<string>(
                         "This meeting has a transcript but no summary artifact to rewrite. It needs to be finalized again, not re-summarised.",
                         ErrorCodes.InvalidState);
                 }
@@ -124,10 +124,13 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     roomId,
                     NormalizeTemplateKey(templateKey),
                     LanguageHelper.NormalizeLanguageCode(summaryLanguage));
-                return Result.Success();
+                // No request id, because this did not go out as a summary request: finalization is
+                // a different pipeline with a different answer. An empty id tells the caller there
+                // is nothing to ask about rather than handing it one that will never resolve.
+                return Result.Success(string.Empty);
             }
 
-            await QueueSummaryAsync(
+            var requestId = await QueueSummaryAsync(
                 room,
                 NormalizeTemplateKey(templateKey),
                 LanguageHelper.NormalizeLanguageCode(summaryLanguage) ?? string.Empty,
@@ -143,12 +146,69 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 templateKey,
                 LanguageHelper.NormalizeLanguageCode(summaryLanguage) is { Length: > 0 } code ? code : "as-spoken");
 
-            return Result.Success();
+            return Result.Success(requestId);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to queue summary regeneration for room {RoomId}", roomId);
-            return Result.Failure("Could not queue the summary rewrite.", ErrorCodes.InternalServerError);
+            return Result.Failure<string>("Could not queue the summary rewrite.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<SummaryRewriteStatusDto>> GetSummaryRewriteStatusAsync(
+        Guid roomId,
+        Guid userId,
+        string requestId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(requestId))
+            return Result.Failure<SummaryRewriteStatusDto>("A request id is required.", ErrorCodes.InvalidState);
+
+        var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+            r => r.Id == roomId,
+            "TranslationRoomParticipants,TranslationRoomArtifacts",
+            ct);
+
+        if (room == null)
+            return Result.Failure<SummaryRewriteStatusDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        // The same gate as reading the artifacts, because the failure text quotes what the worker
+        // found in this meeting's transcript — "This meeting has no saved transcript to summarise"
+        // is itself a fact about the meeting.
+        if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            return Result.Failure<SummaryRewriteStatusDto>("Unauthorized to read this room's artifacts.", ErrorCodes.Unauthorized);
+
+        var outcome = await ReadRewriteOutcomeAsync(requestId);
+        return Result.Success(outcome ?? new SummaryRewriteStatusDto { Status = "pending" });
+    }
+
+    /// <summary>
+    /// What the consumer recorded for one queued request, or null when it has recorded nothing.
+    ///
+    /// NULL IS "NOT YET", NEVER "DONE". The key is absent while the worker is still running, and
+    /// absent again once it has expired or been evicted — Redis runs allkeys-lru, so an outcome
+    /// nobody collected can simply be gone. Those are indistinguishable from here, and the honest
+    /// answer to both is that we do not know. Reading an absent key as success would turn every
+    /// eviction into a silent claim that the work succeeded, which is the failure this whole
+    /// mechanism exists to remove.
+    /// </summary>
+    private async Task<SummaryRewriteStatusDto?> ReadRewriteOutcomeAsync(string requestId)
+    {
+        var stored = await _redisStateRepo.StringGetAsync(
+            TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + requestId);
+
+        if (string.IsNullOrWhiteSpace(stored)) return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<SummaryRewriteStatusDto>(stored);
+        }
+        catch (JsonException ex)
+        {
+            // Written by the consumer in this same service, so this is a bug rather than bad
+            // input — but it must not take down the poll that the browser is depending on.
+            _logger.LogError(ex, "Unreadable summary rewrite status for request {RequestId}", requestId);
+            return null;
         }
     }
 
@@ -230,7 +290,82 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     cached.UpdatedAt));
             }
 
-            await QueueSummaryAsync(room, wantedTemplate, wantedLanguage, bearerToken, SummaryDelivery.Variant);
+            // ONE RUN PER PAIR, AND A WAY TO ASK HOW IT WENT.
+            //
+            // This is a GET that queues work, and the client polls it every four seconds while it
+            // waits. Nothing held the place, so every poll came back through here, found no cached
+            // rendering, and queued the whole job again — one click could spend twenty model calls
+            // writing the same paragraph twenty times, and two readers picking the same language in
+            // the same second did it to each other for the same reason. The log line below has said
+            // "for the first reader who asked" all along; it just was not true.
+            //
+            // The claim is SET NX, not a read followed by a write: a get-then-set has a gap, and
+            // the gap is exactly where the second reader gets in. The value is the request id
+            // rather than a flag, so a later poll can ask what became of the run in progress —
+            // see SummaryRewriteStatusKeyPrefix, which the consumer files every outcome under.
+            var inFlightKey = TranslationRoomConstants.SummaryVariantInFlightKeyPrefix
+                + $"{roomId}:{wantedTemplate}:{wantedLanguage}";
+
+            var runningRequestId = await _redisStateRepo.StringGetAsync(inFlightKey);
+            if (!string.IsNullOrWhiteSpace(runningRequestId))
+            {
+                var outcome = await ReadRewriteOutcomeAsync(runningRequestId);
+                if (outcome?.Status == "failed")
+                {
+                    // Cleared, so asking again starts a new run rather than replaying this answer
+                    // forever. A rendering that failed for a reason the reader can act on — a
+                    // transcript that has since been fixed, say — must be askable again.
+                    await _redisStateRepo.KeyDeleteAsync(inFlightKey);
+                    return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                        wantedTemplate,
+                        wantedLanguage,
+                        Content: null,
+                        IsCanonical: false,
+                        SummaryVariantStatus.Failed,
+                        UpdatedAt: null,
+                        outcome.Error));
+                }
+
+                // Still running. Answering "generating" without queueing anything is the whole
+                // point of the key.
+                return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                    wantedTemplate,
+                    wantedLanguage,
+                    Content: null,
+                    IsCanonical: false,
+                    SummaryVariantStatus.Generating,
+                    UpdatedAt: null));
+            }
+
+            var variantRequestId = Guid.NewGuid().ToString();
+            if (!await _redisStateRepo.StringSetIfAbsentAsync(
+                    inFlightKey,
+                    variantRequestId,
+                    TranslationRoomConstants.SummaryVariantInFlightTtl))
+            {
+                // Somebody claimed it between the read above and here. Theirs is running; ours
+                // would be a duplicate of it.
+                return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                    wantedTemplate,
+                    wantedLanguage,
+                    Content: null,
+                    IsCanonical: false,
+                    SummaryVariantStatus.Generating,
+                    UpdatedAt: null));
+            }
+
+            try
+            {
+                await QueueSummaryAsync(
+                    room, wantedTemplate, wantedLanguage, bearerToken, SummaryDelivery.Variant, variantRequestId);
+            }
+            catch
+            {
+                // The claim outlives its run only if we let it. Releasing it here means the next
+                // poll tries again instead of watching a job that was never queued.
+                await _redisStateRepo.KeyDeleteAsync(inFlightKey);
+                throw;
+            }
 
             _logger.LogInformation(
                 "Queued a {TemplateKey}/{Language} rendering of room {RoomId}'s summary for the first reader who asked",
@@ -317,18 +452,31 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     /// only the caller knows which act this was — the content of a Standup-in-Japanese summary
     /// looks identical whether the host chose it for the room or one reader asked to see it.
     /// </summary>
-    private async Task QueueSummaryAsync(
+    /// <summary>
+    /// Queue one summary request and return the id it went out under.
+    ///
+    /// WT-669: the id used to be generated into the dictionary and forgotten on the same line.
+    /// It is the only handle anybody has on a request once it is asynchronous — the worker
+    /// echoes it back on the result, so it is what lets an outcome find its way to the person
+    /// who asked rather than to a log.
+    /// </summary>
+    private async Task<string> QueueSummaryAsync(
         TranslationRoom room,
         string templateKey,
         string language,
         string? bearerToken,
-        string delivery)
+        string delivery,
+        // Supplied when the caller has already claimed the run under this id and needs the queued
+        // job to carry the SAME one — a claim filed under a different id than the job it is
+        // holding the place for could never be asked about. Minted here otherwise.
+        string? requestId = null)
     {
         var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+        requestId ??= Guid.NewGuid().ToString();
 
         await _redisStateRepo.StreamAddAsync(SummaryRequestStream, new Dictionary<string, string>
         {
-            ["request_id"] = Guid.NewGuid().ToString(),
+            ["request_id"] = requestId,
             ["room_id"] = room.Id.ToString(),
             ["workspace_id"] = room.WorkspaceId.ToString(),
             ["template_key"] = templateKey,
@@ -345,6 +493,8 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             ["delivery"] = delivery,
             ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
         });
+
+        return requestId;
     }
 
     private static string NormalizeTemplateKey(string? templateKey) =>
