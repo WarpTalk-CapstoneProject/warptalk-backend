@@ -6,6 +6,7 @@ using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
+using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
@@ -236,5 +237,54 @@ public class RoomOccupancyCountTests : IAsyncLifetime
         detail.IsSuccess.Should().BeTrue(detail.Error);
         detail.Value!.ParticipantCount.Should().Be(3);
         detail.Value!.ParticipantCount.Should().Be(listed.ParticipantCount);
+    }
+
+    /// <summary>
+    /// The reapers' question, asked in SQL: an EXTERNAL_BRIDGE room whose host has gone holds one
+    /// seat — the far-side stand-in, CONNECTED from creation until End — and nobody in it.
+    ///
+    /// Run against Postgres because the rule is a nullable-Guid comparison inside an EF predicate:
+    /// translated with SQL's three-valued `user_id &lt;&gt; @standIn`, a guest row with no user id
+    /// would silently stop counting as a person, and a mock cannot see that.
+    /// </summary>
+    [Fact]
+    public async Task PeopleCount_LeavesOutTheBridgeStandIn_AndKeepsGuests()
+    {
+        var bridge = await SeedRoomAsync(TranslationRoomParticipantStatuses.Left);
+        _dbContext.Set<TranslationRoomParticipant>().Add(
+            TranslationRoomMapper.BuildExternalBridgeParticipant(bridge.Id, "vi", new List<string> { "en" }));
+
+        var native = await SeedRoomAsync(TranslationRoomParticipantStatuses.Connected);
+        var now = DateTime.UtcNow;
+        _dbContext.Set<TranslationRoomParticipant>().Add(new TranslationRoomParticipant
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = native.Id,
+            UserId = null,
+            DisplayName = "Guest",
+            Role = "PARTICIPANT",
+            ListenLanguage = "en",
+            SpeakLanguage = "vi",
+            Status = TranslationRoomParticipantStatuses.Connected,
+            ConnectionType = "WEBRTC",
+            IsTranslationAudioEnabled = true,
+            IsUsingVoiceClone = false,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var repository = new TranslationRoomParticipantRepository(_dbContext);
+        var roomIds = new List<Guid> { bridge.Id, native.Id };
+
+        var people = await repository.CountPeopleInRoomsAsync(roomIds);
+        var seats = await repository.CountSeatHoldingParticipantsByRoomsAsync(roomIds);
+
+        people.GetValueOrDefault(bridge.Id).Should().Be(0, "the stand-in is not a person, and the host left");
+        people.GetValueOrDefault(native.Id).Should().Be(2, "a guest with no user id is still somebody in the room");
+
+        // Capacity and the audio mesh still see the stand-in's seat — only "is anyone here" changed.
+        seats.GetValueOrDefault(bridge.Id).Should().Be(1);
     }
 }

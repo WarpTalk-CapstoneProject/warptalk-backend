@@ -53,20 +53,33 @@ public static class AbandonedRoomPolicy
     /// </summary>
     public static readonly TimeSpan GracePeriod = TimeSpan.FromMinutes(20);
 
-    /// <param name="seatHolders">Participants currently holding a seat in the room.</param>
+    /// <param name="peopleInRoom">
+    /// Real people currently in the room — <c>RoomPresence.IsPersonInRoom</c>, which is seat
+    /// holders minus an EXTERNAL_BRIDGE room's far-side stand-in.
+    /// </param>
     /// <param name="emptySince">
     /// When a previous sweep first saw this room empty, or null if none has. Cleared by the
     /// caller as soon as anybody is present, so a room that refills starts its grace over.
     /// </param>
-    public static AbandonedRoomAction Decide(int seatHolders, DateTime? emptySince, DateTime now)
+    public static AbandonedRoomAction Decide(int peopleInRoom, DateTime? emptySince, DateTime now) =>
+        Decide(peopleInRoom, emptySince, now, GracePeriod);
+
+    /// <summary>
+    /// The same two-observation rule with a caller-chosen grace. IdleRoomMonitoringWorker uses it
+    /// with its own, shorter timeout: it used to anchor that timeout to the participants' last
+    /// LeftAt, falling back to JoinedAt, and a dropped socket writes no LeftAt — so a sole
+    /// participant who had been in a meeting for an hour and lost wifi for one second was "idle
+    /// since they joined" and ended on the next tick.
+    /// </summary>
+    public static AbandonedRoomAction Decide(int peopleInRoom, DateTime? emptySince, DateTime now, TimeSpan grace)
     {
-        if (seatHolders > 0) return AbandonedRoomAction.Leave;
+        if (peopleInRoom > 0) return AbandonedRoomAction.Leave;
 
         if (emptySince is null) return AbandonedRoomAction.StartGrace;
 
         // Strictly greater: a room observed empty exactly one grace period ago has not yet been
         // empty FOR longer than the grace, and the next sweep is seconds away.
-        return now - emptySince.Value > GracePeriod
+        return now - emptySince.Value > grace
             ? AbandonedRoomAction.End
             : AbandonedRoomAction.Leave;
     }

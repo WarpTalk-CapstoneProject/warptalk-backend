@@ -11,6 +11,7 @@ public static class RealtimeConstants
         public const string DocumentsEvents = "warptalk:documents:events";
         public const string TranslationRoomCommands = "warptalk:translation-room:commands";
         public const string ParticipantOffline = "translationRoom:participant-offline";
+        public const string ParticipantOnline = "translationRoom:participant-online";
     }
 
     public static class ClientMethods

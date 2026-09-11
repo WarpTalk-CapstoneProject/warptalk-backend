@@ -9,6 +9,11 @@ using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
 
+/// <summary>
+/// Keeps the participant row in step with the hub socket: participant-offline marks a dropped
+/// socket DISCONNECTED, participant-online restores it when the socket comes back. Both are
+/// published by the Gateway's TranslationRoomHub.
+/// </summary>
 public class ParticipantOfflineConsumerWorker : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
@@ -26,6 +31,7 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
     }
 
     private const string ParticipantOfflineChannel = "translationRoom:participant-offline";
+    private const string ParticipantOnlineChannel = "translationRoom:participant-online";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -44,7 +50,16 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
                     RedisChannel.Literal(ParticipantOfflineChannel),
                     async (channel, message) => await HandleParticipantOfflineAsync(message, stoppingToken));
 
-                _logger.LogInformation("ParticipantOfflineConsumerWorker started subscribing to '{Channel}'.", ParticipantOfflineChannel);
+                // WT-354 promised that a dropped socket "stays reversible when they reconnect";
+                // this is the reversal. See MarkParticipantReconnectedAsync.
+                await subscriber.SubscribeAsync(
+                    RedisChannel.Literal(ParticipantOnlineChannel),
+                    async (channel, message) => await HandleParticipantOnlineAsync(message, stoppingToken));
+
+                _logger.LogInformation(
+                    "ParticipantOfflineConsumerWorker started subscribing to '{OfflineChannel}' and '{OnlineChannel}'.",
+                    ParticipantOfflineChannel,
+                    ParticipantOnlineChannel);
                 break;
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
@@ -63,15 +78,7 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
     {
         try
         {
-            var payload = message.ToString();
-            if (string.IsNullOrEmpty(payload)) return;
-
-            var parts = payload.Split(':');
-            if (parts.Length != 2 || !Guid.TryParse(parts[0], out var roomId) || !Guid.TryParse(parts[1], out var userId))
-            {
-                _logger.LogWarning("Invalid participant-offline payload: {Payload}", payload);
-                return;
-            }
+            if (!TryParse(message, "participant-offline", out var roomId, out var userId)) return;
 
             _logger.LogInformation("Processing offline event for Room: {RoomId}, User: {UserId}", roomId, userId);
 
@@ -93,5 +100,44 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
         {
             _logger.LogError(ex, "Error processing participant-offline message");
         }
+    }
+
+    private async Task HandleParticipantOnlineAsync(RedisValue message, CancellationToken stoppingToken)
+    {
+        try
+        {
+            if (!TryParse(message, "participant-online", out var roomId, out var userId)) return;
+
+            using var scope = _serviceProvider.CreateScope();
+            var participantService = scope.ServiceProvider.GetRequiredService<ITranslationRoomParticipantService>();
+
+            var result = await participantService.MarkParticipantReconnectedAsync(roomId, userId, stoppingToken);
+            if (!result.IsSuccess)
+            {
+                _logger.LogWarning("Failed to mark {UserId} reconnected in {RoomId}: {Error}", userId, roomId, result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing participant-online message");
+        }
+    }
+
+    private bool TryParse(RedisValue message, string channelName, out Guid roomId, out Guid userId)
+    {
+        roomId = Guid.Empty;
+        userId = Guid.Empty;
+
+        var payload = message.ToString();
+        if (string.IsNullOrEmpty(payload)) return false;
+
+        var parts = payload.Split(':');
+        if (parts.Length != 2 || !Guid.TryParse(parts[0], out roomId) || !Guid.TryParse(parts[1], out userId))
+        {
+            _logger.LogWarning("Invalid {Channel} payload: {Payload}", channelName, payload);
+            return false;
+        }
+
+        return true;
     }
 }

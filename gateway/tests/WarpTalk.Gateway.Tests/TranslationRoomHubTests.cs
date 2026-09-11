@@ -574,6 +574,30 @@ public class TranslationRoomHubTests
             Times.Once);
     }
 
+    /// <summary>
+    /// The other half of participant-offline. SignalR's automatic reconnect re-enters through
+    /// JoinTranslationRoom, and until this was published nothing turned the DISCONNECTED row the
+    /// drop left behind back into CONNECTED — so the idle reaper ended a sole participant's meeting
+    /// five minutes after any network blip, while they were still in it.
+    /// </summary>
+    [Fact]
+    public async Task JoinTranslationRoom_ShouldPublishParticipantOnline_SoAReconnectIsRecorded()
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub();
+        var userId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(userId.ToString(), $"translation-{Guid.NewGuid()}");
+
+        await hub.JoinTranslationRoom(roomId, "User", "en", "vi");
+
+        dbMock.Verify(
+            db => db.PublishAsync(
+                RedisChannel.Literal("translationRoom:participant-online"),
+                $"{roomId}:{userId}",
+                CommandFlags.None),
+            Times.Once);
+    }
+
     /// <param name="hostAuthority">
     /// Defaults to "yes, you are the host". Every pre-existing test in this file exercises a
     /// non-host-only method (join, language, hand, reaction), so the permissive default keeps their

@@ -25,7 +25,7 @@ public class AbandonedRoomPolicyTests
     public void ARoomWithSomebodyInItIsLeftAlone()
     {
         AbandonedRoomPolicy
-            .Decide(seatHolders: 1, emptySince: Now.AddDays(-3), now: Now)
+            .Decide(peopleInRoom: 1, emptySince: Now.AddDays(-3), now: Now)
             .Should()
             .Be(AbandonedRoomAction.Leave);
     }
@@ -36,7 +36,7 @@ public class AbandonedRoomPolicyTests
         // The caller clears the timestamp on this branch. Without that, a room empty overnight,
         // rejoined at 9am, would be ended on the first sweep after the meeting started.
         AbandonedRoomPolicy
-            .Decide(seatHolders: 4, emptySince: Now.AddHours(-9), now: Now)
+            .Decide(peopleInRoom: 4, emptySince: Now.AddHours(-9), now: Now)
             .Should()
             .Be(AbandonedRoomAction.Leave);
     }
@@ -47,7 +47,7 @@ public class AbandonedRoomPolicyTests
         // One observation is never enough. A database blip or a roster mid-write reads as zero,
         // and ending a live meeting on a single bad count is the failure this ordering prevents.
         AbandonedRoomPolicy
-            .Decide(seatHolders: 0, emptySince: null, now: Now)
+            .Decide(peopleInRoom: 0, emptySince: null, now: Now)
             .Should()
             .Be(AbandonedRoomAction.StartGrace);
     }
@@ -57,7 +57,7 @@ public class AbandonedRoomPolicyTests
     {
         // Somebody dropped off wifi. They get the whole grace period to come back.
         AbandonedRoomPolicy
-            .Decide(seatHolders: 0, emptySince: Now.AddSeconds(-30), now: Now)
+            .Decide(peopleInRoom: 0, emptySince: Now.AddSeconds(-30), now: Now)
             .Should()
             .Be(AbandonedRoomAction.Leave);
     }
@@ -68,7 +68,7 @@ public class AbandonedRoomPolicyTests
         // Opening the room early and waiting is ordinary. At exactly the grace period it has not
         // been empty FOR longer than the grace, and the next sweep is minutes away.
         AbandonedRoomPolicy
-            .Decide(seatHolders: 0, emptySince: Now - AbandonedRoomPolicy.GracePeriod, now: Now)
+            .Decide(peopleInRoom: 0, emptySince: Now - AbandonedRoomPolicy.GracePeriod, now: Now)
             .Should()
             .Be(AbandonedRoomAction.Leave);
     }
@@ -78,7 +78,7 @@ public class AbandonedRoomPolicyTests
     {
         AbandonedRoomPolicy
             .Decide(
-                seatHolders: 0,
+                peopleInRoom: 0,
                 emptySince: Now - AbandonedRoomPolicy.GracePeriod - TimeSpan.FromSeconds(1),
                 now: Now)
             .Should()
@@ -90,7 +90,7 @@ public class AbandonedRoomPolicyTests
     {
         // The actual report: meetings started on 9 August still showing LIVE NOW on the 13th.
         AbandonedRoomPolicy
-            .Decide(seatHolders: 0, emptySince: Now.AddDays(-4), now: Now)
+            .Decide(peopleInRoom: 0, emptySince: Now.AddDays(-4), now: Now)
             .Should()
             .Be(AbandonedRoomAction.End);
     }
