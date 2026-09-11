@@ -63,11 +63,30 @@ public interface ITranslationRoomArtifactService
         Guid userId,
         CancellationToken ct = default);
 
-    Task<Result> RegenerateSummaryAsync(
+    /// <summary>
+    /// Queue a rewrite, and hand back the id it was queued under.
+    ///
+    /// The id is not decoration: it is how the requester finds out what happened. A rewrite is
+    /// answered asynchronously and its failures used to reach a log and stop, so the caller is
+    /// given something to ask about — see <see cref="GetSummaryRewriteStatusAsync"/>.
+    /// </summary>
+    Task<Result<string>> RegenerateSummaryAsync(
         Guid roomId,
         Guid userId,
         string templateKey,
         string? summaryLanguage,
         string? bearerToken,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// What became of one queued rewrite.
+    ///
+    /// Behind the same access gate as reading the room's artifacts, and for the same reason: the
+    /// failure text quotes what the worker found in this meeting's transcript.
+    /// </summary>
+    Task<Result<SummaryRewriteStatusDto>> GetSummaryRewriteStatusAsync(
+        Guid roomId,
+        Guid userId,
+        string requestId,
         CancellationToken ct = default);
 }

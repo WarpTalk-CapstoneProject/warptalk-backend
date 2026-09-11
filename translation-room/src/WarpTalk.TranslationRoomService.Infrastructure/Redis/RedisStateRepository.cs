@@ -89,6 +89,13 @@ public class RedisStateRepository : IRedisStateRepository
         return await GetDb().StringSetAsync(key, value, expiry.HasValue ? expiry.Value : default);
     }
 
+    public async Task<bool> StringSetIfAbsentAsync(string key, string value, TimeSpan expiry)
+    {
+        // `When.NotExists` is SET NX: the check and the write are one round trip and one decision,
+        // which is what a get-then-set cannot be.
+        return await GetDb().StringSetAsync(key, value, expiry, When.NotExists);
+    }
+
     public async Task<string?> StringGetAsync(string key)
     {
         var val = await GetDb().StringGetAsync(key);

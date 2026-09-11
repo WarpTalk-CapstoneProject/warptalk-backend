@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging.Abstractions;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
@@ -297,6 +297,112 @@ public sealed class SummaryLanguageVariantTests
         return room;
     }
 
+    /// <summary>
+    /// THE POLL THAT PAID FOR THE SAME PARAGRAPH TWENTY TIMES.
+    ///
+    /// Reading a meeting in another language is a GET that queues work, and the client polls that
+    /// GET every four seconds for up to ninety while it waits. Nothing held the place, so every
+    /// poll found no cached rendering and queued the whole job again. The log line has claimed
+    /// "for the first reader who asked" since the day it was written; it simply was not true.
+    /// </summary>
+    [Fact]
+    public async Task ASecondPollDoesNotQueueTheSameRenderingAgain()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var redis = new Mock<IRedisStateRepository>();
+        // AFTER CreateService, deliberately: it registers its own empty-Redis default for this
+        // method, and in Moq the later Setup wins — configuring first would lose the callback.
+        var service = CreateService(room, redis, variant: null);
+        string? claimed = null;
+        redis
+            .Setup(item => item.StringSetIfAbsentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()))
+            .Callback((string _, string value, TimeSpan _) => claimed = value)
+            .ReturnsAsync(true);
+        // The claim the first call left behind, answered from the second call onwards.
+        redis
+            .Setup(item => item.StringGetAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))))
+            .ReturnsAsync(() => claimed);
+
+        var first = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+        var second = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+
+        Assert.Equal(SummaryVariantStatus.Generating, first.Value!.Status);
+        Assert.Equal(SummaryVariantStatus.Generating, second.Value!.Status);
+        redis.Verify(
+            item => item.StreamAddAsync(
+                TranslationRoomConstants.SummaryRequestStream,
+                It.IsAny<Dictionary<string, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// The job is queued under the SAME id the claim holds, or the claim could never be asked
+    /// about — which is the only reason it stores an id rather than a flag.
+    /// </summary>
+    [Fact]
+    public async Task TheQueuedJobCarriesTheIdTheClaimIsHeldUnder()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var redis = new Mock<IRedisStateRepository>();
+        // See the note above: CreateService registers a default for StringSetIfAbsentAsync, so
+        // this has to come after it or the callback is overwritten.
+        var service = CreateService(room, redis, variant: null);
+        string? claimed = null;
+        Dictionary<string, string>? queued = null;
+        redis
+            .Setup(item => item.StringSetIfAbsentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()))
+            .Callback((string _, string value, TimeSpan _) => claimed = value)
+            .ReturnsAsync(true);
+        redis
+            .Setup(item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
+            .Callback((string _, Dictionary<string, string> fields) => queued = fields)
+            .ReturnsAsync("1-0");
+        await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+
+        Assert.NotNull(claimed);
+        Assert.Equal(claimed, queued!["request_id"]);
+    }
+
+    /// <summary>
+    /// A rendering that failed says so, in the worker's own words.
+    ///
+    /// SummaryVariantStatus had no `failed` at all, and the absence WAS the bug: the endpoint
+    /// could only keep answering "generating" until the client gave up after ninety seconds and
+    /// said something had not arrived.
+    /// </summary>
+    [Fact]
+    public async Task AFailedRenderingReportsTheReasonInsteadOfGeneratingForever()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var requestId = Guid.NewGuid().ToString();
+        var redis = new Mock<IRedisStateRepository>();
+        redis
+            .Setup(item => item.StringGetAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))))
+            .ReturnsAsync(requestId);
+        redis
+            .Setup(item => item.StringGetAsync(
+                TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + requestId))
+            .ReturnsAsync("{\"Status\":\"failed\",\"Error\":\"Could not read the transcript.\"}");
+
+        var service = CreateService(room, redis, variant: null);
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+
+        Assert.Equal(SummaryVariantStatus.Failed, result.Value!.Status);
+        Assert.Equal("Could not read the transcript.", result.Value.Error);
+        // Released, so asking again starts a new run rather than replaying this answer forever.
+        redis.Verify(
+            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
+            Times.Once);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
     private static TranslationRoomArtifactService CreateService(
         TranslationRoom room,
         Mock<IRedisStateRepository> redis,
@@ -309,6 +415,17 @@ public sealed class SummaryLanguageVariantTests
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
+
+        // An empty Redis, which is what SET NX answers on a key nobody holds. Moq's default for a
+        // bool is `false` — the answer Redis gives when somebody ELSE is already writing this
+        // rendering — so leaving it unset would make every test here silently exercise the
+        // "somebody beat us to it" branch and never queue anything. A test whose fake disagrees
+        // with the real thing about a default is a test that passes for the wrong reason.
+        // Individual tests override this to claim the key is taken.
+        redis
+            .Setup(item => item.StringSetIfAbsentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()))
+            .ReturnsAsync(true);
 
         // Keyed exactly as the database would key it, rather than answering any lookup with the
         // same row. That is what makes ALocaleTagFindsTheCacheItsBareCodeWrote a real test: the
