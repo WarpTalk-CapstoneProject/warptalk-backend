@@ -27,6 +27,21 @@ public partial class WorkspaceDocument
 
     public string StorageKey { get; set; } = null!;
 
+    /// <summary>
+    /// Lowercase hex SHA-256 of the file's PLAINTEXT bytes, or null for rows uploaded before
+    /// WT-666.
+    /// </summary>
+    /// <remarks>
+    /// The identity the duplicate check compares on. It cannot be derived from what is already
+    /// stored: the blob is AES-CBC with a per-save random IV, so the same file encrypted twice is
+    /// two different byte strings on disk.
+    ///
+    /// Nullable and never backfilled. Filling it would mean decrypting every existing document,
+    /// and a document whose hash we do not know must not be silently treated as a duplicate of
+    /// anything — so old rows simply never match.
+    /// </remarks>
+    public string? ContentHash { get; set; }
+
     public string SourceType { get; set; } = null!;
 
     public Guid? SourceId { get; set; }

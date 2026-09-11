@@ -13,6 +13,7 @@ using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Evaluators;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Application.Mappers;
 using WarpTalk.WorkspaceService.Application.Services;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
@@ -104,6 +105,47 @@ public class WorkspaceDocumentServiceTests
             .Returns(new Role { Id = roleId, Name = roleName });
     }
 
+    /// <summary>
+    /// An upload whose BYTES match the extension in its name.
+    /// </summary>
+    /// <remarks>
+    /// WT-666 made the payload's own header part of validation, so a test file called "file.pdf"
+    /// containing the words "test content" is now correctly refused. These tests are about status,
+    /// events and permissions, not about the signature check — they need a file that gets past it,
+    /// and every one of them used to hand over whatever string was convenient.
+    ///
+    /// A FRESH stream per call. <c>OpenReadStream</c> is invoked once per upload, but a single
+    /// MemoryStream shared across a test that uploads twice would be read to its end the first
+    /// time and look like an empty file the second.
+    /// </remarks>
+    private static IFormFile StubFile(string fileName, byte[]? content = null)
+    {
+        var bytes = content ?? SampleBytesFor(fileName);
+        var file = Substitute.For<IFormFile>();
+        file.FileName.Returns(fileName);
+        file.Length.Returns(bytes.LongLength);
+        file.OpenReadStream().Returns(_ => new MemoryStream(bytes, writable: false));
+        return file;
+    }
+
+    /// <summary>A minimal but genuine header for each accepted format.</summary>
+    private static byte[] SampleBytesFor(string fileName)
+    {
+        var extension = Path.GetExtension(fileName).ToLowerInvariant();
+        return extension switch
+        {
+            ".pdf" => Encoding.ASCII.GetBytes("%PDF-1.7\n1 0 obj\n"),
+            ".docx" or ".xlsx" => [0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00],
+            ".png" => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D],
+            ".jpg" or ".jpeg" => [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10],
+            ".gif" => [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00],
+            ".bmp" => [0x42, 0x4D, 0x36, 0x00, 0x00, 0x00],
+            ".webp" => [0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50],
+            ".md" => Encoding.UTF8.GetBytes("# Title\n\nSome text.\n"),
+            _ => Encoding.UTF8.GetBytes("arbitrary bytes")
+        };
+    }
+
     [Fact]
     public async Task UploadDocumentAsync_ShouldSetPendingApproval_WhenUserIsMember()
     {
@@ -118,10 +160,7 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(memberRoleId, "Member");
 
-        var mockFile = Substitute.For<IFormFile>();
-        mockFile.FileName.Returns("file.pdf");
-        mockFile.Length.Returns(1024);
-        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
+        var mockFile = StubFile("file.pdf");
         var request = new UploadDocumentApiRequest("Doc1", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         // Act
@@ -130,8 +169,8 @@ public class WorkspaceDocumentServiceTests
         // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
-        Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), result.Value.Status);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), result.Value.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), result.Value.Document!.Status);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), result.Value.Document!.IngestionStatus);
 
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
@@ -153,10 +192,7 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(memberRoleId, "Member");
 
-        var mockFile = Substitute.For<IFormFile>();
-        mockFile.FileName.Returns("file.pdf");
-        mockFile.Length.Returns(1024);
-        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
+        var mockFile = StubFile("file.pdf");
         var request = new UploadDocumentApiRequest("Doc1", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         // The blob write to storage succeeds, but the DB save that should follow it fails —
@@ -186,10 +222,7 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(adminRoleId, "Admin");
 
-        var mockFile = Substitute.For<IFormFile>();
-        mockFile.FileName.Returns("file.pdf");
-        mockFile.Length.Returns(1024);
-        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
+        var mockFile = StubFile("file.pdf");
         var request = new UploadDocumentApiRequest("Doc1", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         // Act
@@ -198,8 +231,8 @@ public class WorkspaceDocumentServiceTests
         // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
-        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), result.Value.Status);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), result.Value.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), result.Value.Document!.Status);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), result.Value.Document!.IngestionStatus);
 
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
@@ -220,10 +253,7 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(memberRoleId, "Member");
 
-        var mockFile = Substitute.For<IFormFile>();
-        mockFile.FileName.Returns("payload.html");
-        mockFile.Length.Returns(1024);
-        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("<script>alert(1)</script>")));
+        var mockFile = StubFile("payload.html");
         var request = new UploadDocumentApiRequest("Payload", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
@@ -249,10 +279,7 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(memberRoleId, "Member");
 
-        var mockFile = Substitute.For<IFormFile>();
-        mockFile.FileName.Returns(fileName);
-        mockFile.Length.Returns(1024);
-        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("legacy")));
+        var mockFile = StubFile(fileName);
         var request = new UploadDocumentApiRequest("Legacy", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile);
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
@@ -275,18 +302,15 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(memberRoleId, "Member");
 
-        var mockFile = Substitute.For<IFormFile>();
-        mockFile.FileName.Returns("chart.png");
-        mockFile.Length.Returns(1024);
-        mockFile.OpenReadStream().Returns(new MemoryStream([0x89, 0x50, 0x4E, 0x47]));
+        var mockFile = StubFile("chart.png");
         var request = new UploadDocumentApiRequest("Chart", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, mockFile, IsAiAllowed: true);
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
 
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
-        Assert.False(result.Value.IsAiAllowed);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), result.Value.IngestionStatus);
+        Assert.False(result.Value.Document!.IsAiAllowed);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), result.Value.Document!.IngestionStatus);
         await _storage.Received(1).SaveDocumentContentAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>());
         await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(default, default, default!, default!, default!, default, default, default);
     }
@@ -357,7 +381,9 @@ public class WorkspaceDocumentServiceTests
         StubRoleName(adminRoleId, "Admin");
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
 
-        var request = new ApproveDocumentRequest(false);
+        // A reason, because WT-633 made one mandatory on this branch. The uploader is shown this
+        // sentence, and a rejection that does not carry one is the defect that ticket describes.
+        var request = new ApproveDocumentRequest(false, "Missing the signature page.");
 
         // Act
         var result = await _documentService.ApproveDocumentAsync(workspaceId, documentId, request, userId);
@@ -530,11 +556,7 @@ public class WorkspaceDocumentServiceTests
             .Returns(member);
         StubRoleName(roleId, "Owner");
 
-        var file = Substitute.For<IFormFile>();
-        file.FileName.Returns("policy.pdf");
-        file.Length.Returns(2048);
-        file.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("body")));
-        return (workspace, member, file);
+        return (workspace, member, StubFile("policy.pdf"));
     }
 
     [Theory]
@@ -1182,5 +1204,726 @@ public class WorkspaceDocumentServiceTests
         // The one Role rule that answers a question people actually ask: may ordinary members of
         // this workspace see this document. web#435 draws exactly this control.
         Assert.True(result.IsSuccess);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // WT-666 — upload validation, and the same file twice
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRefuse_ANameLongerThanTheColumn()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        var tooLong = new string('a', WorkspaceDocumentConstants.MaxDocumentNameLength + 1);
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest(tooLong, "upload", null, null, file), userId);
+
+        // A 400 naming the limit, not the 500 Postgres used to raise with the blob already written.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains(WorkspaceDocumentConstants.MaxDocumentNameLength.ToString(), result.Error);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+        await _workspaceDocumentRepository.DidNotReceiveWithAnyArgs().AddAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldStoreTheTrimmedName()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        WorkspaceDocument? stored = null;
+        await _workspaceDocumentRepository.AddAsync(
+            Arg.Do<WorkspaceDocument>(d => stored = d), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("   Quarterly plan   ", "upload", null, null, file), userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(stored);
+        Assert.Equal("Quarterly plan", stored!.Name);
+        Assert.Equal("Quarterly plan", result.Value!.Document!.Name);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRefuse_ABlankName()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("   ", "upload", null, null, file), userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("email_thread")]
+    [InlineData("meeting_summary")]
+    [InlineData("anything-at-all")]
+    public async Task UploadDocumentAsync_ShouldRefuse_ASourceTypeNothingReads(string sourceType)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Doc", sourceType, null, null, file), userId);
+
+        // `meeting_summary` and `email_thread` are in this list deliberately. They are KNOWLEDGE
+        // CHUNK source types — a different field in the vector payload — and WT-666 asked for them
+        // here by mistake. A document row carrying one would match no reader in this service.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+    }
+
+    [Theory]
+    [InlineData("upload")]
+    [InlineData("Upload")]
+    [InlineData("  MEETING  ")]
+    public async Task UploadDocumentAsync_ShouldAcceptAndCanonicalise_AKnownSourceType(string supplied)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        WorkspaceDocument? stored = null;
+        await _workspaceDocumentRepository.AddAsync(
+            Arg.Do<WorkspaceDocument>(d => stored = d), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Doc", supplied, null, null, file), userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(stored);
+        Assert.Equal(supplied.Trim().ToLowerInvariant(), stored!.SourceType);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRefuse_AnExecutableWearingAPdfName()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        // MZ — a Windows PE header. The old check read the file NAME and nothing else, so this was
+        // encrypted, stored, and handed to the extractor.
+        var disguised = StubFile("invoice.pdf", [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00]);
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Invoice", "upload", null, null, disguised), userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+        await _workspaceDocumentRepository.DidNotReceiveWithAnyArgs().AddAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRefuse_AnEmptyFile()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId,
+            new UploadDocumentApiRequest("Nothing", "upload", null, null, StubFile("empty.pdf", [])),
+            userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRecordTheContentHash()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        WorkspaceDocument? stored = null;
+        await _workspaceDocumentRepository.AddAsync(
+            Arg.Do<WorkspaceDocument>(d => stored = d), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Policy", "upload", null, null, file), userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(stored);
+        Assert.Equal(DocumentContentHelper.ComputeSha256(SampleBytesFor("policy.pdf")), stored!.ContentHash);
+    }
+
+    /// <summary>Puts a document with the same bytes already in the workspace.</summary>
+    private WorkspaceDocument ArrangeExistingDuplicate(Guid workspaceId, Guid documentId, string fileName, bool callerMayView)
+    {
+        var existing = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            Name = "The original",
+            FileName = fileName,
+            FileExtension = Path.GetExtension(fileName),
+            StorageKey = $"documents/{workspaceId}/{documentId}{Path.GetExtension(fileName)}",
+            SizeBytes = SampleBytesFor(fileName).LongLength,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+            ContentHash = DocumentContentHelper.ComputeSha256(SampleBytesFor(fileName)),
+            CreatedAt = new DateTime(2026, 8, 12, 9, 0, 0, DateTimeKind.Utc),
+        };
+
+        _workspaceDocumentRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceDocument, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(existing);
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(existing);
+        _accessEvaluator.EvaluateAccessAsync(
+                Arg.Any<Guid>(), workspaceId, documentId, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(callerMayView ? Result.Success() : Result.Failure("Access denied."));
+        return existing;
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldAskRatherThanStoreASecondCopy_WhenTheBytesAreAlreadyHere()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var existingId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+        ArrangeExistingDuplicate(workspaceId, existingId, "policy.pdf", callerMayView: true);
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Policy again", "upload", null, null, file), userId);
+
+        // A SUCCESSFUL result carrying the `duplicate` outcome — Result has no payload on its
+        // failure side, and the answer is useless without saying which document it collided with.
+        Assert.True(result.IsSuccess);
+        Assert.Equal(UploadDocumentOutcomeDto.Duplicate, result.Value!.Outcome);
+        Assert.Equal(existingId, result.Value.ExistingDocument!.DocumentId);
+        Assert.Equal("The original", result.Value.ExistingDocument.Name);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+        await _workspaceDocumentRepository.DidNotReceiveWithAnyArgs().AddAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldNotNameTheDuplicate_WhenTheCallerCannotOpenIt()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+        ArrangeExistingDuplicate(workspaceId, Guid.NewGuid(), "policy.pdf", callerMayView: false);
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId, new UploadDocumentApiRequest("Policy again", "upload", null, null, file), userId);
+
+        // A collision must not become a way to learn that a document one cannot open exists. The
+        // upload is still refused — the bytes really are already here — but nothing is disclosed.
+        Assert.True(result.IsSuccess);
+        Assert.Equal(UploadDocumentOutcomeDto.Duplicate, result.Value!.Outcome);
+        Assert.Null(result.Value.ExistingDocument);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldStoreASecondCopy_WhenTheCallerAsksForOne()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+        ArrangeExistingDuplicate(workspaceId, Guid.NewGuid(), "policy.pdf", callerMayView: true);
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId,
+            new UploadDocumentApiRequest("Policy again", "upload", null, null, file,
+                DuplicateStrategy: WorkspaceDocumentConstants.DuplicateStrategies.CreateNew),
+            userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(UploadDocumentOutcomeDto.Created, result.Value!.Outcome);
+        await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldReturnTheExistingDocument_WhenTheCallerAsksToSkip()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var existingId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+        ArrangeExistingDuplicate(workspaceId, existingId, "policy.pdf", callerMayView: true);
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId,
+            new UploadDocumentApiRequest("Policy again", "upload", null, null, file,
+                DuplicateStrategy: WorkspaceDocumentConstants.DuplicateStrategies.Skip),
+            userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(UploadDocumentOutcomeDto.Skipped, result.Value!.Outcome);
+        Assert.Equal(existingId, result.Value.Document!.Id);
+        await _workspaceDocumentRepository.DidNotReceiveWithAnyArgs().AddAsync(default!, default);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRefuse_ADuplicateStrategyThatDoesNotExist()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId,
+            new UploadDocumentApiRequest("Doc", "upload", null, null, file, DuplicateStrategy: "overwrite"),
+            userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // WT-666 — the signature table itself
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(".pdf", new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D }, true)]
+    [InlineData(".pdf", new byte[] { 0x50, 0x4B, 0x03, 0x04 }, false)]
+    [InlineData(".docx", new byte[] { 0x50, 0x4B, 0x03, 0x04 }, true)]
+    [InlineData(".xlsx", new byte[] { 0x50, 0x4B, 0x05, 0x06 }, true)]
+    [InlineData(".docx", new byte[] { 0x25, 0x50, 0x44, 0x46 }, false)]
+    [InlineData(".png", new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, true)]
+    [InlineData(".png", new byte[] { 0x89, 0x50, 0x4E, 0x47 }, false)]
+    [InlineData(".jpg", new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }, true)]
+    [InlineData(".gif", new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61 }, true)]
+    [InlineData(".bmp", new byte[] { 0x42, 0x4D, 0x36 }, true)]
+    [InlineData(".webp", new byte[] { 0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50 }, true)]
+    [InlineData(".webp", new byte[] { 0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x41, 0x56, 0x49, 0x20 }, false)]
+    public void MatchesExtensionSignature_ShouldReadTheBytes_NotTheName(string extension, byte[] header, bool expected)
+    {
+        Assert.Equal(expected, DocumentContentHelper.MatchesExtensionSignature(header, extension));
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0x4D, 0x5A })]                          // Windows PE
+    [InlineData(new byte[] { 0x7F, 0x45, 0x4C, 0x46 })]              // ELF
+    [InlineData(new byte[] { 0x23, 0x21, 0x2F, 0x62, 0x69, 0x6E })]  // #!/bin
+    [InlineData(new byte[] { 0x50, 0x4B, 0x03, 0x04 })]              // a ZIP called .md
+    [InlineData(new byte[] { 0x48, 0x69, 0x00, 0x21 })]              // text with an embedded NUL
+    public void MatchesExtensionSignature_ShouldRefuse_ABinaryWearingAMarkdownName(byte[] header)
+    {
+        // Markdown is the one accepted format with no header of its own, so it is the one place a
+        // positive signature test cannot be applied. The test there is that it is not something
+        // else.
+        Assert.False(DocumentContentHelper.MatchesExtensionSignature(header, ".md"));
+    }
+
+    [Fact]
+    public void MatchesExtensionSignature_ShouldAccept_RealMarkdown()
+    {
+        Assert.True(DocumentContentHelper.MatchesExtensionSignature(
+            Encoding.UTF8.GetBytes("# Sổ tay nhân viên\n\nĐiều 1.\n"), ".md"));
+    }
+
+    [Fact]
+    public void MatchesExtensionSignature_ShouldFailClosed_ForAnExtensionItDoesNotKnow()
+    {
+        // Adding a format to SupportedUploadExtensions without adding its signature here must not
+        // silently reopen the hole this table exists to close.
+        Assert.False(DocumentContentHelper.MatchesExtensionSignature("anything"u8, ".svg"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // WT-633 — rejection reasons, feedback history and the revision upload
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>A pending document an Owner may decide about.</summary>
+    private WorkspaceDocument ArrangeReviewableDocument(Guid workspaceId, Guid documentId, Guid reviewerId, Guid uploaderId)
+    {
+        var roleId = Guid.NewGuid();
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = reviewerId, RoleId = roleId };
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(roleId, "Owner");
+
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            UploadedBy = uploaderId,
+            OwnerId = uploaderId,
+            Name = "Quarterly plan",
+            FileName = "plan.pdf",
+            FileExtension = ".pdf",
+            StorageKey = $"documents/{workspaceId}/{documentId}.pdf",
+            Status = WorkspaceDocumentStatus.pending_approval.ToString(),
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+            IsAiAllowed = true,
+        };
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        return document;
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_ShouldRefuseARejection_WithNoReason()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+        var document = ArrangeReviewableDocument(workspaceId, documentId, reviewerId, Guid.NewGuid());
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId, new ApproveDocumentRequest(false), reviewerId);
+
+        // The uploader is going to be shown this sentence. A rejection that does not have one is
+        // exactly the state WT-633 reported.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), document.Status);
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_ShouldWriteTheReasonOntoTheAuditRow_WhenRejecting()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+        var document = ArrangeReviewableDocument(workspaceId, documentId, reviewerId, Guid.NewGuid());
+
+        WorkspaceDocumentAudit? audit = null;
+        await _workspaceDocumentAuditRepository.AddAsync(
+            Arg.Do<WorkspaceDocumentAudit>(a => audit = a), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId,
+            new ApproveDocumentRequest(false, "  Missing the signature page.  "),
+            reviewerId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.rejected.ToString(), document.Status);
+        Assert.NotNull(audit);
+        Assert.Equal(WorkspaceDocumentConstants.AuditActions.RejectDocument, audit!.Action);
+        // Read back through the same reader the history route uses, so a change to either the
+        // property name or the reader breaks here rather than in production.
+        Assert.Equal("Missing the signature page.", WorkspaceDocumentMapper.ReadAuditReason(audit.Metadata));
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_ShouldNotRequireAReason_WhenApproving()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+        var document = ArrangeReviewableDocument(workspaceId, documentId, reviewerId, Guid.NewGuid());
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId, new ApproveDocumentRequest(true), reviewerId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
+    }
+
+    [Fact]
+    public async Task GetDocumentByIdAsync_ShouldCarryTheRejectionReason()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            UploadedBy = userId,
+            Name = "Quarterly plan",
+            FileName = "plan.pdf",
+            FileExtension = ".pdf",
+            Status = WorkspaceDocumentStatus.rejected.ToString(),
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+        };
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        _workspaceDocumentAuditRepository.GetLatestActionAsync(
+                documentId, WorkspaceDocumentConstants.AuditActions.RejectDocument, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceDocumentAudit
+            {
+                Id = Guid.NewGuid(),
+                DocumentId = documentId,
+                WorkspaceId = workspaceId,
+                Action = WorkspaceDocumentConstants.AuditActions.RejectDocument,
+                Metadata = "{\"reason\":\"Missing the signature page.\"}",
+            });
+
+        var result = await _documentService.GetDocumentByIdAsync(workspaceId, documentId, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Missing the signature page.", result.Value!.RejectionReason);
+    }
+
+    /// <summary>A rejected document, and the member who uploaded it.</summary>
+    private WorkspaceDocument ArrangeRejectedDocument(Guid workspaceId, Guid documentId, Guid uploaderId, string role = "Member")
+    {
+        var roleId = Guid.NewGuid();
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = uploaderId, RoleId = roleId });
+        StubRoleName(roleId, role);
+
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            UploadedBy = uploaderId,
+            OwnerId = uploaderId,
+            Name = "Quarterly plan",
+            FileName = "plan.pdf",
+            FileExtension = ".pdf",
+            MimeType = "application/pdf",
+            StorageKey = $"documents/{workspaceId}/{documentId}.pdf",
+            Status = WorkspaceDocumentStatus.rejected.ToString(),
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+            IsAiAllowed = true,
+        };
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceDocumentAuditRepository.GetLatestActionAsync(
+                documentId, WorkspaceDocumentConstants.AuditActions.RejectDocument, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceDocumentAudit
+            {
+                Id = Guid.NewGuid(),
+                DocumentId = documentId,
+                WorkspaceId = workspaceId,
+                Action = WorkspaceDocumentConstants.AuditActions.RejectDocument,
+                Metadata = "{\"reason\":\"Missing the signature page.\"}",
+            });
+        return document;
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_ShouldKeepTheIdAndReturnItToReview()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        var document = ArrangeRejectedDocument(workspaceId, documentId, uploaderId);
+        var originalKey = document.StorageKey;
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId,
+            new ReuploadDocumentApiRequest(StubFile("plan-v2.pdf"), Note: "Added the signature page."),
+            uploaderId);
+
+        Assert.True(result.IsSuccess);
+        // The id is the whole point: delete-and-reupload was the workaround, and it destroyed the
+        // approval trail.
+        Assert.Equal(documentId, result.Value!.Id);
+        Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), document.Status);
+        Assert.Equal("plan-v2.pdf", document.FileName);
+        Assert.NotEqual(originalKey, document.StorageKey);
+        // The superseded blob is left exactly where it is — the audit row points at it.
+        await _storage.DidNotReceiveWithAnyArgs().DeleteDocumentContentAsync(default!, default);
+        await _storage.Received(1).SaveDocumentContentAsync(document, Arg.Any<Stream>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_ShouldRecordThePreviousKeyAndTheFeedbackItAnswers()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        var document = ArrangeRejectedDocument(workspaceId, documentId, uploaderId);
+        var originalKey = document.StorageKey;
+
+        WorkspaceDocumentAudit? audit = null;
+        await _workspaceDocumentAuditRepository.AddAsync(
+            Arg.Do<WorkspaceDocumentAudit>(a => audit = a), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId,
+            new ReuploadDocumentApiRequest(StubFile("plan-v2.pdf"), Note: "Added the signature page."),
+            uploaderId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(audit);
+        Assert.Equal(WorkspaceDocumentConstants.AuditActions.ReuploadDocument, audit!.Action);
+        Assert.Contains(originalKey, audit.Metadata);
+        Assert.Contains("Missing the signature page.", audit.Metadata);
+        Assert.Equal("Added the signature page.", WorkspaceDocumentMapper.ReadAuditReason(audit.Metadata));
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_ShouldPurgeTheOldChunks()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        ArrangeRejectedDocument(workspaceId, documentId, uploaderId);
+
+        await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId, new ReuploadDocumentApiRequest(StubFile("plan-v2.pdf")), uploaderId);
+
+        // The document id does not change, so every vector point keyed to it still describes the
+        // file that was just replaced.
+        await _eventPublisher.Received(1).PublishDocumentDeletedAsync(documentId, workspaceId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_ShouldRefuse_AMemberWhoDidNotUploadIt()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var stranger = Guid.NewGuid();
+        var document = ArrangeRejectedDocument(workspaceId, documentId, Guid.NewGuid());
+        // The caller is a member of the workspace, but not this document's uploader.
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = stranger, RoleId = Guid.NewGuid() });
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId, new ReuploadDocumentApiRequest(StubFile("plan-v2.pdf")), stranger);
+
+        // Being allowed to READ a document is not being allowed to replace its contents, and a
+        // workspace-visible document is readable by every Internal member.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceDocumentStatus.rejected.ToString(), document.Status);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_ShouldRefuse_AFileThatIsNotWhatItClaims()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        ArrangeRejectedDocument(workspaceId, documentId, uploaderId);
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId,
+            new ReuploadDocumentApiRequest(StubFile("plan-v2.pdf", [0x4D, 0x5A, 0x90, 0x00])),
+            uploaderId);
+
+        // The revision route is a second front door for a file. It gets the same lock.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_ShouldRefuse_ADocumentAlreadyAwaitingReview()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        var document = ArrangeRejectedDocument(workspaceId, documentId, uploaderId);
+        document.Status = WorkspaceDocumentStatus.pending_approval.ToString();
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId, new ReuploadDocumentApiRequest(StubFile("plan-v2.pdf")), uploaderId);
+
+        // Otherwise a reviewer reads one file and decides about another.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetDocumentHistoryAsync_ShouldReturnTheDecisions_WithTheirReasons()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            Name = "Quarterly plan",
+            FileName = "plan.pdf",
+            FileExtension = ".pdf",
+            Status = WorkspaceDocumentStatus.rejected.ToString(),
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+        });
+        _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        _workspaceDocumentAuditRepository.GetPagedAuditsAsync(
+                documentId, Arg.Any<int>(), Arg.Any<int>(), Arg.Any<bool>(),
+                Arg.Any<IReadOnlyCollection<string>?>(), Arg.Any<CancellationToken>())
+            .Returns((new List<WorkspaceDocumentAudit>
+            {
+                new()
+                {
+                    Id = Guid.NewGuid(),
+                    DocumentId = documentId,
+                    WorkspaceId = workspaceId,
+                    ActorId = reviewerId,
+                    Action = WorkspaceDocumentConstants.AuditActions.RejectDocument,
+                    ActionAt = new DateTime(2026, 9, 2, 8, 0, 0, DateTimeKind.Utc),
+                    Metadata = "{\"reason\":\"Missing the signature page.\"}",
+                },
+                new()
+                {
+                    Id = Guid.NewGuid(),
+                    DocumentId = documentId,
+                    WorkspaceId = workspaceId,
+                    ActorId = userId,
+                    Action = WorkspaceDocumentConstants.AuditActions.UploadDocument,
+                    ActionAt = new DateTime(2026, 9, 1, 8, 0, 0, DateTimeKind.Utc),
+                    Metadata = "{\"Name\":\"Quarterly plan\"}",
+                },
+            }, 2));
+
+        var result = await _documentService.GetDocumentHistoryAsync(
+            workspaceId, documentId, new GetWorkspacesQuery(), userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, result.Value!.Items.Count);
+        Assert.Equal("Missing the signature page.", result.Value.Items[0].Reason);
+        Assert.Equal(reviewerId, result.Value.Items[0].ActorId);
+        // Upload metadata carries a name and a level, not a reason — and must not be misread as one.
+        Assert.Null(result.Value.Items[1].Reason);
+    }
+
+    [Fact]
+    public async Task GetDocumentHistoryAsync_ShouldRefuse_ACallerWhoCannotOpenTheDocument()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("Access denied."));
+
+        var result = await _documentService.GetDocumentHistoryAsync(
+            workspaceId, documentId, new GetWorkspacesQuery(), userId);
+
+        // The history says more than the document row does — who refused it, and what they wrote.
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not json at all")]
+    [InlineData("[\"an array\"]")]
+    [InlineData("{\"reason\":null}")]
+    [InlineData("{\"reason\":42}")]
+    [InlineData("{\"reason\":\"   \"}")]
+    public void ReadAuditReason_ShouldReturnNull_RatherThanThrow(string? metadata)
+    {
+        // Metadata is free-form across thirteen actions and predates this field entirely. A
+        // document's history is not worth a 500.
+        Assert.Null(WorkspaceDocumentMapper.ReadAuditReason(metadata));
     }
 }

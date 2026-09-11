@@ -21,9 +21,19 @@ public class WorkspaceDocumentAuditRepository : GenericRepository<WorkspaceDocum
         int page,
         int pageSize,
         bool isDescending = true,
+        IReadOnlyCollection<string>? excludeActions = null,
         CancellationToken ct = default)
     {
         var query = _dbSet.AsNoTracking().Where(a => a.DocumentId == documentId);
+
+        // IN THE QUERY, not after paging. Filtering the returned page instead would leave
+        // TotalCount counting rows the caller never sees, so the last page would be short and the
+        // page count wrong — and every document detail view writes a GetDocumentDetails row, so
+        // for a much-read document that is most of the table.
+        if (excludeActions is { Count: > 0 })
+        {
+            query = query.Where(a => !excludeActions.Contains(a.Action));
+        }
 
         var totalCount = await query.CountAsync(ct);
 
@@ -35,6 +45,21 @@ public class WorkspaceDocumentAuditRepository : GenericRepository<WorkspaceDocum
         var items = await query.Skip(skip).Take(pageSize).ToListAsync(ct);
 
         return (items, totalCount);
+    }
+
+    public Task<WorkspaceDocumentAudit?> GetLatestActionAsync(
+        Guid documentId,
+        string action,
+        CancellationToken ct = default)
+    {
+        // ORDERED, unlike the FirstOrDefaultAsync calls this sits beside. A document can be
+        // rejected, re-uploaded and rejected again, so "the rejection reason" is specifically the
+        // most recent one — an unordered first row would show the uploader feedback they have
+        // already answered.
+        return _dbSet.AsNoTracking()
+            .Where(a => a.DocumentId == documentId && a.Action == action)
+            .OrderByDescending(a => a.ActionAt)
+            .FirstOrDefaultAsync(ct);
     }
 
     public async Task<Dictionary<Guid, Guid?>> GetLatestApproverUserIdsByWorkspaceAsync(

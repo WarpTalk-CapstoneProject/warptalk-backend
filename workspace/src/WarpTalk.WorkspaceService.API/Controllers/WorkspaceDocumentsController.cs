@@ -41,6 +41,78 @@ public class WorkspaceDocumentsController : ControllerBase
         }
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId.Value, ct);
+        if (!result.IsSuccess || result.Value is null)
+        {
+            return ToActionResult(result);
+        }
+
+        // A duplicate is a SUCCESSFUL service call whose answer is "not without a decision from
+        // you". Result carries no payload on its failure side, so the service reports it as an
+        // outcome and the HTTP shaping happens here — 409, with the document it collided with
+        // attached so the dialog can name it. WT-666.
+        if (string.Equals(result.Value.Outcome, UploadDocumentOutcomeDto.Duplicate, StringComparison.Ordinal))
+        {
+            var duplicate = result.Value.ExistingDocument;
+            return Conflict(new DocumentDuplicateConflictResponse(
+                duplicate is null
+                    ? "This file is already in this workspace, in a document you do not have access to."
+                    : $"This file is already in this workspace as \"{duplicate.Name}\".",
+                ErrorCodes.DocumentDuplicateContent,
+                duplicate));
+        }
+
+        // The success body is the document, exactly as it has always been — `skip` returns the
+        // document that was kept and `replace` the one that was updated, so a caller that ignores
+        // the outcome still gets a usable answer rather than a reshaped payload.
+        return Ok(result.Value.Document);
+    }
+
+    /// <summary>
+    /// Replaces a rejected document's file without losing its id, its approval trail or the
+    /// reviewer's reason. WT-633.
+    /// </summary>
+    /// <remarks>
+    /// A POST to a `revision` sub-resource rather than a PUT on the document: this appends a state
+    /// and an audit row rather than replacing a representation, and the previous file stays
+    /// addressable in storage afterwards.
+    /// </remarks>
+    [Authorize]
+    [HttpPost("{documentId:guid}/revision")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(10 * 1024 * 1024)]
+    public async Task<IActionResult> ReuploadDocument(
+        Guid workspaceId,
+        Guid documentId,
+        [FromForm] ReuploadDocumentApiRequest request,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        if (request.File == null || request.File.Length == 0)
+        {
+            return BadRequest(new ApiErrorResponse("No file was uploaded.", ErrorCodes.ValidationError));
+        }
+
+        var result = await _documentService.ReuploadDocumentAsync(workspaceId, documentId, request, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
+    /// A document's approval and feedback history, newest first. WT-633.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{documentId:guid}/history")]
+    public async Task<IActionResult> GetDocumentHistory(
+        Guid workspaceId,
+        Guid documentId,
+        [FromQuery] GetWorkspacesQuery query,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.GetDocumentHistoryAsync(workspaceId, documentId, query, userId.Value, ct);
         return ToActionResult(result);
     }
 

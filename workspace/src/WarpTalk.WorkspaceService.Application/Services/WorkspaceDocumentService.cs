@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
@@ -259,31 +260,67 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         return workspace is not null && workspace.IsOperational();
     }
 
-    public async Task<Result<WorkspaceDocumentDto>> UploadDocumentAsync(Guid workspaceId, UploadDocumentApiRequest request, Guid userId, CancellationToken ct = default)
+    public async Task<Result<UploadDocumentOutcomeDto>> UploadDocumentAsync(Guid workspaceId, UploadDocumentApiRequest request, Guid userId, CancellationToken ct = default)
     {
         try
         {
             if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
-                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+                return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
             if (member == null)
             {
-                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+                return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+
+            // EVERY CHECK BELOW RUNS BEFORE A SINGLE BYTE REACHES STORAGE. The old order wrote the
+            // encrypted blob first and let Postgres be the validator, so an over-long name came
+            // back as a 500 with an orphaned encrypted file already on disk.
+            //
+            // Trimmed, not merely measured. " Report " and "Report" are the same document to the
+            // person naming it, and storing the padded form made the list, the search and the name
+            // shown in the UI disagree with each other.
+            var name = (request.Name ?? string.Empty).Trim();
+            if (name.Length == 0)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>("Document name is required.", ErrorCodes.ValidationError);
+            }
+
+            if (name.Length > WorkspaceDocumentConstants.MaxDocumentNameLength)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>(
+                    $"Document name must be {WorkspaceDocumentConstants.MaxDocumentNameLength} characters or fewer. This one is {name.Length}.",
+                    ErrorCodes.ValidationError);
+            }
+
+            var sourceType = WorkspaceDocumentHelper.NormalizeSourceType(request.SourceType);
+            if (sourceType is null)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>(
+                    $"Unsupported source type. Allowed values are: {WorkspaceDocumentHelper.SupportedSourceTypes}.",
+                    ErrorCodes.ValidationError);
+            }
+
+            var duplicateStrategy = WorkspaceDocumentHelper.NormalizeDuplicateStrategy(request.DuplicateStrategy);
+            if (duplicateStrategy is null)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>(
+                    $"Unsupported duplicate strategy. Allowed values are: {WorkspaceDocumentHelper.SupportedDuplicateStrategies}.",
+                    ErrorCodes.ValidationError);
+            }
 
             var docId = Guid.NewGuid();
             var extension = WorkspaceDocumentHelper.NormalizeExtension(System.IO.Path.GetExtension(request.File.FileName));
             if (!WorkspaceDocumentHelper.IsSupportedUploadExtension(extension))
             {
                 var allowed = string.Join(", ", WorkspaceDocumentConstants.SupportedUploadExtensions);
-                return Result.Failure<WorkspaceDocumentDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
+                return Result.Failure<UploadDocumentOutcomeDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
             }
 
             // Refused at the boundary rather than stored and misread later. Every policy check
@@ -294,9 +331,27 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var confidentiality = WorkspaceDocumentHelper.NormalizeConfidentialityLevel(request.ConfidentialityLevel);
             if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel) && confidentiality is null)
             {
-                return Result.Failure<WorkspaceDocumentDto>(
+                return Result.Failure<UploadDocumentOutcomeDto>(
                     $"Unsupported confidentiality level. Allowed values are: {WorkspaceDocumentHelper.SupportedConfidentialityLevels}.",
                     ErrorCodes.ValidationError);
+            }
+
+            var contentResult = await ReadAndValidateContentAsync(request.File, extension, ct);
+            if (!contentResult.IsSuccess || contentResult.Value is null)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>(contentResult.Error ?? "Invalid file.", contentResult.ErrorCode);
+            }
+
+            var content = contentResult.Value;
+            var contentHash = DocumentContentHelper.ComputeSha256(content);
+
+            if (!string.Equals(duplicateStrategy, WorkspaceDocumentConstants.DuplicateStrategies.CreateNew, StringComparison.Ordinal))
+            {
+                var settled = await ResolveDuplicateAsync(workspaceId, userId, contentHash, duplicateStrategy, request, ct);
+                if (settled is not null)
+                {
+                    return settled;
+                }
             }
 
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
@@ -321,15 +376,21 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var aiEligible = false; // Initial state: false until ingestion completes or if IsAiAllowed == false
 
-            var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storage.StorageProviderName, status, ingestionStatus, aiEligible);
+            var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storage.StorageProviderName, status, ingestionStatus, aiEligible, contentHash: contentHash);
             document.IsAiAllowed = effectiveIsAiAllowed;
-            // The CANONICAL value, not the caller's spelling — "Restricted " and "RESTRICTED"
+            // The CANONICAL values, not the caller's spelling — "Restricted " and "RESTRICTED"
             // both mean restricted, and storing either verbatim would make IsRestricted() false
-            // for one of them.
+            // for one of them. Same reasoning for the name and the source type: the mapper copies
+            // the request through verbatim, so the normalised forms are applied here.
             document.ConfidentialityLevel = confidentiality ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
+            document.Name = name;
+            document.SourceType = sourceType;
 
-            // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
-            using (var stream = request.File.OpenReadStream())
+            // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction.
+            // The already-read copy, not a second OpenReadStream: the signature check and the hash
+            // were computed from THESE bytes, and re-reading the request stream would leave a gap
+            // in which the validated payload and the stored payload are not provably the same.
+            using (var stream = new MemoryStream(content, writable: false))
             {
                 await _storage.SaveDocumentContentAsync(document, stream, ct);
             }
@@ -374,13 +435,129 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.UploadDocument, new { document.Name, document.ConfidentialityLevel }, _logger, ct);
 
             var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
-            return Result.Success(document.ToDto(downloadUrl));
+            return Result.Success(new UploadDocumentOutcomeDto(UploadDocumentOutcomeDto.Created, document.ToDto(downloadUrl)));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while uploading document. WorkspaceId: {WorkspaceId}", workspaceId);
-            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+            return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// The upload's bytes, once, checked against the format its extension claims. WT-666.
+    /// </summary>
+    /// <remarks>
+    /// Buffered rather than streamed because three things need the same bytes — the signature
+    /// check, the SHA-256, and the encrypted write — and <see cref="IFormFile.OpenReadStream"/>
+    /// gives no guarantee that a second open would yield the same content. The request pipeline
+    /// caps an upload at 10MB (<c>RequestSizeLimit</c> on the controller action), and the storage
+    /// layer already materialises the whole payload to encrypt it, so this adds no new ceiling.
+    /// </remarks>
+    private async Task<Result<byte[]>> ReadAndValidateContentAsync(IFormFile file, string extension, CancellationToken ct)
+    {
+        byte[] content;
+        await using (var source = file.OpenReadStream())
+        using (var buffer = new MemoryStream())
+        {
+            await source.CopyToAsync(buffer, ct);
+            content = buffer.ToArray();
+        }
+
+        if (content.Length == 0)
+        {
+            return Result.Failure<byte[]>("The uploaded file is empty.", ErrorCodes.ValidationError);
+        }
+
+        // THE FILE NAME IS NOT EVIDENCE. Until this check, the only question asked about an upload
+        // was whether its name ended in an accepted extension — so renaming payload.exe to
+        // payload.pdf was enough to have it encrypted, stored, handed to the text extractor and,
+        // for the AI-readable extensions, chunked into the vector store.
+        if (!DocumentContentHelper.MatchesExtensionSignature(content, extension))
+        {
+            return Result.Failure<byte[]>(
+                $"This file's contents do not match its {extension} extension — expected {DocumentContentHelper.DescribeExpectedFormat(extension)}. Rename it to its real format and upload it again.",
+                ErrorCodes.ValidationError);
+        }
+
+        return Result.Success(content);
+    }
+
+    /// <summary>
+    /// Answers a content collision, or returns null when there is none and the upload should
+    /// proceed. WT-666.
+    /// </summary>
+    /// <remarks>
+    /// WHY THE EXISTING DOCUMENT IS NOT ALWAYS NAMED.
+    ///
+    /// The match is over every live document in the workspace, because that is what a duplicate
+    /// IS — a second copy of the same bytes and a second set of AI chunks, whoever uploaded it.
+    /// But the collision must not become a way to learn that a document one cannot open exists, so
+    /// the DETAILS are gated through <see cref="IDocumentAccessEvaluator"/> with the same View
+    /// permission every other read uses. No new visibility rule is invented here; a caller who
+    /// fails that check is told the bytes are already present and offered `create_new`, and that
+    /// is all.
+    ///
+    /// `replace` is deliberately NOT handled here. Replacing means writing over a document that
+    /// already has an id, an approval state and a history, which is the re-upload path — and its
+    /// authorization (uploader or Owner/Admin) belongs with it rather than being re-derived here.
+    /// </remarks>
+    private async Task<Result<UploadDocumentOutcomeDto>?> ResolveDuplicateAsync(
+        Guid workspaceId,
+        Guid userId,
+        string contentHash,
+        string duplicateStrategy,
+        UploadDocumentApiRequest request,
+        CancellationToken ct)
+    {
+        var existing = await _unitOfWork.WorkspaceDocumentRepository.FirstOrDefaultAsync(
+            d => d.WorkspaceId == workspaceId && d.ContentHash == contentHash && d.DeletedAt == null, "", ct);
+
+        if (existing is null)
+        {
+            return null;
+        }
+
+        var canView = await _accessEvaluator.EvaluateAccessAsync(
+            userId, workspaceId, existing.Id, WorkspaceDocumentPermissions.View, ct);
+
+        if (string.Equals(duplicateStrategy, WorkspaceDocumentConstants.DuplicateStrategies.Replace, StringComparison.Ordinal))
+        {
+            var reuploaded = await ReuploadDocumentAsync(
+                workspaceId,
+                existing.Id,
+                new ReuploadDocumentApiRequest(request.File, request.Name),
+                userId,
+                ct);
+
+            return reuploaded.IsSuccess && reuploaded.Value is not null
+                ? Result.Success(new UploadDocumentOutcomeDto(UploadDocumentOutcomeDto.Replaced, reuploaded.Value))
+                : Result.Failure<UploadDocumentOutcomeDto>(reuploaded.Error ?? "Failed to replace the existing document.", reuploaded.ErrorCode);
+        }
+
+        if (string.Equals(duplicateStrategy, WorkspaceDocumentConstants.DuplicateStrategies.Skip, StringComparison.Ordinal) && canView.IsSuccess)
+        {
+            var url = _urlProvider.GetDocumentDownloadUrl(workspaceId, existing.Id);
+            var approver = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
+                a => a.DocumentId == existing.Id && a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument, "", ct);
+            return Result.Success(new UploadDocumentOutcomeDto(
+                UploadDocumentOutcomeDto.Skipped,
+                existing.ToDto(url, approver?.ActorId)));
+        }
+
+        // Reject — and `skip` for a caller who cannot see what they would be keeping, which is the
+        // same answer: nothing was written, come back and say what you want done.
+        //
+        // A SUCCESSFUL Result carrying the `duplicate` outcome, not a Failure. Result has no
+        // payload on the failure side, so a Failure here could say "already present" without being
+        // able to say WHICH document — and the three choices the ticket asks for are unanswerable
+        // without that. The controller turns this outcome into the 409.
+        return Result.Success(new UploadDocumentOutcomeDto(
+            UploadDocumentOutcomeDto.Duplicate,
+            null,
+            canView.IsSuccess
+                ? new DocumentDuplicateDto(existing.Id, existing.Name, existing.FileName, existing.Status, existing.SizeBytes, existing.CreatedAt)
+                : null));
     }
 
     public async Task<Result<PagedResult<WorkspaceDocumentDto>>> ListDocumentsAsync(Guid workspaceId, GetDocumentsQuery query, Guid userId, CancellationToken ct = default)
@@ -494,7 +671,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                      a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument,
                 "",
                 ct);
-            return Result.Success(document.ToDto(downloadUrl, approvalAudit?.ActorId));
+
+            // WT-633: the reviewer's reason, on the detail route only. The list evaluates access
+            // for every document it returns and this is a detail-page fact; asking for it there
+            // would add a second audit query per row.
+            var rejectionReason = await GetLatestRejectionReasonAsync(documentId, ct);
+
+            return Result.Success(document.ToDto(downloadUrl, approvalAudit?.ActorId, rejectionReason));
         }
         catch (Exception ex)
         {
@@ -854,6 +1037,23 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure("Document is not pending approval.", ErrorCodes.ValidationError);
             }
 
+            // A REJECTION WITHOUT A REASON IS THE BUG. WT-633's reporter described an uploader who
+            // could see that their document was refused and had no way to learn why, and the cause
+            // was here: nothing ever asked the reviewer for a sentence. Required on the reject
+            // branch only — an approval needs no justification.
+            var reason = (request.Reason ?? string.Empty).Trim();
+            if (!request.Approve && reason.Length == 0)
+            {
+                return Result.Failure("A reason is required when rejecting a document.", ErrorCodes.ValidationError);
+            }
+
+            if (reason.Length > WorkspaceDocumentConstants.MaxRejectionReasonLength)
+            {
+                return Result.Failure(
+                    $"The reason must be {WorkspaceDocumentConstants.MaxRejectionReasonLength} characters or fewer. This one is {reason.Length}.",
+                    ErrorCodes.ValidationError);
+            }
+
             if (request.Approve)
             {
                 document.Status = WorkspaceDocumentStatus.@public.ToString();
@@ -887,7 +1087,14 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     userId,
                     ct);
 
-                await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ApproveDocument, logger: _logger, ct: ct);
+                await _unitOfWork.AuditAsync(
+                    document.Id,
+                    workspaceId,
+                    userId,
+                    WorkspaceDocumentConstants.AuditActions.ApproveDocument,
+                    reason.Length > 0 ? new { reason } : null,
+                    _logger,
+                    ct);
             }
             else
             {
@@ -908,7 +1115,17 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     userId,
                     ct);
 
-                await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RejectDocument, logger: _logger, ct: ct);
+                // The reviewer's words, on the row. This audit call used to pass no metadata at
+                // all, which is why WT-633 could not be answered by reading anything: the decision
+                // was recorded and the reason for it was discarded at the moment it was made.
+                await _unitOfWork.AuditAsync(
+                    document.Id,
+                    workspaceId,
+                    userId,
+                    WorkspaceDocumentConstants.AuditActions.RejectDocument,
+                    new { reason },
+                    _logger,
+                    ct);
             }
 
             return Result.Success();
@@ -917,6 +1134,267 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         {
             _logger.LogError(ex, "Error occurred while approving/rejecting document. DocumentId: {DocumentId}", documentId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Audit actions the history route leaves out. A read is not a decision, and
+    /// GetDocumentDetails is written on every single view of the detail page.
+    /// </summary>
+    private static readonly string[] HistoryExcludedActions =
+    [
+        WorkspaceDocumentConstants.AuditActions.GetDocumentDetails,
+        WorkspaceDocumentConstants.AuditActions.DownloadDocument
+    ];
+
+    /// <summary>The most recent rejection reason on record for a document, or null.</summary>
+    private async Task<string?> GetLatestRejectionReasonAsync(Guid documentId, CancellationToken ct)
+    {
+        var audit = await _unitOfWork.WorkspaceDocumentAuditRepository.GetLatestActionAsync(
+            documentId, WorkspaceDocumentConstants.AuditActions.RejectDocument, ct);
+        return WorkspaceDocumentMapper.ReadAuditReason(audit?.Metadata);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<WorkspaceDocumentDto>> ReuploadDocumentAsync(
+        Guid workspaceId,
+        Guid documentId,
+        ReuploadDocumentApiRequest request,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            // THE UPLOADER, or an Owner/Admin. Not the View ACL: being allowed to read a document
+            // is not being allowed to replace its contents, and a workspace-visible document is
+            // readable by every Internal member. This is the same shape as the delete and archive
+            // paths, which is the company this operation keeps.
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            var isUploader = document.UploadedBy == userId || document.OwnerId == userId;
+            if (!isUploader && !roleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "Forbidden. Only the uploader or a workspace owner or admin can replace this document's file.",
+                    ErrorCodes.Forbidden);
+            }
+
+            // Rejected and published are the two states a replacement makes sense from. Refusing a
+            // document already awaiting review keeps the reviewer from reading one file and
+            // deciding about another, and refusing an archived or deleted one keeps a retired
+            // document from being quietly brought back with new contents.
+            var isRejected = string.Equals(document.Status, WorkspaceDocumentStatus.rejected.ToString(), StringComparison.OrdinalIgnoreCase);
+            var isPublished = string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase);
+            if (!isRejected && !isPublished)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    $"A document with status \"{document.Status}\" cannot be replaced.",
+                    ErrorCodes.ValidationError);
+            }
+
+            var name = string.IsNullOrWhiteSpace(request.Name) ? document.Name : request.Name.Trim();
+            if (name.Length == 0)
+            {
+                return Result.Failure<WorkspaceDocumentDto>("Document name is required.", ErrorCodes.ValidationError);
+            }
+
+            if (name.Length > WorkspaceDocumentConstants.MaxDocumentNameLength)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    $"Document name must be {WorkspaceDocumentConstants.MaxDocumentNameLength} characters or fewer. This one is {name.Length}.",
+                    ErrorCodes.ValidationError);
+            }
+
+            var note = (request.Note ?? string.Empty).Trim();
+            if (note.Length > WorkspaceDocumentConstants.MaxRejectionReasonLength)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    $"The note must be {WorkspaceDocumentConstants.MaxRejectionReasonLength} characters or fewer. This one is {note.Length}.",
+                    ErrorCodes.ValidationError);
+            }
+
+            var extension = WorkspaceDocumentHelper.NormalizeExtension(System.IO.Path.GetExtension(request.File.FileName));
+            if (!WorkspaceDocumentHelper.IsSupportedUploadExtension(extension))
+            {
+                var allowed = string.Join(", ", WorkspaceDocumentConstants.SupportedUploadExtensions);
+                return Result.Failure<WorkspaceDocumentDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
+            }
+
+            var contentResult = await ReadAndValidateContentAsync(request.File, extension, ct);
+            if (!contentResult.IsSuccess || contentResult.Value is null)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(contentResult.Error ?? "Invalid file.", contentResult.ErrorCode);
+            }
+
+            var content = contentResult.Value;
+            var now = DateTime.UtcNow;
+            var previousStorageKey = document.StorageKey;
+            var previousFileName = document.FileName;
+            var rejectionReason = await GetLatestRejectionReasonAsync(documentId, ct);
+
+            // Asked BEFORE the extension is overwritten. Whether vectors exist to purge is a fact
+            // about the document as it stands, and reading it from the replacement's extension
+            // would leave the old chunks in place whenever a .pdf was replaced by a .png.
+            var hadVectors = document.IsAiAllowed
+                && WorkspaceDocumentHelper.IsAiReadableExtension(document.FileExtension);
+
+            // A NEW KEY, and the old blob is left exactly where it is. Reusing the key would
+            // encrypt the replacement over the file the reviewer read, which would make
+            // `previousStorageKey` in the audit row a pointer to bytes that no longer exist —
+            // the audit trail would claim a completeness it did not have.
+            document.StorageKey = WorkspaceDocumentHelper.GenerateRevisionStorageKey(workspaceId, documentId, extension, now);
+            document.StorageProvider = _storage.StorageProviderName;
+            document.Name = name;
+            document.FileName = request.File.FileName;
+            document.FileExtension = extension;
+            document.MimeType = WorkspaceDocumentHelper.GetSafeContentType(extension);
+            document.DocumentType = extension.TrimStart('.').ToUpperInvariant();
+            document.SizeBytes = request.File.Length;
+            document.ContentHash = DocumentContentHelper.ComputeSha256(content);
+            document.UpdatedAt = now;
+
+            // Back to the queue, whichever state it came from. A replaced file has not been read by
+            // anyone, so it cannot keep a published document's approval — that is the difference
+            // between this and editing a title.
+            document.Status = WorkspaceDocumentStatus.pending_approval.ToString();
+            document.AiEligible = false;
+
+            // The same rule upload applies: an image cannot be AI-readable however the switch was
+            // left, so replacing a PDF with a PNG turns indexing off rather than queueing work the
+            // extractor cannot do.
+            document.IsAiAllowed = document.IsAiAllowed && WorkspaceDocumentHelper.IsAiReadableExtension(extension);
+            document.IngestionStatus = document.IsAiAllowed
+                ? WorkspaceDocumentIngestionStatus.awaiting_approval.ToString()
+                : WorkspaceDocumentIngestionStatus.skipped.ToString();
+
+            await _storage.SaveDocumentContentAsync(document, new MemoryStream(content, writable: false), ct);
+
+            try
+            {
+                _unitOfWork.WorkspaceDocumentRepository.Update(document);
+
+                // THE OLD CHUNKS HAVE TO GO. The document id is unchanged, so every vector point
+                // keyed to it still describes the superseded file — and the document is no longer
+                // published, so nothing may answer from it either way. Re-indexing happens on
+                // approval, through the path that already does it.
+                if (hadVectors)
+                {
+                    await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+                }
+
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+            catch
+            {
+                // The replacement blob is written but the row still points at the old key — remove
+                // the orphan rather than leaving an encrypted file nothing references. The previous
+                // file is untouched by this, which is the point of the new key.
+                await _storage.DeleteDocumentContentAsync(document, ct);
+                throw;
+            }
+
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.PendingApproval,
+                document.UpdatedAt,
+                userId,
+                ct);
+
+            // The whole point of the ticket, in one row: what was replaced, where the old bytes
+            // still are, and the feedback this revision is answering.
+            await _unitOfWork.AuditAsync(
+                document.Id,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.ReuploadDocument,
+                new
+                {
+                    previousStorageKey,
+                    previousFileName,
+                    fileName = document.FileName,
+                    rejectionReason,
+                    reason = note.Length > 0 ? note : null
+                },
+                _logger,
+                ct);
+
+            var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
+            return Result.Success(document.ToDto(downloadUrl, null, rejectionReason));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while re-uploading document. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<PagedResult<DocumentHistoryEntryDto>>> GetDocumentHistoryAsync(
+        Guid workspaceId,
+        Guid documentId,
+        GetWorkspacesQuery query,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<PagedResult<DocumentHistoryEntryDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            // The document's own View ACL decides this. Its history says who uploaded it, who
+            // refused it and what they wrote — strictly more than the document row — so it can
+            // never be readable by someone the document itself is not.
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
+            if (!accessResult.IsSuccess)
+            {
+                return Result.Failure<PagedResult<DocumentHistoryEntryDto>>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+            {
+                return Result.Failure<PagedResult<DocumentHistoryEntryDto>>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            var (items, totalCount) = await _unitOfWork.WorkspaceDocumentAuditRepository.GetPagedAuditsAsync(
+                documentId,
+                query.Page,
+                query.PageSize,
+                isDescending: true,
+                excludeActions: HistoryExcludedActions,
+                ct);
+
+            var entries = items.Select(a => a.ToHistoryDto()).ToList();
+
+            return Result.Success(new PagedResult<DocumentHistoryEntryDto>(entries, query.Page, query.PageSize, totalCount));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while reading document history. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<PagedResult<DocumentHistoryEntryDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
