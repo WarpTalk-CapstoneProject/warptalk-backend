@@ -117,6 +117,12 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private const string InvitationAcceptedStatus = "ACCEPTED";
 
+    /// <summary>
+    /// The creation state. The insert sites still spell the literal out; this name exists for the
+    /// one reader that ranks states against each other (<see cref="PickViewerInvitationStatus"/>).
+    /// </summary>
+    private const string InvitationPendingStatus = "PENDING";
+
     /// <summary>Written by nothing today; read here so Accept fails closed if it ever is.</summary>
     private const string InvitationDeclinedStatus = "DECLINED";
 
@@ -2571,6 +2577,10 @@ public class TranslationRoomService : ITranslationRoomService
     /// archive's ordering falls through to CreatedAt and sorts upcoming meetings by the day somebody
     /// booked them rather than the day they happen.
     ///
+    /// And one ADDITION the archive does not make: each row carries the caller's own invitation
+    /// status (<see cref="WithViewerInvitationStatusAsync"/>), because a diary has to say whether you
+    /// went, and for a room you reached only by an emailed invitation the roster cannot say it.
+    ///
     /// WorkspaceId stays required. A timeline spanning every workspace was considered and dropped:
     /// it would mean taking the tenant boundary off this read for every caller, not just this one.
     /// </summary>
@@ -2587,8 +2597,10 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var timelineRequest = request with { Status = request.Status ?? BuildMyMeetingsDefaultStatusFilter() };
 
-            return Result.Success(await BuildRoomTimelinePageAsync(
-                timelineRequest, userId, userEmail, RoomTimelineOrder.ScheduledFirst, RoomTimelineScope.Mine, ct));
+            var timeline = await BuildRoomTimelinePageAsync(
+                timelineRequest, userId, userEmail, RoomTimelineOrder.ScheduledFirst, RoomTimelineScope.Mine, ct);
+
+            return Result.Success(await WithViewerInvitationStatusAsync(timeline, userEmail, ct));
         }
         catch (Exception ex)
         {
@@ -2599,6 +2611,83 @@ public class TranslationRoomService : ITranslationRoomService
 
     private static string BuildMyMeetingsDefaultStatusFilter()
         => string.Join(',', Enum.GetNames<RoomStatus>());
+
+    /// <summary>
+    /// Stamps each row of a personal-timeline page with the caller's own invitation status
+    /// (<see cref="TranslationRoomHistoryItemDto.ViewerInvitationStatus"/>).
+    ///
+    /// WHY. An invitation carrying the caller's email is one of the three ways
+    /// <see cref="RoomReadAccess.IsReadableBy"/> puts a room on this timeline, and the only one that
+    /// leaves no participant row behind. Without this, a finished meeting somebody was invited to by
+    /// email and never opened was indistinguishable, on the wire, from one whose roster simply said
+    /// nothing about them — and the calendar called it "Joined".
+    ///
+    /// Done HERE, after the page is built, rather than inside <see cref="BuildRoomTimelinePageAsync"/>:
+    /// that body is shared with the workspace archive, which does not carry this field, and the
+    /// archive should not pay a query for an answer it throws away.
+    ///
+    /// ONE query for the whole page, keyed by the page's room ids — never one per row.
+    ///
+    /// Email matching is the one <see cref="RoomReadAccess.IsReadableBy"/> uses: the claim goes
+    /// through <see cref="RoomReadAccess.NormalizeEmail"/> (trimmed, lower-cased) and the column is
+    /// lower-cased in SQL (WT-496). Anything looser or stricter would let this field disagree with
+    /// the read gate that admitted the row — an invitation that listed the room but was "not found"
+    /// here would put the Joined bug straight back. Every status is reported, not only the ones that
+    /// grant read: the field states a fact about the invitation, and the reader decides what it
+    /// proves.
+    /// </summary>
+    private async Task<TranslationRoomHistoryResponse> WithViewerInvitationStatusAsync(
+        TranslationRoomHistoryResponse timeline,
+        string? userEmail,
+        CancellationToken ct)
+    {
+        var email = RoomReadAccess.NormalizeEmail(userEmail);
+        if (email is null || timeline.Rooms.Count == 0)
+        {
+            // No email claim: no invitation row can be matched to this caller at all (rows are keyed
+            // by address, not user id), so every row honestly has none.
+            return timeline;
+        }
+
+        var roomIds = timeline.Rooms.Select(item => item.Room.Id).ToList();
+
+        var invitations = await _unitOfWork.TranslationRoomInvitationRepository
+            .Query()
+            .Where(i => roomIds.Contains(i.TranslationRoomId) && i.Email.ToLower() == email)
+            .Select(i => new { i.TranslationRoomId, i.Status })
+            .ToListAsync(ct);
+
+        if (invitations.Count == 0)
+            return timeline;
+
+        var statusByRoom = invitations
+            .GroupBy(i => i.TranslationRoomId)
+            .ToDictionary(g => g.Key, g => PickViewerInvitationStatus(g.Select(i => i.Status)));
+
+        return timeline with
+        {
+            Rooms = timeline.Rooms
+                .Select(item => item with { ViewerInvitationStatus = statusByRoom.GetValueOrDefault(item.Room.Id) })
+                .ToList(),
+        };
+    }
+
+    /// <summary>
+    /// One status when one room holds several invitations for the caller.
+    ///
+    /// Possible because the unique index is on the address AS TYPED — (room, email) — while matching
+    /// is case-insensitive, so "Ann@x.com" and "ann@x.com" are two rows for one person. The
+    /// strongest answer wins: ACCEPTED (she said yes) over PENDING (asked, no answer) over anything
+    /// else, then ordinal order so the same rows always give the same answer.
+    /// </summary>
+    private static string PickViewerInvitationStatus(IEnumerable<string> statuses)
+    {
+        var candidates = statuses.ToList();
+
+        return candidates.FirstOrDefault(s => string.Equals(s, InvitationAcceptedStatus, StringComparison.OrdinalIgnoreCase))
+            ?? candidates.FirstOrDefault(s => string.Equals(s, InvitationPendingStatus, StringComparison.OrdinalIgnoreCase))
+            ?? candidates.OrderBy(s => s, StringComparer.Ordinal).First();
+    }
 
     /// <summary>
     /// The reading order of a page of rooms. Each value exists because one of the two callers has a

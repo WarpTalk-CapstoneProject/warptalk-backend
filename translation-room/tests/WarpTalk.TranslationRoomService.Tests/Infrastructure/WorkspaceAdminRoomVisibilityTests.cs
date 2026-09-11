@@ -171,7 +171,7 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
         _dbContext.ChangeTracker.Clear();
     }
 
-    private async Task SeedInvitationAsync(Guid roomId, string email)
+    private async Task SeedInvitationAsync(Guid roomId, string email, string status = "PENDING")
     {
         var now = DateTime.UtcNow;
         _dbContext.Set<TranslationRoomInvitation>().Add(new TranslationRoomInvitation
@@ -179,7 +179,7 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
             Id = Guid.CreateVersion7(),
             TranslationRoomId = roomId,
             Email = email,
-            Status = "PENDING",
+            Status = status,
             CreatedAt = now,
             UpdatedAt = now
         });
@@ -491,5 +491,131 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
             $"{WorkspaceAdminId}@example.test");
 
         result.IsSuccess.Should().BeFalse();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // ViewerInvitationStatus — "Joined" for a meeting the viewer never came to.
+    //
+    // RoomReadAccess admits a room to My Meetings by host, participant row, or an invitation
+    // carrying the viewer's email, and the third route leaves no participant row. The calendar
+    // decides Joined vs Missed from the viewer's roster row, found none, and called a finished
+    // meeting the viewer was emailed about and never opened "Joined". These pin the fact the
+    // client was missing, and pin that it is the VIEWER's invitation and nobody else's.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The reported shape exactly: invited by email, never came, meeting over. The row must carry
+    /// the invitation, because nothing else on it can say this person was expected and did not show.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_CarriesTheInvitation_ForAnEmailOnlyInviteeWhoNeverCame()
+    {
+        var past = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedInvitationAsync(past.Id, $"{OutsiderId}@example.test");
+
+        var result = await MyMeetingsAsync(OutsiderId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var row = result.Value!.Rooms.Single(r => r.Room.Id == past.Id);
+        row.Participants.Should().BeEmpty("the email route leaves no roster row — that is the whole bug");
+        row.ViewerInvitationStatus.Should().Be("PENDING");
+    }
+
+    /// <summary>
+    /// Same email matching as the read gate (WT-496). The gate lets an invitation typed in capitals
+    /// put the room on the timeline; if this lookup were stricter it would then report "no
+    /// invitation" for the very row the invitation admitted, and the bug would be back for anyone
+    /// whose host typed their address with a capital letter.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_MatchesTheInvitation_CaseInsensitively_LikeTheReadGate()
+    {
+        var past = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedInvitationAsync(past.Id, $"{OutsiderId}@example.test".ToUpperInvariant(), "ACCEPTED");
+
+        var result = await MyMeetingsAsync(OutsiderId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Single(r => r.Room.Id == past.Id)
+            .ViewerInvitationStatus.Should().Be("ACCEPTED");
+    }
+
+    /// <summary>
+    /// The unique index is on the address AS TYPED, so one person can hold two rows that differ
+    /// only in case. The strongest answer wins, so a "yes" is never hidden behind a stale "asked".
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_PrefersAccepted_WhenTheViewerHoldsTwoCaseVariantInvitations()
+    {
+        var past = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedInvitationAsync(past.Id, $"{OutsiderId}@EXAMPLE.test", "PENDING");
+        await SeedInvitationAsync(past.Id, $"{OutsiderId}@example.test", "ACCEPTED");
+
+        var result = await MyMeetingsAsync(OutsiderId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Single(r => r.Room.Id == past.Id)
+            .ViewerInvitationStatus.Should().Be("ACCEPTED");
+    }
+
+    /// <summary>
+    /// The host was not invited — and somebody ELSE's invitation to the host's room is not the
+    /// host's. Reporting it here would tell the client the host had been asked and did not come.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_CarriesNoInvitation_ForTheHost_EvenWhenOthersWereInvited()
+    {
+        var own = await SeedRoomAsync(WorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+        await SeedInvitationAsync(own.Id, $"{OutsiderId}@example.test");
+
+        var result = await MyMeetingsAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Single(r => r.Room.Id == own.Id)
+            .ViewerInvitationStatus.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Reached by the participant route alone: no invitation exists, so none is reported, and the
+    /// roster row stays the only evidence the client reads.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_CarriesNoInvitation_ForAParticipantWhoWasNeverInvited()
+    {
+        var room = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedParticipantAsync(room.Id, PlainMemberId);
+
+        var result = await MyMeetingsAsync(PlainMemberId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var row = result.Value!.Rooms.Single(r => r.Room.Id == room.Id);
+        row.Participants.Should().ContainSingle(p => p.UserId == PlainMemberId);
+        row.ViewerInvitationStatus.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The archive shares this row type (FR-333-009) but not this field, and its wire contract must
+    /// not move: serialised the way ASP.NET Core serialises it, a history row has no
+    /// <c>viewerInvitationStatus</c> key at all, for the very invitee whose My Meetings row has one.
+    /// </summary>
+    [Fact]
+    public async Task History_DoesNotEmitTheViewerInvitation_ButMyMeetingsDoes()
+    {
+        var past = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedInvitationAsync(past.Id, $"{OutsiderId}@example.test");
+        var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+
+        var history = await HistoryAsync(OutsiderId);
+        var mine = await MyMeetingsAsync(OutsiderId);
+
+        history.IsSuccess.Should().BeTrue(history.Error);
+        var historyRow = history.Value!.Rooms.Single(r => r.Room.Id == past.Id);
+        historyRow.ViewerInvitationStatus.Should().BeNull();
+        System.Text.Json.JsonSerializer.Serialize(historyRow, web)
+            .Should().NotContain("viewerInvitationStatus");
+
+        mine.IsSuccess.Should().BeTrue(mine.Error);
+        System.Text.Json.JsonSerializer.Serialize(mine.Value!.Rooms.Single(r => r.Room.Id == past.Id), web)
+            .Should().Contain("\"viewerInvitationStatus\":\"PENDING\"");
     }
 }
