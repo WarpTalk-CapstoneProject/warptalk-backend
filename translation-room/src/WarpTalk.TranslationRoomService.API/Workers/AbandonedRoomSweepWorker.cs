@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -114,7 +113,8 @@ public class AbandonedRoomSweepWorker : BackgroundService
         }
     }
 
-    private async Task SweepAsync(CancellationToken ct)
+    /// <summary>One sweep. Internal so the tests can drive it directly — see InternalsVisibleTo.</summary>
+    internal async Task SweepAsync(CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -134,8 +134,11 @@ public class AbandonedRoomSweepWorker : BackgroundService
 
         if (live.Count == 0) return;
 
+        // People, not seats. An EXTERNAL_BRIDGE room's far-side stand-in holds a seat from creation
+        // until End and has no socket that could ever release it, so counting seats here made
+        // every bridge room look occupied forever — see RoomPresence.
         var occupancy = await unitOfWork.TranslationRoomParticipantRepository
-            .CountSeatHoldingParticipantsByRoomsAsync(live.Select(room => room.Id).ToList(), ct);
+            .CountPeopleInRoomsAsync(live.Select(room => room.Id).ToList(), ct);
 
         var db = _redis.GetDatabase();
         var ended = 0;
@@ -152,33 +155,22 @@ public class AbandonedRoomSweepWorker : BackgroundService
             }
 
             var key = $"translationRoom:{room.Id}:empty_since";
-            var seatHolders = occupancy.GetValueOrDefault(room.Id);
-            var stored = await db.StringGetAsync(key);
-            DateTime? emptySince = stored.HasValue
-                && DateTime.TryParse(
-                    stored.ToString(),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                    out var parsed)
-                    ? parsed
-                    : null;
+            var people = occupancy.GetValueOrDefault(room.Id);
+            var emptySince = await EmptyRoomObservation.ReadAsync(db, key);
 
-            switch (AbandonedRoomPolicy.Decide(seatHolders, emptySince, now))
+            switch (AbandonedRoomPolicy.Decide(people, emptySince, now))
             {
-                case AbandonedRoomAction.Leave when seatHolders > 0:
+                case AbandonedRoomAction.Leave when people > 0:
                     // Somebody came back. Forget the observation so a later emptying starts a
                     // fresh grace rather than inheriting the old one and ending immediately.
-                    await db.KeyDeleteAsync(key);
+                    await EmptyRoomObservation.ClearAsync(db, key);
                     continue;
 
                 case AbandonedRoomAction.Leave:
                     continue;
 
                 case AbandonedRoomAction.StartGrace:
-                    await db.StringSetAsync(
-                        key,
-                        now.ToString("O", CultureInfo.InvariantCulture),
-                        AbandonedRoomPolicy.GracePeriod + TimeSpan.FromHours(1));
+                    await EmptyRoomObservation.StartAsync(db, key, now, AbandonedRoomPolicy.GracePeriod);
                     _logger.LogInformation(
                         "Room {RoomId} is empty; starting the {Grace} grace before ending it.",
                         room.Id,
@@ -200,7 +192,7 @@ public class AbandonedRoomSweepWorker : BackgroundService
                 continue;
             }
 
-            await db.KeyDeleteAsync(key);
+            await EmptyRoomObservation.ClearAsync(db, key);
             ended++;
 
             _logger.LogInformation(

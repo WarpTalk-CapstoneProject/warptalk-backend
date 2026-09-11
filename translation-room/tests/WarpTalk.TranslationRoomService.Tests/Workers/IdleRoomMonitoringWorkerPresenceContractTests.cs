@@ -14,20 +14,28 @@ public sealed class IdleRoomMonitoringWorkerPresenceContractTests
     /// path stores CONNECTED — so the two predicates differed for no reason, which is how a cap and
     /// a reaper drift until one of them ends a live room. The protection is kept, re-anchored to the
     /// shared predicate instead of to a string literal that encoded a false premise.
+    ///
+    /// The reaper now reads RoomPresence.IsPersonInRoom — the seat rule minus an EXTERNAL_BRIDGE
+    /// room's far-side stand-in — so the anchor is pinned on both links: the worker asks
+    /// RoomPresence, and RoomPresence asks HoldsSeat.
     /// </summary>
     [Fact]
     public void IdleWorker_SharesTheOneSeatHoldingDefinition()
     {
         var source = File.ReadAllText(FindSourceFile(
             "translation-room/src/WarpTalk.TranslationRoomService.API/Workers/IdleRoomMonitoringWorker.cs"));
+        var presence = File.ReadAllText(FindSourceFile(
+            "translation-room/src/WarpTalk.TranslationRoomService.Domain/Constants/RoomPresence.cs"));
 
+        Assert.Contains("RoomPresence.IsPersonInRoom", source, StringComparison.Ordinal);
         Assert.Contains(
-            "TranslationRoomParticipantStatuses.HoldsSeat(p.Status)",
-            source,
+            "TranslationRoomParticipantStatuses.HoldsSeat(participant.Status)",
+            presence,
             StringComparison.Ordinal);
 
         // A second, private status predicate reappearing here is the regression this guards.
         Assert.DoesNotContain("p.Status == \"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HoldsSeat(", source, StringComparison.Ordinal);
     }
 
     /// <summary>

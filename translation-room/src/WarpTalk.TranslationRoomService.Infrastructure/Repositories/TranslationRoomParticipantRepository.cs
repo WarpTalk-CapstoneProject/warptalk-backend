@@ -55,6 +55,29 @@ public class TranslationRoomParticipantRepository : GenericRepository<Translatio
             .ToDictionaryAsync(x => x.RoomId, x => x.Seats, ct);
     }
 
+    public async Task<Dictionary<Guid, int>> CountPeopleInRoomsAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        CancellationToken ct = default)
+    {
+        if (roomIds.Count == 0)
+        {
+            return new Dictionary<Guid, int>();
+        }
+
+        var ids = roomIds as List<Guid> ?? roomIds.ToList();
+        var standIn = TranslationRoomConstants.ExternalBridgeParticipantUserId;
+
+        // The SQL form of RoomPresence.IsPersonInRoom. UserId is nullable, and EF keeps C# null
+        // semantics for `!=`, so a row with no user id (a guest) still counts as a person.
+        return await _dbSet
+            .Where(p => ids.Contains(p.TranslationRoomId) &&
+                        TranslationRoomParticipantStatuses.SeatHolding.Contains(p.Status) &&
+                        p.UserId != standIn)
+            .GroupBy(p => p.TranslationRoomId)
+            .Select(g => new { RoomId = g.Key, People = g.Count() })
+            .ToDictionaryAsync(x => x.RoomId, x => x.People, ct);
+    }
+
     public async Task<Dictionary<Guid, int>> CountEverJoinedByRoomsAsync(
         IReadOnlyCollection<Guid> roomIds,
         CancellationToken ct = default)
