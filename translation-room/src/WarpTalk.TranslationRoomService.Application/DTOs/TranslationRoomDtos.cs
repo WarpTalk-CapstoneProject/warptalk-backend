@@ -432,7 +432,27 @@ public record CreateArtifactRequest(
 public record TranslationRoomHistoryItemDto(
     TranslationRoomListItemDto Room,
     List<TranslationRoomParticipantDto> Participants,
-    List<TranslationRoomArtifactDto> Artifacts
+    List<TranslationRoomArtifactDto> Artifacts,
+    /// <summary>
+    /// The CALLER's own invitation to this room, as stored (PENDING / ACCEPTED / DECLINED), or
+    /// null when no invitation carries the caller's email.
+    ///
+    /// Exists for the personal timeline's "Joined" vs "Missed". <c>RoomReadAccess.IsReadableBy</c>
+    /// puts a room on that timeline by host, by participant row, or by an invitation carrying the
+    /// caller's email — and the third route leaves no participant row at all. So the roster alone
+    /// could not tell "invited by email, never came" from "no roster evidence either way", and the
+    /// web had to call every such finished meeting Joined. This is the missing fact.
+    ///
+    /// Filled in ONLY by the personal timeline (<c>GetMyMeetingsAsync</c>). This record is shared
+    /// with the workspace archive (WT-333 FR-333-009 pins one response shape for both), and the
+    /// archive never sets it; <c>WhenWritingNull</c> is what keeps the archive's wire contract
+    /// byte-for-byte what it was. The cost: on the timeline "no invitation" is an ABSENT key rather
+    /// than an explicit null, and a reader must treat the two alike.
+    ///
+    /// Added LAST, with a default, so existing positional constructions keep compiling.
+    /// </summary>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ViewerInvitationStatus = null
 );
 
 public record TranslationRoomHistoryResponse(

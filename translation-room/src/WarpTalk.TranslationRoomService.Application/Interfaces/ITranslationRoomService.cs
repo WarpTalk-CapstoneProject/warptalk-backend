@@ -212,7 +212,8 @@ public interface ITranslationRoomService
 
     /// <summary>
     /// WT-333 — the caller's own meetings in one workspace, past and upcoming, newest first. Same
-    /// response shape as the history read; the implementation documents the three ways it differs.
+    /// response shape as the history read; the implementation documents the three ways it differs,
+    /// and the one field only this read fills in (<c>ViewerInvitationStatus</c>).
     /// </summary>
     Task<Result<TranslationRoomHistoryResponse>> GetMyMeetingsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
