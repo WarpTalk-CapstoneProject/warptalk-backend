@@ -22,11 +22,6 @@ namespace WarpTalk.WorkspaceService.Application.Helpers;
 /// </remarks>
 public static class DocumentContentHelper
 {
-    /// <summary>
-    /// How many leading bytes any signature below needs. WEBP is the longest at 12.
-    /// </summary>
-    public const int SignaturePrefixLength = 16;
-
     private static readonly byte[] Pdf = "%PDF"u8.ToArray();
     private static readonly byte[] ZipLocalFile = [0x50, 0x4B, 0x03, 0x04];
     private static readonly byte[] ZipEmpty = [0x50, 0x4B, 0x05, 0x06];
