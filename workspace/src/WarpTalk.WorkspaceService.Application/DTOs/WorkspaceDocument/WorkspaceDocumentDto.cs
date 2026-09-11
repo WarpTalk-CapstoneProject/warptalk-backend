@@ -32,5 +32,20 @@ public record WorkspaceDocumentDto(
     /// Trailing and optional so every existing positional construction of this record keeps
     /// compiling — this is a diagnostic addition, not a reshape.
     /// </summary>
-    string? IngestionFailureReason = null
+    string? IngestionFailureReason = null,
+    /// <summary>
+    /// Why a reviewer rejected this document, or null when it was never rejected. WT-633.
+    /// </summary>
+    /// <remarks>
+    /// Read from the latest RejectDocument audit row rather than stored on the document, and only
+    /// on the by-id route — the list evaluates N documents already, and this is a detail-page
+    /// fact. It is the reason WT-633 exists: the reviewer's words had nowhere to live, so the
+    /// uploader was told "rejected" and nothing else.
+    ///
+    /// It SURVIVES the re-upload that sets the status back to `pending_approval`, because the
+    /// audit row it comes from is immutable. That is deliberate: the feedback being answered
+    /// should still be readable while the answer is under review. Approval writes its own row, and
+    /// the web hides the banner once the status is published.
+    /// </remarks>
+    string? RejectionReason = null
 );

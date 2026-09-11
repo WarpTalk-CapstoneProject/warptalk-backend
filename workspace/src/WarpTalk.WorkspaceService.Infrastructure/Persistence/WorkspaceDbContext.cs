@@ -109,6 +109,8 @@ public partial class WorkspaceDbContext : DbContext
 
             entity.HasIndex(e => new { e.WorkspaceId, e.Status }, "idx_workspace_documents_workspace_status");
 
+            entity.HasIndex(e => new { e.WorkspaceId, e.ContentHash }, "idx_workspace_documents_workspace_content_hash");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuidv7()")
                 .HasColumnName("id");
@@ -128,6 +130,12 @@ public partial class WorkspaceDbContext : DbContext
                 .HasMaxLength(30)
                 .HasDefaultValueSql("'public_internal'::character varying")
                 .HasColumnName("confidentiality_level");
+            // HasColumnName is NOT optional here. This file configures every column by hand — there
+            // is no snake_case convention — and WT-411 already shipped a property without this line
+            // and broke every SELECT over the table with 42703.
+            entity.Property(e => e.ContentHash)
+                .HasMaxLength(64)
+                .HasColumnName("content_hash");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
