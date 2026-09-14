@@ -152,8 +152,12 @@ public class MeetingMinutesController : ControllerBase
     /// </summary>
     [HttpGet("export.docx")]
     public Task<IActionResult> ExportDocx(
-        Guid roomId, [FromQuery] string? template = null, CancellationToken ct = default) =>
-        ExportAsync(roomId, template, "docx", ct);
+        Guid roomId,
+        [FromQuery] string? template = null,
+        [FromQuery] string? lang = null,
+        [FromQuery] string? mode = null,
+        CancellationToken ct = default) =>
+        ExportAsync(roomId, template, "docx", lang, mode, ct);
 
     /// <summary>
     /// The same document as a PDF.
@@ -164,17 +168,28 @@ public class MeetingMinutesController : ControllerBase
     /// </summary>
     [HttpGet("export.pdf")]
     public Task<IActionResult> ExportPdf(
-        Guid roomId, [FromQuery] string? template = null, CancellationToken ct = default) =>
-        ExportAsync(roomId, template, "pdf", ct);
+        Guid roomId,
+        [FromQuery] string? template = null,
+        [FromQuery] string? lang = null,
+        [FromQuery] string? mode = null,
+        CancellationToken ct = default) =>
+        ExportAsync(roomId, template, "pdf", lang, mode, ct);
 
+    /// <summary>
+    /// WT-685: <c>lang</c> is the one language the file is in (absent means the original) and
+    /// <c>mode=bilingual</c> puts the original beside exactly that language. The bearer token is
+    /// forwarded for the same reason <see cref="GetTranslation"/> forwards it: a language the
+    /// record does not store is generated as this caller.
+    /// </summary>
     private async Task<IActionResult> ExportAsync(
-        Guid roomId, string? template, string format, CancellationToken ct)
+        Guid roomId, string? template, string format, string? lang, string? mode, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
         var result = await _minutesService.ExportAsync(
-            roomId, userId.Value, User.GetEmail(), template, format, ct);
+            roomId, userId.Value, User.GetEmail(), template, format,
+            lang, mode, Request.Headers["Authorization"].ToString(), ct);
 
         return result.IsSuccess
             ? File(result.Value!.Bytes, result.Value!.ContentType, result.Value!.FileName)

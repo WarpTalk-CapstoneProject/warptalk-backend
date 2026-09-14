@@ -115,6 +115,9 @@ public static class MeetingMinutesDrafter
     {
         var attended = participants.Where(p => Attended(p)).ToList();
 
+        var primaryLanguage = ReadSummaryLanguage(summaryJson)
+            ?? (string.IsNullOrWhiteSpace(room.SourceLanguage) ? null : room.SourceLanguage);
+
         var content = new MeetingMinutesContent
         {
             MeetingTitle = room.Title,
@@ -139,9 +142,8 @@ public static class MeetingMinutesDrafter
             //
             // Empty `summaryLanguage` means nobody chose and the model followed the transcript,
             // which is exactly when the room's source language IS the honest answer.
-            PrimaryLanguage = ReadSummaryLanguage(summaryJson)
-                ?? (string.IsNullOrWhiteSpace(room.SourceLanguage) ? null : room.SourceLanguage),
-            Translations = BuildTranslations(summaryJson),
+            PrimaryLanguage = primaryLanguage,
+            Translations = BuildTranslations(summaryJson, primaryLanguage),
             // Votes are never inferred from the transcript. A count of who agreed has to come
             // from people pressing a button, because silence is not assent and "ừ" may be
             // answering a different question — a fabricated tally is worse than no tally.
@@ -507,7 +509,8 @@ public static class MeetingMinutesDrafter
     ///     The map is also model-produced and never defaulted upstream, so it can be absent from a
     ///     multilingual room's summary entirely. Absent means "not produced", never "none".
     /// </summary>
-    private static Dictionary<string, List<MinutesSection>>? BuildTranslations(string? summaryJson)
+    private static Dictionary<string, List<MinutesSection>>? BuildTranslations(
+        string? summaryJson, string? primaryLanguage)
     {
         if (string.IsNullOrWhiteSpace(summaryJson)) return null;
 
@@ -530,6 +533,7 @@ public static class MeetingMinutesDrafter
             }
 
             var result = new Dictionary<string, List<MinutesSection>>(StringComparer.OrdinalIgnoreCase);
+            var original = LanguageHelper.NormalizeLanguageCode(primaryLanguage);
 
             foreach (var language in translations.EnumerateObject())
             {
@@ -565,9 +569,15 @@ public static class MeetingMinutesDrafter
                     });
                 }
 
-                if (sections.Count > 0)
+                // WT-685: keyed by the bare code, so "vi-VN" and "vi" are one language rather than
+                // two; and never by the record's OWN language — a "translation" of the original
+                // into itself printed English under English with an [en] tag. The first spelling
+                // of a language wins. MinutesLanguageView.CleanTranslations applies the same rule
+                // to documents drawn up before this.
+                var code = LanguageHelper.NormalizeLanguageCode(language.Name);
+                if (sections.Count > 0 && code.Length > 0 && code != original)
                 {
-                    result[language.Name] = sections;
+                    result.TryAdd(code, sections);
                 }
             }
 
