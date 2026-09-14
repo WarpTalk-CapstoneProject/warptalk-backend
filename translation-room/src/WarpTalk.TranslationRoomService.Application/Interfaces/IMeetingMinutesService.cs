@@ -110,8 +110,14 @@ public interface IMeetingMinutesService
     /// were at the meeting, and one only its author can download is a record of nothing. The
     /// document prints its own status, so a draft that leaves the building says it is a draft.
     /// </summary>
+    /// <remarks>
+    /// WT-685: <paramref name="language"/> picks the one language the file is in (null is the
+    /// original), and <paramref name="mode"/> "bilingual" adds the original beside exactly that
+    /// language. See MinutesLanguageView.
+    /// </remarks>
     Task<Result<MinutesExportFile>> ExportAsync(
         Guid roomId, Guid userId, string? userEmail, string? template, string format,
+        string? language = null, string? mode = null, string? bearerToken = null,
         CancellationToken ct = default);
 
     // ------------------------------------------------------------------ sharing
@@ -155,5 +161,6 @@ public interface IMeetingMinutesService
     /// <summary>The same document as a file, for a viewer holding a link that allows downloads.</summary>
     Task<Result<MinutesExportFile>> ExportSharedAsync(
         string token, Guid? viewerUserId, string? viewerEmail, string? template, string format,
+        string? language = null, string? mode = null,
         CancellationToken ct = default);
 }

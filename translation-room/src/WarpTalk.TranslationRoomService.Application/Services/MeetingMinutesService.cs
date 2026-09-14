@@ -805,6 +805,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
     public async Task<Result<MinutesExportFile>> ExportAsync(
         Guid roomId, Guid userId, string? userEmail, string? template, string format,
+        string? language = null, string? mode = null, string? bearerToken = null,
         CancellationToken ct = default)
     {
         // Deliberately the same gate as reading the minutes on screen, not the write gate.
@@ -817,7 +818,21 @@ public class MeetingMinutesService : IMeetingMinutesService
                 current.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, current.ErrorCode);
         }
 
-        return await RenderAsync(current.Value!, template, format, ct);
+        // WT-685: the file follows the language the reader is reading. A language the record does
+        // not store is read the same way the page reads it, so the file and the screen agree; one
+        // that is still being generated renders its sections as "not translated yet" rather than
+        // silently printing a different language.
+        List<MinutesSection>? requested = null;
+        if (LanguageHelper.NormalizeLanguageCode(language).Length > 0)
+        {
+            var reading = await GetTranslationAsync(roomId, userId, userEmail, language!, bearerToken, ct);
+            if (reading.IsSuccess && reading.Value!.Status == MinutesTranslationStatus.Ready)
+            {
+                requested = reading.Value.Sections;
+            }
+        }
+
+        return await RenderAsync(current.Value!, template, format, language, mode, requested, ct);
     }
 
     /// <summary>
@@ -829,7 +844,13 @@ public class MeetingMinutesService : IMeetingMinutesService
     /// a template is therefore exactly the .docx of that template, printed.
     /// </summary>
     private async Task<Result<MinutesExportFile>> RenderAsync(
-        MeetingMinutesDto minutes, string? template, string format, CancellationToken ct)
+        MeetingMinutesDto minutes,
+        string? template,
+        string format,
+        string? language,
+        string? mode,
+        List<MinutesSection>? requested,
+        CancellationToken ct)
     {
         var content = TryReadContent(minutes.Content);
         if (content == null)
@@ -839,6 +860,10 @@ public class MeetingMinutesService : IMeetingMinutesService
             return Result.Failure<MinutesExportFile>(
                 MeetingMinutesConstants.ErrorContentUnreadable, ErrorCodes.InvalidState);
         }
+
+        // One language, or the original plus exactly one — see MinutesLanguageView. Shaped here so
+        // both layouts obey the same rule without either writer choosing languages itself.
+        content = MinutesLanguageView.Shape(content, language, mode, requested);
 
         // Normalised here rather than at the controller so every caller — the HTTP endpoint
         // today, a scheduled circulation tomorrow — gets the same default and the same
@@ -1096,6 +1121,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
     public async Task<Result<MinutesExportFile>> ExportSharedAsync(
         string token, Guid? viewerUserId, string? viewerEmail, string? template, string format,
+        string? language = null, string? mode = null,
         CancellationToken ct = default)
     {
         var opened = await OpenLinkAsync(token, viewerUserId, viewerEmail, ct);
@@ -1128,7 +1154,8 @@ public class MeetingMinutesService : IMeetingMinutesService
                 MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.InvalidState);
         }
 
-        return await RenderAsync(await ToDtoAsync(minutes, ct), template, format, ct);
+        // Stored languages only: a share link has no reader to generate a new reading as.
+        return await RenderAsync(await ToDtoAsync(minutes, ct), template, format, language, mode, null, ct);
     }
 
     /// <summary>
