@@ -96,6 +96,24 @@ public class MeetingMinutesController : ControllerBase
             roomId, minutesId, userId.Value, request.Content, ct));
     }
 
+    /// <summary>
+    /// Name the secretary of record — the one person besides the host and a workspace Owner/Admin
+    /// who may edit and sign. A null participant clears it.
+    /// </summary>
+    [HttpPut("{minutesId}/secretary")]
+    public async Task<IActionResult> DesignateSecretary(
+        Guid roomId,
+        Guid minutesId,
+        [FromBody] DesignateMinutesSecretaryRequest request,
+        CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        return Respond(await _minutesService.DesignateSecretaryAsync(
+            roomId, minutesId, userId.Value, request?.ParticipantId, ct));
+    }
+
     [HttpPost("{minutesId}/sign")]
     public async Task<IActionResult> Sign(Guid roomId, Guid minutesId, CancellationToken ct = default)
     {

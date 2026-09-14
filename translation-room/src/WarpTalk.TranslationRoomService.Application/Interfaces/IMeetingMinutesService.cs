@@ -85,6 +85,13 @@ public interface IMeetingMinutesService
     Task<Result<MeetingMinutesDto>> UpdateContentAsync(
         Guid roomId, Guid minutesId, Guid userId, string contentJson, CancellationToken ct = default);
 
+    /// <summary>
+    /// The host names the secretary — the one person besides host authority who may edit and sign.
+    /// Null clears it. Refused once the minutes are signed, and for anyone who did not attend.
+    /// </summary>
+    Task<Result<MeetingMinutesDto>> DesignateSecretaryAsync(
+        Guid roomId, Guid minutesId, Guid userId, Guid? participantId, CancellationToken ct = default);
+
     /// <summary>The secretary takes responsibility for the content. Records how much they changed.</summary>
     Task<Result<MeetingMinutesDto>> SignAsync(
         Guid roomId, Guid minutesId, Guid userId, CancellationToken ct = default);
