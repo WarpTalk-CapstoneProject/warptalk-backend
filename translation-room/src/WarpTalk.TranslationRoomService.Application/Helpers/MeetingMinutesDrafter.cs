@@ -66,6 +66,47 @@ public static class MeetingMinutesDrafter
     /// <summary>The section key under which a recurring meeting lists what it inherited.</summary>
     public const string CarriedOverKey = "carriedOver";
 
+    // WT-685 — THE THREE LINES THIS DRAFTER WRITES IN WORDS.
+    //
+    // Everything else in a draft is a fact or a quotation; these three are sentences, and they are
+    // written in Vietnamese because the draft is the Vietnamese form's record. The International
+    // layout printed them verbatim, so an English document said "Location: Trực tuyến qua
+    // WarpTalk" and "Quorum: met — Quá bán số người được mời".
+    //
+    // They are translated where they are READ rather than stored in two languages, for two reasons:
+    // every document already drawn up — including approved ones, which are immutable — gets the
+    // fix without a rewrite, and a line the secretary has edited is no longer the drafted sentence,
+    // so it is printed exactly as they wrote it. warptalk-web's `inInternationalLayout` is the
+    // other half and must stay in step with this one.
+    public const string DraftedLocation = "Trực tuyến qua WarpTalk";
+    public const string DraftedQuorumRule = "Quá bán số người được mời";
+    public const string DraftedAgendaPreface = "Theo mô tả cuộc họp khi đặt lịch:";
+
+    /// <summary>
+    /// A drafted line as the International layout prints it; anything a person wrote is returned
+    /// unchanged. See the note above <see cref="DraftedLocation"/>.
+    /// </summary>
+    public static string? InInternationalLayout(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+        if (value == DraftedLocation) return "Online via WarpTalk";
+        if (value == DraftedQuorumRule) return "a majority of those invited";
+        if (value.StartsWith(DraftedAgendaPreface, StringComparison.Ordinal))
+        {
+            return "From the meeting description at booking:" + value[DraftedAgendaPreface.Length..];
+        }
+        return value;
+    }
+
+    /// <summary>
+    /// WT-685: the smallest roll for which "a majority of those invited" says anything.
+    ///
+    /// With two invitees the rule collapses into "both came", which is attendance restated, and a
+    /// 1-1 printed "Quorum: not met" when one side dropped reads as a procedural failure of a
+    /// conversation that never had a quorum to fail.
+    /// </summary>
+    private const int SmallestRollForQuorum = 3;
+
     public static string BuildContent(
         TranslationRoom room,
         IReadOnlyCollection<TranslationRoomParticipant> participants,
@@ -79,12 +120,12 @@ public static class MeetingMinutesDrafter
             MeetingTitle = room.Title,
             // Every WarpTalk meeting is online; standard form still wants the line filled, and
             // naming the platform is the truthful answer to "địa điểm".
-            Location = "Trực tuyến qua WarpTalk",
+            Location = DraftedLocation,
             OpenedAt = FirstJoin(attended),
             ClosedAt = room.EndedAt,
             ScheduledAt = room.ScheduledAt,
             Agenda = AgendaFrom(room),
-            Attendance = BuildAttendance(participants, attended),
+            Attendance = BuildAttendance(participants, attended, IsInterview(summaryJson)),
             Sections = BuildSections(summaryJson, carriedOver),
             // Which language THIS DOCUMENT's primary half is written in, so a bilingual reader
             // knows which side is the original rather than inferring it.
@@ -214,7 +255,29 @@ public static class MeetingMinutesDrafter
     private static string? AgendaFrom(TranslationRoom room) =>
         string.IsNullOrWhiteSpace(room.Description)
             ? null
-            : $"Theo mô tả cuộc họp khi đặt lịch:\n{room.Description!.Trim()}";
+            : $"{DraftedAgendaPreface}\n{room.Description!.Trim()}";
+
+    /// <summary>
+    /// Whether the summary this draft is built from was written as an interview. An interview has
+    /// sides, not a roll: nobody asks whether a majority of an interview panel turned up.
+    /// </summary>
+    private static bool IsInterview(string? summaryJson)
+    {
+        if (string.IsNullOrWhiteSpace(summaryJson)) return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(summaryJson);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("templateKey", out var key)
+                && key.ValueKind == JsonValueKind.String
+                && string.Equals(key.GetString(), "interview", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>When the meeting was called to order, or null when nobody ever joined.</summary>
     private static DateTime? FirstJoin(IReadOnlyCollection<TranslationRoomParticipant> attended)
@@ -233,7 +296,8 @@ public static class MeetingMinutesDrafter
 
     private static MinutesAttendance BuildAttendance(
         IReadOnlyCollection<TranslationRoomParticipant> all,
-        IReadOnlyCollection<TranslationRoomParticipant> attended)
+        IReadOnlyCollection<TranslationRoomParticipant> attended,
+        bool isInterview)
     {
         var attendedIds = attended.Select(p => p.Id).ToHashSet();
 
@@ -251,6 +315,7 @@ public static class MeetingMinutesDrafter
 
         var invited = all.Count;
         var present = attended.Count;
+        var quorumApplies = invited >= SmallestRollForQuorum && !isInterview;
 
         return new MinutesAttendance
         {
@@ -273,8 +338,10 @@ public static class MeetingMinutesDrafter
             // Stated rather than assumed, because a bare boolean tells the reader nothing about
             // what bar was applied. Null when nobody was formally invited: an ad-hoc room has no
             // roll to be a majority of, and answering "false" there would be a claim, not a fact.
-            QuorumRule = invited > 0 ? "Quá bán số người được mời" : null,
-            QuorumMet = invited > 0 ? present * 2 > invited : null
+            // WT-685: the same null for a 1-1 and for an interview, for the reasons given on
+            // SmallestRollForQuorum and IsInterview.
+            QuorumRule = quorumApplies ? DraftedQuorumRule : null,
+            QuorumMet = quorumApplies ? present * 2 > invited : null
         };
     }
 

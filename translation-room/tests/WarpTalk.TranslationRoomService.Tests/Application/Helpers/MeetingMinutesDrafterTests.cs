@@ -139,6 +139,79 @@ public class MeetingMinutesDrafterTests
     }
 
     [Fact]
+    public void AOneToOneMeetingIsNotJudgedForQuorum()
+    {
+        // WT-685. With two invitees "a majority of those invited" only restates attendance, and
+        // "Quorum: not met" on a 1-1 reads as a procedural failure that never existed.
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(),
+            new List<TranslationRoomParticipant>
+            {
+                Person("Tú", "CONNECTED", Opened),
+                Person("Kỳ", "INVITED")
+            },
+            null));
+
+        content.Attendance.QuorumMet.Should().BeNull();
+        content.Attendance.QuorumRule.Should().BeNull();
+    }
+
+    [Fact]
+    public void AnInterviewIsNotJudgedForQuorumWhateverItsSize()
+    {
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            Room(),
+            new List<TranslationRoomParticipant>
+            {
+                Person("A", "CONNECTED", Opened),
+                Person("B", "CONNECTED", Opened),
+                Person("C", "CONNECTED", Opened)
+            },
+            "{\"templateKey\":\"interview\",\"summary\":\"The candidate walked through the design.\"}"));
+
+        content.Attendance.QuorumMet.Should().BeNull();
+        content.Attendance.QuorumRule.Should().BeNull();
+    }
+
+    [Fact]
+    public void TheInternationalLayoutReadsDraftedLinesInEnglishAndLeavesAPersonsWordsAlone()
+    {
+        // WT-685: an English document printed "Trực tuyến qua WarpTalk" and "Quá bán số người
+        // được mời" verbatim.
+        MeetingMinutesDrafter.InInternationalLayout(MeetingMinutesDrafter.DraftedLocation)
+            .Should().Be("Online via WarpTalk");
+        MeetingMinutesDrafter.InInternationalLayout(MeetingMinutesDrafter.DraftedQuorumRule)
+            .Should().Be("a majority of those invited");
+        MeetingMinutesDrafter.InInternationalLayout($"{MeetingMinutesDrafter.DraftedAgendaPreface}\nReview Q3")
+            .Should().Be("From the meeting description at booking:\nReview Q3");
+
+        // Edited by the secretary, so no longer the drafted sentence: printed as written.
+        MeetingMinutesDrafter.InInternationalLayout("Phòng họp tầng 3").Should().Be("Phòng họp tầng 3");
+        MeetingMinutesDrafter.InInternationalLayout(null).Should().BeNull();
+    }
+
+    [Fact]
+    public void TheDraftStillUsesTheDraftedSentencesTheLayoutKnowsHowToTranslate()
+    {
+        var room = Room();
+        room.Description = "Review Q3";
+
+        var content = Parse(MeetingMinutesDrafter.BuildContent(
+            room,
+            new List<TranslationRoomParticipant>
+            {
+                Person("A", "CONNECTED", Opened),
+                Person("B", "CONNECTED", Opened),
+                Person("C", "INVITED")
+            },
+            null));
+
+        content.Location.Should().Be(MeetingMinutesDrafter.DraftedLocation);
+        content.Attendance.QuorumRule.Should().Be(MeetingMinutesDrafter.DraftedQuorumRule);
+        content.Agenda.Should().StartWith(MeetingMinutesDrafter.DraftedAgendaPreface);
+    }
+
+    [Fact]
     public void TheMeetingOpensWhenTheFirstPersonJoinedAndClosesWhenTheRoomEnded()
     {
         var content = Parse(MeetingMinutesDrafter.BuildContent(

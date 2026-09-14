@@ -256,7 +256,7 @@ public class GlobalMinutesDocxWriter
             ("Meeting opened", Moment(content.OpenedAt)),
             ("Meeting closed", Moment(content.ClosedAt)),
             ("Scheduled for", content.ScheduledAt.HasValue ? Moment(content.ScheduledAt) : null),
-            ("Location", content.Location),
+            ("Location", WarpTalk.TranslationRoomService.Application.Helpers.MeetingMinutesDrafter.InInternationalLayout(content.Location)),
             ("Language of record", LanguageOfRecord(content)),
             ("Translations", TranslationsNote(content)),
             ("Source record", SourceRecord(minutes)),
@@ -384,7 +384,7 @@ public class GlobalMinutesDocxWriter
             var verdict = attendance.QuorumMet.Value ? "quorum was met" : "QUORUM WAS NOT MET";
             var rule = string.IsNullOrWhiteSpace(attendance.QuorumRule)
                 ? string.Empty
-                : $" (rule applied: {attendance.QuorumRule})";
+                : $" (rule applied: {WarpTalk.TranslationRoomService.Application.Helpers.MeetingMinutesDrafter.InInternationalLayout(attendance.QuorumRule)})";
             body.AppendChild(Line(
                 $"{attendance.PresentCount} of {attendance.InvitedCount} invited were present: {verdict}{rule}.",
                 left: Indent));
@@ -394,7 +394,7 @@ public class GlobalMinutesDocxWriter
     private static void WriteAgenda(Body body, MeetingMinutesContent content, DecimalCounter numbering)
     {
         body.AppendChild(Heading(numbering.NextSection(), "Agenda"));
-        WriteRichText(body, content.Agenda);
+        WriteRichText(body, WarpTalk.TranslationRoomService.Application.Helpers.MeetingMinutesDrafter.InInternationalLayout(content.Agenda));
 
         // The blank on its own reads as a bug in the exporter. Saying why it is blank turns it
         // back into what it is: a meeting booked without a programme, and a line for a person.
