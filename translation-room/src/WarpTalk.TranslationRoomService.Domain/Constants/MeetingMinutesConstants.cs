@@ -20,6 +20,12 @@ public static class MeetingMinutesConstants
     public const string ErrorMinutesNotPublished =
         "These minutes are still a draft. They become readable once the host or the secretary signs them.";
     public const string ErrorUnauthorizedManage = "Only the meeting host can draw up or sign the minutes.";
+    public const string ErrorUnauthorizedEdit =
+        "Only the meeting host, a workspace admin or the secretary the host assigned can edit these minutes.";
+    public const string ErrorSecretaryAlreadySigned =
+        "These minutes have already been signed, so the secretary can no longer be changed.";
+    public const string ErrorSecretaryNotInMeeting =
+        "The secretary must be somebody with a WarpTalk account who attended this meeting.";
     public const string ErrorMeetingNotEnded = "Minutes can only be drawn up once the meeting has ended.";
     public const string ErrorApprovedIsImmutable =
         "Approved minutes cannot be edited. Issue a revision instead — the signed version stays on record.";
