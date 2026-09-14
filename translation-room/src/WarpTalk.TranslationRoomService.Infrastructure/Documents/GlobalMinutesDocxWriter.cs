@@ -938,6 +938,9 @@ public class GlobalMinutesDocxWriter
         "decisions" => "Decisions",
         "actionItems" => "Action items",
         "openQuestions" => "Open questions",
+        // Not a summary template section: the minutes editor adds it for points a secretary writes
+        // in by hand (warptalk-web DISCUSSION_KEY). Without it the file would print the raw key.
+        "discussion" => "Discussion points",
         "progress" => "Progress",
         "plans" => "Plans",
         "blockers" => "Blockers",
