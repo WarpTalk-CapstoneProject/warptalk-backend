@@ -813,6 +813,41 @@ public class McpToolOrchestratorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_AsksToConnect_WhenThePluginIsInstalledButTheUserNeverConnectedIt()
+    {
+        // The grant is live and covers the tool - Calendar's consent carries the scope Meet uses -
+        // but the user never connected this plugin. WarpBot must not act through it anyway.
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin, DateTime.UtcNow.AddMinutes(30));
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PluginInstallation
+            {
+                Id = Guid.NewGuid(),
+                UserId = UserId,
+                PluginId = PluginId,
+                Status = PluginConstants.InstallationStatus.Installed,
+                InstalledAt = DateTime.UtcNow,
+            });
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConnectionRequired, result.Value.ErrorCode);
+        Assert.Equal(PluginConstants.ConnectionStatus.NotConnected, result.Value.ConnectionStatus);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ExecuteAsync_Refuses_WhenTheRequestNamesNoWorkspace()
     {
         // The bypass this gate was missing. workspaceId is an ordinary optional field of a body the
@@ -1012,6 +1047,9 @@ public class McpToolOrchestratorTests
                 PluginId = PluginId,
                 Status = PluginConstants.InstallationStatus.Installed,
                 InstalledAt = DateTime.UtcNow,
+                // Connected by the user. Every test through this helper is about a plugin WarpBot
+                // is allowed to act through; the unconnected case sets its own installation.
+                ConnectedAt = DateTime.UtcNow,
             });
     }
 

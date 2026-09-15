@@ -107,6 +107,18 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (installation == null)
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.PluginNotInstalled, "Plugin is not installed.", ct);
 
+        // Installed but never connected. The provider's grant may well cover this tool - Meet rides
+        // on the scope Calendar was granted - but the user did not connect this plugin, so WarpBot
+        // does not get to act through it.
+        if (installation.ConnectedAt is null)
+            return await McpToolAuditRecorder.RecordFailureAsync(
+                _unitOfWork,
+                userId,
+                plugin.Id,
+                request,
+                BuildConnectionRequiredResult(plugin, connection: null),
+                ct);
+
         // The grant is the provider's, not the plugin's. The per-tool scope check below is what
         // still separates the products: a Drive tool needs drive.readonly on this connection
         // whether the user consented through the Drive tile or the Calendar one.

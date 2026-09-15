@@ -158,6 +158,34 @@ public class AssistantPluginsController : ControllerBase
     }
 
     /// <remarks>
+    /// What the plugins page and WarpBot call to connect. Answers <c>connected: true</c> with no URL
+    /// when the provider's existing grant already covers the plugin, and a consent URL otherwise.
+    /// A POST because the first answer changes state. <c>connect-url</c> above stays for clients
+    /// that predate this route; it always sends the user to the provider.
+    /// </remarks>
+    [HttpPost("{pluginKey}/connect")]
+    [ProducesResponseType(typeof(PluginConnectResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> Connect(
+        string pluginKey,
+        [FromQuery] string? client,
+        [FromQuery] Guid? workspaceId,
+        CancellationToken ct)
+    {
+        var result = await _connectionService.ConnectAsync(pluginKey, CurrentUserId, client, workspaceId, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
+            if (result.ErrorCode == PluginConstants.ErrorCodes.PluginNotInstalled) return Conflict(result.Error);
+            if (IsWorkspacePolicyRefusal(result.ErrorCode)) return StatusCode(StatusCodes.Status403Forbidden, result.Error);
+            return BadRequest(result.Error);
+        }
+        return Ok(result.Value);
+    }
+
+    /// <remarks>
     /// The provider redirects the end user's browser straight at this gateway URL, so the response
     /// has to be a redirect back into the app rather than a JSON body: nothing renders raw API JSON
     /// for a human. That holds for the unhappy paths too, which is what <see cref="LandingUrl"/>

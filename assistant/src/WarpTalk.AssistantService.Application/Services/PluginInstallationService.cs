@@ -139,6 +139,10 @@ public class PluginInstallationService : IPluginInstallationService
 
         installation.Status = PluginConstants.InstallationStatus.Disabled;
         installation.DisabledAt = DateTime.UtcNow;
+        // A removed plugin is not connected, and installing it again is not a choice to reconnect
+        // it. Left set, a reinstall would come back already connected, and the last-plugin check
+        // in DisconnectAsync would count it as still riding on the provider's grant.
+        installation.ConnectedAt = null;
         _unitOfWork.PluginInstallationRepository.Update(installation);
         await _unitOfWork.SaveChangesAsync(ct);
         return Result.Success();
