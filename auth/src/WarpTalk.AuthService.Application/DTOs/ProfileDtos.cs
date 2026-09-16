@@ -18,5 +18,10 @@ public record UserDto(
     string? Timezone,
     bool EmailVerified,
     AccountStatus Status,
-    IReadOnlyList<string> Roles
+    IReadOnlyList<string> Roles,
+    // Sign-in methods, so Settings > Connected accounts can show link state and explain why
+    // Unlink is refused (UnlinkGoogleAsync requires a local password). Booleans only — the
+    // Google subject id and the password hash never leave the service.
+    bool GoogleLinked = false,
+    bool HasPassword = false
 );

@@ -20,7 +20,10 @@ public static class UserMapper
             user.Timezone,
             user.EmailVerified,
             UserStatusHelper.GetAccountStatus(user),
-            roles.AsReadOnly()
+            roles.AsReadOnly(),
+            GoogleLinked: !string.IsNullOrEmpty(user.GoogleId),
+            // Google sign-up stores PasswordHash = "", which is the same test UnlinkGoogleAsync uses.
+            HasPassword: !string.IsNullOrEmpty(user.PasswordHash)
         );
     }
 
