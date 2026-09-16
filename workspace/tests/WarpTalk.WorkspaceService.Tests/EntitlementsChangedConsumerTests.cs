@@ -146,6 +146,48 @@ public class EntitlementsChangedConsumerTests
         await unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// The ceiling an owner tightened against must survive the wire and the snapshot, or the
+    /// Features page can only show the owner's number and never the plan's.
+    /// </summary>
+    [Fact]
+    public async Task OwnerOverrideCeiling_SurvivesTheWireAndIsStored()
+    {
+        var workspaceId = Guid.NewGuid();
+        var envelope = Envelope(workspaceId, "enterprise", "3", DateTime.UtcNow) with
+        {
+            Payload = Envelope(workspaceId, "enterprise", "3", DateTime.UtcNow).Payload with
+            {
+                Entitlements = new List<ResolvedEntitlementPayload>
+                {
+                    new("max_active_rooms", "5", "workspace_override") { Ceiling = "20", CeilingSource = "plan:enterprise" },
+                    new("max_languages", "3", "plan:enterprise")
+                }
+            }
+        };
+
+        var wire = JsonSerializer.Serialize(envelope);
+        Assert.Contains("\"ceiling\":\"20\"", wire);
+        Assert.True(EntitlementsChangedConsumer.TryParseEnvelope(wire, out var parsed));
+
+        var unitOfWork = Substitute.For<IUnitOfWork>();
+        unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+        WorkspaceEntitlementSnapshot? added = null;
+        await unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .AddAsync(Arg.Do<WorkspaceEntitlementSnapshot>(snapshot => added = snapshot), Arg.Any<CancellationToken>());
+
+        await CreateConsumer().ApplyAsync(unitOfWork, parsed!, CancellationToken.None);
+
+        var stored = WorkspaceEntitlements.FromSnapshot(added!.EntitlementsJson, added.HasActiveSubscription).All;
+        Assert.Equal("20", stored["max_active_rooms"].Ceiling);
+        Assert.Equal("plan:enterprise", stored["max_active_rooms"].CeilingSource);
+        Assert.Null(stored["max_languages"].Ceiling);
+        // Null ceilings stay off the stored row, so older readers see the shape they always did.
+        Assert.DoesNotContain("\"max_languages\":{\"value\":\"3\",\"source\":\"plan:enterprise\",", added.EntitlementsJson);
+    }
+
     [Fact]
     public void Envelope_IsRejected_WhenItIsNotTheEventOrSchemaWeUnderstand()
     {

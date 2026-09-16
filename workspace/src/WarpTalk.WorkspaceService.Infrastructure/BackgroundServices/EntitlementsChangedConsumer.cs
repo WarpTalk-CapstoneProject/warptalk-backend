@@ -156,7 +156,11 @@ public class EntitlementsChangedConsumer : BackgroundService
         var entitlementsJson = JsonSerializer.Serialize(
             payload.Entitlements.ToDictionary(
                 entitlement => entitlement.Key,
-                entitlement => new StoredEntitlement(entitlement.Value, entitlement.Source),
+                entitlement => new StoredEntitlement(entitlement.Value, entitlement.Source)
+                {
+                    Ceiling = entitlement.Ceiling,
+                    CeilingSource = entitlement.CeilingSource
+                },
                 StringComparer.Ordinal));
 
         var existing = await unitOfWork.WorkspaceEntitlementSnapshotRepository
