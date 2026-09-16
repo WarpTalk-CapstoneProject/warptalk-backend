@@ -36,13 +36,41 @@ public class UnitOfWork : IUnitOfWork
     public INotificationInboxMessageRepository NotificationInboxMessageRepository =>
         _notificationInboxMessageRepository ??= new NotificationInboxMessageRepository(_context);
 
+    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
+
     public async Task<int> SaveChangesAsync()
     {
         return await _context.SaveChangesAsync();
     }
 
+    public async Task BeginTransactionAsync(CancellationToken ct = default)
+    {
+        _currentTransaction = await _context.Database.BeginTransactionAsync(ct);
+    }
+
+    public async Task CommitTransactionAsync(CancellationToken ct = default)
+    {
+        if (_currentTransaction != null)
+        {
+            await _currentTransaction.CommitAsync(ct);
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
+    }
+
+    public async Task RollbackTransactionAsync(CancellationToken ct = default)
+    {
+        if (_currentTransaction != null)
+        {
+            await _currentTransaction.RollbackAsync(ct);
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
+    }
+
     public void Dispose()
     {
+        _currentTransaction?.Dispose();
         _context.Dispose();
     }
 }

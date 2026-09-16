@@ -86,6 +86,7 @@ builder.Services.AddTransient<IEmailSender, WarpTalk.NotificationService.Infrast
 
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
+builder.Services.AddScoped<IAdminNotificationDeliveryService, AdminNotificationDeliveryService>();
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
