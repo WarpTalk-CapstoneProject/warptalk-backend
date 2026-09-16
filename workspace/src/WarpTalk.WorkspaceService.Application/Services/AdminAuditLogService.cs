@@ -51,17 +51,10 @@ public class AdminAuditLogService : IAdminAuditLogService
                 "Unknown result filter. Expected 'succeeded' or 'failed'.", ErrorCodes.ValidationError);
         }
 
-        if (query.From is { } from && query.To is { } to && from >= to)
+        if (ValidateRange(query.From, query.To) is { } rangeError)
         {
             return Result.Failure<AdminPagedResult<AdminAuditLogEntryDto>>(
-                "'from' must be earlier than 'to'.", ErrorCodes.ValidationError);
-        }
-
-        if (query.From is { } rangeFrom && query.To is { } rangeTo
-            && (rangeTo - rangeFrom).TotalDays > MaxRangeDays)
-        {
-            return Result.Failure<AdminPagedResult<AdminAuditLogEntryDto>>(
-                $"Date range must not exceed {MaxRangeDays} days.", ErrorCodes.ValidationError);
+                rangeError, ErrorCodes.ValidationError);
         }
 
         var (page, pageSize) = query.Normalize();
@@ -161,7 +154,22 @@ public class AdminAuditLogService : IAdminAuditLogService
         }
     }
 
-    private static DateTime? ToUtc(DateTime? value) => value?.ToUniversalTime();
+    /// <summary>
+    /// Shared by the admin and the workspace-scoped reads so both reject the same ranges.
+    /// Returns the validation message, or null when the range is acceptable.
+    /// </summary>
+    public static string? ValidateRange(DateTime? from, DateTime? to)
+    {
+        if (from is { } f && to is { } t)
+        {
+            if (f >= t) return "'from' must be earlier than 'to'.";
+            if ((t - f).TotalDays > MaxRangeDays) return $"Date range must not exceed {MaxRangeDays} days.";
+        }
+
+        return null;
+    }
+
+    public static DateTime? ToUtc(DateTime? value) => value?.ToUniversalTime();
 
     private static string? Serialize(IReadOnlyDictionary<string, string?>? summary) =>
         summary is null || summary.Count == 0 ? null : JsonSerializer.Serialize(summary);
