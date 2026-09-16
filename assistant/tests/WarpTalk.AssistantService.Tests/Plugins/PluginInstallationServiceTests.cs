@@ -63,6 +63,7 @@ public class PluginInstallationServiceTests
                     PluginId = PluginId,
                     Status = PluginConstants.InstallationStatus.Installed,
                     InstalledAt = DateTime.UtcNow,
+                    ConnectedAt = DateTime.UtcNow,
                 }
             ]);
         _connectionRepository.FindAsync(
@@ -104,15 +105,12 @@ public class PluginInstallationServiceTests
     }
 
     [Fact]
-    public async Task InstallAsync_ReportsTheProvidersExistingConnection_NotNotConnected()
+    public async Task InstallAsync_IsNotConnected_ButCarriesTheProvidersExistingGrant()
     {
-        // Installing Calendar while the shared Google grant is already live. The response used to
-        // pass a hardcoded null connection, so it answered "not_connected" for a provider the user
-        // had already consented to - and a client that patches its tile from this response rather
-        // than refetching the catalog then offered Connect and sent them through a second consent.
-        //
-        // That second trip is not just wasted: consent replaces the shared grant's whole scope set,
-        // so it is also where Drive's access can be dropped.
+        // Installing a plugin while the shared Google grant is already live. Installing is not
+        // connecting, so the row says not_connected - reporting connected here is how a sibling
+        // used to switch itself on. The grant's account and scopes still travel, so a client can
+        // see that Connect will reuse them instead of sending the user back through consent.
         var plugin = GoogleDrivePlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -142,7 +140,7 @@ public class PluginInstallationServiceTests
         var result = await CreateSut().InstallAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.ConnectionStatus);
+        Assert.Equal(PluginConstants.ConnectionStatus.NotConnected, result.Value!.ConnectionStatus);
         Assert.Equal("user@example.com", result.Value.ConnectedAccountEmail);
         // The granted scopes travel too, so a client can apply the same subset test the catalog
         // listing does instead of trusting the status alone.
@@ -208,6 +206,8 @@ public class PluginInstallationServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.InstallationStatus.Disabled, installation.Status);
         Assert.NotNull(installation.DisabledAt);
+        // Removed is not connected: a reinstall must not come back already connected.
+        Assert.Null(installation.ConnectedAt);
         _installationRepository.Received(1).Update(installation);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
@@ -215,11 +215,11 @@ public class PluginInstallationServiceTests
     // ---- WT-646: three Google rows, one grant ------------------------------------------------
 
     [Fact]
-    public async Task ListCatalogAsync_ShowsEveryGoogleRowConnected_OffTheOneGrant()
+    public async Task ListCatalogAsync_ReportsOnlyTheConnectedGoogleRowConnected_OffTheOneGrant()
     {
-        // The tile-level regression this ticket exists to prevent: with the connection matched on
-        // plugin id, whichever Google tile did not happen to start the consent would render a
-        // "Connect" button for an account the user has already connected.
+        // One grant, two installed rows, one of them connected. Both rows read the grant - that is
+        // what lets the unconnected one reuse the account - but only the row the user connected
+        // says connected. Reporting both is how connecting Calendar used to switch Meet on.
         var drive = GoogleDrivePlugin();
         var calendar = GoogleCalendarPlugin();
         _pluginRepository.FindAsync(
@@ -232,7 +232,7 @@ public class PluginInstallationServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns([
-                Installation(PluginId),
+                Installation(PluginId, connected: true),
                 Installation(CalendarPluginId),
             ]);
         _connectionRepository.FindAsync(
@@ -259,9 +259,14 @@ public class PluginInstallationServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(
+            PluginConstants.ConnectionStatus.Connected,
+            Assert.Single(result.Value, item => item.Key == GoogleDriveKey).ConnectionStatus);
+        Assert.Equal(
+            PluginConstants.ConnectionStatus.NotConnected,
+            Assert.Single(result.Value, item => item.Key == GoogleCalendarKey).ConnectionStatus);
         Assert.All(result.Value, item =>
         {
-            Assert.Equal(PluginConstants.ConnectionStatus.Connected, item.ConnectionStatus);
             Assert.Equal("user@example.com", item.ConnectedAccountEmail);
             // And installing Calendar did not invent a calendar scope: the tile reports exactly
             // what Google granted, so the UI can still tell the user a reconnect is needed.
@@ -487,7 +492,7 @@ public class PluginInstallationServiceTests
             .Returns((PluginInstallation?)null);
     }
 
-    private static PluginInstallation Installation(Guid pluginId) =>
+    private static PluginInstallation Installation(Guid pluginId, bool connected = false) =>
         new()
         {
             Id = Guid.NewGuid(),
@@ -495,6 +500,7 @@ public class PluginInstallationServiceTests
             PluginId = pluginId,
             Status = PluginConstants.InstallationStatus.Installed,
             InstalledAt = DateTime.UtcNow,
+            ConnectedAt = connected ? DateTime.UtcNow : null,
         };
 
     private static Plugin GoogleCalendarPlugin()

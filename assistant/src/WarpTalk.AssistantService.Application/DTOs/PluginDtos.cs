@@ -90,6 +90,16 @@ public record PluginConnectionStatusDto(
 public record PluginConnectUrlDto(string Url);
 
 /// <summary>
+/// The answer to "connect this plugin": either it is already connected, or here is where to consent.
+/// </summary>
+/// <remarks>
+/// <see cref="Connected"/> is true when the provider's existing grant already covers the plugin, so
+/// it was connected on the spot and <see cref="Url"/> is null. Otherwise <see cref="Url"/> is the
+/// provider's consent page, exactly as <see cref="PluginConnectUrlDto"/> carries it.
+/// </remarks>
+public record PluginConnectResultDto(bool Connected, string? Url);
+
+/// <summary>
 /// What has to survive the browser round trip between building an authorization URL and handling
 /// the callback.
 /// </summary>

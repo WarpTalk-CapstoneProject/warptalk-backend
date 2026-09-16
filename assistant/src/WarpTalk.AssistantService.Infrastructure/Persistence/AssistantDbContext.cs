@@ -141,6 +141,7 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.ConfigJson).HasColumnType("jsonb").HasColumnName("config_json");
             entity.Property(e => e.InstalledAt).HasDefaultValueSql("now()").HasColumnName("installed_at");
             entity.Property(e => e.DisabledAt).HasColumnName("disabled_at");
+            entity.Property(e => e.ConnectedAt).HasColumnName("connected_at");
 
             entity.HasOne<Plugin>()
                 .WithMany()
