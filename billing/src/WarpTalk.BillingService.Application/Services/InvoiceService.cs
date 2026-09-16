@@ -93,6 +93,7 @@ public class InvoiceService : IInvoiceService
 
     public async Task<Result<string>> CreateInvoiceCheckoutSessionAsync(
         Guid invoiceId,
+        InvoiceCheckoutCaller caller,
         CancellationToken cancellationToken = default)
     {
         try
@@ -109,24 +110,70 @@ public class InvoiceService : IInvoiceService
                     ErrorCodes.NotFound);
             }
 
-            if (invoice.Status == InvoiceConstants.InvoiceStatuses.Paid)
+            // WT-260, the last instance. This action authorised off [Authorize(Roles = Owner…)],
+            // and a workspace Owner is membership data, never a token claim — so no real Owner
+            // could ever pay, and any platform-role holder could pay (and so re-point) ANY
+            // workspace's invoice. The filter cannot help: the only route value is an invoice id,
+            // which it would take for a workspace id. The invoice names its workspace, so the check
+            // happens here, after the lookup.
+            //
+            // Owner only. Paying is a spend decision, and an invoice is not a plan change an Admin
+            // was already trusted with.
+            var workspaceId = invoice.Payment.Subscription.WorkspaceId;
+            if (!caller.IsPlatformAdmin)
+            {
+                var access = await _workspaceClient.VerifyWorkspaceRolesAsync(
+                    workspaceId,
+                    caller.UserId,
+                    WorkspaceRoleConstants.Owner);
+
+                if (!access.IsSuccess)
+                {
+                    return Result.Failure<string>(
+                        access.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                        ErrorCodes.InternalServerError);
+                }
+
+                if (!access.Value)
+                {
+                    return Result.Failure<string>(
+                        ApiMessageConstants.ErrorMessages.BillingAccessDenied,
+                        ErrorCodes.Forbidden);
+                }
+            }
+
+            if (invoice.Status == InvoiceConstants.InvoiceStatuses.Paid || invoice.PaidAt is not null)
             {
                 return Result.Failure<string>(
                     BillingMessageConstants.ApiErrorMessages.BillingInvoiceAlreadyPaid,
                     ErrorCodes.ValidationError);
             }
 
+            // A voided or written-off invoice is not owed. Taking money for one would be a charge
+            // with nothing behind it, and nothing downstream would reverse it.
+            if (invoice.Status is InvoiceConstants.InvoiceStatuses.Void
+                or InvoiceConstants.InvoiceStatuses.Uncollectible)
+            {
+                return Result.Failure<string>(
+                    BillingMessageConstants.ApiErrorMessages.BillingInvoiceNotPayable,
+                    ErrorCodes.ValidationError);
+            }
+
             var subscription = invoice.Payment.Subscription;
             var plan = subscription.Plan;
             var checkoutResult = await _stripePaymentService.CreateCheckoutSessionAsync(
+                // WT-545: the buyer is whoever is paying now, not whoever the invoice was raised
+                // to. GetAndProcessCheckoutSessionAsync lets the session's named buyer through
+                // without a role check, so it has to be the person holding this token.
                 new CreateCheckoutSessionRequest(
-                    UserId: invoice.UserId,
+                    UserId: caller.UserId,
                     WorkspaceId: subscription.WorkspaceId,
                     Amount: invoice.Total,
                     Currency: invoice.Currency,
                     PaymentType: PaymentConstants.PaymentTypes.InvoicePayment,
                     PlanSlug: plan?.Slug ?? SubscriptionConstants.PlanSlugs.Enterprise,
-                    BillingCycle: plan?.BillingCycle ?? SubscriptionConstants.BillingCycles.Monthly),
+                    BillingCycle: plan?.BillingCycle ?? SubscriptionConstants.BillingCycles.Monthly,
+                    BuyerEmail: caller.Email),
                 cancellationToken);
 
             if (!checkoutResult.IsSuccess)

@@ -79,7 +79,10 @@ public record SalesInquiryQuery(
     int PageSize = 20,
     string? Status = null,
     string? Search = null,
-    Guid? WorkspaceId = null);
+    Guid? WorkspaceId = null,
+    // The workspace view groups open inquiries first; the platform lead inbox reads strictly
+    // newest-first so a lead that arrived this morning is never below last month's "new" ones.
+    bool NewestFirst = false);
 
 public record UpdateSalesInquiryStatusRequest(
     [Required] string Status);
