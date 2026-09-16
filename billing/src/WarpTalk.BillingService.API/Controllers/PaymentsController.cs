@@ -55,12 +55,11 @@ public class PaymentsController : ControllerBase
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
     {
+        // 404 for "no active subscription", 500 for a real fault — not 400 for both. The Payments
+        // settings page renders the first as an empty history and the second as an error; a 400
+        // left it unable to tell a workspace with nothing to show from a broken request.
         var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return this.ToActionResult(result);
     }
 
     /// <summary>
