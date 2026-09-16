@@ -9,4 +9,7 @@ public interface IUnitOfWork : IDisposable
     IAdminNotificationRepository AdminNotificationRepository { get; }
     INotificationInboxMessageRepository NotificationInboxMessageRepository { get; }
     Task<int> SaveChangesAsync();
+    Task BeginTransactionAsync(CancellationToken ct = default);
+    Task CommitTransactionAsync(CancellationToken ct = default);
+    Task RollbackTransactionAsync(CancellationToken ct = default);
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -17,6 +18,9 @@ namespace WarpTalk.NotificationService.Application.Services;
 
 public class AdminNotificationService : IAdminNotificationService
 {
+    public const string DeliveryStreamName = "admin-notifications-delivery";
+    public const int DeliveryChunkSize = 1000;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IValidator<CreateAdminNotificationDto> _validator;
     private readonly IMessagePublisher _messagePublisher;
@@ -58,6 +62,11 @@ public class AdminNotificationService : IAdminNotificationService
 
         var notification = AdminNotificationMapper.ToEntity(request, adminId);
 
+        // Decide the delivery events before the row is written: the consumer flips the
+        // announcement to Sent only when it has processed this many of them.
+        var payloads = BuildDeliveryPayloads(notification.Id, request);
+        notification.DeliveryChunkCount = payloads.Count;
+
         await _unitOfWork.AdminNotificationRepository.AddAsync(notification, ct);
         await _unitOfWork.SaveChangesAsync();
 
@@ -65,32 +74,39 @@ public class AdminNotificationService : IAdminNotificationService
 
         // Chunking Strategy for Delivery Trigger (T015)
         // Prepare events for downstream workers via Redis Streams (US4)
-        if (request.TargetAudienceMode == Domain.Constants.NotificationConstants.TargetModeSpecificUsers && request.SpecificUserIds != null)
+        try
         {
-            var userChunks = request.SpecificUserIds.Chunk(1000);
-            foreach (var chunk in userChunks)
+            foreach (var payload in payloads)
             {
-                var payload = new Application.DTOs.AdminNotifications.DeliveryEventPayload(
-                    notification.Id,
-                    request.TargetAudienceMode,
-                    chunk
-                );
-                await _messagePublisher.PublishAsync("admin-notifications-delivery", payload, ct);
-                _logger.LogInformation("Published chunk of {Count} users for Notification {NotificationId} to Redis Streams.", chunk.Length, notification.Id);
+                await _messagePublisher.PublishAsync(DeliveryStreamName, payload, ct);
+                _logger.LogInformation(
+                    "Published delivery event of {Count} users for Notification {NotificationId} with Mode {Mode}.",
+                    payload.SpecificUserIds?.Length ?? 0, notification.Id, payload.TargetAudienceMode);
             }
         }
-        else
+        catch (Exception ex)
         {
-            var payload = new Application.DTOs.AdminNotifications.DeliveryEventPayload(
-                notification.Id,
-                request.TargetAudienceMode,
-                null
-            );
-            await _messagePublisher.PublishAsync("admin-notifications-delivery", payload, ct);
-            _logger.LogInformation("Published delivery event for Notification {NotificationId} with Mode {Mode}.", notification.Id, request.TargetAudienceMode);
+            // The row is committed and some chunks may already be on the stream, so this
+            // announcement will never reach everyone. Say so rather than leaving it Pending.
+            _logger.LogError(ex, "Publishing delivery events failed for Notification {NotificationId}; marking it Failed.", notification.Id);
+            await _unitOfWork.AdminNotificationRepository.MarkFailedAsync(notification.Id, CancellationToken.None);
+            throw;
         }
 
         return Result.Success(notification);
+    }
+
+    private static List<DeliveryEventPayload> BuildDeliveryPayloads(Guid notificationId, CreateAdminNotificationDto request)
+    {
+        if (request.TargetAudienceMode == Domain.Constants.NotificationConstants.TargetModeSpecificUsers && request.SpecificUserIds != null)
+        {
+            return request.SpecificUserIds
+                .Chunk(DeliveryChunkSize)
+                .Select(chunk => new DeliveryEventPayload(notificationId, request.TargetAudienceMode, chunk))
+                .ToList();
+        }
+
+        return [new DeliveryEventPayload(notificationId, request.TargetAudienceMode, null)];
     }
 
     public async Task<Result<AdminNotificationPaginatedResponse>> GetAdminNotificationsAsync(GetAdminNotificationsQuery query, CancellationToken ct = default)

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.NotificationService.Domain.Constants;
 using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.NotificationService.Domain.Models;
@@ -24,6 +25,47 @@ public class AdminNotificationRepository
     public async Task<AdminNotification?> GetByIdAsync(Guid id, CancellationToken ct)
     {
         return await _context.AdminNotifications.FindAsync(new object[] { id }, ct);
+    }
+
+    public async Task RecordChunkDeliveredAsync(Guid id, int recipientCount, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        // Every right-hand side reads the row as it was before this UPDATE, so "+ 1 >= total" is
+        // "this chunk is the last one". A Failed announcement keeps its status: some chunk already
+        // went to the dead-letter stream, and finishing the others does not make it whole.
+        await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteUpdateAsync(
+            System.Linq.Queryable.Where(_context.AdminNotifications, n => n.Id == id),
+            s => s
+                .SetProperty(n => n.DeliveredChunkCount, n => n.DeliveredChunkCount + 1)
+                .SetProperty(n => n.DeliveredCount, n => n.DeliveredCount + recipientCount)
+                .SetProperty(
+                    n => n.Status,
+                    n => n.Status == NotificationConstants.StatusPending
+                         && n.DeliveredChunkCount + 1 >= n.DeliveryChunkCount
+                        ? NotificationConstants.StatusSent
+                        : n.Status)
+                .SetProperty(
+                    n => n.SentAt,
+                    n => n.Status == NotificationConstants.StatusPending
+                         && n.DeliveredChunkCount + 1 >= n.DeliveryChunkCount
+                        ? (DateTime?)now
+                        : n.SentAt)
+                .SetProperty(n => n.UpdatedAt, now),
+            ct);
+    }
+
+    public async Task<bool> MarkFailedAsync(Guid id, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var updated = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteUpdateAsync(
+            System.Linq.Queryable.Where(
+                _context.AdminNotifications,
+                n => n.Id == id && n.Status == NotificationConstants.StatusPending),
+            s => s
+                .SetProperty(n => n.Status, NotificationConstants.StatusFailed)
+                .SetProperty(n => n.UpdatedAt, now),
+            ct);
+        return updated > 0;
     }
 
     public async Task<(IEnumerable<AdminNotification> Items, int TotalCount)> GetPaginatedAsync(
