@@ -62,6 +62,13 @@ public class GatewayRouteCoverageTests
         "/api/v1/credits/",
         "/api/v1/invoices/",
         "/api/v1/payments/",
+        // Admin platform settings (VAT). BillingPolicyController mounts at the bare prefix, and no
+        // billing catch-all covers it — /billing/ is a different word — so the Platform settings
+        // tax row loaded and saved against a 404 through the proxy.
+        "/api/v1/billing-policy",
+        // Marking a meeting commitment done. MeetingActionItemsController has no shared prefix;
+        // the status PUT lives at the root.
+        "/api/v1/action-items/",
     };
 
     [Theory]
@@ -104,6 +111,31 @@ public class GatewayRouteCoverageTests
             minutes.Value.GetProperty("Order").GetInt32() < catchAll.Value.GetProperty("Order").GetInt32(),
             "The workspace minutes route must outrank the workspaces catch-all, or the request "
             + "reaches WorkspaceService, which does not serve it.");
+    }
+
+    /// <summary>
+    /// "My action items" is served by translation-room, under the workspaces prefix.
+    ///
+    /// Same trap as the minutes route above: /api/v1/workspaces/{**catch-all} matches it and would
+    /// hand it to WorkspaceService, which answers 404 for a list that exists.
+    /// </summary>
+    [Fact]
+    public void WorkspaceActionItemsOutrankTheWorkspaceCatchAll()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(AppSettingsPath()));
+        var routes = document.RootElement.GetProperty("ReverseProxy").GetProperty("Routes");
+
+        var actionItems = routes.EnumerateObject()
+            .Single(route => route.Value.GetProperty("Match").GetProperty("Path").GetString()
+                == "/api/v1/workspaces/{workspaceId}/action-items/{**catch-all}");
+        var catchAll = routes.EnumerateObject()
+            .Single(route => route.Value.GetProperty("Match").GetProperty("Path").GetString()
+                == "/api/v1/workspaces/{**catch-all}");
+
+        Assert.Equal("translation-room-cluster", actionItems.Value.GetProperty("ClusterId").GetString());
+        Assert.True(
+            actionItems.Value.GetProperty("Order").GetInt32() < catchAll.Value.GetProperty("Order").GetInt32(),
+            "The workspace action-items route must outrank the workspaces catch-all.");
     }
 
     /// <summary>
