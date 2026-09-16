@@ -85,6 +85,36 @@ public sealed record MeetingRecordingCompletedEventPayload(
     [property: JsonPropertyName("started_at")] DateTime? StartedAt = null
 );
 
+/// <summary>
+/// rec-loss: a recording has STARTED — LiveKit accepted the egress and the room now holds its id.
+///
+/// Until this existed the only trace a recording ever left was RecordingCompleted, written when
+/// LiveKit reported a file. Every other ending left nothing, so the record page could not tell a
+/// meeting nobody recorded from one whose recording was lost. Published at start so downstream can
+/// hold a "recording in progress" row that a later Completed or Failed resolves.
+/// </summary>
+public sealed record MeetingRecordingStartedEventPayload(
+    [property: JsonPropertyName("translation_room_id")] Guid TranslationRoomId,
+    [property: JsonPropertyName("egress_id")] string EgressId,
+    [property: JsonPropertyName("started_at")] DateTime StartedAt
+);
+
+/// <summary>
+/// rec-loss: a started recording ended WITHOUT a file — LiveKit failed or aborted it, the plan's
+/// recording minutes ran out, it completed with nothing to upload, or LiveKit no longer knows it.
+///
+/// <see cref="Reason"/> is a short sentence written for the HOST and is safe to show as-is: it never
+/// carries URLs, credentials or LiveKit internals. The raw LiveKit status and error travel
+/// separately for operators, and are NOT safe to render — <c>error</c> is free text from LiveKit.
+/// </summary>
+public sealed record MeetingRecordingFailedEventPayload(
+    [property: JsonPropertyName("translation_room_id")] Guid TranslationRoomId,
+    [property: JsonPropertyName("egress_id")] string EgressId,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("livekit_status")] string? LiveKitStatus,
+    [property: JsonPropertyName("livekit_error")] string? LiveKitError
+);
+
 public sealed record MeetingStartedEventPayload(
     [property: JsonPropertyName("translation_room_id")] Guid TranslationRoomId,
     [property: JsonPropertyName("workspace_id")] Guid WorkspaceId,
@@ -104,6 +134,8 @@ public static class MeetingEventTypes
     public const string Started = "meeting.started";
     public const string TrackPublished = "meeting.track_published";
     public const string RecordingCompleted = "meeting.recording_completed";
+    public const string RecordingStarted = "meeting.recording_started";
+    public const string RecordingFailed = "meeting.recording_failed";
 }
 
 public sealed record OutboxEventMessage
