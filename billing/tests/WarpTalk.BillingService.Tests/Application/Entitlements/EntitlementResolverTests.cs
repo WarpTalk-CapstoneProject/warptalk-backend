@@ -192,6 +192,41 @@ public class EntitlementResolverTests
             .Should().Be(EntitlementConstants.Sources.WorkspaceOverride);
     }
 
+    /// <summary>
+    /// An applied override carries the ceiling it tightened against, so a reader of the replicated
+    /// snapshot can show both numbers without re-running this order. Only overrides carry one.
+    /// </summary>
+    [Fact]
+    public void WorkspaceOverride_CarriesTheCeilingItTightenedAgainst()
+    {
+        var map = Resolve(Inputs(
+            PlanWith(slug: "enterprise", maxActiveRooms: 20),
+            contract: new Dictionary<string, string> { ["max_languages"] = "12" },
+            workspace: new Dictionary<string, string> { ["max_active_rooms"] = "5", ["max_languages"] = "4" }));
+
+        var rooms = map[EntitlementConstants.Keys.MaxActiveRooms];
+        rooms.Value.Should().Be("5");
+        rooms.Ceiling.Should().Be("20");
+        rooms.CeilingSource.Should().Be("plan:enterprise");
+
+        var languages = map[EntitlementConstants.Keys.MaxLanguages];
+        languages.Ceiling.Should().Be("12");
+        languages.CeilingSource.Should().Be(EntitlementConstants.Sources.ContractOverride);
+
+        map[EntitlementConstants.Keys.MaxParticipants].Ceiling.Should().BeNull();
+        map[EntitlementConstants.Keys.MaxParticipants].CeilingSource.Should().BeNull();
+    }
+
+    [Fact]
+    public void ARejectedLooseningOverride_CarriesNoCeiling()
+    {
+        var map = Resolve(Inputs(
+            PlanWith(slug: "startup", maxLanguages: 2),
+            workspace: new Dictionary<string, string> { ["max_languages"] = "9" }));
+
+        map[EntitlementConstants.Keys.MaxLanguages].Ceiling.Should().BeNull();
+    }
+
     /// <summary>A value nobody can parse must never become an entitlement, in either direction.</summary>
     [Fact]
     public void UnparseableOverride_IsIgnoredRatherThanGuessed()

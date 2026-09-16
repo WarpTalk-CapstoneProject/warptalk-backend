@@ -26,7 +26,22 @@ public static class EntitlementKeys
 /// <summary>One entry of the stored snapshot: the value and the layer that decided it.</summary>
 public sealed record StoredEntitlement(
     [property: JsonPropertyName("value")] string Value,
-    [property: JsonPropertyName("source")] string Source);
+    [property: JsonPropertyName("source")] string Source)
+{
+    /// <summary>
+    /// The plan/contract ceiling an owner's <c>workspace_override</c> tightened against, as
+    /// published by billing. Display only — enforcement reads <see cref="Value"/>, which billing
+    /// has already resolved. Null when the source is not an override, and also for every snapshot
+    /// stored before billing started publishing it, so null means "not known", not "no ceiling".
+    /// </summary>
+    [JsonPropertyName("ceiling")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Ceiling { get; init; }
+
+    [JsonPropertyName("ceiling_source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CeilingSource { get; init; }
+}
 
 /// <summary>
 /// A parsed local entitlement snapshot, or the absence of one.
@@ -142,6 +157,13 @@ public sealed class WorkspaceEntitlements
             ? parsed
             : null;
     }
+
+    /// <summary>
+    /// Every stored entry, in snapshot order, for READ-ONLY display. Enforcement must keep using
+    /// <see cref="Limit"/>, <see cref="SelfServiceLimit"/> and <see cref="Flag"/>, which encode when a
+    /// value is in force; this exposes what billing resolved, not whether it applies.
+    /// </summary>
+    public IReadOnlyDictionary<string, StoredEntitlement> All => _entitlements;
 
     /// <summary>The provenance of a key, for diagnostics and error copy. Null when not known.</summary>
     public string? Source(string key) =>
