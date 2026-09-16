@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.WorkspaceService.Infrastructure.Outbox;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 
@@ -13,7 +14,11 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/workspaces/outbox")]
-[Authorize(Roles = "Admin")]
+// Platform-wide: lists and replays dead letters from EVERY workspace. `Roles = "Admin"` admitted
+// the workspace-administrator role, which auth.user_roles also hands out globally (the seeded demo
+// accounts carry it), so a tenant admin could read other tenants' event payload errors and
+// re-publish their events. The system-admin policy is the gate every other admin surface uses.
+[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public sealed class WorkspaceOutboxAdminController(
     WorkspaceDbContext dbContext,
     TimeProvider timeProvider) : ControllerBase
