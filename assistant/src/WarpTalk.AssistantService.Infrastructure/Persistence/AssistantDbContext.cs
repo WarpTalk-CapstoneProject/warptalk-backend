@@ -63,6 +63,9 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.SourcesJson)
                 .HasColumnType("jsonb")
                 .HasColumnName("sources_json");
+            entity.Property(e => e.MentionsJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("mentions_json");
             entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("completed").HasColumnName("status");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
