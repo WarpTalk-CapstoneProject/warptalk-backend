@@ -139,6 +139,35 @@ public class GatewayRouteCoverageTests
     }
 
     /// <summary>
+    /// GET /api/v1/auth/sessions — the caller's own session list — is authenticated AT THE GATEWAY.
+    ///
+    /// It is exactly one segment under /api/v1/auth, so without its own route it falls into
+    /// auth-public-route ({endpoint}, anonymous). The service's [Authorize] would still refuse an
+    /// anonymous call, so this is not a hole today; but it would spend the anonymous IP budget and
+    /// depend on a single attribute for an endpoint that lists where someone is signed in. The
+    /// deeper session paths (/sessions/{id}, /sessions/revoke-others) already fall to
+    /// auth-secure-route and need nothing.
+    /// </summary>
+    [Fact]
+    public void OwnSessionListRequiresAuthAndOutranksThePublicAuthRoute()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(AppSettingsPath()));
+        var routes = document.RootElement.GetProperty("ReverseProxy").GetProperty("Routes");
+
+        var sessions = routes.EnumerateObject()
+            .Single(route => route.Value.GetProperty("Match").GetProperty("Path").GetString()
+                == "/api/v1/auth/sessions");
+        var publicRoute = routes.GetProperty("auth-public-route");
+
+        Assert.Equal("auth-cluster", sessions.Value.GetProperty("ClusterId").GetString());
+        Assert.Equal("RequireAuth", sessions.Value.GetProperty("AuthorizationPolicy").GetString());
+        Assert.True(
+            sessions.Value.GetProperty("Order").GetInt32() < publicRoute.GetProperty("Order").GetInt32(),
+            "The sessions route must outrank auth-public-route, or /api/v1/auth/sessions is proxied "
+            + "without gateway authentication.");
+    }
+
+    /// <summary>
     /// Every route forwards to a cluster that exists.
     ///
     /// A ClusterId typo is the same failure one step later: the route matches, and the proxy has
