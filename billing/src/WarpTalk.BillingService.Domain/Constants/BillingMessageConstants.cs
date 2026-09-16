@@ -302,6 +302,7 @@ public static class BillingMessageConstants
         public const string BillingPaymentEventFailed = "Failed to process payment event";
         public const string BillingInvoiceNotFound = "Invoice not found.";
         public const string BillingInvoiceAlreadyPaid = "Invoice is already paid.";
+        public const string BillingInvoiceNotPayable = "This invoice is void or written off and cannot be paid.";
 
         public const string BillingOwnerEmailInvalid = "Owner email is invalid.";
         public const string BillingTrialAlreadyExistsForOwnerDomain = "Trial already exists for this owner email domain.";
