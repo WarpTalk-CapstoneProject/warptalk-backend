@@ -63,6 +63,12 @@ public class AdminAuditLogRepository : IAdminAuditLogRepository
         if (!string.IsNullOrWhiteSpace(filter.EntityType))
             query = query.Where(row => row.EntityType == filter.EntityType);
 
+        if (filter.EntityTypes is { } entityTypes)
+        {
+            var allowed = entityTypes.ToList();
+            query = query.Where(row => allowed.Contains(row.EntityType));
+        }
+
         if (filter.EntityId is { } entityId)
             query = query.Where(row => row.EntityId == entityId);
 

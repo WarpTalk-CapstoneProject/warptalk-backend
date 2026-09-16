@@ -45,4 +45,7 @@ public sealed record AdminAuditLogFilter(
     string? SourceService,
     string? Result,
     DateTime? From,
-    DateTime? To);
+    DateTime? To,
+    // Allowlist on top of EntityType: a row must match one of these when the set is given.
+    // The workspace-scoped read uses it so a category nobody reviewed for tenants stays hidden.
+    IReadOnlyCollection<string>? EntityTypes = null);

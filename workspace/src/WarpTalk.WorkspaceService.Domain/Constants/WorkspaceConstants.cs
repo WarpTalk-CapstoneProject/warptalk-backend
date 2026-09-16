@@ -138,6 +138,7 @@ public static class WorkspaceConstants
         public const string ExternalCollaborationNotAllowed = "Workspace does not allow external collaboration.";
         public const string InvalidRoleSpecified = "Invalid role specified.";
         public const string OnlyOwnerAdminCanViewInvitations = "Only Owner or Admin can view invitations.";
+        public const string OnlyOwnerAdminCanViewAuditLog = "Only Owner or Admin can view the workspace audit log.";
         public const string OnlyOwnerAdminCanRevoke = "Only Owner or Admin can revoke invitations.";
         public const string InvitationNotFound = "Invitation not found.";
         public const string OnlyPendingCanBeRevoked = "Only pending invitations can be revoked.";
