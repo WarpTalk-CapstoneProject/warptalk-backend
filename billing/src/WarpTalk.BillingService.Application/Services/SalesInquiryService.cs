@@ -104,7 +104,9 @@ public class SalesInquiryService : ISalesInquiryService
             predicate,
             skip,
             pageSize,
-            q => q
+            query.NewestFirst
+                ? q => q.OrderByDescending(i => i.CreatedAt).ThenByDescending(i => i.Id)
+                : q => q
                 .OrderBy(i =>
                     i.Status == SalesInquiryConstants.Statuses.New ? 0 :
                     i.Status == SalesInquiryConstants.Statuses.Reviewing ? 1 :
