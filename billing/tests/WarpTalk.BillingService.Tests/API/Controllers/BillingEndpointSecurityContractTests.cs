@@ -123,12 +123,9 @@ public class BillingEndpointSecurityContractTests
     [Fact]
     public void NoBillingAction_AuthorizesWorkspaceRolesOffJwtClaims()
     {
-        // InvoicesController.CreateInvoiceCheckout is the one remaining instance of the WT-260
-        // shape. It is not reachable from the web client and cannot use RequireWorkspaceRole as
-        // written: its only route argument is an invoiceId, which the filter would happily treat
-        // as a workspace id. Fixing it needs an invoice -> workspace lookup in the application
-        // layer, so it is named here rather than silently passing. Do not add entries.
-        var knownOffenders = new[] { "InvoicesController.CreateInvoiceCheckout" };
+        // Empty since InvoicesController.CreateInvoiceCheckout moved its Owner check into the
+        // service, after the invoice -> workspace lookup. Do not add entries.
+        var knownOffenders = Array.Empty<string>();
 
         var controllers = typeof(PaymentsController).Assembly
             .GetTypes()

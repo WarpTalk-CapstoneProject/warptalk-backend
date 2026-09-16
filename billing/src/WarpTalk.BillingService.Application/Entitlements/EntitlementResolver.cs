@@ -198,7 +198,13 @@ public sealed class EntitlementResolver : IEntitlementResolver
                 // Only a tightening is applied. A loosening request is DROPPED rather than clamped
                 // to the ceiling, because clamping would report source=workspace_override for a
                 // value the workspace did not choose, and provenance has to stay truthful.
-                current = new ResolvedEntitlement(key, Normalize(key, requested), EntitlementConstants.Sources.WorkspaceOverride);
+                current = new ResolvedEntitlement(key, Normalize(key, requested), EntitlementConstants.Sources.WorkspaceOverride)
+                {
+                    // The ceiling the owner tightened against travels with the value, so a reader
+                    // can show both without re-deriving the order above.
+                    Ceiling = current.Value,
+                    CeilingSource = current.Source
+                };
             }
 
             resolved.Add(current);

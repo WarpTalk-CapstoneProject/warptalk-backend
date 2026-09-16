@@ -131,7 +131,23 @@ public sealed record ResolvedEntitlementPayload(
     [property: JsonPropertyName("key")] string Key,
     [property: JsonPropertyName("value")] string Value,
     [property: JsonPropertyName("source")] string Source
-);
+)
+{
+    /// <summary>
+    /// Only when <see cref="Source"/> is <c>workspace_override</c>: the value the platform, plan and
+    /// contract layers settled on before the owner tightened it. Additive and optional — omitted
+    /// from the wire when null, and absent from every event published before it existed, so a
+    /// consumer must treat a missing ceiling as "not known", never as "no ceiling".
+    /// </summary>
+    [JsonPropertyName("ceiling")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Ceiling { get; init; }
+
+    /// <summary>Provenance of <see cref="Ceiling"/>, e.g. <c>plan:enterprise</c>.</summary>
+    [JsonPropertyName("ceiling_source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CeilingSource { get; init; }
+}
 
 /// <summary>
 /// WT-263: the complete resolved entitlement map for one workspace, as published by BillingService's

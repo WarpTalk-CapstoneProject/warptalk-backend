@@ -31,9 +31,12 @@ builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceServic
 builder.Services.AddScoped<IWorkspaceInvitationAcceptanceProcessor, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationAcceptanceProcessor>();
 builder.Services.AddScoped<IWorkspaceDocumentService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDocumentService>();
 builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.Application.Services.VerifiedDomainService>();
+// Read-only view of the replicated billing entitlement snapshot for the workspace Features page.
+builder.Services.AddScoped<IWorkspaceEntitlementService, WarpTalk.WorkspaceService.Application.Services.WorkspaceEntitlementService>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
+builder.Services.AddScoped<IWorkspaceAuditLogService, WarpTalk.WorkspaceService.Application.Services.WorkspaceAuditLogService>();
 builder.Services.AddScoped<IAdminPlatformHealthService, WarpTalk.WorkspaceService.Application.Services.AdminPlatformHealthService>();
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
 // WT-335: backs the presence query's membership intersection in the Gateway.

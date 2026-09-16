@@ -16,6 +16,22 @@ namespace WarpTalk.BillingService.Application.Entitlements;
 /// </summary>
 public sealed record ResolvedEntitlement(string Key, string Value, string Source)
 {
+    /// <summary>
+    /// When <see cref="Source"/> is <c>workspace_override</c>: the value the three layers ABOVE the
+    /// workspace settled on — the most the owner could have allowed. Null for every other source,
+    /// because then <see cref="Value"/> already IS the ceiling.
+    ///
+    /// Carried so a reader can show "your plan allows 20, your owner capped it at 5" from the
+    /// replicated snapshot alone. Without it, an applied override erases the ceiling from every
+    /// consumer's view and the only way to recover it is to re-run the resolution order downstream —
+    /// the exact duplication this layer exists to prevent.
+    /// </summary>
+    public string? Ceiling { get; init; }
+
+    /// <summary>Provenance of <see cref="Ceiling"/>, e.g. <c>plan:enterprise</c>. Null when
+    /// <see cref="Ceiling"/> is.</summary>
+    public string? CeilingSource { get; init; }
+
     public static ResolvedEntitlement Number(string key, long value, string source) =>
         new(key, value.ToString(CultureInfo.InvariantCulture), source);
 
