@@ -81,6 +81,10 @@ public class AssistantConversationService : IAssistantConversationService
 
         var now = DateTime.UtcNow;
 
+        // Serialized once, before the message is written, so the row and the worker receive the
+        // SAME string: what the thread shows on reload cannot drift from what WarpBot was told.
+        var mentionsJson = AssistantConversationPayloadSerializer.SerializeMentions(request.Mentions, conversation.WorkspaceId);
+
         var userMessage = new AssistantMessage
         {
             Id = Guid.NewGuid(),
@@ -89,6 +93,7 @@ public class AssistantConversationService : IAssistantConversationService
             UserId = userId,
             Role = "user",
             Content = request.Content,
+            MentionsJson = mentionsJson,
             Status = "completed",
             CreatedAt = now,
             CompletedAt = now,
@@ -130,7 +135,6 @@ public class AssistantConversationService : IAssistantConversationService
             .ToList();
 
         var pageContextJson = AssistantConversationPayloadSerializer.SerializePageContext(request.PageContext, conversation.WorkspaceId);
-        var mentionsJson = AssistantConversationPayloadSerializer.SerializeMentions(request.Mentions, conversation.WorkspaceId);
         var attachmentsJson = AssistantConversationPayloadSerializer.SerializeAttachments(request.Attachments);
 
         await _chatRequestPublisher.PublishAsync(
