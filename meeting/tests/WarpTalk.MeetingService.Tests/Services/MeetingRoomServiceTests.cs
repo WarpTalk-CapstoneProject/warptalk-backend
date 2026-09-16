@@ -304,6 +304,92 @@ public class MeetingRoomServiceTests
     }
 
     /// <summary>
+    /// rec-loss: a started recording announces itself on meeting:domain-events, so its ending
+    /// (Completed or Failed) resolves something instead of being the only trace it ever left.
+    /// </summary>
+    [Fact]
+    public async Task SetRecordingAsync_PublishesRecordingStarted_WhenTheEgressStarts()
+    {
+        var translationRoomId = SetupStartableRecording(Result.Success("egress-123"), out var hostId);
+        var published = CaptureDomainEvents();
+
+        var before = DateTime.UtcNow;
+        var result = await _sut.SetRecordingAsync(translationRoomId, hostId, "start");
+
+        Assert.True(result.IsSuccess);
+        var fields = Assert.Single(published);
+        Assert.Equal(MeetingEventTypes.RecordingStarted, fields["event_type"]);
+        Assert.Equal(DomainEventEnvelope.CurrentSchemaVersion.ToString(), fields["schema_version"]);
+        var envelope = JsonSerializer.Deserialize<EventEnvelope<MeetingRecordingStartedEventPayload>>(fields["envelope"])!;
+        Assert.Equal(fields["event_id"], envelope.EventId.ToString());
+        Assert.Equal("meeting-service", envelope.Producer);
+        Assert.Equal(translationRoomId, envelope.Payload.TranslationRoomId);
+        Assert.Equal("egress-123", envelope.Payload.EgressId);
+        Assert.InRange(envelope.Payload.StartedAt, before.AddSeconds(-1), DateTime.UtcNow.AddSeconds(1));
+    }
+
+    [Fact]
+    public async Task SetRecordingAsync_PublishesNothing_WhenTheEgressDoesNotStart()
+    {
+        var translationRoomId = SetupStartableRecording(
+            Result.Failure<string>("quota", ErrorCodes.InternalServerError),
+            out var hostId);
+        var published = CaptureDomainEvents();
+
+        var result = await _sut.SetRecordingAsync(translationRoomId, hostId, "start");
+
+        Assert.False(result.IsSuccess);
+        Assert.Empty(published);
+    }
+
+    /// <summary>
+    /// The egress is already running when the Started publish fails, and the webhook or sweep will
+    /// still finish it. Failing the request would tell the host a running recording did not start.
+    /// </summary>
+    [Fact]
+    public async Task SetRecordingAsync_StillSucceeds_WhenRecordingStartedCannotBePublished()
+    {
+        var translationRoomId = SetupStartableRecording(Result.Success("egress-123"), out var hostId);
+        _redisServiceMock
+            .Setup(r => r.PublishStreamMessageAsync("meeting:domain-events", It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(Result.Failure("redis unavailable", "REDIS_ERROR"));
+
+        var result = await _sut.SetRecordingAsync(translationRoomId, hostId, "start");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.Recording);
+        Assert.Equal("egress-123", result.Value.EgressId);
+    }
+
+    private Guid SetupStartableRecording(Result<string> startResult, out Guid hostId)
+    {
+        var translationRoomId = Guid.NewGuid();
+        hostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = hostId, ProviderRoomName = "room-1" };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+        _egressServiceMock
+            .Setup(e => e.StartRoomCompositeEgressAsync("room-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(startResult);
+        return translationRoomId;
+    }
+
+    private List<Dictionary<string, string>> CaptureDomainEvents()
+    {
+        var published = new List<Dictionary<string, string>>();
+        _redisServiceMock
+            .Setup(r => r.PublishStreamMessageAsync("meeting:domain-events", It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, fields) => published.Add(fields))
+            .ReturnsAsync(Result.Success());
+        return published;
+    }
+
+    /// <summary>
     /// WT-644. Stop reports the recording as stopped — capture really has ended — but it must NOT
     /// erase <c>ActiveEgressId</c>, which is the only durable record that a recording is still
     /// being finalised and owes us an artifact.
