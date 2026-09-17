@@ -45,6 +45,17 @@ public partial class TranscriptSegment
     /// <summary>Cross-version match — the equivalent segment in a previous transcript version (re-recording/re-STT), self-referencing FK.</summary>
     public Guid? MatchedSegmentId { get; set; }
 
+    /// <summary>
+    /// WT-716 tier 1: <see cref="OriginalText"/> with fillers and stutters removed by stt_worker.
+    /// Null means NOT CLEANED (older rows, older producer) — read <see cref="OriginalText"/>. An
+    /// empty string is different: the segment was filler only, and a clean view hides it.
+    /// <see cref="OriginalText"/> itself is never rewritten by cleaning.
+    /// </summary>
+    public string? CleanText { get; set; }
+
+    /// <summary>WT-716: subset of filler_only, fillers_removed, stutter_removed, escalate. Null exactly when <see cref="CleanText"/> is.</summary>
+    public string[]? CleanFlags { get; set; }
+
     public virtual Transcript Transcript { get; set; } = null!;
 
     public virtual ICollection<TranscriptCorrection> TranscriptCorrections { get; set; } = new List<TranscriptCorrection>();
