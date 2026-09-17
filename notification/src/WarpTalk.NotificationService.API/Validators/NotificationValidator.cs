@@ -18,6 +18,20 @@ public static class NotificationValidator
         public Dictionary<string, JsonValueKind> OptionalFields { get; set; } = new();
     }
 
+    // The five keys AssistantService's PluginRequestNotifications sends for every plugin-request
+    // type. All required: the web client needs the workspace and the plugin to render any of them.
+    private static PayloadSchema PluginRequestSchema() => new()
+    {
+        RequiredFields =
+        {
+            { "workspace_id", JsonValueKind.String },
+            { "workspace_name", JsonValueKind.String },
+            { "plugin_key", JsonValueKind.String },
+            { "plugin_label", JsonValueKind.String },
+            { "request_id", JsonValueKind.String }
+        }
+    };
+
     private static readonly Dictionary<string, PayloadSchema> Schemas = new(StringComparer.OrdinalIgnoreCase)
     {
         {
@@ -158,6 +172,9 @@ public static class NotificationValidator
                 }
             }
         },
+        { NotificationConstants.TypePluginRequested, PluginRequestSchema() },
+        { NotificationConstants.TypePluginRequestApproved, PluginRequestSchema() },
+        { NotificationConstants.TypePluginRequestDeclined, PluginRequestSchema() },
         {
             NotificationConstants.TypeWorkspaceLeaveRejected, new PayloadSchema
             {

@@ -83,6 +83,11 @@ try
     // so the null-versus-empty allowlist rule exists once.
     builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
     builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
+    // The workspace plugin marketplace: which plugins a workspace has, private MCP plugins, and
+    // members asking the Owner for more. Notifies through the notification service's gRPC.
+    builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();
+    builder.Services.AddScoped<IWorkspaceDirectoryClient, WorkspaceDirectoryGrpcClient>();
+    builder.Services.AddScoped<IUserNotificationClient, UserNotificationGrpcClient>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
     // has no official remote MCP server for Drive/Calendar.
@@ -144,6 +149,18 @@ try
             builder.Environment,
             "GrpcSettings:WorkspaceServiceUrl",
             "http://localhost:50056");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // Plugin request notifications (member asks the Owner; the Owner decides). Required outside
+    // Development like every other gRPC address: GetRequiredServiceUri throws when it is missing, and
+    // warptalk-infrastructure's check-grpc-config-coverage.mjs fails a descriptor that omits it.
+    builder.Services.AddGrpcClient<NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:NotificationServiceUrl",
+            "http://localhost:50054");
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 

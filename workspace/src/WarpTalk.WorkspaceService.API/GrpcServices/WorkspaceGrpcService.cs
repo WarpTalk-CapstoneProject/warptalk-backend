@@ -225,7 +225,8 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             WorkspaceName = preflight.WorkspaceName,
             WorkspaceSlug = preflight.WorkspaceSlug,
             IsDomainMatched = preflight.IsDomainMatched,
-            AllowExternalCollaboration = preflight.AllowExternalCollaboration
+            AllowExternalCollaboration = preflight.AllowExternalCollaboration,
+            OwnerUserId = preflight.OwnerUserId?.ToString() ?? string.Empty
         };
     }
 }

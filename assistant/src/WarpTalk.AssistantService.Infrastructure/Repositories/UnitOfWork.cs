@@ -18,6 +18,9 @@ public class UnitOfWork : IUnitOfWork
         PluginConnectionRepository = new PluginConnectionRepository(db);
         PluginToolAuditRepository = new PluginToolAuditRepository(db);
         PluginConfirmationTokenRepository = new PluginConfirmationTokenRepository(db);
+        WorkspacePluginRepository = new WorkspacePluginRepository(db);
+        WorkspacePluginCurationRepository = new WorkspacePluginCurationRepository(db);
+        PluginRequestRepository = new PluginRequestRepository(db);
     }
 
     public IAssistantConversationRepository AssistantConversationRepository { get; }
@@ -28,6 +31,9 @@ public class UnitOfWork : IUnitOfWork
     public IPluginConnectionRepository PluginConnectionRepository { get; }
     public IPluginToolAuditRepository PluginToolAuditRepository { get; }
     public IPluginConfirmationTokenRepository PluginConfirmationTokenRepository { get; }
+    public IWorkspacePluginRepository WorkspacePluginRepository { get; }
+    public IWorkspacePluginCurationRepository WorkspacePluginCurationRepository { get; }
+    public IPluginRequestRepository PluginRequestRepository { get; }
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _db.SaveChangesAsync(ct);
