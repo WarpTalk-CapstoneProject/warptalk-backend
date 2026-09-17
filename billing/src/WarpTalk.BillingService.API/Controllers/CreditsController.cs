@@ -23,8 +23,17 @@ public class CreditsController : ControllerBase
         _creditService = creditService;
     }
 
+    /// <summary>
+    /// The workspace's credit balance. WT-700.
+    ///
+    /// Readable by every active internal member, not just Owner/Admin: members spend these
+    /// credits in meetings and need to see how much is left. External members are guests from
+    /// another organisation and have no business reading this workspace's balance. History and
+    /// usage-by-member stay behind the Owner/Admin gate — the balance is one number, those show
+    /// what was spent and by whom (WT-413).
+    /// </summary>
     [HttpGet("workspace/{workspaceId}")]
-    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    [RequireInternalWorkspaceMember]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
@@ -64,9 +73,9 @@ public class CreditsController : ControllerBase
     /// <summary>
     /// Who in this workspace has spent what. WT-413.
     ///
-    /// Same role gate as the balance and history endpoints beside it — an ordinary member must
-    /// not be able to read the whole workspace's spend, and RequireWorkspaceRole is what the
-    /// two neighbours already use, so this cannot drift from them.
+    /// Same role gate as the history endpoint beside it — an ordinary member must not be able to
+    /// read the whole workspace's spend. The balance endpoint is deliberately looser (WT-700);
+    /// do not align this one with it.
     /// </summary>
     [HttpGet("workspace/{workspaceId}/usage-by-member")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
