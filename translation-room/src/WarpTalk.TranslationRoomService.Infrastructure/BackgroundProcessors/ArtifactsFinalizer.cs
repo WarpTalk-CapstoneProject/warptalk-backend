@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -20,6 +21,10 @@ using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
+
+// WT-701: lets the tests drive FinalizeSummaryAsync with a short wait window. The API project
+// declares the same thing in its csproj.
+[assembly: InternalsVisibleTo("WarpTalk.TranslationRoomService.Tests")]
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.BackgroundProcessors;
 
@@ -524,10 +529,14 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// over a whole meeting transcript, which is not instant.
     ///
     /// Longer than the transcript's window because it is waiting on generation, not on a flush.
-    /// It exits the moment content appears, so a summary that is already there costs one read.
+    /// It exits the moment <c>structured_json</c> appears, so a summary that is already there
+    /// costs one read.
+    ///
+    /// Settable only from the tests (InternalsVisibleTo below), so the wait can be driven without
+    /// spending ninety real seconds per case.
     /// </summary>
-    private static readonly TimeSpan SummaryWaitTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan SummaryPollInterval = TimeSpan.FromSeconds(2);
+    internal TimeSpan SummaryWaitTimeout { get; init; } = TimeSpan.FromSeconds(90);
+    internal TimeSpan SummaryPollInterval { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// The summary artifact, and whether it is the placeholder written because nothing arrived.
@@ -537,9 +546,9 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// appear zero times — so this flag is the signal that the meeting deserves a second attempt,
     /// not a rare edge case.
     /// </summary>
-    private readonly record struct SummaryFinalization(TranslationRoomArtifact Artifact, bool TimedOut);
+    internal readonly record struct SummaryFinalization(TranslationRoomArtifact Artifact, bool TimedOut);
 
-    private async Task<SummaryFinalization> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
+    internal async Task<SummaryFinalization> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
     {
         _logger.LogInformation("Retrieving AI summary from Redis cache for room {RoomId}", roomId);
 
@@ -567,9 +576,23 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 || !string.IsNullOrWhiteSpace(actionItems)
                 || !string.IsNullOrWhiteSpace(structuredJson);
 
-            if (foundSomething)
+            if (!string.IsNullOrWhiteSpace(structuredJson))
             {
                 await _redisStateRepo.KeyDeleteAsync(summaryKey);
+            }
+            else if (foundSomething)
+            {
+                // WT-701. The prose (and maybe action items) arrived but structured_json did not
+                // make the window. The artifact saved now is the markdown fallback — no
+                // templateKey, no summaryLanguage — so the key is KEPT: when ai_assistant_worker
+                // writes structured_json, ArtifactsReconciliationWorker.RecoverLateSummariesAsync
+                // finds it and upgrades this artifact in place. Deleting here is what used to leave
+                // the fallback as the meeting's summary until the worker happened to recreate the key.
+                _logger.LogWarning(
+                    "Only a partial AI summary for room {RoomId} arrived within {Seconds}s (no structured_json). Saving the fallback summary and KEEPING {SummaryKey} so the structured version can replace it.",
+                    roomId,
+                    SummaryWaitTimeout.TotalSeconds,
+                    summaryKey);
             }
             else
             {
@@ -623,9 +646,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             .ToEntity();
 
     /// <summary>
-    /// Polls the summary hash until the AI worker has written something, or the window closes.
+    /// Polls the summary hash until the AI worker has written <c>structured_json</c>, or the
+    /// window closes.
     ///
-    /// Returns whatever is there at the end — an empty result is a legitimate answer that the
+    /// Returns whatever is there at the end — content without structured_json becomes the
+    /// fallback artifact, and an empty result is a legitimate answer that the
     /// caller turns into an explicit insufficient-data artifact, because a UI stuck on
     /// "generating" forever is worse than one that says the summary did not arrive (WT-13).
     /// </summary>
@@ -647,9 +672,12 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.ActionItems);
             var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.StructuredJson);
 
-            if (!string.IsNullOrWhiteSpace(content)
-                || !string.IsNullOrWhiteSpace(actionItems)
-                || !string.IsNullOrWhiteSpace(structuredJson))
+            // WT-701: ONLY structured_json ends the wait early. The worker writes the three fields
+            // with an LLM call between each (content, then action_items, then structured_json),
+            // so a hash holding content alone is a summary still being written. Returning on it
+            // saved the raw-markdown fallback — no templateKey, no summaryLanguage — as the
+            // meeting's summary moments before the structured one landed.
+            if (!string.IsNullOrWhiteSpace(structuredJson))
             {
                 return (content, actionItems, structuredJson);
             }
