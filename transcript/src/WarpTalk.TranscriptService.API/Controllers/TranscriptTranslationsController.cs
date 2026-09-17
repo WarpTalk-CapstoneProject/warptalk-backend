@@ -108,6 +108,7 @@ public class TranscriptTranslationsController : ControllerBase
             "FORBIDDEN" => Forbid(),
             "VALIDATION_ERROR" => BadRequest(new { Message = error }),
             "TOO_LARGE" => BadRequest(new { Message = error }),
+            "RATE_LIMITED" => StatusCode(429, new { Message = error }),
             _ => StatusCode(500, new { Message = error })
         };
 }

@@ -222,6 +222,134 @@ public class TranscriptTranslationBackfillServiceTests
         Assert.Equal("FORBIDDEN", result.ErrorCode);
     }
 
+    [Fact]
+    public async Task RequestBackfill_CarriesWhatBillingNeedsToChargeTheWorkLongAfterTheMeeting()
+    {
+        // billing_worker settles translate:backfill_results. It cannot read the room projection a
+        // live charge uses (24h TTL), has no speaker to bill, and prices TRANSLATION per second of
+        // source speech, so the request must name the workspace, the requester and the audio span.
+        var line = Segment("một", "vi");
+        line.StartTimeMs = 12_000;
+        line.EndTimeMs = 15_500;
+
+        var service = Build([line], [], out var database);
+        database
+            .StringSetAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<TimeSpan?>(), When.NotExists)
+            .Returns(true);
+
+        var result = await service.RequestBackfillAsync(TranscriptId, UserId, "en");
+
+        Assert.True(result.IsSuccess);
+        var entries = QueuedEntries(database).Single();
+        Assert.Equal(WorkspaceId.ToString(), Field(entries, "workspace_id"));
+        Assert.Equal(UserId.ToString(), Field(entries, "requested_by_user_id"));
+
+        var queued = System.Text.Json.JsonDocument.Parse(Field(entries, "segments_json")).RootElement[0];
+        Assert.Equal(12_000, queued.GetProperty("start_ms").GetInt32());
+        Assert.Equal(15_500, queued.GetProperty("end_ms").GetInt32());
+    }
+
+    [Fact]
+    public async Task RequestBackfill_RefusesOverTheTranscriptBudgetAndGivesTheReservationBack()
+    {
+        var service = Build([Segment("một", "vi"), Segment("hai", "vi")], [], out var database);
+        database
+            .StringSetAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<TimeSpan?>(), When.NotExists)
+            .Returns(true);
+        var budgetKey = (RedisKey)TranscriptTranslationBackfillService.BudgetKey(TranscriptId);
+        database.StringIncrementAsync(budgetKey, 2L, Arg.Any<CommandFlags>())
+            .Returns(TranscriptTranslationBackfillService.MaxQueuedSegmentsPerTranscriptPerWindow + 1L);
+
+        var result = await service.RequestBackfillAsync(TranscriptId, UserId, "en");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("RATE_LIMITED", result.ErrorCode);
+        Assert.Empty(QueuedEntries(database));
+        await database.Received(1).StringDecrementAsync(budgetKey, 2L, Arg.Any<CommandFlags>());
+        // The marker claimed for this run is released: nothing is running.
+        await database.Received(1).KeyDeleteAsync(
+            (RedisKey)TranscriptTranslationBackfillService.RunMarkerKey(TranscriptId, "en"),
+            Arg.Any<CommandFlags>());
+    }
+
+    [Fact]
+    public async Task RequestBackfill_AnInFlightDuplicateSpendsNoBudget()
+    {
+        var service = Build([Segment("một", "vi")], [], out var database);
+        database
+            .StringSetAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<TimeSpan?>(), When.NotExists)
+            .Returns(false);
+
+        await service.RequestBackfillAsync(TranscriptId, UserId, "en");
+
+        await database.DidNotReceive().StringIncrementAsync(
+            Arg.Any<RedisKey>(), Arg.Any<long>(), Arg.Any<CommandFlags>());
+    }
+
+    [Fact]
+    public async Task RequestBackfill_TheBudgetWindowIsFixedFromFirstUse()
+    {
+        var service = Build([Segment("một", "vi")], [], out var database);
+        database
+            .StringSetAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<TimeSpan?>(), When.NotExists)
+            .Returns(true);
+
+        await service.RequestBackfillAsync(TranscriptId, UserId, "en");
+
+        // Only when no TTL exists yet; refreshing it on every request would never let it expire.
+        await database.Received(1).KeyExpireAsync(
+            (RedisKey)TranscriptTranslationBackfillService.BudgetKey(TranscriptId),
+            TranscriptTranslationBackfillService.BudgetWindow,
+            ExpireWhen.HasNoExpiry,
+            Arg.Any<CommandFlags>());
+    }
+
+    [Fact]
+    public async Task RequestRetranslation_ChargesTheEditorAndSpendsOneUnitPerLanguage()
+    {
+        var line = Segment("một", "vi");
+        line.StartTimeMs = 1_000;
+        line.EndTimeMs = 2_000;
+        var service = Build([line], [Link(line.Id, "en"), Link(line.Id, "ja"), Link(line.Id, "vi")], out var database);
+
+        var queued = await service.RequestRetranslationAsync(line.Id, UserId);
+
+        Assert.Equal(2, queued); // "vi" is the line's own language
+        await database.Received(1).StringIncrementAsync(
+            (RedisKey)TranscriptTranslationBackfillService.BudgetKey(TranscriptId), 2L, Arg.Any<CommandFlags>());
+
+        var entries = QueuedEntries(database);
+        Assert.All(entries, e => Assert.Equal(UserId.ToString(), Field(e, "requested_by_user_id")));
+        var payload = System.Text.Json.JsonDocument.Parse(Field(entries[0], "segments_json")).RootElement[0];
+        Assert.Equal(1_000, payload.GetProperty("start_ms").GetInt32());
+        Assert.Equal(2_000, payload.GetProperty("end_ms").GetInt32());
+    }
+
+    [Fact]
+    public async Task RequestRetranslation_OverBudgetQueuesNothingButDoesNotThrow()
+    {
+        // The correction is already committed by the time this runs; over budget it stays saved
+        // and only its translations stay stale.
+        var line = Segment("một", "vi");
+        var service = Build([line], [Link(line.Id, "en")], out var database);
+        database.StringIncrementAsync(Arg.Any<RedisKey>(), Arg.Any<long>(), Arg.Any<CommandFlags>())
+            .Returns(TranscriptTranslationBackfillService.MaxQueuedSegmentsPerTranscriptPerWindow + 1L);
+
+        var queued = await service.RequestRetranslationAsync(line.Id, UserId);
+
+        Assert.Equal(0, queued);
+        Assert.Empty(QueuedEntries(database));
+    }
+
+    private static List<NameValueEntry[]> QueuedEntries(IDatabase database) =>
+        database.ReceivedCalls()
+            .Where(c => c.GetMethodInfo().Name == nameof(IDatabase.StreamAddAsync))
+            .Select(c => (NameValueEntry[])c.GetArguments()[1]!)
+            .ToList();
+
+    private static string Field(NameValueEntry[] entries, string name) =>
+        entries.Single(e => e.Name == name).Value.ToString();
+
     private static TranscriptSegment Segment(string text, string language) => new()
     {
         Id = Guid.NewGuid(),
@@ -262,6 +390,8 @@ public class TranscriptTranslationBackfillServiceTests
             .FindAsync(Arg.Any<Expression<Func<TranscriptSegment, bool>>>(), Arg.Any<CancellationToken>())
             .Returns(call => Task.FromResult(
                 segments.Where(call.Arg<Expression<Func<TranscriptSegment, bool>>>().Compile())));
+        segmentRepository.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => segments.FirstOrDefault(s => s.Id == call.Arg<Guid>()));
         unitOfWork.TranscriptSegments.Returns(segmentRepository);
 
         var linkRepository = Substitute.For<ISegmentTranslationLinkRepository>();
