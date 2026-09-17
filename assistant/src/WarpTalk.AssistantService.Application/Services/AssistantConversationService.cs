@@ -136,9 +136,10 @@ public class AssistantConversationService : IAssistantConversationService
 
         var pageContextJson = AssistantConversationPayloadSerializer.SerializePageContext(request.PageContext, conversation.WorkspaceId);
         var attachmentsJson = AssistantConversationPayloadSerializer.SerializeAttachments(request.Attachments);
+        var disabledPluginKeysJson = AssistantConversationPayloadSerializer.SerializeDisabledPluginKeys(request.DisabledPluginKeys);
 
         await _chatRequestPublisher.PublishAsync(
-            assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, attachmentsJson, ct);
+            assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, attachmentsJson, disabledPluginKeysJson, ct);
 
         return Result.Success(new SendAssistantMessageResponse(userMessage.Id, assistantMessage.Id));
     }

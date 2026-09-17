@@ -138,6 +138,32 @@ public static class PluginConstants
     }
 
     /// <summary>
+    /// What a user has decided WarpBot may do with one tool. WT-687.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolEffect"/> is what the tool does; this is what the user allows. A tool the user
+    /// never set follows its effect - read tools run, write tools ask - which is exactly the rule
+    /// every tool followed before users could choose.
+    /// </remarks>
+    public static class ToolPolicy
+    {
+        /// <summary>Runs without asking, including a write tool the user chose to trust.</summary>
+        public const string Allow = "allow";
+
+        /// <summary>Asks for confirmation first, including a read tool the user wants to see coming.</summary>
+        public const string Approval = "approval";
+
+        /// <summary>Never offered to the model and refused if called anyway.</summary>
+        public const string Blocked = "blocked";
+
+        public static bool IsKnown(string? value) =>
+            value is Allow or Approval or Blocked;
+
+        public static string DefaultFor(string effect) =>
+            effect == ToolEffect.Read ? Allow : Approval;
+    }
+
+    /// <summary>
     /// Which surface a connect flow started from, carried inside the sealed OAuth state.
     /// </summary>
     /// <remarks>
@@ -183,6 +209,15 @@ public static class PluginConstants
         public const string ProviderUnavailable = "provider_unavailable";
         public const string UnknownPlugin = "unknown_plugin";
         public const string UnknownTool = "unknown_tool";
+
+        /// <summary>
+        /// The user blocked this tool for WarpBot in the plugin's settings. WT-687. Not a fault and
+        /// not something reconnecting fixes: the remedy is the user's own setting.
+        /// </summary>
+        public const string ToolBlocked = "tool_blocked";
+
+        /// <summary>A tool policy update named a value other than allow, approval or blocked.</summary>
+        public const string InvalidToolPolicy = "invalid_tool_policy";
 
         /// <summary>
         /// The user pressed Cancel on the provider's consent screen. Not a fault, and kept apart
