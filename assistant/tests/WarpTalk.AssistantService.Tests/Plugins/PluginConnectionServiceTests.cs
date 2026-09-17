@@ -1658,6 +1658,90 @@ public class PluginConnectionServiceTests
     /// <summary>Null unless a test needs the tool sync to reach a gateway; the sync swallows its absence.</summary>
     private IMcpToolGateway? _gateway;
 
+    // ---- API-key auth ---------------------------------------------------------------------------
+
+    private Plugin ArrangeApiKeyPlugin(PluginInstallation? installation = null)
+    {
+        var remote = RemoteMcpPlugin();
+        remote.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(remote);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation ?? new PluginInstallation
+            {
+                Id = Guid.NewGuid(),
+                UserId = UserId,
+                PluginId = RemotePluginId,
+                Status = PluginConstants.InstallationStatus.Installed,
+                InstalledAt = DateTime.UtcNow,
+            });
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _gateway = Substitute.For<IMcpToolGateway>();
+        return remote;
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_VerifiesTheKey_ThenStoresItEncrypted_AndSyncsTools()
+    {
+        var remote = ArrangeApiKeyPlugin();
+        _gateway!.ListToolsAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Is<PluginConnection>(c => c.EncryptedAccessToken == "protected:lin_api_123"),
+                Arg.Any<CancellationToken>())
+            .Returns([new McpToolDescriptorDto("list_issues", RemoteAppKey, "List issues", "", "read", [], new System.Text.Json.Nodes.JsonObject())]);
+
+        // Pasted as a header value: the prefix is not part of the key.
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "  Bearer lin_api_123 ");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.ConnectionStatus);
+        Assert.Contains("list_issues", remote.ToolsJson);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(c =>
+                c.Status == PluginConstants.ConnectionStatus.Connected
+                && c.EncryptedAccessToken == "protected:lin_api_123"
+                && c.EncryptedRefreshToken == null
+                && c.AccessTokenExpiresAt == null),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_RefusesAKeyTheServerRejects_AndStoresNothing()
+    {
+        ArrangeApiKeyPlugin();
+        _gateway!.ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new PluginProviderException(PluginConstants.ErrorCodes.ConnectionRequired, "401"));
+
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "lin_api_wrong");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidApiKey, result.ErrorCode);
+        await _connectionRepository.DidNotReceive().AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_RefusesARowThatSignsInWithOAuth()
+    {
+        var remote = ArrangeApiKeyPlugin();
+        remote.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "lin_api_123");
+
+        Assert.False(result.IsSuccess);
+        await _gateway!.DidNotReceive().ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+    }
+
     // ---- WT-710: remote MCP servers as they actually behave ------------------------------------
 
     [Fact]
