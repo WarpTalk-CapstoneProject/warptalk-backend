@@ -49,6 +49,9 @@ public sealed record AdminUserSessionRow(
     DateTime CreatedAt,
     DateTime ExpiresAt);
 
+/// <summary>How many rows fell on one UTC calendar day. <paramref name="Day"/> is midnight UTC.</summary>
+public sealed record AdminDailyCount(DateTime Day, int Count);
+
 public interface IUserRepository : IGenericRepository<User>
 {
     Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default);
@@ -77,5 +80,20 @@ public interface IUserRepository : IGenericRepository<User>
     /// <summary>Sessions that are live right now — not revoked, not expired — newest first.</summary>
     Task<IReadOnlyList<AdminUserSessionRow>> GetActiveSessionsAsync(
         Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Accounts created in <c>[from, to)</c>, soft-deleted ones INCLUDED: the figure is "how many
+    /// people signed up in that window", and a later deletion must not rewrite a past period.
+    /// </summary>
+    Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>
+    /// The same accounts grouped by UTC day of creation, in the database. Days with no sign-up
+    /// are absent; the caller zero-fills.
+    /// </summary>
+    Task<IReadOnlyList<AdminDailyCount>> CountCreatedByDayAsync(
+        DateTime from,
+        DateTime to,
         CancellationToken ct = default);
 }

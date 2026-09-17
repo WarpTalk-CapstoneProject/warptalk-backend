@@ -79,6 +79,27 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         return (live, startedSince);
     }
 
+    public async Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        // Anonymous projection, mapped to the record in memory, never ordered in SQL as a record.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(r => r.DeletedAt == null
+                && r.StartedAt != null
+                && r.StartedAt < to
+                && (r.EndedAt > from
+                    || (r.EndedAt == null && (LiveStatuses.Contains(r.Status) || r.StartedAt >= from))))
+            .Select(r => new { StartedAt = r.StartedAt!.Value, r.EndedAt, r.DurationSeconds, r.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new AdminMeetingSpan(r.StartedAt, r.EndedAt, r.DurationSeconds, r.Status))
+            .ToList();
+    }
+
     private static IQueryable<TranslationRoom> ApplyAdminFilters(
         IQueryable<TranslationRoom> query,
         AdminMeetingFilter filter)

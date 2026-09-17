@@ -46,3 +46,21 @@ public record AdminMeetingSummaryDto(
 
 /// <summary>The header counts. Both are read at the same instant so they cannot disagree.</summary>
 public record AdminMeetingCountsDto(int LiveNow, int StartedToday);
+
+/// <summary>One UTC day of the meetings chart. <paramref name="Date"/> is <c>yyyy-MM-dd</c>.</summary>
+public record AdminMeetingDayDto(string Date, int Meetings, decimal Hours);
+
+/// <summary>
+/// <c>GET /api/v1/admin/meetings/insights</c>: metrics <c>meetingsHeld</c> and
+/// <c>hoursTranslated</c> over the window, the per-day series for the current window, and the
+/// point-in-time <paramref name="LiveNow"/> / <paramref name="StartedToday"/> (UTC day) counts.
+/// Definitions live on <c>AdminMeetingInsightsCalculator</c>.
+/// </summary>
+public record AdminMeetingInsightsDto(
+    AdminInsightRange Range,
+    AdminInsightRange PreviousRange,
+    System.Collections.Generic.IReadOnlyList<AdminInsightMetric> Metrics,
+    System.Collections.Generic.IReadOnlyList<AdminMeetingDayDto> MeetingsByDay,
+    int LiveNow,
+    int StartedToday);
+
