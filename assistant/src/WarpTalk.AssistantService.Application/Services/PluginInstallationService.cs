@@ -33,16 +33,36 @@ public class PluginInstallationService : IPluginInstallationService
         Guid? workspaceId = null,
         CancellationToken ct = default)
     {
-        // Null when the caller names no workspace, which is the plugins settings page's own case
-        // and leaves every row unblocked - exactly the behaviour that predates WT-646. One check
-        // for the whole list: the workspace's answer is the same for every row.
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        // Null when the caller names no workspace: no workspace verdict at all, exactly the
+        // behaviour that predates WT-646. Otherwise one read of what the workspace has, for an active
+        // member of it - the list says which plugins a workspace has, and that is only a member's to
+        // read. A non-member gets every marketplace row refused with the same sentence.
+        WorkspacePluginAvailability? availability = null;
+        string? workspaceRefusal = null;
+        if (workspaceId.HasValue)
+        {
+            var resolved = await _workspacePluginGuard.GetAvailabilityForMemberAsync(workspaceId, userId, ct);
+            if (resolved.IsSuccess) availability = resolved.Value;
+            else workspaceRefusal = resolved.Error;
+        }
 
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.IsActive, ct: ct);
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(i => i.UserId == userId, ct: ct);
         var connections = await _unitOfWork.PluginConnectionRepository.FindAsync(c => c.UserId == userId, ct: ct);
 
+        var pendingPluginIds = new HashSet<Guid>();
+        if (availability is not null)
+        {
+            var pending = await _unitOfWork.PluginRequestRepository.FindAsync(
+                r => r.WorkspaceId == availability.WorkspaceId
+                    && r.RequestedBy == userId
+                    && r.Status == WorkspacePluginConstants.RequestStatus.Pending,
+                ct: ct);
+            pendingPluginIds.UnionWith(pending.Select(r => r.PluginId));
+        }
+
         var items = plugins
+            .Where(plugin => IsListed(plugin, availability, installations))
             .Select(plugin =>
             {
                 var definition = PluginDefinitionMapper.ToDefinition(plugin);
@@ -53,19 +73,49 @@ public class PluginInstallationService : IPluginInstallationService
                 var installation = installations.FirstOrDefault(i => i.PluginId == plugin.Id);
                 var connection = connections.FirstOrDefault(c =>
                     string.Equals(c.Provider, plugin.Provider, StringComparison.Ordinal));
-                // Reported, not filtered out. A user in a workspace that has just turned plugins
-                // off under an already-installed, already-connected plugin has to be able to see
-                // that row to disconnect it; dropping it from the catalog would leave them holding
-                // an OAuth grant with no way to revoke it from this product.
+
+                var workspaceAvailability = availability?.Of(plugin);
+                var blockReason = workspaceRefusal
+                    ?? (workspaceAvailability is null || WorkspacePluginConstants.Availability.IsUsable(workspaceAvailability)
+                        ? null
+                        : plugin.OwnerWorkspaceId is null
+                            ? WorkspacePluginConstants.Messages.NotAdded
+                            : WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace);
+
+                // Reported, not filtered out. A user whose workspace does not have a plugin they have
+                // already installed and connected has to be able to see that row to disconnect it;
+                // dropping it from the catalog would leave them holding an OAuth grant with no way to
+                // revoke it from this product.
                 return PluginCatalogItemMapper.ToCatalogItem(
                     definition,
                     installation,
                     connection,
-                    permitted.IsSuccess ? null : permitted.Error);
+                    blockReason,
+                    workspaceAvailability,
+                    pendingPluginIds.Contains(plugin.Id) ? WorkspacePluginConstants.RequestStatus.Pending : null);
             })
             .ToList();
 
         return Result.Success<IReadOnlyList<PluginCatalogItemDto>>(items);
+    }
+
+    /// <summary>
+    /// Every marketplace row; a private row only inside the workspace that owns it.
+    /// </summary>
+    /// <remarks>
+    /// The one exception is a private plugin the caller has installed, which stays listed wherever
+    /// they look - refused, but there - for the same reason a refused marketplace row stays: it is
+    /// the only place its grant can be revoked. That reveals nothing the caller does not already
+    /// hold.
+    /// </remarks>
+    private static bool IsListed(
+        Plugin plugin,
+        WorkspacePluginAvailability? availability,
+        IReadOnlyList<PluginInstallation> installations)
+    {
+        if (plugin.OwnerWorkspaceId is null) return true;
+        if (availability is not null && plugin.OwnerWorkspaceId == availability.WorkspaceId) return true;
+        return installations.Any(i => i.PluginId == plugin.Id);
     }
 
     public async Task<Result<PluginCatalogItemDto>> InstallAsync(
@@ -80,7 +130,7 @@ public class PluginInstallationService : IPluginInstallationService
 
         // After the catalog lookup so an unknown key still reads as unknown rather than as
         // forbidden, and before anything is written.
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        var permitted = await _workspacePluginGuard.CanUsePluginAsync(workspaceId, userId, plugin, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginCatalogItemDto>(permitted.Error!, permitted.ErrorCode);
 
@@ -205,27 +255,12 @@ public class PluginInstallationService : IPluginInstallationService
     {
         var key = request.PluginKey?.Trim() ?? string.Empty;
 
-        if (string.IsNullOrWhiteSpace(key))
-            return Result.Failure<PluginCatalogItemDto>("A plugin key is required.", PluginConstants.ErrorCodes.UnknownPlugin);
-
-        // Some keys collide with a literal route segment sitting beside a {pluginKey} route, and
-        // ASP.NET gives the literal precedence — so the row is not rejected by routing, it is
-        // silently unreachable, which is the worse failure. The list lives in PluginConstants
-        // rather than being spelled out here, so a new literal route can be declared reserved in
-        // one place. The database rejects these too; catching it here gives a usable message.
-        if (PluginConstants.IsReservedPluginKey(key))
-            return Result.Failure<PluginCatalogItemDto>(
-                $"'{key.Trim()}' is reserved and cannot be a plugin key.",
-                PluginConstants.ErrorCodes.UnknownPlugin);
-
-        if (string.IsNullOrWhiteSpace(request.McpServerUrl)
-            || !Uri.TryCreate(request.McpServerUrl, UriKind.Absolute, out var serverUri)
-            || serverUri.Scheme != Uri.UriSchemeHttps)
-        {
-            return Result.Failure<PluginCatalogItemDto>(
-                "An MCP plugin needs an absolute https:// server URL.",
-                PluginConstants.ErrorCodes.UnknownPlugin);
-        }
+        // The key, reserved-route, https and provider-collision checks live in McpPluginRows, shared
+        // with a workspace Owner's private plugin so the two cannot drift apart.
+        var valid = await McpPluginRows.ValidateNewAsync(
+            _unitOfWork, key, request.McpServerUrl, PluginConstants.ErrorCodes.UnknownPlugin, ct);
+        if (!valid.IsSuccess)
+            return Result.Failure<PluginCatalogItemDto>(valid.Error!, valid.ErrorCode);
 
         var authMode = string.IsNullOrWhiteSpace(request.AuthMode)
             ? PluginConstants.AuthMode.OAuth
@@ -241,44 +276,21 @@ public class PluginInstallationService : IPluginInstallationService
                 "A plugin that connects with an API key cannot also have an OAuth client.",
                 PluginConstants.ErrorCodes.InvalidCatalogUpdate);
 
-        if (await _unitOfWork.PluginRepository.AnyAsync(p => p.PluginKey == key, ct))
-            return Result.Failure<PluginCatalogItemDto>($"A plugin keyed '{key}' already exists.", PluginConstants.ErrorCodes.UnknownPlugin);
+        // A marketplace row: no owning workspace. Every workspace Owner can add it from there.
+        var plugin = McpPluginRows.Build(
+            key,
+            request.Label,
+            request.Description,
+            request.McpServerUrl,
+            request.AvatarUrl,
+            request.RequiredScopes,
+            ownerWorkspaceId: null,
+            createdBy: userId == Guid.Empty ? null : userId,
+            DateTime.UtcNow);
 
-        // An MCP row takes its key as its provider (below), and since 20260907101000 the provider
-        // is the identity of a user's OAuth grant. So a row keyed 'google' would not just look
-        // confusing - it would be handed the existing Google connection, complete with its refresh
-        // token, and its tools would run against Google's grant. Colliding with any existing
-        // provider is rejected outright.
-        if (await _unitOfWork.PluginRepository.AnyAsync(p => p.Provider == key, ct))
-            return Result.Failure<PluginCatalogItemDto>(
-                $"'{key}' is already in use as a provider by another plugin; an MCP plugin needs a provider of its own.",
-                PluginConstants.ErrorCodes.UnknownPlugin);
-
-        var now = DateTime.UtcNow;
-        var plugin = new Plugin
-        {
-            Id = Guid.NewGuid(),
-            PluginKey = key,
-            Label = request.Label,
-            Description = request.Description,
-            AvatarUrl = request.AvatarUrl,
-            // Its own provider, taken from its own key. Each MCP server is a separate
-            // authorization server with a separate grant, so keying connections by provider never
-            // merges two MCP plugins - the guard above is what keeps that true.
-            Provider = key,
-            RequiredScopesJson = JsonSerializer.Serialize(request.RequiredScopes ?? Array.Empty<string>()),
-            // Empty until the first connect: for an MCP row this column is a cache of tools/list,
-            // not something we author.
-            ToolsJson = "[]",
-            Kind = PluginConstants.PluginKind.Mcp,
-            McpServerUrl = request.McpServerUrl,
-            OAuthClientSource = authMode == PluginConstants.AuthMode.ApiKey
-                ? PluginConstants.OAuthClientSource.ApiKey
-                : PluginConstants.OAuthClientSource.Unresolved,
-            IsActive = true,
-            CreatedAt = now,
-            UpdatedAt = now,
-        };
+        // Each user pastes their own key; the row holds no client and never walks the ladder.
+        if (authMode == PluginConstants.AuthMode.ApiKey)
+            plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
 
         if (request.OAuth is { } oauth && !string.IsNullOrWhiteSpace(oauth.ClientId))
         {

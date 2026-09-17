@@ -632,7 +632,6 @@ public class McpToolGateway : IMcpToolGateway
     private static string Summarise(string value) =>
         value.Length <= 300 ? value : value[..300] + "...";
 
-
     /// <summary>A 404 on a request that carried a session id: the server has forgotten the session.</summary>
     private sealed class McpSessionExpiredException() : Exception("The MCP session has expired.");
 }

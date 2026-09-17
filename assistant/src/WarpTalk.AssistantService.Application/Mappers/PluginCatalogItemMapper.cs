@@ -11,7 +11,9 @@ internal static class PluginCatalogItemMapper
         PluginDefinitionDto plugin,
         PluginInstallation? installation,
         PluginConnection? connection,
-        string? workspacePolicyBlockReason = null)
+        string? workspacePolicyBlockReason = null,
+        string? workspaceAvailability = null,
+        string? requestStatus = null)
     {
         var installationStatus = installation?.Status ?? PluginConstants.InstallationStatus.NotInstalled;
         // The grant is the provider's; being connected is the plugin's. A row the user never
@@ -44,6 +46,8 @@ internal static class PluginCatalogItemMapper
             plugin.IsFeatured,
             plugin.SortOrder,
             plugin.Category,
+            workspaceAvailability,
+            requestStatus,
             plugin.AuthMode);
     }
 }

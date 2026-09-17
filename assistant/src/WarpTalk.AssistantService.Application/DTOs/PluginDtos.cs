@@ -82,6 +82,18 @@ public record PluginCatalogItemDto(
     /// <summary>Null on every row today; grouping by it is only worth it once rows carry one.</summary>
     string? Category = null,
     /// <summary>
+    /// <c>added</c>, <c>private</c> or <c>not_added</c> for the workspace the catalog was listed for;
+    /// null when it was listed without one. See <c>WorkspacePluginConstants.Availability</c>.
+    /// </summary>
+    /// <remarks>
+    /// What the member page branches on: Connect for a usable row, Request for a not-added one, and
+    /// "Added by your workspace" for a private one. <see cref="WorkspacePolicyBlockReason"/> still
+    /// carries the sentence for a refused row, for clients that predate the marketplace.
+    /// </remarks>
+    string? WorkspaceAvailability = null,
+    /// <summary><c>pending</c> when the caller has asked this workspace's Owner for the plugin.</summary>
+    string? RequestStatus = null,
+    /// <summary>
     /// <c>oauth</c>: Connect sends the user to the provider. <c>api_key</c>: Connect asks the user
     /// for their own API key and posts it to <c>{key}/api-key</c>.
     /// </summary>

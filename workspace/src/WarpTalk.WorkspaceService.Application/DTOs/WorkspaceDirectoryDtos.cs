@@ -48,5 +48,6 @@ public record WorkspacePreflightDto(
     string WorkspaceName,
     string WorkspaceSlug,
     bool IsDomainMatched,
-    bool AllowExternalCollaboration
+    bool AllowExternalCollaboration,
+    Guid? OwnerUserId = null
 );
