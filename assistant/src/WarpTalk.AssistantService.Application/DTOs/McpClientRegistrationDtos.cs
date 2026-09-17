@@ -46,7 +46,13 @@ public record AuthorizationServerMetadataDto(
 public record McpServerDiscoveryDto(
     string ResourceIdentifier,
     IReadOnlyList<string> ResourceScopesSupported,
-    AuthorizationServerMetadataDto AuthorizationServer);
+    AuthorizationServerMetadataDto AuthorizationServer,
+    /// <summary>
+    /// The <c>scope</c> the server named in its <c>WWW-Authenticate</c> challenge, when it named one.
+    /// WT-710. MCP Authorization makes this the first choice for what to request, ahead of either
+    /// <c>scopes_supported</c> list; see <c>McpScopeSelection</c>.
+    /// </summary>
+    IReadOnlyList<string>? ChallengedScopes = null);
 
 /// <summary>
 /// How the attempt to establish a client identity for one plugin ended.
