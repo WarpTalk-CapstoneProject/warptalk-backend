@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WarpTalk.MeetingService.Application.Interfaces;
+using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared.Events;
 
@@ -63,7 +64,12 @@ public sealed class EgressCompletion : IEgressCompletion
         // a room matched by name may already have STARTED A SECOND recording — and cancelling the
         // live one because the previous one just finished uploading is a worse bug than the one
         // being fixed here.
-        if (room.ActiveEgressId == egressId) room.ActiveEgressId = null;
+        //
+        // rec-loss: decided here, APPLIED only once the outcome is durably published. The sweep
+        // saves once for the whole batch, so a room cleared in memory before a publish that then
+        // threw was persisted as cleared by the next room's success — and a cleared room is never
+        // swept again, so its Completed/Failed event was gone for good.
+        var clearsActiveEgress = room.ActiveEgressId == egressId;
 
         string? fileUrl = null;
         long? fileSizeBytes = null;
@@ -91,7 +97,8 @@ public sealed class EgressCompletion : IEgressCompletion
         var startedAt = ReadEgressStartedAt(egressInfo);
 
         // A failed or empty egress has no recording artifact. Clearing the id is still correct —
-        // the room is not recording any more — but there is nothing to publish.
+        // the room is not recording any more — but there is no RecordingCompleted to publish, only
+        // the RecordingFailed below (rec-loss).
         //
         // WT-660: say WHY, using LiveKit's own two fields. Both callers previously reported this
         // as one undifferentiated "finished with no recording file", which cannot tell apart:
@@ -117,13 +124,28 @@ public sealed class EgressCompletion : IEgressCompletion
                 ReadEgressStatus(egressInfo) ?? "(absent)",
                 ReadEgressError(egressInfo) ?? "(none)");
 
+            // rec-loss: and tell the rest of the system, not only the log. Without this a failed
+            // recording left no row anywhere, and the record page showed exactly what it shows for
+            // a meeting nobody recorded. Only when the egress id is known: the event is keyed by
+            // it, and a payload with no id could never be matched to the Started it resolves.
+            if (!string.IsNullOrWhiteSpace(egressId))
+            {
+                var status = ReadEgressStatus(egressInfo);
+                await PublishFailedAsync(
+                    room.TranslationRoomId,
+                    egressId,
+                    DescribeNoFile(status),
+                    status,
+                    ReadEgressError(egressInfo));
+            }
+
+            if (clearsActiveEgress) room.ActiveEgressId = null;
             return EgressCompletionOutcome.Cleared;
         }
 
-        var envelope = DomainEventEnvelope.Create(
+        var publishResult = await MeetingDomainEventStream.PublishAsync(
+            _redisService,
             MeetingEventTypes.RecordingCompleted,
-            "meeting-service",
-            workspaceId: null,
             new MeetingRecordingCompletedEventPayload(
                 room.TranslationRoomId,
                 egressId,
@@ -138,21 +160,71 @@ public sealed class EgressCompletion : IEgressCompletion
         // safe and expected: RecordingCompletedEventProcessor treats an artifact that already
         // exists for this egress id as an idempotent redelivery. That is what lets the fallback
         // run unconditionally instead of having to guess whether the webhook got there first.
-        var publishResult = await _redisService.PublishStreamMessageAsync(
-            "meeting:domain-events",
-            new Dictionary<string, string>
-            {
-                ["event_id"] = envelope.EventId.ToString(),
-                ["event_type"] = envelope.EventType,
-                ["schema_version"] = envelope.SchemaVersion.ToString(),
-                ["envelope"] = JsonSerializer.Serialize(envelope)
-            });
-
         if (!publishResult.IsSuccess)
             throw new InvalidOperationException(
                 $"Could not durably publish {MeetingEventTypes.RecordingCompleted}: {publishResult.Error}");
 
+        if (clearsActiveEgress) room.ActiveEgressId = null;
         return EgressCompletionOutcome.Published;
+    }
+
+    public async Task ApplyLostAsync(MeetingRoom room, CancellationToken ct = default)
+    {
+        var egressId = room.ActiveEgressId;
+        if (string.IsNullOrWhiteSpace(egressId)) return;
+
+        // No LiveKit status or error to pass on: there is no EgressInfo, which is the whole problem.
+        await PublishFailedAsync(
+            room.TranslationRoomId,
+            egressId,
+            "The recording could not be recovered from LiveKit.",
+            liveKitStatus: null,
+            liveKitError: null);
+
+        room.ActiveEgressId = null;
+    }
+
+    /// <summary>
+    /// rec-loss: the host-facing sentence for an egress that ended with no file.
+    ///
+    /// Written for a person reading the record page, so it names the situation and nothing else —
+    /// LiveKit's <c>error</c> is free text that can carry storage paths and endpoint names, and it
+    /// travels in its own field for operators. The three branches are the three responses WT-660
+    /// separated in the log: minutes ran out (a plan matter), LiveKit broke, or nothing to record.
+    /// </summary>
+    private static string DescribeNoFile(string? status) => status?.ToUpperInvariant() switch
+    {
+        "EGRESS_LIMIT_REACHED" => "The recording stopped because the workspace ran out of recording minutes.",
+        "EGRESS_FAILED" or "EGRESS_ABORTED" => "The recording failed and no file was saved.",
+        _ => "The recording finished but produced no file.",
+    };
+
+    /// <summary>
+    /// Throws when the publish fails, exactly like the Completed path and for the same reason:
+    /// the webhook turns it into a 500 so LiveKit retries, and the sweep leaves the room holding
+    /// its egress id so the next tick tries again. A Failed event swallowed here is a recording
+    /// that disappears without a trace — the bug this event exists to end.
+    /// </summary>
+    private async Task PublishFailedAsync(
+        Guid translationRoomId,
+        string egressId,
+        string reason,
+        string? liveKitStatus,
+        string? liveKitError)
+    {
+        var publishResult = await MeetingDomainEventStream.PublishAsync(
+            _redisService,
+            MeetingEventTypes.RecordingFailed,
+            new MeetingRecordingFailedEventPayload(
+                translationRoomId,
+                egressId,
+                reason,
+                liveKitStatus,
+                liveKitError));
+
+        if (!publishResult.IsSuccess)
+            throw new InvalidOperationException(
+                $"Could not durably publish {MeetingEventTypes.RecordingFailed}: {publishResult.Error}");
     }
 
     /// <summary>

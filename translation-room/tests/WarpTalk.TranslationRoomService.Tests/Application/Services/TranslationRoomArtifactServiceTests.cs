@@ -97,6 +97,46 @@ public sealed class TranslationRoomArtifactServiceTests
         Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
     }
 
+    /// <summary>
+    /// rec-loss: a FAILED recording row has no file and never will. Behind a consent hold the old
+    /// answer was "consent is required" — an invitation to ask the host for something that does
+    /// not exist — and without one it was "not available yet", which promises it is coming.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_SaysAFailedRecordingHasNoFile()
+    {
+        var userId = Guid.NewGuid();
+        var artifact = CreateArtifact(userId);
+        artifact.ArtifactType = "OPTIONAL_RECORDING";
+        artifact.Status = "FAILED";
+        artifact.ConsentRequired = true;
+        artifact.ContainsRawAudio = true;
+
+        var service = CreateService(artifact);
+        var result = await service.GetArtifactDownloadAsync(artifact.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
+        Assert.Contains("failed", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A recording still in progress is refused without crashing on its null FileUrl.</summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_RefusesARecordingStillProcessing()
+    {
+        var userId = Guid.NewGuid();
+        var artifact = CreateArtifact(userId);
+        artifact.ArtifactType = "OPTIONAL_RECORDING";
+        artifact.Status = "PROCESSING";
+        artifact.ContainsRawAudio = true;
+
+        var service = CreateService(artifact);
+        var result = await service.GetArtifactDownloadAsync(artifact.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
+    }
+
     private static TranslationRoomArtifactService CreateService(TranslationRoomArtifact artifact)
     {
         var repository = new Mock<ITranslationRoomArtifactRepository>();

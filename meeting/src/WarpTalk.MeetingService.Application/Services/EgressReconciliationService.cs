@@ -92,7 +92,13 @@ public sealed class EgressReconciliationService : IEgressReconciliation
                         egressId,
                         room.Id,
                         UnknownEgressGrace);
-                    room.ActiveEgressId = null;
+
+                    // rec-loss: this used to be a bare `ActiveEgressId = null` — the recording
+                    // stopped existing with no event, so the record page could only show "never
+                    // recorded". ApplyLostAsync publishes RecordingFailed first and clears after;
+                    // if the publish throws, the catch below leaves the room holding its id and
+                    // the next tick tries again.
+                    await _egressCompletion.ApplyLostAsync(room, ct);
                     finished++;
                     continue;
                 }
