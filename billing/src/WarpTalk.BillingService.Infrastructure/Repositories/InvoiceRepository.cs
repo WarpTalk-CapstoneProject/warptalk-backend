@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using System.Linq;
 using System.Threading;
@@ -61,5 +62,21 @@ public class InvoiceRepository : GenericRepository<Invoice>, IInvoiceRepository
                 i.Status != InvoiceConstants.InvoiceStatuses.Paid &&
                 i.Status != InvoiceConstants.InvoiceStatuses.Void)
             .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(i =>
+                i.Status != InvoiceConstants.InvoiceStatuses.Paid
+                && i.Status != InvoiceConstants.InvoiceStatuses.Void
+                && i.Status != InvoiceConstants.InvoiceStatuses.Uncollectible
+                && i.Status != InvoiceConstants.InvoiceStatuses.Draft
+                && i.Payment.Status != PaymentConstants.PaymentStatuses.Paid)
+            .Select(i => new { i.Id, i.Payment.Subscription.WorkspaceId, i.Total, i.Currency, i.DueAt })
+            .ToListAsync(cancellationToken);
+
+        return rows.Select(r => new OutstandingInvoiceRow(r.Id, r.WorkspaceId, r.Total, r.Currency, r.DueAt)).ToList();
     }
 }
