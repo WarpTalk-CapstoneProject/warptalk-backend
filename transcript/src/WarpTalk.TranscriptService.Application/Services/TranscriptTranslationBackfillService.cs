@@ -48,6 +48,22 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
     /// </summary>
     public static readonly TimeSpan RunMarkerTtl = TimeSpan.FromMinutes(20);
 
+    /// <summary>
+    /// How many segment translations one transcript may queue inside <see cref="BudgetWindow"/>,
+    /// across every language and both paths (gap fill and post-correction retranslation).
+    ///
+    /// Every queued line is a billed LLM call (billing_worker settles translate:backfill_results
+    /// on the same TRANSLATION rate card as a live one), and nothing else bounds the total: the run
+    /// marker only stops a duplicate of a run that is still alive, <see cref="MaxSegmentsPerRun"/>
+    /// only bounds one language, and corrections redo every language of a line each time. Twice a
+    /// full run: the longest real meeting (~750 lines) can still be read in eight languages in a
+    /// day, while a script looping over languages or corrections stops at a known ceiling.
+    /// </summary>
+    public const int MaxQueuedSegmentsPerTranscriptPerWindow = 2 * MaxSegmentsPerRun;
+
+    /// <summary>The fixed window the per-transcript budget counts over, from its first use.</summary>
+    public static readonly TimeSpan BudgetWindow = TimeSpan.FromHours(24);
+
     public const string StatusIdle = "idle";
     public const string StatusRunning = "running";
     public const string StatusComplete = "complete";
@@ -73,6 +89,9 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
     /// <summary>The Redis key a run marks itself alive under. Public so tests can assert on it.</summary>
     public static string RunMarkerKey(Guid transcriptId, string targetLanguage) =>
         $"transcript:backfill:{transcriptId}:{NormalizeLanguage(targetLanguage)}";
+
+    /// <summary>The per-transcript budget counter. Public so tests can assert on it.</summary>
+    public static string BudgetKey(Guid transcriptId) => $"transcript:backfill-budget:{transcriptId}";
 
     /// <summary>
     /// Segments carry bare ISO-639-1 from STT ("vi"), but a room can hand a locale tag ("vi-VN")
@@ -189,6 +208,25 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 await db.StringSetAsync(markerKey, StatusRunning, RunMarkerTtl);
             }
 
+            // Reserved only by a run that is about to queue: an in-flight duplicate has already
+            // returned above without spending anything.
+            if (!await TryReserveBudgetAsync(db, transcriptId, work.Missing.Count))
+            {
+                // Release the marker just claimed: nothing is running, and leaving it would show a
+                // progress bar for twenty minutes over a request that was refused.
+                await db.KeyDeleteAsync(markerKey);
+                _logger.LogWarning(
+                    "Refused to backfill transcript {TranscriptId} into {Language}: {Segments} more lines would exceed its budget of {Budget} per {Window}",
+                    transcriptId,
+                    work.Language,
+                    work.Missing.Count,
+                    MaxQueuedSegmentsPerTranscriptPerWindow,
+                    BudgetWindow);
+                return Result.Failure<TranscriptLanguageCoverageDto>(
+                    "This transcript has reached its translation limit for today. Try again later.",
+                    "RATE_LIMITED");
+            }
+
             var requestId = Guid.NewGuid();
             var published = 0;
 
@@ -200,12 +238,14 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                     .Select(s => new BackfillSegmentPayload(
                         s.Id.ToString(),
                         s.OriginalText!.Trim(),
-                        NormalizeLanguage(s.OriginalLanguage)))
+                        NormalizeLanguage(s.OriginalLanguage),
+                        StartMs: s.StartTimeMs,
+                        EndMs: s.EndTimeMs))
                     .ToArray();
 
                 await db.StreamAddAsync(
                     RequestStream,
-                    RequestEntries(requestId, work.Transcript, work.Language, markerKey, payload),
+                    RequestEntries(requestId, work.Transcript, work.Language, markerKey, userId, payload),
                     maxLength: 10000,
                     useApproximateMaxLength: true);
 
@@ -336,7 +376,10 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         }
     }
 
-    public async Task<int> RequestRetranslationAsync(Guid segmentId, CancellationToken cancellationToken = default)
+    public async Task<int> RequestRetranslationAsync(
+        Guid segmentId,
+        Guid requestedByUserId,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -364,7 +407,25 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             }
 
             var sourceLanguage = NormalizeLanguage(segment.OriginalLanguage);
+            var languages = links
+                .Select(l => NormalizeLanguage(l.TargetLanguage))
+                .Where(language => language.Length > 0 && language != sourceLanguage)
+                .ToHashSet(StringComparer.Ordinal);
             var db = _redis.GetDatabase();
+
+            // Corrections spend the same budget as gap fills: each one redoes every language the
+            // line has, and an editor saving the same line over and over is otherwise unbounded
+            // spend. Over budget the correction still stands; only its translations stay stale.
+            if (languages.Count > 0 && !await TryReserveBudgetAsync(db, transcript.Id, languages.Count))
+            {
+                _logger.LogWarning(
+                    "Skipped retranslating corrected segment {SegmentId}: transcript {TranscriptId} is over its budget of {Budget} per {Window}",
+                    segmentId,
+                    transcript.Id,
+                    MaxQueuedSegmentsPerTranscriptPerWindow,
+                    BudgetWindow);
+                return 0;
+            }
             var requestId = Guid.NewGuid();
             var queued = 0;
 
@@ -373,7 +434,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var language = NormalizeLanguage(link.TargetLanguage);
-                if (language.Length == 0 || language == sourceLanguage)
+                if (!languages.Contains(language))
                 {
                     continue;
                 }
@@ -384,7 +445,9 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                         segmentId.ToString(),
                         segment.OriginalText!.Trim(),
                         sourceLanguage,
-                        link.TranslationContentId.ToString()),
+                        link.TranslationContentId.ToString(),
+                        segment.StartTimeMs,
+                        segment.EndTimeMs),
                 };
 
                 // No status key. The run marker drives the reader's "translating the rest of this
@@ -392,7 +455,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 // over a count that never moves, because nothing about this line is missing.
                 await db.StreamAddAsync(
                     RequestStream,
-                    RequestEntries(requestId, transcript, language, markerKey: string.Empty, payload),
+                    RequestEntries(requestId, transcript, language, markerKey: string.Empty, requestedByUserId, payload),
                     maxLength: 10000,
                     useApproximateMaxLength: true);
 
@@ -422,6 +485,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         Transcript transcript,
         string targetLanguage,
         string markerKey,
+        Guid requestedByUserId,
         IReadOnlyList<BackfillSegmentPayload> payload) =>
         [
             new NameValueEntry("request_id", requestId.ToString()),
@@ -429,7 +493,12 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             // The consumer resolves a room from the payload, so the worker has to be able to echo
             // one back — see TranscriptConsumerPollingPolicy.TryResolveRoomId.
             new NameValueEntry("meeting_id", transcript.TranslationRoomId.ToString()),
+            // billing_worker charges the workspace named HERE, not the one the room projection live
+            // settlement reads: that projection lives 24h, and a transcript is read back for months.
             new NameValueEntry("workspace_id", transcript.WorkspaceId.ToString()),
+            // The usage record's user. A backfilled line has no speaker who spent anything; the
+            // reader who picked the language, or the editor who corrected the line, did.
+            new NameValueEntry("requested_by_user_id", requestedByUserId.ToString()),
             new NameValueEntry("target_lang", targetLanguage),
             new NameValueEntry("status_key", markerKey),
             new NameValueEntry("segments_json", JsonSerializer.Serialize(payload)),
@@ -437,6 +506,29 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 "timestamp_ms",
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
         ];
+
+    /// <summary>
+    /// Adds <paramref name="segments"/> to the transcript's window counter, or leaves it unchanged
+    /// and returns false when that would cross the budget. INCRBY-then-compensate rather than
+    /// read-then-write, so two concurrent requests cannot both read "under" and both queue.
+    /// </summary>
+    private static async Task<bool> TryReserveBudgetAsync(IDatabase db, Guid transcriptId, int segments)
+    {
+        var key = BudgetKey(transcriptId);
+        var used = await db.StringIncrementAsync(key, segments);
+
+        // A fixed window from first use: only set when the key has no TTL yet, so later
+        // reservations do not keep sliding it forward and turn a daily budget into a permanent one.
+        await db.KeyExpireAsync(key, BudgetWindow, ExpireWhen.HasNoExpiry);
+
+        if (used <= MaxQueuedSegmentsPerTranscriptPerWindow)
+        {
+            return true;
+        }
+
+        await db.StringDecrementAsync(key, segments);
+        return false;
+    }
 
     private async Task TryMarkFailedAsync(Guid transcriptId, string targetLanguage)
     {
@@ -480,5 +572,11 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         /// line is being redone after a correction. Empty for an ordinary gap fill — the worker
         /// reads its presence as "this is a retranslation".
         /// </summary>
-        [property: System.Text.Json.Serialization.JsonPropertyName("previous_translation_content_id")] string PreviousTranslationContentId = "");
+        [property: System.Text.Json.Serialization.JsonPropertyName("previous_translation_content_id")] string PreviousTranslationContentId = "",
+        /// <summary>
+        /// The line's audio span. Billing prices a backfilled translation exactly like a live one,
+        /// TRANSLATION per second of source speech, and this is where the seconds come from.
+        /// </summary>
+        [property: System.Text.Json.Serialization.JsonPropertyName("start_ms")] int StartMs = 0,
+        [property: System.Text.Json.Serialization.JsonPropertyName("end_ms")] int EndMs = 0);
 }
