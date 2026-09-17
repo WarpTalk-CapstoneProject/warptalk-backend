@@ -42,7 +42,7 @@ public class TranscriptCorrectionPropagationTests
             TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
 
         Assert.True(result.IsSuccess);
-        await context.Backfill.Received(1).RequestRetranslationAsync(SegmentId, Arg.Any<CancellationToken>());
+        await context.Backfill.Received(1).RequestRetranslationAsync(SegmentId, UserId, Arg.Any<CancellationToken>());
         Assert.Equal("what was actually said", context.Segment.OriginalText);
         Assert.True(context.Segment.IsCorrected);
     }
@@ -56,7 +56,7 @@ public class TranscriptCorrectionPropagationTests
             TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
 
         Assert.True(result.IsSuccess);
-        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
 
         // And it says so. This column was hardcoded true on every correction ever made, while
         // nothing retranslated anything.
@@ -85,7 +85,7 @@ public class TranscriptCorrectionPropagationTests
             TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en-US"));
 
         Assert.True(result.IsSuccess);
-        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
 
         var content = Assert.Single(context.AddedContents);
         Assert.Equal("the wording a person chose", content.TranslatedText);

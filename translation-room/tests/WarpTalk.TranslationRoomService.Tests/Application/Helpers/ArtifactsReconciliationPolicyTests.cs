@@ -160,6 +160,30 @@ public class ArtifactsReconciliationScopeTests
         matches(Room("ENDED", Now.AddHours(-1), withArtifact: true)).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("PROCESSING")]
+    [InlineData("FAILED")]
+    [InlineData("COMPLETED")]
+    public void AMeetingWhoseOnlyArtifactIsARecordingIsStillFinalized(string recordingStatus)
+    {
+        // rec-loss: the recording row is written when recording STARTS, by the recording event
+        // consumer, not by finalization. A meeting with a recording and no transcript or summary
+        // is exactly as unfinalized as one with nothing — it must not escape the sweep for having
+        // pressed Record.
+        var matches = ArtifactsReconciliationPolicy
+            .AbandonedRooms(QueuedBefore, EndedAfter)
+            .Compile();
+        var room = Room("ENDED", Now.AddHours(-1));
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            ArtifactType = "OPTIONAL_RECORDING",
+            Status = recordingStatus,
+        });
+
+        matches(room).Should().BeTrue();
+    }
+
     [Fact]
     public void ARoomWithNoEndedAtIsInvisibleToTheSweep()
     {

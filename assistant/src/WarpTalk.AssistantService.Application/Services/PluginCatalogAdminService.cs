@@ -40,8 +40,13 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     {
         // Unfiltered on purpose. The user-facing catalog shows only is_active rows, which makes a
         // retired row invisible in the one place someone would go to un-retire it.
-        var plugins = await _unitOfWork.PluginRepository.GetAllAsync(ct: ct);
+        //
+        // Marketplace rows only. A workspace Owner's private plugin is that workspace's, not the
+        // marketplace's: listing it here would present it as something the admin curates and every
+        // Owner could add. It stays reachable by key for support, but is not a marketplace row.
+        var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.OwnerWorkspaceId == null, ct: ct);
         var installationCounts = await _unitOfWork.PluginInstallationRepository.CountByPluginAsync(ct);
+        var workspaceCounts = await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct);
 
         var items = plugins
             // sort_order is the curated order the catalog page renders; label breaks the tie for
@@ -62,7 +67,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 !string.IsNullOrWhiteSpace(plugin.OAuthClientId),
                 !string.IsNullOrWhiteSpace(plugin.OAuthClientSecretEncrypted),
                 ReadTools(plugin).Count,
-                installationCounts.TryGetValue(plugin.Id, out var count) ? count : 0))
+                installationCounts.TryGetValue(plugin.Id, out var count) ? count : 0,
+                workspaceCounts.TryGetValue(plugin.Id, out var workspaces) ? workspaces : 0))
             .ToList();
 
         return Result.Success<IReadOnlyList<PluginCatalogAdminListItemDto>>(items);

@@ -637,6 +637,19 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 return Result.Failure<ArtifactDownloadDto>("Artifact retention period has expired.", ErrorCodes.InvalidState);
             }
 
+            // rec-loss: a recording row now exists before, and sometimes without, a file. A FAILED
+            // one will never have anything to download, and answering "consent is required" or
+            // "not available yet" would both promise something that is not coming. Checked before
+            // consent because there is nothing behind the consent hold to protect.
+            if (string.IsNullOrWhiteSpace(artifact.FileUrl) &&
+                string.IsNullOrWhiteSpace(artifact.Content) &&
+                string.Equals(artifact.Status, ArtifactStatus.Failed.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure<ArtifactDownloadDto>(
+                    "This recording failed and has no file to download.",
+                    ErrorCodes.InvalidState);
+            }
+
             if (artifact.ConsentRequired)
             {
                 return Result.Failure<ArtifactDownloadDto>("Consent is required before downloading this artifact.", ErrorCodes.Unauthorized);
@@ -714,7 +727,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
     /// <summary>
     /// Releases the consent hold on an artifact — today, in practice, a recording
-    /// (<c>RecordingCompletedEventProcessor</c> is the one writer that sets
+    /// (<c>RecordingLifecycleEventProcessor</c> is the one writer that sets
     /// <c>ConsentRequired = true</c>).
     /// </summary>
     /// <remarks>

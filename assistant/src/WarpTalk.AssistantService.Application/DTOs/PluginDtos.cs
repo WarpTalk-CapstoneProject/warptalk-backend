@@ -78,7 +78,19 @@ public record PluginCatalogItemDto(
     /// <summary>Ascending. Ties are the client's to break, by label.</summary>
     int SortOrder = 0,
     /// <summary>Null on every row today; grouping by it is only worth it once rows carry one.</summary>
-    string? Category = null);
+    string? Category = null,
+    /// <summary>
+    /// <c>added</c>, <c>private</c> or <c>not_added</c> for the workspace the catalog was listed for;
+    /// null when it was listed without one. See <c>WorkspacePluginConstants.Availability</c>.
+    /// </summary>
+    /// <remarks>
+    /// What the member page branches on: Connect for a usable row, Request for a not-added one, and
+    /// "Added by your workspace" for a private one. <see cref="WorkspacePolicyBlockReason"/> still
+    /// carries the sentence for a refused row, for clients that predate the marketplace.
+    /// </remarks>
+    string? WorkspaceAvailability = null,
+    /// <summary><c>pending</c> when the caller has asked this workspace's Owner for the plugin.</summary>
+    string? RequestStatus = null);
 
 public record InstallPluginRequest();
 
@@ -131,7 +143,13 @@ public record PluginOAuthStateDto(
     string PluginKey,
     string? CodeVerifier = null,
     string? Issuer = null,
-    string? Client = null);
+    string? Client = null,
+    /// <summary>
+    /// The scopes the authorization request asked for. WT-710. RFC 6749 §5.1 lets a token response
+    /// omit <c>scope</c> when it is identical to what was requested, so the exchange needs this to
+    /// know what was granted; reading an omitted scope as "nothing" marked every such grant partial.
+    /// </summary>
+    IReadOnlyList<string>? RequestedScopes = null);
 
 /// <summary>
 /// What a finished OAuth callback has to say, in the terms the redirect needs.

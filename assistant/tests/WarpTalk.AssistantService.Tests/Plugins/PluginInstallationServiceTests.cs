@@ -381,13 +381,41 @@ public class PluginInstallationServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, result.Value!.Count);
+        // A workspace still on AllowAnyPlugins=false has added nothing: each row reads not_added,
+        // which is what the member page turns into a Request button.
         Assert.All(result.Value, item =>
-            Assert.Equal(PluginConstants.WorkspacePolicyMessages.PluginsDisabled, item.WorkspacePolicyBlockReason));
+        {
+            Assert.Equal(WorkspacePluginConstants.Messages.NotAdded, item.WorkspacePolicyBlockReason);
+            Assert.Equal(WorkspacePluginConstants.Availability.NotAdded, item.WorkspaceAvailability);
+        });
 
         // Still reported as installed. The rows are untouched; the block is a verdict, not a
         // rewrite of what the user has.
         var calendar = Assert.Single(result.Value, item => item.Key == GoogleCalendarKey);
         Assert.Equal(PluginConstants.InstallationStatus.Installed, calendar.InstallationStatus);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_ListsAPrivatePluginOnlyInsideItsOwnWorkspace()
+    {
+        var mine = WorkspacePluginGuardTests.Private("ws_mine_00000000", WorkspaceId);
+        var theirs = WorkspacePluginGuardTests.Private("ws_theirs_00000000", Guid.NewGuid());
+        ConfigureCatalog(GoogleDrivePlugin(), mine, theirs);
+        _workspaceAllowsPlugins = true;
+
+        var inWorkspace = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        var personal = (await CreateSut().ListCatalogAsync(UserId)).Value!;
+
+        Assert.Equal([GoogleDriveKey, "ws_mine_00000000"], inWorkspace.Select(i => i.Key).Order());
+        Assert.Equal(
+            WorkspacePluginConstants.Availability.Private,
+            inWorkspace.Single(i => i.Key == "ws_mine_00000000").WorkspaceAvailability);
+        Assert.Equal(
+            WorkspacePluginConstants.Availability.Added,
+            inWorkspace.Single(i => i.Key == GoogleDriveKey).WorkspaceAvailability);
+        // No workspace: no private rows at all, and no workspace verdict on the rest.
+        var row = Assert.Single(personal);
+        Assert.Null(row.WorkspaceAvailability);
     }
 
     [Fact]

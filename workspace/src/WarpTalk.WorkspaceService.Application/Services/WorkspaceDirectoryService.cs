@@ -411,7 +411,8 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             workspace.Name,
             workspace.Slug,
             isDomainMatched,
-            config.AllowExternalCollaboration));
+            config.AllowExternalCollaboration,
+            workspace.OwnerId));
     }
 
     /// <summary>

@@ -64,5 +64,8 @@ public interface ITranscriptTranslationBackfillService
     /// Authorization is the caller's. This is reached only after a correction has been accepted
     /// and committed, and it deliberately does not re-ask a question that was already answered.
     /// </remarks>
-    Task<int> RequestRetranslationAsync(Guid segmentId, CancellationToken cancellationToken = default);
+    Task<int> RequestRetranslationAsync(
+        Guid segmentId,
+        Guid requestedByUserId,
+        CancellationToken cancellationToken = default);
 }
