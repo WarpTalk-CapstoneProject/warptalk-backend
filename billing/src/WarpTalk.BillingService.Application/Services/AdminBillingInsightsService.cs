@@ -48,7 +48,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
 
     public async Task<Result<AdminBillingInsightsDto>> GetInsightsAsync(AdminInsightsQuery query, CancellationToken ct = default)
     {
-        if (!AdminComparisonRange.TryResolve(query, query.Compare, out var window, out var error))
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
         {
             return Result.Failure<AdminBillingInsightsDto>(error!, ErrorCodes.ValidationError);
         }
@@ -60,11 +60,13 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             var current = await ReadPeriodAsync(window.Range, now, fx, ct);
             var previous = await ReadPeriodAsync(window.PreviousRange, now, fx, ct);
 
-            var dayBuckets = await _unitOfWork.PaymentRepository.GetCountedPaidTotalsByUtcBucketAsync(
-                window.From, window.To, monthly: false, ct);
-            var monthWindow = RevenueMonthWindow(window.To);
-            var monthBuckets = await _unitOfWork.PaymentRepository.GetCountedPaidTotalsByUtcBucketAsync(
-                monthWindow.From, monthWindow.To, monthly: true, ct);
+            // Series on the local calendar of the request's tz (default Asia/Ho_Chi_Minh).
+            var dayPayments = await _unitOfWork.PaymentRepository.GetCountedPaidAmountsAsync(window.From, window.To, ct);
+            var monthWindow = RevenueMonthWindow(window.To, window.TimeZone);
+            var monthPayments = await _unitOfWork.PaymentRepository.GetCountedPaidAmountsAsync(
+                monthWindow.From, monthWindow.To, ct);
+            var (revenueByDay, revenueByDayNote) = RevenueByDay(window.Days(), dayPayments, fx);
+            var (revenueByMonth, revenueByMonthNote) = RevenueByMonth(window.To, window.TimeZone, monthPayments, fx);
 
             var byService = await _unitOfWork.CreditTransactionRepository.GetConsumedByChargeTypeAsync(
                 window.From, window.To, ct);
@@ -91,8 +93,10 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 window.PreviousRange,
                 now,
                 metrics,
-                RevenueByDay(window.From, window.To, dayBuckets, fx),
-                RevenueByMonth(window.To, monthBuckets, fx),
+                revenueByDay,
+                revenueByDayNote,
+                revenueByMonth,
+                revenueByMonthNote,
                 byService.Select(s => new AdminCreditsByServiceDto(s.UsageType, s.Credits)).ToList(),
                 top.Select(t => new AdminTopWorkspaceCreditsDto(t.WorkspaceId, NameOf(names, t.WorkspaceId), t.Credits)).ToList()));
         }
@@ -104,24 +108,24 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         }
     }
 
-    public async Task<Result<AdminBillingSnapshotDto>> GetSnapshotAsync(CancellationToken ct = default)
+    public async Task<Result<AdminBillingSnapshotDto>> GetSnapshotAsync(string? timeZoneId, CancellationToken ct = default)
     {
+        if (!AdminComparisonRange.TryResolveTimeZone(timeZoneId, out var timeZone, out var tzError))
+        {
+            return Result.Failure<AdminBillingSnapshotDto>(tzError!, ErrorCodes.ValidationError);
+        }
+
         try
         {
             var now = _time.GetUtcNow().UtcDateTime;
             var fx = await ReadFxAsync(ct);
 
-            // Revenue today / yesterday, on the UTC calendar like every other insights series.
-            var today = DateOnly.FromDateTime(now);
-            var yesterdayStart = now.Date.AddDays(-1);
-            var tomorrowStart = now.Date.AddDays(1);
-            var dayBuckets = await _unitOfWork.PaymentRepository.GetCountedPaidTotalsByUtcBucketAsync(
-                DateTime.SpecifyKind(yesterdayStart, DateTimeKind.Utc), DateTime.SpecifyKind(tomorrowStart, DateTimeKind.Utc), monthly: false, ct);
-            decimal RevenueOn(DateOnly day) => ToVnd(
-                    dayBuckets.Where(b => new DateOnly(b.Year, b.Month, b.Day) == day)
-                        .Select(b => new MoneyPart(b.Currency, b.Total, 1)),
-                    fx)
-                .Amount ?? 0m;
+            // Today and yesterday are the admin's local days: in Vietnam, today began at 17:00Z yesterday.
+            var today = AdminComparisonRange.LocalDayOf(now, timeZone);
+            var yesterdayStart = AdminComparisonRange.StartOfLocalDay(today.Date.AddDays(-1), timeZone);
+            var recentPaid = await _unitOfWork.PaymentRepository.GetCountedPaidAmountsAsync(yesterdayStart, today.End, ct);
+            var (revenueToday, revenueTodayNote) = RevenueBetween(recentPaid, today.Start, today.End, fx);
+            var (revenueYesterday, revenueYesterdayNote) = RevenueBetween(recentPaid, yesterdayStart, today.Start, fx);
 
             // Subscriptions right now. The same row set and rules as the subscriptions page summary.
             var active = await _unitOfWork.SubscriptionRepository.GetActiveForRevenueAsync(ct);
@@ -130,7 +134,8 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 AdminSubscriptionRevenue.MonthlyRecurring(recurring).Select(m => new MoneyPart(m.Currency, m.Amount, 1)),
                 fx);
 
-            var monthStart = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            // The local calendar month: churn since the admin's 1st, not UTC's.
+            var monthStart = AdminComparisonRange.StartOfLocalMonth(today.Date.Year, today.Date.Month, timeZone);
             var flows = await _unitOfWork.SubscriptionRepository.GetSubscriptionFlowCountsAsync(monthStart, now, now, ct);
 
             var outstandingRows = await _unitOfWork.InvoiceRepository.GetOutstandingAsync(ct);
@@ -158,8 +163,10 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
 
             return Result.Success(new AdminBillingSnapshotDto(
                 now,
-                RevenueOn(today),
-                RevenueOn(today.AddDays(-1)),
+                revenueToday,
+                revenueTodayNote,
+                revenueYesterday,
+                revenueYesterdayNote,
                 recurring.Count == 0 ? 0m : mrr.Amount,
                 ConversionNote(mrr, fx),
                 recurring.Count,
@@ -177,6 +184,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 new AdminOutstandingInvoicesDto(
                     outstandingRows.Count,
                     outstandingRows.Count == 0 ? 0m : outstandingTotal.Amount,
+                    ConversionNote(outstandingTotal, fx),
                     pastDueInvoices.Count,
                     oldestPastDue?.DueAt is { } oldestDue ? (int)Math.Floor((now - oldestDue).TotalDays) : null,
                     oldestPastDue is null ? null : NameOf(names, oldestPastDue.WorkspaceId)),

@@ -28,9 +28,12 @@ public interface IPaymentRepository : IGenericRepository<Payment>
     /// <summary>Failed payments whose last update falls in [from, to).</summary>
     Task<int> CountFailedAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
-    /// <summary>Counted paid payments in [from, to), bucketed by UTC calendar day (monthly = false) or month.</summary>
-    Task<IReadOnlyList<PaymentBucketTotal>> GetCountedPaidTotalsByUtcBucketAsync(
-        DateTime from, DateTime to, bool monthly, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Counted paid payments in [from, to), one row each, unbucketed. Which day or month a payment
+    /// belongs to depends on the caller's time zone, so the caller buckets them.
+    /// </summary>
+    Task<IReadOnlyList<PaidAmountRow>> GetCountedPaidAmountsAsync(
+        DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
     /// <summary>Newest payments that represent a charge attempt (not pending, not subscription_updated), newest first.</summary>
     Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default);

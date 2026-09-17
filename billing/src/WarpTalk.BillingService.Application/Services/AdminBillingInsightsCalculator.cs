@@ -227,44 +227,96 @@ public static class AdminBillingInsightsCalculator
 
     // ── Series ───────────────────────────────────────────────────────────────
 
-    /// <summary>Every UTC calendar day [from, to) touches (shared AdminComparisonRange.DaysOf), zero-filled, in VND.</summary>
-    public static IReadOnlyList<AdminRevenueByDayDto> RevenueByDay(
-        DateTime from, DateTime to, IReadOnlyList<PaymentBucketTotal> buckets, decimal? fxUsdVnd)
+    /// <summary>
+    /// Every local day of the window (<c>AdminComparisonRange.DaysOf</c> in the request's tz), zero-filled,
+    /// in VND. A payment belongs to the local day it was paid on. A day whose every payment was in an
+    /// unconvertible currency is null, not 0; the note (null when nothing was left out) says what the
+    /// series excludes.
+    /// </summary>
+    public static (IReadOnlyList<AdminRevenueByDayDto> Days, string? Note) RevenueByDay(
+        IReadOnlyList<AdminLocalDay> days, IReadOnlyList<PaidAmountRow> payments, decimal? fxUsdVnd)
     {
-        var byDay = buckets
-            .GroupBy(b => new DateTime(b.Year, b.Month, b.Day, 0, 0, 0, DateTimeKind.Utc))
-            .ToDictionary(g => g.Key, g => ToVnd(g.Select(b => new MoneyPart(b.Currency, b.Total, 1)), fxUsdVnd).Amount ?? 0m);
+        var buckets = new List<MoneyPart>[days.Count];
+        var counted = new List<MoneyPart>();
+        foreach (var payment in payments)
+        {
+            var index = AdminComparisonRange.IndexOfDay(days, payment.At);
+            if (index < 0) continue;
+            var part = new MoneyPart(payment.Currency, payment.Total, 1);
+            (buckets[index] ??= []).Add(part);
+            counted.Add(part);
+        }
 
-        return AdminComparisonRange.DaysOf(from, to)
-            .Select(day => new AdminRevenueByDayDto(
-                day.ToString("yyyy-MM-dd", Invariant),
-                byDay.TryGetValue(day, out var revenue) ? revenue : 0m))
+        var rows = days
+            .Select((day, i) => new AdminRevenueByDayDto(day.Key, ToVnd(buckets[i] ?? [], fxUsdVnd).Amount))
             .ToList();
+        return (rows, ExclusionNote(ToVnd(counted, fxUsdVnd), fxUsdVnd));
     }
 
-    /// <summary>The UTC window of the <see cref="RevenueMonths"/> calendar months ending with the month of <paramref name="to"/> (exclusive).</summary>
-    public static AdminInsightRange RevenueMonthWindow(DateTime to)
+    /// <summary>
+    /// The <see cref="RevenueMonths"/> local calendar months of <paramref name="timeZone"/> ending with
+    /// the month that the last instant before <paramref name="to"/> falls in, as UTC instants.
+    /// </summary>
+    public static AdminInsightRange RevenueMonthWindow(DateTime to, TimeZoneInfo timeZone)
     {
-        var lastInstant = to.AddTicks(-1);
-        var lastMonthStart = new DateTime(lastInstant.Year, lastInstant.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-        return new AdminInsightRange(lastMonthStart.AddMonths(-(RevenueMonths - 1)), lastMonthStart.AddMonths(1));
+        var (first, last) = RevenueMonthBounds(to, timeZone);
+        return new AdminInsightRange(
+            AdminComparisonRange.StartOfLocalMonth(first.Year, first.Month, timeZone),
+            AdminComparisonRange.StartOfLocalMonth(last.AddMonths(1).Year, last.AddMonths(1).Month, timeZone));
     }
 
-    public static IReadOnlyList<AdminRevenueByMonthDto> RevenueByMonth(
-        DateTime to, IReadOnlyList<PaymentBucketTotal> buckets, decimal? fxUsdVnd)
+    /// <summary>revenueByMonth over <see cref="RevenueMonthWindow"/>, nulls and note as for <see cref="RevenueByDay"/>.</summary>
+    public static (IReadOnlyList<AdminRevenueByMonthDto> Months, string? Note) RevenueByMonth(
+        DateTime to, TimeZoneInfo timeZone, IReadOnlyList<PaidAmountRow> payments, decimal? fxUsdVnd)
     {
-        var first = RevenueMonthWindow(to).From;
-        var byMonth = buckets
-            .GroupBy(b => (b.Year, b.Month))
-            .ToDictionary(g => g.Key, g => ToVnd(g.Select(b => new MoneyPart(b.Currency, b.Total, 1)), fxUsdVnd).Amount ?? 0m);
-
-        return Enumerable.Range(0, RevenueMonths)
+        var (first, _) = RevenueMonthBounds(to, timeZone);
+        var months = Enumerable.Range(0, RevenueMonths)
             .Select(i => first.AddMonths(i))
-            .Select(month => new AdminRevenueByMonthDto(
-                month.ToString("yyyy-MM", Invariant),
-                byMonth.TryGetValue((month.Year, month.Month), out var revenue) ? revenue : 0m))
+            .Select(month => (
+                Month: month,
+                Start: AdminComparisonRange.StartOfLocalMonth(month.Year, month.Month, timeZone),
+                End: AdminComparisonRange.StartOfLocalMonth(month.AddMonths(1).Year, month.AddMonths(1).Month, timeZone)))
             .ToList();
+
+        var counted = new List<MoneyPart>();
+        var rows = months
+            .Select(month =>
+            {
+                var parts = payments
+                    .Where(p => p.At >= month.Start && p.At < month.End)
+                    .Select(p => new MoneyPart(p.Currency, p.Total, 1))
+                    .ToList();
+                counted.AddRange(parts);
+                return new AdminRevenueByMonthDto(month.Month.ToString("yyyy-MM", Invariant), ToVnd(parts, fxUsdVnd).Amount);
+            })
+            .ToList();
+
+        return (rows, ExclusionNote(ToVnd(counted, fxUsdVnd), fxUsdVnd));
     }
+
+    /// <summary>A day's revenue in VND with its conversion note — revenueToday / revenueYesterday.</summary>
+    public static (decimal? Amount, string? Note) RevenueBetween(
+        IReadOnlyList<PaidAmountRow> payments, DateTime from, DateTime to, decimal? fxUsdVnd)
+    {
+        var total = ToVnd(
+            payments.Where(p => p.At >= from && p.At < to).Select(p => new MoneyPart(p.Currency, p.Total, 1)),
+            fxUsdVnd);
+        return (total.Amount, ConversionNote(total, fxUsdVnd));
+    }
+
+    /// <summary>First and last local month (as the first of the month) of the revenueByMonth window.</summary>
+    private static (DateOnly First, DateOnly Last) RevenueMonthBounds(DateTime to, TimeZoneInfo timeZone)
+    {
+        var lastDay = AdminComparisonRange.LocalDateOf(to.AddTicks(-1), timeZone);
+        var last = new DateOnly(lastDay.Year, lastDay.Month, 1);
+        return (last.AddMonths(-(RevenueMonths - 1)), last);
+    }
+
+    /// <summary>Only the "excludes N … rows" half of <see cref="ConversionNote"/> — what a chart left out.</summary>
+    public static string? ExclusionNote(VndTotal total, decimal? fxUsdVnd)
+        => total.ExcludedRows == 0
+            ? null
+            : ConversionNote(total with { ConvertedRows = 0, ConvertedUsd = 0 }, fxUsdVnd);
 
     // ── Snapshot helpers ─────────────────────────────────────────────────────
 

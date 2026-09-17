@@ -10,10 +10,11 @@ namespace WarpTalk.BillingService.Domain.Interfaces;
 public sealed record PaymentCurrencyTotal(string Currency, int Payments, decimal Total);
 
 /// <summary>
-/// Counted paid payments in one local calendar bucket and currency. <paramref name="Day"/> is 1 for
-/// month buckets.
+/// One counted paid payment: when it was paid (<c>paid_at</c>, else <c>updated_at</c>, as a UTC
+/// instant), its upper-cased currency and total. The insights series bucket these on the local
+/// days/months of the request's time zone, which SQL grouping by UTC date cannot do.
 /// </summary>
-public sealed record PaymentBucketTotal(int Year, int Month, int Day, string Currency, decimal Total);
+public sealed record PaidAmountRow(DateTime At, string Currency, decimal Total);
 
 /// <summary>One payment as the "recent payments" list shows it. WorkspaceId is null when it has no subscription.</summary>
 public sealed record RecentPaymentRow(

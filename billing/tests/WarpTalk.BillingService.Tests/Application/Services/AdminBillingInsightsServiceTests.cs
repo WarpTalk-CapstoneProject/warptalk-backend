@@ -115,11 +115,12 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
 
     // ── Period insights ─────────────────────────────────────────────────────
 
+    // The seeded September is the UTC one; the Vietnam calendar (the default tz) has its own tests.
     private async Task<AdminBillingInsightsDto> SeptemberAsync(string compare = "previousMonth")
     {
         var result = await _service.GetInsightsAsync(new AdminInsightsQuery
         {
-            From = Utc(9, 1), To = Utc(10, 1), Compare = compare,
+            From = Utc(9, 1), To = Utc(10, 1), Compare = compare, Tz = "UTC",
         });
         result.IsSuccess.Should().BeTrue(result.Error);
         return result.Value!;
@@ -227,7 +228,7 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
     [DockerFact]
     public async Task ComparePrevious_UsesTheSameLengthBefore()
     {
-        var result = await _service.GetInsightsAsync(new AdminInsightsQuery { From = Utc(9, 5), To = Utc(9, 6) });
+        var result = await _service.GetInsightsAsync(new AdminInsightsQuery { From = Utc(9, 5), To = Utc(9, 6), Tz = "UTC" });
 
         result.Value!.PreviousRange.Should().Be(new AdminInsightRange(Utc(9, 4), Utc(9, 5)));
         M(result.Value, "revenue").Value.Should().Be(1_000_000m);
@@ -261,13 +262,15 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
     [DockerFact]
     public async Task Snapshot_RightNow()
     {
-        var result = await _service.GetSnapshotAsync();
+        var result = await _service.GetSnapshotAsync("UTC");
         result.IsSuccess.Should().BeTrue(result.Error);
         var s = result.Value!;
 
         s.GeneratedAt.Should().Be(Now);
         s.RevenueToday.Should().Be(150_000m);
+        s.RevenueTodayNote.Should().BeNull();
         s.RevenueYesterday.Should().Be(500_000m);
+        s.RevenueYesterdayNote.Should().Contain("includes 20.00 USD converted");
 
         // S1 500,000 + S2 2,000,000 + S7 12,000,000/12 + S8 20 USD × 25,000.
         s.Mrr.Should().Be(4_000_000m);
@@ -285,7 +288,7 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         s.ActiveWorkspaces.Should().Be(5);
         s.PlatformCreditBalance.Should().Be(1_000 + 2_000 + 3_000 + 7_000 + 8_000);
 
-        s.OutstandingInvoices.Should().Be(new AdminOutstandingInvoicesDto(2, 1_990_000m, 1, 12, $"ws-{_w8.ToString()[..4]}"));
+        s.OutstandingInvoices.Should().Be(new AdminOutstandingInvoicesDto(2, 1_990_000m, null, 1, 12, $"ws-{_w8.ToString()[..4]}"));
         s.OpenSalesLeads.Should().Be(2);
 
         s.SubscriptionsByPlan.Should().BeEquivalentTo(new[]
@@ -299,7 +302,7 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
     [DockerFact]
     public async Task Snapshot_Lists()
     {
-        var s = (await _service.GetSnapshotAsync()).Value!;
+        var s = (await _service.GetSnapshotAsync("UTC")).Value!;
 
         s.RecentPayments.Should().HaveCount(8);
         s.RecentPayments.Select(p => p.At).Should().BeInDescendingOrder();
@@ -314,6 +317,72 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         s.EndingSoon.Select(e => (e.WorkspaceId, e.CancelAtPeriodEnd)).Should().Equal((_w1, false), (_w5, true), (_w8, false));
 
         s.HighUsageAlerts.Should().Equal(new AdminHighUsageAlertDto(_w2, $"ws-{_w2.ToString()[..4]}", 60_000));
+    }
+
+    // ── Time zone ───────────────────────────────────────────────────────────
+
+    private async Task AddPaidAsync(decimal total, string currency, DateTime at, string providerTxId)
+    {
+        _context.Payments.Add(NewPayment(_s1, total, currency, "paid", at, providerTxId));
+        await _context.SaveChangesAsync();
+        _context.ChangeTracker.Clear();
+    }
+
+    [DockerFact]
+    public async Task Snapshot_TodayIsTheVietnamDayByDefault()
+    {
+        // 18:00Z on 16 Sep is 01:00 on 17 Sep in Vietnam. "Now" is 17 Sep 15:00 there.
+        await AddPaidAsync(70_000m, "VND", Utc(9, 16, 18), "cs_vn_night");
+
+        var vietnam = (await _service.GetSnapshotAsync(null)).Value!;
+        vietnam.RevenueToday.Should().Be(150_000m + 70_000m);
+        vietnam.RevenueYesterday.Should().Be(500_000m);
+
+        var utc = (await _service.GetSnapshotAsync("UTC")).Value!;
+        utc.RevenueToday.Should().Be(150_000m);
+        utc.RevenueYesterday.Should().Be(500_000m + 70_000m);
+    }
+
+    [DockerFact]
+    public async Task Snapshot_RevenueToday_NotesAnUnconvertibleCurrencyInsteadOfDroppingIt()
+    {
+        await AddPaidAsync(9m, "EUR", Utc(9, 17, 6), "cs_eur_today");
+
+        var s = (await _service.GetSnapshotAsync("Asia/Ho_Chi_Minh")).Value!;
+
+        s.RevenueToday.Should().Be(150_000m);
+        s.RevenueTodayNote.Should().Be("excludes 1 EUR rows");
+    }
+
+    [DockerFact]
+    public async Task Snapshot_UnknownTz_IsAValidationError()
+    {
+        (await _service.GetSnapshotAsync("Mars/Olympus_Mons")).ErrorCode.Should().Be(ErrorCodes.ValidationError);
+    }
+
+    [DockerFact]
+    public async Task Insights_VietnamSeptember_BucketsDaysAndComparesWithVietnamAugust()
+    {
+        // 18:00Z on 31 Aug is 01:00 on 1 Sep in Vietnam: September revenue there, August in UTC.
+        await AddPaidAsync(70_000m, "VND", Utc(8, 31, 18), "cs_vn_first");
+
+        var result = await _service.GetInsightsAsync(new AdminInsightsQuery
+        {
+            From = Utc(8, 31, 17), To = Utc(9, 30, 17), Compare = "previousMonth",
+        });
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var dto = result.Value!;
+
+        dto.PreviousRange.Should().Be(new AdminInsightRange(Utc(7, 31, 17), Utc(8, 31, 17)));
+        dto.RevenueByDay.Should().HaveCount(30);
+        dto.RevenueByDay[0].Should().Be(new AdminRevenueByDayDto("2026-09-01", 70_000m));
+        dto.RevenueByDay[^1].Date.Should().Be("2026-09-30");
+        M(dto, "revenue").Value.Should().Be(4_150_000m + 70_000m);
+        M(dto, "revenue").Previous.Should().Be(300_000m);
+        dto.RevenueByMonth.Select(m => m.Month).Should().Equal("2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09");
+        dto.RevenueByMonth.Single(m => m.Month == "2026-09").Revenue.Should().Be(4_150_000m + 70_000m);
+        dto.RevenueByMonth.Single(m => m.Month == "2026-08").Revenue.Should().Be(300_000m);
+        dto.RevenueByDayNote.Should().BeNull();
     }
 
     // ── Seed ────────────────────────────────────────────────────────────────

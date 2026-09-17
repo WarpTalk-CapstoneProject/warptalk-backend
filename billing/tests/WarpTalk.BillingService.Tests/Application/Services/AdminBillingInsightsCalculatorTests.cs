@@ -156,34 +156,89 @@ public class AdminBillingInsightsCalculatorTests
 
     // ── Series ───────────────────────────────────────────────────────────────
 
+    private static readonly TimeZoneInfo Vietnam = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh");
+
+    private static DateTime Utc(int month, int day, int hour = 0) => new(2026, month, day, hour, 0, 0, DateTimeKind.Utc);
+
     [Fact]
     public void RevenueByDay_ZeroFillsEveryUtcDay()
     {
-        var from = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
-        var to = new DateTime(2026, 9, 4, 0, 0, 0, DateTimeKind.Utc); // exclusive
+        var days = AdminComparisonRange.DaysOf(Utc(9, 1), Utc(9, 4), TimeZoneInfo.Utc);
 
-        var days = RevenueByDay(from, to,
-            [new PaymentBucketTotal(2026, 9, 2, "VND", 1_200_000m), new PaymentBucketTotal(2026, 9, 2, "USD", 2m)], Fx);
+        var (rows, note) = RevenueByDay(days,
+            [new PaidAmountRow(Utc(9, 2, 3), "VND", 1_200_000m), new PaidAmountRow(Utc(9, 2, 20), "USD", 2m)], Fx);
 
-        days.Should().Equal(
+        rows.Should().Equal(
             new AdminRevenueByDayDto("2026-09-01", 0m),
             new AdminRevenueByDayDto("2026-09-02", 1_250_000m),
             new AdminRevenueByDayDto("2026-09-03", 0m));
+        note.Should().BeNull("a converted currency is not an exclusion");
+    }
+
+    [Fact]
+    public void RevenueByDay_OnTheVietnamCalendar_MovesAPaymentAfter1700UtcToTheNextDay()
+    {
+        // Vietnam's 1–2 September as instants.
+        var days = AdminComparisonRange.DaysOf(Utc(8, 31, 17), Utc(9, 2, 17), Vietnam);
+
+        var (rows, _) = RevenueByDay(days,
+        [
+            new PaidAmountRow(new DateTime(2026, 9, 1, 16, 59, 59, DateTimeKind.Utc), "VND", 100m), // 23:59:59 on 1 Sep
+            new PaidAmountRow(Utc(9, 1, 17), "VND", 200m),                                          // 00:00 on 2 Sep
+        ], Fx);
+
+        rows.Should().Equal(new AdminRevenueByDayDto("2026-09-01", 100m), new AdminRevenueByDayDto("2026-09-02", 200m));
+    }
+
+    [Fact]
+    public void RevenueByDay_ADayOfOnlyUnconvertibleCurrency_IsNullAndNoted()
+    {
+        var days = AdminComparisonRange.DaysOf(Utc(9, 1), Utc(9, 3), TimeZoneInfo.Utc);
+
+        var (rows, note) = RevenueByDay(days,
+            [new PaidAmountRow(Utc(9, 1, 5), "EUR", 10m), new PaidAmountRow(Utc(9, 2, 5), "VND", 5m), new PaidAmountRow(Utc(9, 2, 6), "EUR", 1m)], Fx);
+
+        rows.Should().Equal(new AdminRevenueByDayDto("2026-09-01", null), new AdminRevenueByDayDto("2026-09-02", 5m));
+        note.Should().Be("excludes 2 EUR rows");
     }
 
     [Fact]
     public void RevenueByMonth_IsTheSixMonthsEndingWithTheMonthOfTo()
     {
         // `to` = 1 Oct 00:00 exclusive, so the last month is September, not October.
-        var to = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+        var to = Utc(10, 1);
 
-        RevenueMonthWindow(to).Should().Be(new AdminInsightRange(
-            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
-            new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc)));
+        RevenueMonthWindow(to, TimeZoneInfo.Utc).Should().Be(new AdminInsightRange(Utc(4, 1), Utc(10, 1)));
 
-        var months = RevenueByMonth(to, [new PaymentBucketTotal(2026, 7, 1, "VND", 300m)], Fx);
+        var (months, note) = RevenueByMonth(to, TimeZoneInfo.Utc, [new PaidAmountRow(Utc(7, 1), "VND", 300m)], Fx);
         months.Select(m => m.Month).Should().Equal("2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09");
         months.Single(m => m.Month == "2026-07").Revenue.Should().Be(300m);
+        note.Should().BeNull();
+    }
+
+    [Fact]
+    public void RevenueByMonth_OnTheVietnamCalendar_UsesLocalMonths()
+    {
+        // `to` = Vietnam's 1 Oct 00:00. The window is Vietnam's April–September.
+        var to = Utc(9, 30, 17);
+
+        RevenueMonthWindow(to, Vietnam).Should().Be(new AdminInsightRange(Utc(3, 31, 17), Utc(9, 30, 17)));
+
+        // 31 Aug 18:00Z is 1 Sep 01:00 in Vietnam: September's revenue, not August's.
+        var (months, _) = RevenueByMonth(to, Vietnam, [new PaidAmountRow(Utc(8, 31, 18), "VND", 300m)], Fx);
+        months.Single(m => m.Month == "2026-09").Revenue.Should().Be(300m);
+        months.Single(m => m.Month == "2026-08").Revenue.Should().Be(0m);
+    }
+
+    [Fact]
+    public void RevenueBetween_NotesWhatItConvertedAndWhatItLeftOut()
+    {
+        PaidAmountRow[] payments = [new(Utc(9, 1, 1), "EUR", 10m), new(Utc(9, 1, 2), "USD", 2m)];
+
+        RevenueBetween(payments, Utc(9, 1), Utc(9, 2), Fx).Should().Be(
+            (50_000m, "includes 2.00 USD converted at 25,000 VND/USD (billing_pricing_config.fx_rate_usd_vnd); excludes 1 EUR rows"));
+        RevenueBetween([payments[0]], Utc(9, 1), Utc(9, 2), Fx).Should().Be(((decimal?)null, "excludes 1 EUR rows"));
+        RevenueBetween([], Utc(9, 1), Utc(9, 2), Fx).Should().Be((0m, (string?)null));
     }
 
     // ── Snapshot helpers ─────────────────────────────────────────────────────

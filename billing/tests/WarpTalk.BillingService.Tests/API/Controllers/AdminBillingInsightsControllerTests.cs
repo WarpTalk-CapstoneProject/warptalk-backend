@@ -98,6 +98,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     [InlineData("?from=2026-09-17T00:00:00Z&to=2026-09-01T00:00:00Z")]
     [InlineData("?from=2025-01-01T00:00:00Z&to=2026-09-01T00:00:00Z")]
     [InlineData("?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z&compare=lastYear")]
+    [InlineData("?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z&tz=Asia/Atlantis")]
     public async Task InvalidRange_Is400(string queryString)
     {
         _useRealService = true;
@@ -106,6 +107,45 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain(ErrorCodes.ValidationError);
+    }
+
+    [Theory]
+    [InlineData("?tz=Asia/Atlantis")]
+    [InlineData("?tz=..%2F..%2Fetc%2Fpasswd")]
+    public async Task Snapshot_UnknownTz_Is400(string queryString)
+    {
+        _useRealService = true;
+
+        var response = await Send(Snapshot + queryString, SystemAdminAuthorization.RoleName);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("tz");
+    }
+
+    [Fact]
+    public async Task Snapshot_PassesTzThrough_AndSerializesNullsAsNull()
+    {
+        _service
+            .Setup(s => s.GetSnapshotAsync("Asia/Ho_Chi_Minh", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new AdminBillingSnapshotDto(
+                DateTime.UtcNow, null, "excludes 1 EUR rows", 4_480_000m, null, null, "excludes 2 EUR rows",
+                0, new AdminActiveByCycleDto(0, 0, 0), new AdminChurnRateMonthDto(0, 0, null), 0, 0, 0, 0, 0, 0,
+                new AdminOutstandingInvoicesDto(1, null, "excludes 1 EUR rows", 0, null, null), 0,
+                [], [], [new AdminEndingSoonDto(Guid.Empty, null, "Team", DateTime.UtcNow, true)], [])));
+
+        var response = await Send(Snapshot + "?tz=Asia/Ho_Chi_Minh", "admin");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        root.GetProperty("revenueToday").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("revenueTodayNote").GetString().Should().Be("excludes 1 EUR rows");
+        root.GetProperty("revenueYesterdayNote").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("mrr").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("outstandingInvoices").GetProperty("amount").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("outstandingInvoices").GetProperty("amountNote").GetString().Should().Be("excludes 1 EUR rows");
+        root.GetProperty("churnRateMonth").GetProperty("rate").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("endingSoon")[0].GetProperty("workspaceName").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
     [Fact]
@@ -120,8 +160,10 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
                 new AdminInsightRange(from.AddDays(-2), from),
                 to,
                 [new AdminInsightMetric("revenue", 48_900_000m, null, AdminInsightUnits.Money, true, "why")],
-                [new AdminRevenueByDayDto("2026-09-01", 1_200_000m)],
+                [new AdminRevenueByDayDto("2026-09-01", 1_200_000m), new AdminRevenueByDayDto("2026-09-02", null)],
+                "excludes 1 EUR rows",
                 [new AdminRevenueByMonthDto("2026-09", 24_000_000m)],
+                null,
                 [new AdminCreditsByServiceDto("TRANSLATION", 4_378_400)],
                 [new AdminTopWorkspaceCreditsDto(Guid.Empty, "Demo", 2_410_000)])));
 
@@ -142,7 +184,10 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
         metric.GetProperty("higherIsBetter").GetBoolean().Should().BeTrue();
         metric.GetProperty("note").GetString().Should().Be("why");
         root.GetProperty("revenueByDay")[0].GetProperty("date").GetString().Should().Be("2026-09-01");
+        root.GetProperty("revenueByDay")[1].GetProperty("revenue").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("revenueByDayNote").GetString().Should().Be("excludes 1 EUR rows");
         root.GetProperty("revenueByMonth")[0].GetProperty("month").GetString().Should().Be("2026-09");
+        root.GetProperty("revenueByMonthNote").ValueKind.Should().Be(JsonValueKind.Null);
         root.GetProperty("creditsByService")[0].GetProperty("usageType").GetString().Should().Be("TRANSLATION");
         root.GetProperty("topWorkspaces")[0].GetProperty("workspaceName").GetString().Should().Be("Demo");
     }

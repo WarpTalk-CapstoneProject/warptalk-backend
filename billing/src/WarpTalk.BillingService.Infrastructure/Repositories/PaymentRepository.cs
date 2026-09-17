@@ -77,30 +77,19 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
                 p => p.Status == PaymentConstants.PaymentStatuses.Failed && p.UpdatedAt >= from && p.UpdatedAt < to,
                 cancellationToken);
 
-    public async Task<IReadOnlyList<PaymentBucketTotal>> GetCountedPaidTotalsByUtcBucketAsync(
-        DateTime from, DateTime to, bool monthly, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<PaidAmountRow>> GetCountedPaidAmountsAsync(
+        DateTime from, DateTime to, CancellationToken cancellationToken = default)
     {
-        var local = CountedPaidIn(from, to).Select(p => new
-        {
-            At = p.PaidAt ?? p.UpdatedAt,
-            Currency = p.Currency.ToUpper(),
-            p.TotalAmount,
-        });
-
-        if (monthly)
-        {
-            var months = await local
-                .GroupBy(x => new { x.At.Year, x.At.Month, x.Currency })
-                .Select(g => new { g.Key.Year, g.Key.Month, g.Key.Currency, Total = g.Sum(x => x.TotalAmount) })
-                .ToListAsync(cancellationToken);
-            return months.Select(m => new PaymentBucketTotal(m.Year, m.Month, 1, m.Currency, m.Total)).ToList();
-        }
-
-        var days = await local
-            .GroupBy(x => new { x.At.Year, x.At.Month, x.At.Day, x.Currency })
-            .Select(g => new { g.Key.Year, g.Key.Month, g.Key.Day, g.Key.Currency, Total = g.Sum(x => x.TotalAmount) })
+        // Anonymous projection, mapped to the record in memory — never a record the database is
+        // asked to shape. Three scalars per paid payment; bucketing by local day happens in the
+        // calculator because a UTC date_trunc would put a Vietnam evening on the wrong day.
+        var rows = await CountedPaidIn(from, to)
+            .Select(p => new { At = p.PaidAt ?? p.UpdatedAt, Currency = p.Currency.ToUpper(), p.TotalAmount })
             .ToListAsync(cancellationToken);
-        return days.Select(d => new PaymentBucketTotal(d.Year, d.Month, d.Day, d.Currency, d.Total)).ToList();
+
+        return rows
+            .Select(r => new PaidAmountRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Currency, r.TotalAmount))
+            .ToList();
     }
 
     public async Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default)

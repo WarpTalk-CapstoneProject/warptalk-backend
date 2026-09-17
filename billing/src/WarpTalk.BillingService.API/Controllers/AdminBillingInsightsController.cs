@@ -28,15 +28,18 @@ public class AdminBillingInsightsController : ControllerBase
         _insights = insights;
     }
 
-    /// <summary><c>?from&amp;to&amp;compare=previous|previousMonth</c> (shared AdminComparisonRange). 400 on an invalid range.</summary>
+    /// <summary>
+    /// <c>?from&amp;to&amp;compare=previous|previousMonth&amp;tz</c> (shared AdminComparisonRange). 400 on an
+    /// invalid range or an unknown tz.
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetInsights([FromQuery] AdminInsightsQuery query, CancellationToken ct)
         => ToActionResult(await _insights.GetInsightsAsync(query, ct));
 
-    /// <summary>"Right now" figures, on the UTC calendar.</summary>
+    /// <summary>"Right now" figures; today, yesterday and this month on the calendar of <c>?tz</c> (default Asia/Ho_Chi_Minh). 400 on an unknown tz.</summary>
     [HttpGet("snapshot")]
-    public async Task<IActionResult> GetSnapshot(CancellationToken ct)
-        => ToActionResult(await _insights.GetSnapshotAsync(ct));
+    public async Task<IActionResult> GetSnapshot([FromQuery(Name = "tz")] string? tz, CancellationToken ct)
+        => ToActionResult(await _insights.GetSnapshotAsync(tz, ct));
 
     private IActionResult ToActionResult<T>(Result<T> result)
     {
