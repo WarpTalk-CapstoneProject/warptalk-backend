@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Application.Services;
@@ -731,6 +732,150 @@ public class McpToolOrchestratorTests
         Assert.Equal(PluginConstants.ConnectionStatus.Expired, connection.Status);
     }
 
+    // ---- WT-687: what the user allows each tool to do ------------------------------------------
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_LeavesOutBlockedToolsAndExcludedPlugins_AndCarriesEachPolicy()
+    {
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([GoogleDrivePlugin(includeWriteTool: true), GoogleCalendarPlugin()]);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                    ConfigJson = """{"installedFrom":"assistant_plugins","toolPolicy":{"google_drive_search":"blocked"}}""",
+                },
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                },
+            ]);
+
+        var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId, [GoogleCalendarKey]);
+
+        Assert.True(result.IsSuccess);
+        var tool = Assert.Single(result.Value!);
+        // The read tool was blocked, Calendar was switched off for the conversation, and the write
+        // tool the user never touched keeps asking.
+        Assert.Equal("google_calendar_create_event", tool.Name);
+        Assert.Equal(PluginConstants.ToolPolicy.Approval, tool.Policy);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RefusesABlockedTool_WithoutReachingTheProvider()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_drive_search":"blocked"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin());
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ToolBlocked, result.Value.ErrorCode);
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit => audit.ResultStatus == PluginConstants.ErrorCodes.ToolBlocked),
+                Arg.Any<CancellationToken>());
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RunsAWriteToolWithoutConfirmation_WhenTheUserAllowedIt()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_calendar_create_event":"allow"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin(includeWriteTool: true));
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "calendar:event", null));
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_calendar_create_event"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsSuccess);
+        await _confirmationTokenService.DidNotReceive()
+            .CreateAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<McpToolExecutionRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AsksBeforeAReadTool_WhenTheUserWantsApproval()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_drive_search":"approval"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin());
+        var request = Request("google_drive_search");
+        _confirmationTokenService.CreateAsync(UserId, PluginId, request, Arg.Any<CancellationToken>())
+            .Returns(Result.Success("signed-confirmation-token"));
+
+        var result = await CreateSut().ExecuteAsync(UserId, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.ConfirmationRequired, result.Value!.ErrorCode);
+        Assert.Equal("signed-confirmation-token", result.Value.ConfirmationToken);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RecordsAlwaysAllow_OnlyAfterTheConfirmationTokenValidates()
+    {
+        ConfigureInstalledConnected(GoogleDrivePlugin(includeWriteTool: true));
+        var confirmed = Request(
+            "google_calendar_create_event",
+            new JsonObject { ["summary"] = "Roadmap review" },
+            "signed-confirmation-token") with { AlwaysAllow = true };
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId, PluginId, confirmed, "signed-confirmation-token", Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "calendar:event", null));
+
+        var result = await CreateSut().ExecuteAsync(UserId, confirmed);
+
+        Assert.True(result.Value!.IsSuccess);
+        Assert.Equal(
+            PluginConstants.ToolPolicy.Allow,
+            PluginToolPolicyStore.Read(_installation!.ConfigJson)["google_calendar_create_event"]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_IgnoresAlwaysAllow_WhenTheConfirmationTokenIsRejected()
+    {
+        ConfigureInstalledConnected(GoogleDrivePlugin(includeWriteTool: true));
+        var forged = Request(
+            "google_calendar_create_event",
+            new JsonObject { ["summary"] = "Roadmap review" },
+            "forged-token") with { AlwaysAllow = true };
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId, PluginId, forged, "forged-token", Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("Confirmation token does not match this plugin action.", PluginConstants.ErrorCodes.PermissionDenied));
+
+        var result = await CreateSut().ExecuteAsync(UserId, forged);
+
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value!.ErrorCode);
+        Assert.Empty(PluginToolPolicyStore.Read(_installation!.ConfigJson));
+    }
+
     // ---- WT-646: the workspace gate on the tool path -------------------------------------------
 
     [Fact]
@@ -1040,7 +1185,7 @@ public class McpToolOrchestratorTests
                 Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
-            .Returns(new PluginInstallation
+            .Returns(_installation = new PluginInstallation
             {
                 Id = Guid.NewGuid(),
                 UserId = UserId,
@@ -1050,8 +1195,15 @@ public class McpToolOrchestratorTests
                 // Connected by the user. Every test through this helper is about a plugin WarpBot
                 // is allowed to act through; the unconnected case sets its own installation.
                 ConnectedAt = DateTime.UtcNow,
+                ConfigJson = _installationConfigJson,
             });
     }
+
+    /// <summary>The installation's config_json for the next ConfigureInstalledPlugin. WT-687.</summary>
+    private string? _installationConfigJson;
+
+    /// <summary>The installation the last ConfigureInstalledPlugin handed out, to assert writes on.</summary>
+    private PluginInstallation? _installation;
 
     private static Plugin GoogleDrivePlugin(bool includeWriteTool = false)
     {

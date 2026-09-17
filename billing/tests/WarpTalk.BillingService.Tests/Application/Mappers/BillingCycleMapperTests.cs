@@ -17,6 +17,7 @@ public class BillingCycleMapperTests
 
         var payment = PaymentMapper.CreateBillingCyclePayment(new BillingCyclePaymentCreationRequest(
             subscription,
+            Currency: "usd",
             Subtotal: 100_000m,
             Tax: 10_000m,
             Total: 110_000m,
@@ -33,6 +34,7 @@ public class BillingCycleMapperTests
         payment.TaxAmount.Should().Be(10_000m);
         payment.TotalAmount.Should().Be(110_000m);
         payment.CreatedAt.Should().Be(now);
+        payment.Currency.Should().Be("usd", "the charge's currency is stamped, not re-read from the plan");
     }
 
     [Fact]
@@ -46,6 +48,7 @@ public class BillingCycleMapperTests
             subscription,
             subscription.Plan,
             paymentId,
+            Currency: "usd",
             ContractPrice: 100_000m,
             OverageCredits: 100,
             OveragePricePerCredit: 4m,
@@ -71,6 +74,7 @@ public class BillingCycleMapperTests
         invoice.LineItems.Should().Contain("AI_ASSISTANT");
         invoice.LineItems.Should().Contain(InvoiceConstants.LineItemDescriptions.UsageOverCommittedCredits);
         invoice.DueAt.Should().Be(now.AddDays(15));
+        invoice.Currency.Should().Be("usd", "the charge's currency is stamped, not re-read from the plan");
     }
 
     [Fact]
@@ -81,6 +85,7 @@ public class BillingCycleMapperTests
 
         var paymentAction = () => PaymentMapper.CreateBillingCyclePayment(new BillingCyclePaymentCreationRequest(
             subscription,
+            "VND",
             100m,
             10m,
             110m,
@@ -91,6 +96,7 @@ public class BillingCycleMapperTests
             subscription,
             new Plan(),
             Guid.NewGuid(),
+            "VND",
             100m,
             0,
             4m,

@@ -540,6 +540,124 @@ public class PluginInstallationServiceTests
         };
     }
 
+    // ---- WT-687: per-tool choices --------------------------------------------------------------
+
+    [Fact]
+    public async Task UpdateToolPolicyAsync_MergesKnownToolsIntoTheCallersInstallation_AndKeepsOtherConfig()
+    {
+        var plugin = DriveWithTools();
+        var installation = InstalledDrive("""{"installedFrom":"assistant_plugins","toolPolicy":{"drive_get_file":"blocked"}}""");
+        ConfigurePolicyTarget(plugin, installation);
+
+        var result = await CreateSut().UpdateToolPolicyAsync(
+            GoogleDriveKey,
+            UserId,
+            new Dictionary<string, string> { ["drive_search"] = "approval", ["no_such_tool"] = "blocked" });
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains("\"installedFrom\":\"assistant_plugins\"", installation.ConfigJson);
+        var stored = WarpTalk.AssistantService.Application.Helpers.PluginToolPolicyStore.Read(installation.ConfigJson);
+        Assert.Equal("approval", stored["drive_search"]);
+        // Untouched by the update, and the unknown name was dropped rather than stored.
+        Assert.Equal("blocked", stored["drive_get_file"]);
+        Assert.False(stored.ContainsKey("no_such_tool"));
+        Assert.Equal("approval", result.Value!.Tools.Single(tool => tool.Name == "drive_search").Policy);
+        _installationRepository.Received(1).Update(installation);
+    }
+
+    [Fact]
+    public async Task UpdateToolPolicyAsync_RefusesAValueThatIsNotAToolSetting()
+    {
+        var installation = InstalledDrive(null);
+        ConfigurePolicyTarget(DriveWithTools(), installation);
+
+        var result = await CreateSut().UpdateToolPolicyAsync(
+            GoogleDriveKey,
+            UserId,
+            new Dictionary<string, string> { ["drive_search"] = "always" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidToolPolicy, result.ErrorCode);
+        Assert.Null(installation.ConfigJson);
+    }
+
+    [Fact]
+    public async Task UpdateToolPolicyAsync_RefusesAPluginTheCallerHasNotInstalled()
+    {
+        ConfigurePolicyTarget(DriveWithTools(), installation: null);
+
+        var result = await CreateSut().UpdateToolPolicyAsync(
+            GoogleDriveKey,
+            UserId,
+            new Dictionary<string, string> { ["drive_search"] = "blocked" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PluginNotInstalled, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_DefaultsEachToolFromItsEffect_WhenTheUserHasChosenNothing()
+    {
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([DriveWithTools()]);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<PluginInstallation>());
+        _connectionRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<PluginConnection>());
+
+        var result = await CreateSut().ListCatalogAsync(UserId);
+
+        var tools = Assert.Single(result.Value!).Tools;
+        Assert.Equal("allow", tools.Single(tool => tool.Name == "drive_search").Policy);
+        Assert.Equal("approval", tools.Single(tool => tool.Name == "drive_get_file").Policy);
+    }
+
+    private static Plugin DriveWithTools()
+    {
+        var plugin = GoogleDrivePlugin();
+        // One read and one write tool; the write one only so the effect default has two answers.
+        plugin.ToolsJson = """
+            [
+              { "name": "drive_search", "pluginKey": "google_drive", "label": "Search", "description": "", "effect": "read", "requiredScopes": [], "parameters": {} },
+              { "name": "drive_get_file", "pluginKey": "google_drive", "label": "Get file", "description": "", "effect": "write", "requiredScopes": [], "parameters": {} }
+            ]
+            """;
+        return plugin;
+    }
+
+    private static PluginInstallation InstalledDrive(string? configJson) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = UserId,
+        PluginId = PluginId,
+        Status = PluginConstants.InstallationStatus.Installed,
+        InstalledAt = DateTime.UtcNow,
+        ConfigJson = configJson,
+    };
+
+    private void ConfigurePolicyTarget(Plugin plugin, PluginInstallation? installation)
+    {
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation);
+    }
+
     private PluginInstallationService CreateSut()
     {
         return new PluginInstallationService(

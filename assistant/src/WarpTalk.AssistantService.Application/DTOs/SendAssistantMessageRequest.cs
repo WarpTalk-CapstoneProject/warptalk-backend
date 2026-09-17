@@ -67,7 +67,13 @@ public record SendAssistantMessageRequest(
     /// the types the worker can actually submit, because this field is the one part of the request
     /// that can be megabytes long.
     /// </summary>
-    List<AssistantAttachmentDto>? Attachments = null
+    List<AssistantAttachmentDto>? Attachments = null,
+    /// <summary>
+    /// WT-687: plugins the user switched off for this conversation, by key. Forwarded so WarpBot
+    /// is not offered their tools this turn. A preference, not a gate: tool execution still
+    /// answers to installation, connection, scopes and the user's per-tool choices.
+    /// </summary>
+    List<string>? DisabledPluginKeys = null
 );
 
 public record SendAssistantMessageResponse(

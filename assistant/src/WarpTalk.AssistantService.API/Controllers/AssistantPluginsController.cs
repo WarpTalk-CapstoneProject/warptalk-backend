@@ -116,6 +116,37 @@ public class AssistantPluginsController : ControllerBase
         return Ok();
     }
 
+    /// <summary>
+    /// What WarpBot may do with each tool of an installed plugin, for the caller only. WT-687.
+    /// </summary>
+    /// <remarks>
+    /// A merge, not a replacement: tools left out keep their current choice. Answers with the
+    /// catalog row, whose tools carry the resolved <c>policy</c>.
+    /// </remarks>
+    [HttpPut("{pluginKey}/tool-policy")]
+    [ProducesResponseType(typeof(PluginCatalogItemDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> UpdateToolPolicy(
+        string pluginKey,
+        [FromBody] UpdatePluginToolPolicyRequest request,
+        CancellationToken ct)
+    {
+        var result = await _installationService.UpdateToolPolicyAsync(
+            pluginKey,
+            CurrentUserId,
+            request.Tools ?? new Dictionary<string, string>(),
+            ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
+            if (result.ErrorCode == PluginConstants.ErrorCodes.PluginNotInstalled) return Conflict(result.Error);
+            return BadRequest(result.Error);
+        }
+        return Ok(result.Value);
+    }
+
     [HttpGet("{pluginKey}/connection")]
     [ProducesResponseType(typeof(PluginConnectionStatusDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]

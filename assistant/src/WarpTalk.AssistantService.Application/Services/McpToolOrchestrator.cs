@@ -31,7 +31,11 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         _confirmationTokenService = confirmationTokenService;
     }
 
-    public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(Guid userId, Guid? workspaceId, CancellationToken ct = default)
+    public async Task<Result<IReadOnlyList<McpToolDescriptorDto>>> ListAvailableToolsAsync(
+        Guid userId,
+        Guid? workspaceId,
+        IReadOnlyCollection<string>? excludedPluginKeys = null,
+        CancellationToken ct = default)
     {
         // Answered for the whole list at once: the workspace either permits plugins here or it
         // does not, so there is nothing to decide per plugin.
@@ -48,14 +52,29 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
 
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
             i => i.UserId == userId && i.Status == PluginConstants.InstallationStatus.Installed, ct: ct);
-        var installedPluginIds = installations.Select(i => i.PluginId).ToHashSet();
+        var installationsByPlugin = installations
+            .GroupBy(i => i.PluginId)
+            .ToDictionary(group => group.Key, group => group.First());
+        var installedPluginIds = installationsByPlugin.Keys.ToHashSet();
 
         var plugins = await _unitOfWork.PluginRepository.FindAsync(
             p => installedPluginIds.Contains(p.Id) && p.IsActive, ct: ct);
 
+        // WT-687. Two things the user decided narrow the list before the model sees it:
+        //
+        //   - A plugin switched off for this conversation. A preference, not a security boundary -
+        //     the caller composes the list - which is why it only ever removes tools here and is not
+        //     consulted by ExecuteAsync.
+        //   - A tool the user blocked. Left out so the model never plans around it; ExecuteAsync
+        //     refuses it as well, because that one IS a boundary.
+        var excluded = excludedPluginKeys?.ToHashSet(StringComparer.Ordinal) ?? [];
+
         var tools = plugins
-            .Select(PluginDefinitionMapper.ToDefinition)
-            .SelectMany(plugin => plugin.Tools)
+            .Where(plugin => !excluded.Contains(plugin.PluginKey))
+            .SelectMany(plugin => PluginToolPolicyStore.WithPolicies(
+                PluginDefinitionMapper.ToDefinition(plugin).Tools,
+                installationsByPlugin[plugin.Id].ConfigJson))
+            .Where(tool => tool.Policy != PluginConstants.ToolPolicy.Blocked)
             .ToList();
 
         return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(tools);
@@ -119,6 +138,20 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                 BuildConnectionRequiredResult(plugin, connection: null),
                 ct);
 
+        // WT-687. The user's own choice for this tool. Blocked is refused here even though the list
+        // never offers it: a model working from an earlier turn's tool list, or a caller that skips
+        // the list, must not get through on a tool the user switched off.
+        var policy = PluginToolPolicyStore.Resolve(tool, PluginToolPolicyStore.Read(installation.ConfigJson));
+        if (policy == PluginConstants.ToolPolicy.Blocked)
+            return await McpToolAuditRecorder.RecordFailureAsync(
+                _unitOfWork,
+                userId,
+                plugin.Id,
+                request,
+                PluginConstants.ErrorCodes.ToolBlocked,
+                $"{tool.Label} is blocked for WarpBot. It can be allowed again from the {plugin.Label} plugin settings.",
+                ct);
+
         // The grant is the provider's, not the plugin's. The per-tool scope check below is what
         // still separates the products: a Drive tool needs drive.readonly on this connection
         // whether the user consented through the Drive tile or the Calendar one.
@@ -141,7 +174,10 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (missingScopes.Count > 0)
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.MissingScope, "Reconnect the provider account with the required scopes.", ct);
 
-        if (tool.Effect == PluginConstants.ToolEffect.Write && string.IsNullOrWhiteSpace(request.ConfirmationToken))
+        // Asks when the user's policy says to, not when the tool writes. Before WT-687 the two were
+        // the same thing; now a user can trust a write tool (allow) or want to see a read tool
+        // coming (approval), and the policy already defaults to the old rule when they have not.
+        if (policy == PluginConstants.ToolPolicy.Approval && string.IsNullOrWhiteSpace(request.ConfirmationToken))
         {
             var token = await _confirmationTokenService.CreateAsync(userId, plugin.Id, request, ct);
             return await McpToolAuditRecorder.RecordFailureAsync(
@@ -155,7 +191,7 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                 confirmationToken: token.Value);
         }
 
-        if (tool.Effect == PluginConstants.ToolEffect.Write)
+        if (policy == PluginConstants.ToolPolicy.Approval)
         {
             var confirmation = await _confirmationTokenService.ValidateAndConsumeAsync(
                 userId,
@@ -182,6 +218,17 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                     confirmation.Error ?? "Confirmation token does not match this plugin action.",
                     ct,
                     confirmationToken: freshToken);
+            }
+
+            // "Always allow" on the card. Recorded only here, after a token that validated, so the
+            // flag cannot turn a tool to allow without the user having been shown a real card for it.
+            if (request.AlwaysAllow)
+            {
+                installation.ConfigJson = PluginToolPolicyStore.Write(
+                    installation.ConfigJson,
+                    new Dictionary<string, string> { [tool.Name] = PluginConstants.ToolPolicy.Allow });
+                _unitOfWork.PluginInstallationRepository.Update(installation);
+                await _unitOfWork.SaveChangesAsync(ct);
             }
         }
 
