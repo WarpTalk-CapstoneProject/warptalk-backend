@@ -14,18 +14,15 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IHubContext<TranslationRoomHub> _hubContext;
-    private readonly TranscriptPauseState _transcriptPause;
     private readonly ILogger<TranslationRoomRedisSubscriberService> _logger;
 
     public TranslationRoomRedisSubscriberService(
         IConnectionMultiplexer redis,
         IHubContext<TranslationRoomHub> hubContext,
-        TranscriptPauseState transcriptPause,
         ILogger<TranslationRoomRedisSubscriberService> logger)
     {
         _redis = redis;
         _hubContext = hubContext;
-        _transcriptPause = transcriptPause;
         _logger = logger;
     }
 
@@ -98,15 +95,10 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                 // subtitles and LiveKit keep running exactly as before. Reusing the same event
                 // would tell clients to treat the two as the same thing, which they are not.
                 //
-                // Both branches also drop this room's cached pause answer. AiResultConsumerService
-                // caches it for a few seconds to avoid a Redis read per sentence, and this event is
-                // what makes the button take effect NOW instead of at the end of that window — in
-                // the same instant the banner moves in the clients. Invalidated before the
-                // broadcast: a client that reacts to the event by expecting transcript to resume
-                // must not race a gate that is still holding the old answer.
+                // The web client routes on this event: while paused, new segments go to captions
+                // only and stay out of the transcript panel.
                 else if (payload.Command == "TranscriptPaused" && !string.IsNullOrEmpty(payload.RoomId))
                 {
-                    _transcriptPause.Invalidate(payload.RoomId);
                     var groupName = $"translationRoom:{payload.RoomId}";
                     await _hubContext.Clients.Group(groupName).SendAsync("TranscriptPaused", payload.RoomId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranscriptPaused to room {RoomId}", payload.RoomId);
@@ -115,7 +107,6 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                 // this from TranscriptRecordingService.ResumeAsync.
                 else if (payload.Command == "TranscriptResumed" && !string.IsNullOrEmpty(payload.RoomId))
                 {
-                    _transcriptPause.Invalidate(payload.RoomId);
                     var groupName = $"translationRoom:{payload.RoomId}";
                     await _hubContext.Clients.Group(groupName).SendAsync("TranscriptResumed", payload.RoomId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranscriptResumed to room {RoomId}", payload.RoomId);
