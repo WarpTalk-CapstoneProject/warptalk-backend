@@ -227,6 +227,20 @@ public class PluginInstallationService : IPluginInstallationService
                 PluginConstants.ErrorCodes.UnknownPlugin);
         }
 
+        var authMode = string.IsNullOrWhiteSpace(request.AuthMode)
+            ? PluginConstants.AuthMode.OAuth
+            : request.AuthMode.Trim();
+        if (!PluginConstants.AuthMode.IsKnown(authMode))
+            return Result.Failure<PluginCatalogItemDto>(
+                $"'{authMode}' is not a way to connect. Use oauth or api_key.",
+                PluginConstants.ErrorCodes.InvalidCatalogUpdate);
+
+        // An API-key row never sends an OAuth client, and the database refuses to store one on it.
+        if (authMode == PluginConstants.AuthMode.ApiKey && !string.IsNullOrWhiteSpace(request.OAuth?.ClientId))
+            return Result.Failure<PluginCatalogItemDto>(
+                "A plugin that connects with an API key cannot also have an OAuth client.",
+                PluginConstants.ErrorCodes.InvalidCatalogUpdate);
+
         if (await _unitOfWork.PluginRepository.AnyAsync(p => p.PluginKey == key, ct))
             return Result.Failure<PluginCatalogItemDto>($"A plugin keyed '{key}' already exists.", PluginConstants.ErrorCodes.UnknownPlugin);
 
@@ -258,7 +272,9 @@ public class PluginInstallationService : IPluginInstallationService
             ToolsJson = "[]",
             Kind = PluginConstants.PluginKind.Mcp,
             McpServerUrl = request.McpServerUrl,
-            OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved,
+            OAuthClientSource = authMode == PluginConstants.AuthMode.ApiKey
+                ? PluginConstants.OAuthClientSource.ApiKey
+                : PluginConstants.OAuthClientSource.Unresolved,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,

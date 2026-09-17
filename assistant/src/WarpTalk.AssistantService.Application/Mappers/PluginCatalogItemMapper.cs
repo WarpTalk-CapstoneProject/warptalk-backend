@@ -43,6 +43,7 @@ internal static class PluginCatalogItemMapper
             workspacePolicyBlockReason,
             plugin.IsFeatured,
             plugin.SortOrder,
-            plugin.Category);
+            plugin.Category,
+            plugin.AuthMode);
     }
 }

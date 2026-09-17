@@ -9,6 +9,7 @@ using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
+using WarpTalk.AssistantService.Domain.Exceptions;
 
 namespace WarpTalk.AssistantService.Infrastructure.Mcp;
 
@@ -148,7 +149,7 @@ public class McpToolGateway : IMcpToolGateway
                     $"The tool reported an error: {Summarise(content)}")
                 : Success(new JsonObject { ["content"] = JsonNode.Parse(content) ?? new JsonArray() });
         }
-        catch (McpProtocolException e)
+        catch (PluginProviderException e)
         {
             return Failure(e.ErrorCode, e.Message);
         }
@@ -306,7 +307,7 @@ public class McpToolGateway : IMcpToolGateway
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 $"The plugin's server did not finish answering '{method}' in time.");
         }
@@ -368,21 +369,21 @@ public class McpToolGateway : IMcpToolGateway
         if (response.StatusCode is HttpStatusCode.Unauthorized)
         {
             // The orchestrator turns this into one refresh-and-retry before it reaches a user.
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ConnectionRequired,
                 "The plugin's server rejected the stored credentials.");
         }
 
         if (response.StatusCode is HttpStatusCode.Forbidden)
         {
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.MissingScope,
                 "The connection does not carry the scopes this tool needs.");
         }
 
         if (response.StatusCode is HttpStatusCode.TooManyRequests)
         {
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ProviderRateLimited,
                 "The plugin's server is rate limiting requests.");
         }
@@ -392,7 +393,7 @@ public class McpToolGateway : IMcpToolGateway
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 $"The plugin's server answered {(int)response.StatusCode} to '{method}'.");
         }
@@ -446,7 +447,7 @@ public class McpToolGateway : IMcpToolGateway
             // event:, id:, retry: and comments carry nothing a request/response exchange needs.
         }
 
-        throw new McpProtocolException(
+        throw new PluginProviderException(
             PluginConstants.ErrorCodes.ProviderUnavailable,
             $"The plugin's server closed its event stream without answering '{method}'.");
     }
@@ -482,7 +483,7 @@ public class McpToolGateway : IMcpToolGateway
         }
         catch (JsonException)
         {
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 $"The plugin's server answered '{method}' with something that is not JSON.");
         }
@@ -497,7 +498,7 @@ public class McpToolGateway : IMcpToolGateway
                     element.ValueKind == JsonValueKind.Object && HasId(element, id));
                 if (entry.ValueKind != JsonValueKind.Object)
                 {
-                    throw new McpProtocolException(
+                    throw new PluginProviderException(
                         PluginConstants.ErrorCodes.ProviderUnavailable,
                         $"The plugin's server did not include an answer to '{method}'.");
                 }
@@ -507,7 +508,7 @@ public class McpToolGateway : IMcpToolGateway
 
             if (root.ValueKind != JsonValueKind.Object)
             {
-                throw new McpProtocolException(
+                throw new PluginProviderException(
                     PluginConstants.ErrorCodes.ProviderUnavailable,
                     $"The plugin's server answered '{method}' with something that is not a JSON-RPC response.");
             }
@@ -516,7 +517,7 @@ public class McpToolGateway : IMcpToolGateway
             // with no id at all is tolerated: some servers leave it off an unambiguous single reply.
             if (root.TryGetProperty("id", out _) && !HasId(root, id))
             {
-                throw new McpProtocolException(
+                throw new PluginProviderException(
                     PluginConstants.ErrorCodes.ProviderUnavailable,
                     $"The plugin's server answered '{method}' with the response to a different request.");
             }
@@ -538,7 +539,7 @@ public class McpToolGateway : IMcpToolGateway
                 ? text.GetString()
                 : "no message";
 
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 $"The plugin's server refused '{method}': {message}");
         }
@@ -548,7 +549,7 @@ public class McpToolGateway : IMcpToolGateway
         // failure and is reported as one.
         if (!root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
         {
-            throw new McpProtocolException(
+            throw new PluginProviderException(
                 PluginConstants.ErrorCodes.ProviderUnavailable,
                 $"The plugin's server answered '{method}' without a result.");
         }
@@ -631,11 +632,6 @@ public class McpToolGateway : IMcpToolGateway
     private static string Summarise(string value) =>
         value.Length <= 300 ? value : value[..300] + "...";
 
-    /// <summary>Carries a plugin error code out of the transport without leaking HTTP upward.</summary>
-    private sealed class McpProtocolException(string errorCode, string message) : Exception(message)
-    {
-        public string ErrorCode { get; } = errorCode;
-    }
 
     /// <summary>A 404 on a request that carried a session id: the server has forgotten the session.</summary>
     private sealed class McpSessionExpiredException() : Exception("The MCP session has expired.");

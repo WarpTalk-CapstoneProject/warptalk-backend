@@ -142,6 +142,135 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             : Result.Failure<PluginConnectResultDto>(url.Error!, url.ErrorCode);
     }
 
+    /// <summary>Longest key accepted. Real API keys are far shorter; this only bounds a hostile body.</summary>
+    private const int MaxApiKeyLength = 4096;
+
+    public async Task<Result<PluginCatalogItemDto>> ConnectWithApiKeyAsync(
+        string pluginKey,
+        Guid userId,
+        string? apiKey,
+        Guid? workspaceId = null,
+        CancellationToken ct = default)
+    {
+        // The same gates as ConnectAsync, in the same order.
+        var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
+        if (plugin == null)
+            return Result.Failure<PluginCatalogItemDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
+
+        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        if (!permitted.IsSuccess)
+            return Result.Failure<PluginCatalogItemDto>(permitted.Error!, permitted.ErrorCode);
+
+        var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
+            i => i.UserId == userId
+                && i.PluginId == plugin.Id
+                && i.Status == PluginConstants.InstallationStatus.Installed,
+            ct: ct);
+        if (installation == null)
+            return Result.Failure<PluginCatalogItemDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
+
+        if (plugin.OAuthClientSource != PluginConstants.OAuthClientSource.ApiKey)
+            return Result.Failure<PluginCatalogItemDto>(
+                $"{plugin.Label} connects by signing in, not with an API key.",
+                PluginConstants.ErrorCodes.InvalidApiKey);
+
+        var key = apiKey?.Trim() ?? string.Empty;
+        // People paste the header value as often as the key. Either works.
+        if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key["Bearer ".Length..].Trim();
+        if (key.Length == 0 || key.Length > MaxApiKeyLength)
+            return Result.Failure<PluginCatalogItemDto>("Paste your API key.", PluginConstants.ErrorCodes.InvalidApiKey);
+
+        var protectedKey = _credentialProtector.Protect(key);
+        var definition = PluginDefinitionMapper.ToDefinition(plugin);
+
+        // Verified before anything is stored: the key is proven by asking the server for its tools
+        // with it. A wrong key then fails here, in the dialog where it was typed, instead of on the
+        // first tool call minutes later - and a right one arrives with its tool list already synced.
+        IReadOnlyList<McpToolDescriptorDto> tools;
+        try
+        {
+            tools = await _providerResolver.ResolveGateway(plugin.Kind).ListToolsAsync(
+                definition,
+                new PluginConnection
+                {
+                    UserId = userId,
+                    Provider = plugin.Provider,
+                    PluginId = plugin.Id,
+                    Status = PluginConstants.ConnectionStatus.Connected,
+                    EncryptedAccessToken = protectedKey,
+                },
+                ct);
+        }
+        catch (PluginProviderException e) when (e.ErrorCode is PluginConstants.ErrorCodes.ConnectionRequired or PluginConstants.ErrorCodes.MissingScope)
+        {
+            return Result.Failure<PluginCatalogItemDto>(
+                $"{plugin.Label} did not accept that API key. Check that it is complete and still active.",
+                PluginConstants.ErrorCodes.InvalidApiKey);
+        }
+        catch (PluginProviderException e)
+        {
+            _logger.LogInformation(e, "Verifying an API key for plugin {PluginKey} failed.", plugin.PluginKey);
+            return Result.Failure<PluginCatalogItemDto>(
+                $"{plugin.Label} could not be reached to check the key. Try again in a moment.",
+                e.ErrorCode);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            _logger.LogInformation(e, "MCP server for plugin {PluginKey} was unreachable while verifying an API key.", plugin.PluginKey);
+            return Result.Failure<PluginCatalogItemDto>(
+                $"{plugin.Label} could not be reached to check the key. Try again in a moment.",
+                PluginConstants.ErrorCodes.ProviderUnavailable);
+        }
+
+        var now = DateTime.UtcNow;
+        var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
+            c => c.UserId == userId && c.Provider == plugin.Provider, ct: ct);
+        if (connection == null)
+        {
+            connection = new PluginConnection
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                Provider = plugin.Provider,
+                PluginId = plugin.Id,
+                CreatedAt = now,
+            };
+            await _unitOfWork.PluginConnectionRepository.AddAsync(connection, ct);
+        }
+        else
+        {
+            _unitOfWork.PluginConnectionRepository.Update(connection);
+        }
+
+        // Stored exactly where an OAuth access token would be, so the gateway, the orchestrator and
+        // Disconnect need no second path. No refresh token and no expiry: the key lasts until the
+        // user revokes it at the provider, and the first 401 after that marks the connection expired.
+        connection.Status = PluginConstants.ConnectionStatus.Connected;
+        connection.EncryptedAccessToken = protectedKey;
+        connection.EncryptedRefreshToken = null;
+        connection.AccessTokenExpiresAt = null;
+        connection.ScopesJson = "[]";
+        connection.ProviderAccountId = null;
+        connection.ProviderEmail = null;
+        connection.TokenRotatedAt = now;
+        connection.UpdatedAt = now;
+
+        installation.ConnectedAt = now;
+        _unitOfWork.PluginInstallationRepository.Update(installation);
+
+        plugin.ToolsJson = JsonSerializer.Serialize(tools);
+        plugin.ToolsSyncedAt = now;
+        plugin.UpdatedAt = now;
+        _unitOfWork.PluginRepository.Update(plugin);
+
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Result.Success(PluginCatalogItemMapper.ToCatalogItem(
+            PluginDefinitionMapper.ToDefinition(plugin),
+            installation,
+            connection));
+    }
+
     private async Task<Result<string>> BuildAuthorizationUrlAsync(
         Plugin plugin,
         Guid userId,

@@ -29,7 +29,9 @@ public record PluginDefinitionDto(
     /// <summary>Operator-curated presentation. See the same members on <see cref="PluginCatalogItemDto"/>.</summary>
     bool IsFeatured = false,
     int SortOrder = 0,
-    string? Category = null);
+    string? Category = null,
+    /// <summary><c>oauth</c> or <c>api_key</c>; see <c>PluginConstants.AuthMode</c>.</summary>
+    string AuthMode = "oauth");
 
 public record PluginCatalogItemDto(
     string Key,
@@ -78,7 +80,15 @@ public record PluginCatalogItemDto(
     /// <summary>Ascending. Ties are the client's to break, by label.</summary>
     int SortOrder = 0,
     /// <summary>Null on every row today; grouping by it is only worth it once rows carry one.</summary>
-    string? Category = null);
+    string? Category = null,
+    /// <summary>
+    /// <c>oauth</c>: Connect sends the user to the provider. <c>api_key</c>: Connect asks the user
+    /// for their own API key and posts it to <c>{key}/api-key</c>.
+    /// </summary>
+    string AuthMode = "oauth");
+
+/// <summary>A user's own API key for an <c>api_key</c> row. Never echoed back by any endpoint.</summary>
+public record ConnectPluginApiKeyRequest(string? ApiKey);
 
 public record InstallPluginRequest();
 

@@ -42,6 +42,16 @@ public class McpClientProvisioner : IMcpClientProvisioner
         if (!string.Equals(plugin.Kind, PluginConstants.PluginKind.Mcp, StringComparison.Ordinal))
             return Result.Success(McpClientContextDto.NotApplicable);
 
+        // An api_key row has no OAuth flow to provision. Refused here rather than skipped, because
+        // every caller - connect, connect-url - would otherwise walk the ladder and quietly turn the
+        // row into a cimd or dcr client behind the admin's back.
+        if (plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+        {
+            return Result.Failure<McpClientContextDto>(
+                $"{plugin.Label} connects with your own API key. Add it from Settings › Plugins.",
+                PluginConstants.ErrorCodes.ApiKeyRequired);
+        }
+
         var discovered = await _discovery.DiscoverAsync(plugin, ct);
         if (!discovered.IsSuccess)
         {
