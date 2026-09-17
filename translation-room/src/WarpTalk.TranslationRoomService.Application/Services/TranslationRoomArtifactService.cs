@@ -306,7 +306,11 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             var inFlightKey = TranslationRoomConstants.SummaryVariantInFlightKeyPrefix
                 + $"{roomId}:{wantedTemplate}:{wantedLanguage}";
 
+            var requeueKey = TranslationRoomConstants.SummaryVariantRequeueKeyPrefix
+                + $"{roomId}:{wantedTemplate}:{wantedLanguage}";
+
             var runningRequestId = await _redisStateRepo.StringGetAsync(inFlightKey);
+            var isRequeue = false;
             if (!string.IsNullOrWhiteSpace(runningRequestId))
             {
                 var outcome = await ReadRewriteOutcomeAsync(runningRequestId);
@@ -326,15 +330,61 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                         outcome.Error));
                 }
 
-                // Still running. Answering "generating" without queueing anything is the whole
-                // point of the key.
-                return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                if (outcome?.Status != "completed")
+                {
+                    // Still running. Answering "generating" without queueing anything is the whole
+                    // point of the key.
+                    return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                        wantedTemplate,
+                        wantedLanguage,
+                        Content: null,
+                        IsCanonical: false,
+                        SummaryVariantStatus.Generating,
+                        UpdatedAt: null));
+                }
+
+                // WT-701 — COMPLETED, AND STILL NOTHING TO SERVE.
+                //
+                // The consumer said the run finished, yet no stored rendering matched this pair a
+                // few lines up (it files a rendering under the pair stamped in the content, and a
+                // duplicate save is dropped quietly). Left alone this answered "generating" until
+                // the claim expired five minutes later, long after the client gave up at ninety
+                // seconds. So: release the claim and the stale outcome, and try once more — unless
+                // the run that just completed WAS that one retry, in which case say it failed.
+                var requeuedAs = await _redisStateRepo.StringGetAsync(requeueKey);
+
+                await _redisStateRepo.KeyDeleteAsync(inFlightKey);
+                await _redisStateRepo.KeyDeleteAsync(
+                    TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + runningRequestId);
+
+                if (string.Equals(requeuedAs, runningRequestId, StringComparison.Ordinal))
+                {
+                    // Cleared too, so a reader who asks again later starts from a clean slate.
+                    await _redisStateRepo.KeyDeleteAsync(requeueKey);
+
+                    _logger.LogWarning(
+                        "A {TemplateKey}/{Language} rendering of room {RoomId}'s summary completed twice without a stored row matching the request; reporting it as failed",
+                        wantedTemplate,
+                        wantedLanguage is { Length: > 0 } ? wantedLanguage : "as-spoken",
+                        roomId);
+
+                    return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                        wantedTemplate,
+                        wantedLanguage,
+                        Content: null,
+                        IsCanonical: false,
+                        SummaryVariantStatus.Failed,
+                        UpdatedAt: null,
+                        "The summary was generated but could not be saved for this template and language. Please try again."));
+                }
+
+                _logger.LogWarning(
+                    "A {TemplateKey}/{Language} rendering of room {RoomId}'s summary completed but no stored row matches it; queueing it once more",
                     wantedTemplate,
-                    wantedLanguage,
-                    Content: null,
-                    IsCanonical: false,
-                    SummaryVariantStatus.Generating,
-                    UpdatedAt: null));
+                    wantedLanguage is { Length: > 0 } ? wantedLanguage : "as-spoken",
+                    roomId);
+
+                isRequeue = true;
             }
 
             var variantRequestId = Guid.NewGuid().ToString();
@@ -356,6 +406,17 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             try
             {
+                if (isRequeue)
+                {
+                    // Before queueing, so even a run that finishes instantly is recognised as the
+                    // retry. Only by the poll that won the claim: a loser's marker would name a
+                    // request that was never queued.
+                    await _redisStateRepo.StringSetAsync(
+                        requeueKey,
+                        variantRequestId,
+                        TranslationRoomConstants.SummaryRewriteStatusTtl);
+                }
+
                 await QueueSummaryAsync(
                     room, wantedTemplate, wantedLanguage, bearerToken, SummaryDelivery.Variant, variantRequestId);
             }

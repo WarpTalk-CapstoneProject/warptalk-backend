@@ -52,6 +52,14 @@ public static class TranslationRoomConstants
     /// </summary>
     public static readonly TimeSpan SummaryVariantInFlightTtl = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// WT-701 — the one retry a rendering gets when its run reported `completed` but no stored row
+    /// matches the pair that was asked for. The value is the request id of that retry, so the
+    /// retry's own `completed` is recognised and answered with `failed` instead of queueing again.
+    /// Lives as long as the outcome it is compared against (<see cref="SummaryRewriteStatusTtl"/>).
+    /// </summary>
+    public const string SummaryVariantRequeueKeyPrefix = "summary_variant_requeued:";
+
     // Terminal Statuses
     public static readonly string[] TerminalStatuses = new[]
     {
