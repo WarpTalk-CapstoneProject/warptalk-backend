@@ -1,11 +1,14 @@
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.BillingService.Infrastructure.Helpers;
+using WarpTalk.BillingService.Infrastructure.Logging;
+using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
@@ -15,15 +18,18 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ISubscriptionDomainService _domainService;
     private readonly IBillingPolicyService _billingPolicyService;
+    private readonly ILogger<BillingCycleClosingService> _logger;
 
     public BillingCycleClosingService(
         IUnitOfWork unitOfWork,
         ISubscriptionDomainService domainService,
-        IBillingPolicyService billingPolicyService)
+        IBillingPolicyService billingPolicyService,
+        ILogger<BillingCycleClosingService> logger)
     {
         _unitOfWork = unitOfWork;
         _domainService = domainService;
         _billingPolicyService = billingPolicyService;
+        _logger = logger;
     }
 
     public async Task<Result<int>> CloseDueCyclesAsync(
@@ -36,15 +42,19 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
             now.Subtract(lookback),
             cancellationToken);
 
+        var closed = 0;
         foreach (var subscription in dueSubscriptions)
         {
-            await CloseOneCycleAsync(subscription, now, cancellationToken);
+            // A refused subscription is left untouched and due, so it is picked up again once its
+            // terms are fixed; one bad contract must not stop every other workspace's renewal.
+            if (await CloseOneCycleAsync(subscription, now, cancellationToken) is null)
+                closed++;
         }
 
-        if (dueSubscriptions.Count > 0)
+        if (closed > 0)
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return Result.Success(dueSubscriptions.Count);
+        return Result.Success(closed);
     }
 
     public async Task<Result<int>> CloseWorkspaceCycleAsync(
@@ -68,26 +78,50 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
                 ErrorCodes.BillingSubscriptionNotFound);
         }
 
+        var originalPeriodEnd = subscription.CurrentPeriodEnd;
         subscription.CurrentPeriodEnd = now.AddMinutes(-1);
-        await CloseOneCycleAsync(subscription, now, cancellationToken);
+        var refusal = await CloseOneCycleAsync(subscription, now, cancellationToken);
+        if (refusal is not null)
+        {
+            subscription.CurrentPeriodEnd = originalPeriodEnd;
+            return Result.Failure<int>(refusal, ErrorCodes.BillingSubscriptionConflict);
+        }
+
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         return Result.Success(1);
     }
 
-    private async Task CloseOneCycleAsync(
+    /// <returns>Null when the cycle was closed; otherwise why it was refused, with nothing written.</returns>
+    private async Task<string?> CloseOneCycleAsync(
         Subscription subscription,
         DateTime now,
         CancellationToken cancellationToken)
     {
         var plan = subscription.Plan ?? throw new InvalidOperationException("Billing cycle close requires subscription.Plan to be loaded.");
         var creditsPerCycle = subscription.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
-        var overagePricePerCredit = subscription.OveragePricePerCreditOverride ?? plan.OveragePricePerCredit;
         var invoiceTermsDays = subscription.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays;
-        var contractPrice = subscription.ContractPriceVnd ?? plan.Price;
-        var overageCredits = subscription.OverageCreditsThisCycle;
-        var overageAmount = overageCredits * overagePricePerCredit;
-        var subtotal = contractPrice + overageAmount;
+
+        // The currency follows the amounts it labels (see BillingCycleCharge): a contract price is
+        // VND whatever the plan is priced in.
+        var resolution = BillingCycleCharge.Resolve(subscription, plan);
+        if (resolution.Charge is not { } charge)
+        {
+            _logger.LogError(
+                BillingOperationalEventIds.BillingCycleCurrencyMismatch,
+                "billing_cycle_refused_currency_mismatch WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} PlanCurrency={PlanCurrency} Detail={Detail}",
+                subscription.WorkspaceId,
+                subscription.Id,
+                plan.Currency,
+                resolution.CurrencyMismatch);
+            return resolution.CurrencyMismatch;
+        }
+
+        var contractPrice = charge.BasePrice;
+        var overageCredits = charge.OverageCredits;
+        var overagePricePerCredit = charge.OveragePricePerCredit;
+        var overageAmount = charge.OverageAmount;
+        var subtotal = charge.Subtotal;
         var billingPolicy = await _billingPolicyService.GetPolicyAsync(cancellationToken);
         var tax = Math.Round(subtotal * billingPolicy.VatRate, 2, MidpointRounding.AwayFromZero);
         var total = subtotal + tax;
@@ -95,6 +129,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
 
         var payment = PaymentMapper.CreateBillingCyclePayment(new BillingCyclePaymentCreationRequest(
             subscription,
+            charge.Currency,
             subtotal,
             tax,
             total,
@@ -106,6 +141,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
             subscription,
             plan,
             payment.Id,
+            charge.Currency,
             contractPrice,
             overageCredits,
             overagePricePerCredit,
@@ -132,6 +168,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         renewalTx.ReferenceId = invoice.Id;
         renewalTx.ReferenceType = TransactionConstants.ReferenceTypes.Payment;
         await _unitOfWork.CreditTransactionRepository.AddAsync(renewalTx, cancellationToken);
+        return null;
     }
 
     private async Task<IReadOnlyCollection<BillingCycleUsageBreakdownItem>> GetUsageBreakdownAsync(
