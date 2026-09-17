@@ -8,7 +8,12 @@ namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IWorkspaceClient
 {
-    Task<Result<(bool IsMember, string RoleName, bool IsActive)>> GetWorkspaceMemberDetailsAsync(
+    /// <summary>
+    /// MembershipType is workspace-service's INTERNAL/EXTERNAL flag, passed through as sent.
+    /// It is empty when the user is not a member, so callers must not read an empty value as
+    /// either kind of member.
+    /// </summary>
+    Task<Result<(bool IsMember, string RoleName, bool IsActive, string MembershipType)>> GetWorkspaceMemberDetailsAsync(
         Guid workspaceId, Guid userId, CancellationToken cancellationToken = default);
 
     /// <summary>

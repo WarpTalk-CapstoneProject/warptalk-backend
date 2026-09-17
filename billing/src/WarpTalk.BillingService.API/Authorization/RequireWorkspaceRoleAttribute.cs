@@ -21,8 +21,6 @@ public sealed class RequireWorkspaceRoleAttribute : TypeFilterAttribute
 
 internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
 {
-    private const string WorkspaceIdRouteKey = "workspaceId";
-
     private readonly IWorkspaceClient _workspaceClient;
     private readonly string[] _allowedRoles;
 
@@ -51,7 +49,7 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
             return;
         }
 
-        if (!TryGetWorkspaceId(context, out var workspaceId))
+        if (!WorkspaceIdResolver.TryGetWorkspaceId(context, out var workspaceId))
         {
             context.Result = new BadRequestObjectResult(new ApiErrorResponse(
                 ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
@@ -83,48 +81,5 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
         }
 
         await next();
-    }
-
-    private static bool TryGetWorkspaceId(ActionExecutingContext context, out Guid workspaceId)
-    {
-        if (TryParseWorkspaceId(context.RouteData.Values[WorkspaceIdRouteKey], out workspaceId))
-        {
-            return true;
-        }
-
-        foreach (var argument in context.ActionArguments.Values)
-        {
-            if (argument is null)
-            {
-                continue;
-            }
-
-            if (argument is Guid id && id != Guid.Empty)
-            {
-                workspaceId = id;
-                return true;
-            }
-
-            if (argument is IWorkspaceScopedRequest scopedRequest &&
-                TryParseWorkspaceId(scopedRequest.WorkspaceId, out workspaceId))
-            {
-                return true;
-            }
-        }
-
-        workspaceId = Guid.Empty;
-        return false;
-    }
-
-    private static bool TryParseWorkspaceId(object? value, out Guid workspaceId)
-    {
-        workspaceId = Guid.Empty;
-
-        return value switch
-        {
-            Guid id when id != Guid.Empty => (workspaceId = id) != Guid.Empty,
-            string text when Guid.TryParse(text, out var id) && id != Guid.Empty => (workspaceId = id) != Guid.Empty,
-            _ => false
-        };
     }
 }
