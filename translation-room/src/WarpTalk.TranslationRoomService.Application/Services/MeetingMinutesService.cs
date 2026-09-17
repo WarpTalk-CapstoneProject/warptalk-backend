@@ -230,6 +230,15 @@ public class MeetingMinutesService : IMeetingMinutesService
             bearerToken,
             ct);
 
+        // WT-703: a language this meeting does not offer is a refusal of the REQUEST, not a state
+        // of the document, and it must reach the caller as one (400) rather than be dressed up as
+        // "unavailable" below. Stored translations were answered above and never get here — what
+        // already exists stays readable whatever the meeting's languages are now.
+        if (!rendering.IsSuccess && rendering.ErrorCode == ErrorCodes.ValidationError)
+        {
+            return Result.Failure<MinutesTranslationDto>(rendering.Error!, rendering.ErrorCode);
+        }
+
         if (!rendering.IsSuccess)
         {
             // The meeting has no summary to translate from — which is a real state for a document
@@ -826,6 +835,14 @@ public class MeetingMinutesService : IMeetingMinutesService
         if (LanguageHelper.NormalizeLanguageCode(language).Length > 0)
         {
             var reading = await GetTranslationAsync(roomId, userId, userEmail, language!, bearerToken, ct);
+
+            // WT-703: the screen refuses a language the meeting does not offer, so the file does
+            // too, rather than handing back a file in a language the reader was just told no.
+            if (!reading.IsSuccess && reading.ErrorCode == ErrorCodes.ValidationError)
+            {
+                return Result.Failure<MinutesExportFile>(reading.Error!, reading.ErrorCode);
+            }
+
             if (reading.IsSuccess && reading.Value!.Status == MinutesTranslationStatus.Ready)
             {
                 requested = reading.Value.Sections;

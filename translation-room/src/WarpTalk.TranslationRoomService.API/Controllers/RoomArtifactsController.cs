@@ -73,6 +73,8 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-703: a language this meeting's artifacts cannot be generated in.
+            if (result.ErrorCode == ErrorCodes.ValidationError) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
@@ -133,6 +135,8 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-703: a language this meeting's artifacts cannot be generated in.
+            if (result.ErrorCode == ErrorCodes.ValidationError) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

@@ -257,6 +257,132 @@ public sealed class SummaryLanguageVariantTests
         redis.VerifyNoOtherCalls();
     }
 
+    /// <summary>
+    /// WT-703: a language the meeting does not offer is refused BEFORE anything is claimed or
+    /// queued — no model call, and no in-flight key left behind to answer "generating" forever.
+    /// </summary>
+    [Fact]
+    public async Task ALanguageTheMeetingDoesNotOfferIsRefusedAndNothingIsQueued()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateService(room, redis, variant: null, policy: RefusingPolicy("fr"));
+
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "fr", "Bearer t");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        redis.Verify(
+            item => item.StringSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()),
+            Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// What already exists is never re-filtered: the published summary stays readable in its own
+    /// language even when the meeting would no longer let that language be generated.
+    /// </summary>
+    [Fact]
+    public async Task ThePublishedSummaryIsStillServedInALanguageTheMeetingNoLongerOffers()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "fr");
+        var redis = new Mock<IRedisStateRepository>();
+        var policy = RefusingPolicy("fr");
+        var service = CreateService(room, redis, variant: null, policy: policy);
+
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "fr", "Bearer t");
+
+        Assert.True(result.IsSuccess, $"{result.ErrorCode}: {result.Error}");
+        Assert.True(result.Value!.IsCanonical);
+        Assert.Equal(SummaryVariantStatus.Ready, result.Value.Status);
+        policy.Verify(
+            item => item.EnsureCanGenerateAsync(It.IsAny<TranslationRoom>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>The same for a rendering somebody already paid for: it stays readable.</summary>
+    [Fact]
+    public async Task ACachedRenderingIsStillServedInALanguageTheMeetingNoLongerOffers()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var cached = new TranslationRoomSummaryVariant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            TemplateKey = "general",
+            Language = "fr",
+            Content = "{\"summary\":\"français\",\"templateKey\":\"general\",\"summaryLanguage\":\"fr\"}",
+            CreatedAt = DateTime.UtcNow.AddMinutes(-5),
+            UpdatedAt = DateTime.UtcNow.AddMinutes(-5)
+        };
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateService(room, redis, cached, policy: RefusingPolicy("fr"));
+
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "fr", "Bearer t");
+
+        Assert.True(result.IsSuccess, $"{result.ErrorCode}: {result.Error}");
+        Assert.Equal(SummaryVariantStatus.Ready, result.Value!.Status);
+        Assert.Contains("français", result.Value.Content);
+    }
+
+    /// <summary>
+    /// As spoken is not a new language: a standup-as-spoken rendering follows the transcript, so
+    /// the guard is asked with the empty language and lets it through.
+    /// </summary>
+    [Fact]
+    public async Task AsSpokenIsAlwaysGeneratable()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var redis = new Mock<IRedisStateRepository>();
+        var policy = RefusingPolicy("fr");
+        var service = CreateService(room, redis, variant: null, policy: policy);
+
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "standup", "", "Bearer t");
+
+        Assert.True(result.IsSuccess, $"{result.ErrorCode}: {result.Error}");
+        Assert.Equal(SummaryVariantStatus.Generating, result.Value!.Status);
+        policy.Verify(item => item.EnsureCanGenerateAsync(room, "", It.IsAny<CancellationToken>()), Times.Once);
+        redis.Verify(
+            item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A policy that refuses exactly <paramref name="refused"/> and allows everything else,
+    /// including as-spoken — the shape of RoomArtifactLanguagePolicy's answer without its lookups.
+    /// </summary>
+    internal static Mock<IRoomArtifactLanguagePolicy> RefusingPolicy(string refused)
+    {
+        var policy = new Mock<IRoomArtifactLanguagePolicy>();
+        policy
+            .Setup(item => item.EnsureCanGenerateAsync(
+                It.IsAny<TranslationRoom>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoom _, string? language, CancellationToken _) =>
+                string.Equals(language, refused, StringComparison.OrdinalIgnoreCase)
+                    ? Result.Failure(
+                        $"Language '{refused}' is not allowed for this meeting's artifacts. Allowed languages: vi, en.",
+                        ErrorCodes.ValidationError)
+                    : Result.Success());
+        return policy;
+    }
+
+    /// <summary>Allows every language, so tests written before WT-703 keep their meaning.</summary>
+    internal static Mock<IRoomArtifactLanguagePolicy> AllowingPolicy()
+    {
+        var policy = new Mock<IRoomArtifactLanguagePolicy>();
+        policy
+            .Setup(item => item.EnsureCanGenerateAsync(
+                It.IsAny<TranslationRoom>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        return policy;
+    }
+
     private static TranslationRoom RoomWithSummary(
         Guid hostId, Guid participantId, string templateKey, string summaryLanguage)
     {
@@ -406,7 +532,8 @@ public sealed class SummaryLanguageVariantTests
     private static TranslationRoomArtifactService CreateService(
         TranslationRoom room,
         Mock<IRedisStateRepository> redis,
-        TranslationRoomSummaryVariant? variant)
+        TranslationRoomSummaryVariant? variant,
+        Mock<IRoomArtifactLanguagePolicy>? policy = null)
     {
         var roomRepository = new Mock<ITranslationRoomRepository>();
         roomRepository
@@ -454,6 +581,7 @@ public sealed class SummaryLanguageVariantTests
             NullLogger<TranslationRoomArtifactService>.Instance,
             new Mock<IArtifactUrlSigner>().Object,
             redis.Object,
-            new Mock<IArtifactsFinalizationQueue>().Object);
+            new Mock<IArtifactsFinalizationQueue>().Object,
+            (policy ?? AllowingPolicy()).Object);
     }
 }

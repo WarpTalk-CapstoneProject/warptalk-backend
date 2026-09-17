@@ -64,6 +64,14 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
     /// <summary>The fixed window the per-transcript budget counts over, from its first use.</summary>
     public static readonly TimeSpan BudgetWindow = TimeSpan.FromHours(24);
 
+    /// <summary>
+    /// The error code for a refused backfill over <see cref="MaxQueuedSegmentsPerTranscriptPerWindow"/>.
+    /// Sent in the response body because the status alone is ambiguous: the gateway also answers
+    /// 429 for its per-user request limiter, which clears in seconds and deserves a retry button,
+    /// while this one clears when the day's window does and does not.
+    /// </summary>
+    public const string BudgetExhaustedCode = "TRANSLATION_BUDGET_EXHAUSTED";
+
     public const string StatusIdle = "idle";
     public const string StatusRunning = "running";
     public const string StatusComplete = "complete";
@@ -224,7 +232,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                     BudgetWindow);
                 return Result.Failure<TranscriptLanguageCoverageDto>(
                     "This transcript has reached its translation limit for today. Try again later.",
-                    "RATE_LIMITED");
+                    BudgetExhaustedCode);
             }
 
             var requestId = Guid.NewGuid();
@@ -415,7 +423,10 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
 
             // Corrections spend the same budget as gap fills: each one redoes every language the
             // line has, and an editor saving the same line over and over is otherwise unbounded
-            // spend. Over budget the correction still stands; only its translations stay stale.
+            // spend. billing_worker does not charge the workspace for these (the redo fixes the
+            // platform's own transcription error over seconds already paid for), so this budget is
+            // the only thing bounding what the platform absorbs. Over budget the correction still
+            // stands; only its translations stay stale.
             if (languages.Count > 0 && !await TryReserveBudgetAsync(db, transcript.Id, languages.Count))
             {
                 _logger.LogWarning(
@@ -497,7 +508,8 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             // settlement reads: that projection lives 24h, and a transcript is read back for months.
             new NameValueEntry("workspace_id", transcript.WorkspaceId.ToString()),
             // The usage record's user. A backfilled line has no speaker who spent anything; the
-            // reader who picked the language, or the editor who corrected the line, did.
+            // reader who picked the language did. Carried on a correction's retranslation too, for
+            // the log billing_worker writes in place of a charge.
             new NameValueEntry("requested_by_user_id", requestedByUserId.ToString()),
             new NameValueEntry("target_lang", targetLanguage),
             new NameValueEntry("status_key", markerKey),

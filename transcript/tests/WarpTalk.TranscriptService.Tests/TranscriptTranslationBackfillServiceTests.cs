@@ -263,7 +263,7 @@ public class TranscriptTranslationBackfillServiceTests
         var result = await service.RequestBackfillAsync(TranscriptId, UserId, "en");
 
         Assert.False(result.IsSuccess);
-        Assert.Equal("RATE_LIMITED", result.ErrorCode);
+        Assert.Equal(TranscriptTranslationBackfillService.BudgetExhaustedCode, result.ErrorCode);
         Assert.Empty(QueuedEntries(database));
         await database.Received(1).StringDecrementAsync(budgetKey, 2L, Arg.Any<CommandFlags>());
         // The marker claimed for this run is released: nothing is running.
