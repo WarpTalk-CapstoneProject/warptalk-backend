@@ -39,6 +39,7 @@ public class PluginCatalogAdminServiceTests
     private readonly IPluginToolAuditRepository _auditRepository = Substitute.For<IPluginToolAuditRepository>();
     private readonly IPluginConfirmationTokenRepository _confirmationTokenRepository = Substitute.For<IPluginConfirmationTokenRepository>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
+    private readonly IWorkspacePluginRepository _workspacePluginRepository = Substitute.For<IWorkspacePluginRepository>();
 
     public PluginCatalogAdminServiceTests()
     {
@@ -47,6 +48,9 @@ public class PluginCatalogAdminServiceTests
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
+        _unitOfWork.WorkspacePluginRepository.Returns(_workspacePluginRepository);
+        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, int>());
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
 
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => "enc:" + call.Arg<string>());
@@ -948,6 +952,23 @@ public class PluginCatalogAdminServiceTests
         Assert.DoesNotContain(SecretCiphertext, json, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsWorkspacesUsing()
+    {
+        var marketplace = WorkspacePluginGuardTests.Marketplace("linear");
+        var privateRow = WorkspacePluginGuardTests.Marketplace("ws_crm_1a2b3c4d");
+        privateRow.OwnerWorkspaceId = Guid.NewGuid();
+        StubAllPlugins(marketplace, privateRow);
+        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, int> { [marketplace.Id] = 6 });
+
+        var result = await CreateSut().ListAsync();
+
+        var row = Assert.Single(result.Value!);
+        Assert.Equal("linear", row.PluginKey);
+        Assert.Equal(6, row.WorkspaceCount);
+    }
+
     private void StubLookup(Plugin? plugin) =>
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -955,8 +976,16 @@ public class PluginCatalogAdminServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
 
+    // The listing filters in the query (marketplace rows only), so the stub applies the predicate
+    // it is handed rather than ignoring it.
     private void StubAllPlugins(params Plugin[] plugins) =>
-        _pluginRepository.GetAllAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(plugins);
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlyList<Plugin>)plugins
+                .Where(call.Arg<Expression<Func<Plugin, bool>>>().Compile())
+                .ToList());
 
     private void StubAudits(int totalCount, params PluginToolAudit[] audits) =>
         _auditRepository.ListForPluginAsync(

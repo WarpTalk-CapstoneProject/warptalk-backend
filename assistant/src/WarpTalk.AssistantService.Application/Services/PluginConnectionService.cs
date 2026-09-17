@@ -64,7 +64,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         // workspace to judge against. Installation is already gated, so this catches the case the
         // install gate cannot - a plugin installed while the workspace still permitted plugins,
         // in a workspace that has since turned them off.
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        var permitted = await _workspacePluginGuard.CanUsePluginAsync(workspaceId, userId, plugin, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginConnectUrlDto>(permitted.Error!, permitted.ErrorCode);
 
@@ -96,7 +96,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (plugin == null)
             return Result.Failure<PluginConnectResultDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        var permitted = await _workspacePluginGuard.CanUsePluginAsync(workspaceId, userId, plugin, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginConnectResultDto>(permitted.Error!, permitted.ErrorCode);
 
