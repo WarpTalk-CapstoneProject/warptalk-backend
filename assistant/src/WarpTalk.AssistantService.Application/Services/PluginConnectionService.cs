@@ -1017,6 +1017,11 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         PluginConnection connection,
         CancellationToken ct)
     {
+        // An API key is not an OAuth token. Handing it to a revocation endpoint would send the
+        // user's key to an authorization server that never issued it; clearing it is the revoke.
+        if (plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+            return;
+
         var encryptedToken =
             string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)
                 ? connection.EncryptedAccessToken

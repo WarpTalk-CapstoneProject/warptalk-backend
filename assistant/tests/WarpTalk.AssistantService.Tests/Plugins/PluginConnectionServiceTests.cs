@@ -1742,6 +1742,33 @@ public class PluginConnectionServiceTests
         await _gateway!.DidNotReceive().ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task DisconnectAsync_ClearsAnApiKey_WithoutSendingItToARevocationEndpoint()
+    {
+        ArrangeApiKeyPlugin();
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "protected:lin_api_123",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var result = await CreateSut().DisconnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+        await _oauthClient.DidNotReceive()
+            .RevokeTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _credentialProtector.DidNotReceive().Unprotect(Arg.Any<string>());
+    }
+
     // ---- WT-710: remote MCP servers as they actually behave ------------------------------------
 
     [Fact]
