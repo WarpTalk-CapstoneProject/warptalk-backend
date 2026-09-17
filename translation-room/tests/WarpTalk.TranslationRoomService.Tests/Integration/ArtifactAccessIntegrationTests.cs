@@ -159,7 +159,7 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
 
         var roomId = await CreateRoomAsync(host);
         await JoinAsync(roomId, participant);
-        // ConsentRequired = true is what RecordingCompletedEventProcessor writes for every
+        // ConsentRequired = true is what RecordingLifecycleEventProcessor writes for every
         // recording, so this is the live shape, not a hypothetical one.
         var artifactId = await SeedRecordingArtifactAsync(roomId, consentRequired: true);
 
