@@ -76,7 +76,12 @@ public record PluginCatalogAdminListItemDto(
     bool HasClientId,
     bool HasClientSecret,
     int ToolCount,
-    int InstallationCount);
+    int InstallationCount,
+    /// <summary>
+    /// How many workspaces have added the plugin to their list. Counts explicit lists only: a
+    /// workspace still on the pre-marketplace "every plugin" default has no list to be counted in.
+    /// </summary>
+    int WorkspaceCount = 0);
 
 /// <summary>
 /// One catalog row in full, with the tool manifest that <c>PUT .../tools</c> replaces.

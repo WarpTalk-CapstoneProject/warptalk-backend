@@ -111,7 +111,7 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
     /// WT-644 — WHY <c>https://</c> IS HANDLED AT ALL.
     ///
     /// This used to sign only <c>s3://bucket/key</c> and hand anything else back verbatim. Nothing
-    /// ever writes an <c>s3://</c> URL. <c>RecordingCompletedEventProcessor</c> is the ONLY writer
+    /// ever writes an <c>s3://</c> URL. <c>RecordingLifecycleEventProcessor</c> is the ONLY writer
     /// of a non-null <c>FileUrl</c> (ArtifactsFinalizer passes null for every artifact it creates),
     /// and the value it stores is <c>EgressInfo.fileResults[].location</c> — which for an S3 or R2
     /// destination is the uploader's own HTTPS object URL, not a scheme our code chose.

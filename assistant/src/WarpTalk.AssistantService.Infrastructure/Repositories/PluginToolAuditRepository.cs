@@ -78,4 +78,17 @@ public class PluginToolAuditRepository : GenericRepository<PluginToolAudit>, IPl
             .Take(take)
             .ToListAsync(ct);
     }
+
+    public async Task<IReadOnlyDictionary<Guid, int>> CountDistinctUsersByPluginForWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        var counts = await _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId == workspaceId && audit.ResultStatus == "success")
+            .GroupBy(audit => audit.PluginId)
+            .Select(group => new { PluginId = group.Key, Count = group.Select(audit => audit.UserId).Distinct().Count() })
+            .ToListAsync(ct);
+
+        return counts.ToDictionary(entry => entry.PluginId, entry => entry.Count);
+    }
 }

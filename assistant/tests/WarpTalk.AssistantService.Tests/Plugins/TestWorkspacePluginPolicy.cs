@@ -1,6 +1,8 @@
 using NSubstitute;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Services;
+using WarpTalk.AssistantService.Domain.Entities;
+using WarpTalk.AssistantService.Domain.Interfaces;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -55,6 +57,14 @@ internal static class TestWorkspacePluginPolicy
                 ? new WorkspaceMembership(IsMember: true, RoleName: "Member", IsActive: true)
                 : WorkspaceMembership.None);
 
-        return new WorkspacePluginGuard(policyClient, membershipClient);
+        // A workspace that has never curated its plugin list: judged by the policy client's
+        // AllowAnyPlugins answer, exactly as every workspace was before the marketplace.
+        var unitOfWork = Substitute.For<IUnitOfWork>();
+        var curations = Substitute.For<IWorkspacePluginCurationRepository>();
+        curations.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns((WorkspacePluginCuration?)null);
+        unitOfWork.WorkspacePluginCurationRepository.Returns(curations);
+
+        return new WorkspacePluginGuard(unitOfWork, policyClient, membershipClient);
     }
 }

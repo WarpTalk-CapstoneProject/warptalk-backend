@@ -65,18 +65,27 @@ public class McpToolGatewayScopeTests
 
     private static McpToolGateway GatewayAnswering(JsonArray tools)
     {
-        // Two calls go out - initialize, then tools/list - and both are answered from the same
-        // envelope shape, so the handler does not need to tell them apart.
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.OK)
+        // initialize, notifications/initialized and tools/list all get the same envelope, echoing
+        // the request's id (WT-710 matches it) and carrying the tools. A notification has no id and
+        // is simply accepted.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Delete) return new HttpResponseMessage(HttpStatusCode.OK);
+
+            var envelope = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!;
+            var id = envelope["id"]?.GetValue<string>();
+            if (id is null) return new HttpResponseMessage(HttpStatusCode.Accepted);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new JsonObject
                 {
                     ["jsonrpc"] = "2.0",
-                    ["id"] = "1",
+                    ["id"] = id,
                     ["result"] = new JsonObject { ["tools"] = tools.DeepClone() },
                 }),
-            }));
+            };
+        }));
 
         var protector = Substitute.For<IPluginCredentialProtector>();
         protector.Unprotect("enc:access").Returns("access-token");

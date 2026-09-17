@@ -16,6 +16,52 @@ public class BillingEndpointSecurityContractTests
         AssertAdminOnly(typeof(CreditsController), nameof(CreditsController.GetGlobalCreditHistory));
     }
 
+    /// <summary>
+    /// WT-700: the balance is readable by every internal member, so it carries the internal-member
+    /// gate and not the Owner/Admin role gate — having both would make the role gate win and hide
+    /// the balance from members again.
+    /// </summary>
+    [Fact]
+    public void WorkspaceCreditBalance_RequiresInternalWorkspaceMember()
+    {
+        var action = GetAction(typeof(CreditsController), nameof(CreditsController.GetWorkspaceCredits));
+
+        Assert.NotNull(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+        Assert.Null(action.GetCustomAttribute<RequireWorkspaceRoleAttribute>());
+        Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
+
+        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.True(
+            authorize is null || string.IsNullOrEmpty(authorize.Roles),
+            "The balance must not authorize off JWT role claims.");
+    }
+
+    /// <summary>
+    /// WT-413 / WT-700: history and per-member usage show what was spent and by whom, so they stay
+    /// Owner/Admin even though the balance beside them opened up to internal members.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(CreditsController.GetCreditHistory))]
+    [InlineData(nameof(CreditsController.GetUsageByMember))]
+    public void WorkspaceCreditSpendActions_StayOwnerAdminOnly(string actionName)
+    {
+        AssertWorkspaceBillingRole(typeof(CreditsController), actionName);
+
+        var action = GetAction(typeof(CreditsController), actionName);
+        Assert.Null(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+
+        var roleFilter = action.GetCustomAttribute<RequireWorkspaceRoleAttribute>();
+        var roles = Assert.IsType<string[]>(Assert.Single(roleFilter!.Arguments!));
+        Assert.Equal(
+            new[]
+            {
+                WarpTalk.Shared.WorkspaceRoleConstants.Owner,
+                WarpTalk.Shared.WorkspaceRoleConstants.Admin,
+                WarpTalk.Shared.WorkspaceRoleConstants.SystemAdmin
+            },
+            roles);
+    }
+
     [Theory]
     [InlineData(nameof(UsagesController.GetGlobalMetrics))]
     [InlineData(nameof(UsagesController.GetGlobalUsageChart))]

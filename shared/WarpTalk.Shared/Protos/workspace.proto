@@ -137,4 +137,7 @@ message GetWorkspacePreflightResponse {
   string workspace_slug = 3;
   bool is_domain_matched = 4;
   bool allow_external_collaboration = 5;
+  // The workspace's Owner (workspaces.owner_id), for a service that has to tell them something -
+  // AssistantService notifies the Owner when a member asks for a plugin. Empty when unknown.
+  string owner_user_id = 6;
 }

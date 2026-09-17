@@ -30,7 +30,7 @@ public class McpAuthorizationServerDiscovery : IMcpAuthorizationServerDiscovery
 
         var resourceIdentifier = CanonicalResourceUri(serverUri);
 
-        var resourceMetadata = await FetchProtectedResourceMetadataAsync(serverUri, ct);
+        var (resourceMetadata, challengedScopes) = await FetchProtectedResourceMetadataAsync(serverUri, ct);
 
         string issuer;
         Uri issuerUri;
@@ -112,7 +112,8 @@ public class McpAuthorizationServerDiscovery : IMcpAuthorizationServerDiscovery
         return Result.Success(new McpServerDiscoveryDto(
             resourceIdentifier,
             resourceScopes,
-            metadata));
+            metadata,
+            challengedScopes));
     }
 
     /// <summary>
@@ -134,26 +135,42 @@ public class McpAuthorizationServerDiscovery : IMcpAuthorizationServerDiscovery
     /// an unauthenticated request answers 401 with <c>resource_metadata</c> in
     /// <c>WWW-Authenticate</c>; otherwise the well-known URIs are probed, path-scoped first.
     /// </summary>
-    private async Task<JsonElement?> FetchProtectedResourceMetadataAsync(Uri serverUri, CancellationToken ct)
+    private async Task<(JsonElement? Document, IReadOnlyList<string>? ChallengedScopes)> FetchProtectedResourceMetadataAsync(
+        Uri serverUri,
+        CancellationToken ct)
     {
-        var advertised = await ProbeResourceMetadataUrlAsync(serverUri, ct);
+        var (advertised, challengedScopes) = await ProbeChallengeAsync(serverUri, ct);
         if (advertised is not null)
         {
             var fromHeader = await FetchJsonAsync(advertised, ct);
-            if (fromHeader is not null) return fromHeader;
+            if (fromHeader is not null) return (fromHeader, challengedScopes);
         }
 
         foreach (var candidate in WellKnownResourceMetadataUrls(serverUri))
         {
             var document = await FetchJsonAsync(candidate, ct);
-            if (document is not null) return document;
+            if (document is not null) return (document, challengedScopes);
         }
 
-        return null;
+        return (null, challengedScopes);
     }
 
-    private async Task<Uri?> ProbeResourceMetadataUrlAsync(Uri serverUri, CancellationToken ct)
+    /// <summary>
+    /// Reads the unauthenticated challenge: where the resource metadata lives, and - WT-710 - which
+    /// scopes the server says a request needs.
+    /// </summary>
+    /// <remarks>
+    /// The scope is read from the same challenge rather than from a second request, because MCP
+    /// Authorization tells clients to treat the challenged scopes as authoritative and to prefer
+    /// them over any <c>scopes_supported</c> list.
+    /// </remarks>
+    private async Task<(Uri? ResourceMetadata, IReadOnlyList<string>? Scopes)> ProbeChallengeAsync(
+        Uri serverUri,
+        CancellationToken ct)
     {
+        Uri? resourceMetadataUrl = null;
+        IReadOnlyList<string>? scopes = null;
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, serverUri);
@@ -163,11 +180,16 @@ public class McpAuthorizationServerDiscovery : IMcpAuthorizationServerDiscovery
             foreach (var header in response.Headers.WwwAuthenticate)
             {
                 var resourceMetadata = ReadAuthParameter(header.Parameter, "resource_metadata");
-                if (resourceMetadata is not null
+                if (resourceMetadataUrl is null
+                    && resourceMetadata is not null
                     && Uri.TryCreate(resourceMetadata, UriKind.Absolute, out var parsed))
                 {
-                    return parsed;
+                    resourceMetadataUrl = parsed;
                 }
+
+                var scope = ReadAuthParameter(header.Parameter, "scope");
+                if (scopes is null && !string.IsNullOrWhiteSpace(scope))
+                    scopes = scope.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             }
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
@@ -175,7 +197,7 @@ public class McpAuthorizationServerDiscovery : IMcpAuthorizationServerDiscovery
             // The probe is an optimisation; the well-known fallback still gets its chance.
         }
 
-        return null;
+        return (resourceMetadataUrl, scopes);
     }
 
     /// <summary>

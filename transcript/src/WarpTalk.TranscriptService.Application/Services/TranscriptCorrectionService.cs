@@ -161,7 +161,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
                 // CancellationToken.None, not the request's: the correction is committed, and a
                 // client that hung up half a second after saving must not be the reason its
                 // translations keep a sentence nobody said.
-                await _backfillService.RequestRetranslationAsync(segmentId, CancellationToken.None);
+                await _backfillService.RequestRetranslationAsync(segmentId, userId, CancellationToken.None);
             }
 
             return Result.Success();

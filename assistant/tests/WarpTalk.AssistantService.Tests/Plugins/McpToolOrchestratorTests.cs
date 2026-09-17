@@ -76,13 +76,10 @@ public class McpToolOrchestratorTests
 
         var result = await sut.ListAvailableToolsAsync(UserId, WorkspaceId);
 
+        // Per plugin now, so the installations are read and every one is filtered out: an uncurated
+        // workspace with AllowAnyPlugins=false has no plugin that is usable here.
         Assert.True(result.IsSuccess);
         Assert.Empty(result.Value!);
-        await _installationRepository.DidNotReceive()
-            .FindAsync(
-                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>());
     }
 
     [Fact]

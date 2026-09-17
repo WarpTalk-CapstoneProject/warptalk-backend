@@ -6,10 +6,9 @@ public interface IWorkspacePluginPolicyClient
     /// Whether this workspace permits its members to use plugins in it at all. WT-646.
     /// </summary>
     /// <remarks>
-    /// One boolean, because that is the whole of a workspace's plugin policy: a workspace owner
-    /// configures whether plugins may be used here, and nothing finer. Named for the question
-    /// rather than for a policy object, so a caller cannot read the wrong field off a wider
-    /// result.
+    /// Since the plugin marketplace this is the TRANSITION input only: it is read for a workspace
+    /// whose Owner has never curated its plugin list (see WorkspacePluginAvailability), and ignored
+    /// for one that has. True keeps every marketplace plugin available, as before; false, none.
     /// <para>
     /// FALSE when the workspace service cannot be reached or does not know the workspace. An
     /// unreadable policy has to read as "no", not as "no policy" - the alternative is that an

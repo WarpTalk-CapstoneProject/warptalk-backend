@@ -87,6 +87,16 @@ public static class NotificationConstants
     /// </summary>
     public const string TypeWorkspaceMemberRemoved = "WORKSPACE_MEMBER_REMOVED";
 
+    /// <summary>
+    /// The plugin marketplace's request round trip (2026-09-17), produced by AssistantService's
+    /// WorkspacePluginMarketplaceService: a member asks the workspace Owner for a plugin, and the
+    /// Owner's decision goes back to the member. Registered with schemas below in the same change as
+    /// the producer - the producer's strings live in WorkspacePluginConstants.NotificationTypes.
+    /// </summary>
+    public const string TypePluginRequested = "PLUGIN_REQUESTED";
+    public const string TypePluginRequestApproved = "PLUGIN_REQUEST_APPROVED";
+    public const string TypePluginRequestDeclined = "PLUGIN_REQUEST_DECLINED";
+
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
     public const string TypeSystem = "SYSTEM";

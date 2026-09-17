@@ -46,7 +46,7 @@ public sealed class S3ArtifactUrlSignerTests
     /// <summary>
     /// WT-644 — THE SHAPE A REAL RECORDING ACTUALLY ARRIVES IN.
     ///
-    /// Nothing writes <c>s3://</c>. RecordingCompletedEventProcessor is the only writer of a
+    /// Nothing writes <c>s3://</c>. RecordingLifecycleEventProcessor is the only writer of a
     /// non-null FileUrl and it stores <c>EgressInfo.fileResults[].location</c> verbatim, which for
     /// an S3/R2 destination is the uploader's HTTPS object URL. The signer used to hand exactly
     /// that back unsigned, so the &lt;video&gt; element on the record page fetched R2's S3 API

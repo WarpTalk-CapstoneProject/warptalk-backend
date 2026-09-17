@@ -64,7 +64,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         // workspace to judge against. Installation is already gated, so this catches the case the
         // install gate cannot - a plugin installed while the workspace still permitted plugins,
         // in a workspace that has since turned them off.
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        var permitted = await _workspacePluginGuard.CanUsePluginAsync(workspaceId, userId, plugin, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginConnectUrlDto>(permitted.Error!, permitted.ErrorCode);
 
@@ -96,7 +96,7 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (plugin == null)
             return Result.Failure<PluginConnectResultDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
-        var permitted = await _workspacePluginGuard.CanUsePluginsAsync(workspaceId, ct);
+        var permitted = await _workspacePluginGuard.CanUsePluginAsync(workspaceId, userId, plugin, ct);
         if (!permitted.IsSuccess)
             return Result.Failure<PluginConnectResultDto>(permitted.Error!, permitted.ErrorCode);
 
@@ -124,8 +124,13 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             if (connection is { Status: PluginConstants.ConnectionStatus.Connected }
                 && Satisfies(plugin, PluginScopeMapper.FromJson(connection.ScopesJson).ToHashSet(StringComparer.Ordinal)))
             {
-                installation.ConnectedAt = DateTime.UtcNow;
+                var now = DateTime.UtcNow;
+                installation.ConnectedAt = now;
                 _unitOfWork.PluginInstallationRepository.Update(installation);
+                // WT-710: this path never passes through the callback, which was the only place the
+                // tool list was ever fetched. A plugin connected this way stayed at zero tools until
+                // somebody reconnected it through the provider.
+                await SyncToolManifestAsync(plugin, connection, now, ct);
                 await _unitOfWork.SaveChangesAsync(ct);
                 return Result.Success(new PluginConnectResultDto(true, null));
             }
@@ -150,15 +155,24 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!provisioned.IsSuccess)
             return Result.Failure<string>(provisioned.Error!, provisioned.ErrorCode);
 
-        var scopes = PluginScopeMapper.FromJson(plugin.RequiredScopesJson);
+        // WT-710: MCP Authorization's scope selection (challenge, then scopes_supported) on top of
+        // whatever the row declares. A native row has no discovery and asks for its declared set.
+        var scopes = McpScopeSelection.Select(
+            PluginScopeMapper.FromJson(plugin.RequiredScopesJson),
+            provisioned.Value?.Discovery);
         var oauthClient = OAuthClientFor(plugin);
 
         // Prepare, then seal, then build: the provider produces the secrets that must round-trip
         // (a PKCE verifier), those go inside the sealed state, and only then can a URL carrying
-        // that state be assembled.
+        // that state be assembled. The requested scopes ride along too, for a token response that
+        // omits scope because it granted exactly those.
         var flowState = oauthClient.PrepareState(
             plugin,
-            new PluginOAuthStateDto(userId, plugin.PluginKey, Client: PluginConstants.OAuthClient.Normalize(client)));
+            new PluginOAuthStateDto(
+                userId,
+                plugin.PluginKey,
+                Client: PluginConstants.OAuthClient.Normalize(client),
+                RequestedScopes: scopes));
         var state = _stateProtector.Protect(flowState);
         return Result.Success(oauthClient.BuildAuthorizationUrl(plugin, scopes, state, flowState));
     }
@@ -425,7 +439,24 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             connection.ScopesJson = JsonSerializer.Serialize(token.GrantedScopes);
             connection.UpdatedAt = now;
 
-            if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
+            // WT-710: a remote MCP server owes us no refresh token. Many issue only short-lived access
+            // tokens, and refusing those grants made such servers impossible to connect at all. The
+            // connection works for as long as its access token does; when that runs out,
+            // RefreshAccessTokenAsync finds nothing to refresh with and marks it expired, which is
+            // the "connect again" the user would have been told now - only an hour later and after
+            // the plugin was actually usable.
+            //
+            // A native provider keeps the stricter rule. Google issues a refresh token whenever it
+            // is asked for offline access, which the client always does, so one missing there means
+            // a consent that went wrong - better said at once than an hour later.
+            var isMcp = string.Equals(plugin.Kind, PluginConstants.PluginKind.Mcp, StringComparison.Ordinal);
+            if (isMcp && string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
+            {
+                // An expired row's stored refresh token is the one that stopped working. Carrying
+                // it forward would make the next refresh fail on a grant we already know is dead.
+                connection.EncryptedRefreshToken = null;
+            }
+            else if (string.IsNullOrWhiteSpace(token.RefreshToken) && !canReuseStoredRefreshToken)
             {
                 connection.Status = PluginConstants.ConnectionStatus.Expired;
                 connection.EncryptedAccessToken = null;

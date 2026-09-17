@@ -1048,6 +1048,8 @@ public class MeetingRoomService : IMeetingRoomService
             _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
             await _unitOfWork.SaveChangesAsync();
 
+            await PublishRecordingStartedAsync(translationRoomId, meetingRoom.ActiveEgressId);
+
             await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = true });
 
             return Result.Success(new RecordingStateDto { Recording = true, EgressId = meetingRoom.ActiveEgressId });
@@ -1110,6 +1112,49 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Failure<RecordingStateDto>("Action must be 'start' or 'stop'.", ErrorCodes.ValidationError);
+    }
+
+    /// <summary>
+    /// rec-loss: record that a recording BEGAN, so its ending — Completed or Failed, from
+    /// EgressCompletion — resolves something downstream instead of being the only trace.
+    ///
+    /// A failed publish is logged at Error and NOT returned as a failure, deliberately. By now
+    /// LiveKit is recording and the room holds the egress id, so the recording is real and will
+    /// still be finished by the webhook or the sweep — both of which publish a durable Completed or
+    /// Failed on their own. Failing the request would tell the host "could not start recording"
+    /// about a recording that is running, and they would press Record again into "already in
+    /// progress". What is lost is only the in-progress marker, which is the smaller harm.
+    /// </summary>
+    private async Task PublishRecordingStartedAsync(Guid translationRoomId, string egressId)
+    {
+        try
+        {
+            var result = await MeetingDomainEventStream.PublishAsync(
+                _redisService,
+                MeetingEventTypes.RecordingStarted,
+                new MeetingRecordingStartedEventPayload(translationRoomId, egressId, DateTime.UtcNow));
+
+            if (!result.IsSuccess)
+            {
+                _logger.LogError(
+                    "Could not publish {EventType} for egress {EgressId} in room {TranslationRoomId}: {Error}. "
+                    + "The recording is running and will still be completed.",
+                    MeetingEventTypes.RecordingStarted,
+                    egressId,
+                    translationRoomId,
+                    result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Could not publish {EventType} for egress {EgressId} in room {TranslationRoomId}. "
+                + "The recording is running and will still be completed.",
+                MeetingEventTypes.RecordingStarted,
+                egressId,
+                translationRoomId);
+        }
     }
 
     // ── WT-08: Auto host fallback ──────────────────────────

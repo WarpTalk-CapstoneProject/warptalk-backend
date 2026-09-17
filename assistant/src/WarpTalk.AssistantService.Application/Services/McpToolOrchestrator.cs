@@ -37,17 +37,16 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         IReadOnlyCollection<string>? excludedPluginKeys = null,
         CancellationToken ct = default)
     {
-        // Answered for the whole list at once: the workspace either permits plugins here or it
-        // does not, so there is nothing to decide per plugin.
+        // What this workspace has, read once for the whole list.
         //
-        // An empty list, not a refusal. This is what WarpBot may reach for in this conversation,
-        // so in a workspace with plugins off the model never learns the tools exist and never
-        // proposes an action that would be refused downstream.
+        // An empty list, not a refusal, when the caller is not a member or named no workspace. This
+        // is what WarpBot may reach for in this conversation, so a plugin the workspace does not
+        // have never reaches the model and it never proposes an action that would be refused.
         //
         // The in-workspace check, so an omitted or borrowed workspaceId cannot widen the list: this
         // is a conversation, and a conversation has a workspace.
-        var permitted = await _workspacePluginGuard.CanUsePluginsInWorkspaceAsync(workspaceId, userId, ct);
-        if (!permitted.IsSuccess)
+        var availability = await _workspacePluginGuard.GetAvailabilityForMemberAsync(workspaceId, userId, ct);
+        if (!availability.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
@@ -70,6 +69,8 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         var excluded = excludedPluginKeys?.ToHashSet(StringComparer.Ordinal) ?? [];
 
         var tools = plugins
+            // A plugin the user installed is still only offered where the workspace has it.
+            .Where(availability.Value!.IsUsable)
             .Where(plugin => !excluded.Contains(plugin.PluginKey))
             .SelectMany(plugin => PluginToolPolicyStore.WithPolicies(
                 PluginDefinitionMapper.ToDefinition(plugin).Tools,
@@ -103,9 +104,10 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         // workspace they named. Omitting the field used to pass this gate outright, and the audit
         // row it wrote carried workspace_id = NULL - so the calls that slipped past the policy were
         // also the ones its Owner could not see.
-        var policyCheck = await _workspacePluginGuard.CanUsePluginsInWorkspaceAsync(
+        var policyCheck = await _workspacePluginGuard.CanUsePluginInWorkspaceAsync(
             request.WorkspaceId,
             userId,
+            pluginEntity,
             ct);
         if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(
