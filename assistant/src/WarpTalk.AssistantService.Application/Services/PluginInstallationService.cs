@@ -1,5 +1,6 @@
 using System.Text.Json;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Constants;
@@ -146,6 +147,55 @@ public class PluginInstallationService : IPluginInstallationService
         _unitOfWork.PluginInstallationRepository.Update(installation);
         await _unitOfWork.SaveChangesAsync(ct);
         return Result.Success();
+    }
+
+    public async Task<Result<PluginCatalogItemDto>> UpdateToolPolicyAsync(
+        string pluginKey,
+        Guid userId,
+        IReadOnlyDictionary<string, string> tools,
+        CancellationToken ct = default)
+    {
+        var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
+        if (plugin == null)
+            return Result.Failure<PluginCatalogItemDto>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
+
+        var invalid = tools.FirstOrDefault(entry => !PluginConstants.ToolPolicy.IsKnown(entry.Value));
+        if (invalid.Key != null)
+            return Result.Failure<PluginCatalogItemDto>(
+                $"'{invalid.Value}' is not a tool setting. Use allow, approval or blocked.",
+                PluginConstants.ErrorCodes.InvalidToolPolicy);
+
+        // The caller's own installation only. A choice is about what WarpBot does for this user, so
+        // there is no row of anyone else's this could reach.
+        var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
+            i => i.UserId == userId
+                && i.PluginId == plugin.Id
+                && i.Status == PluginConstants.InstallationStatus.Installed,
+            ct: ct);
+        if (installation == null)
+            return Result.Failure<PluginCatalogItemDto>("Plugin is not installed.", PluginConstants.ErrorCodes.PluginNotInstalled);
+
+        var definition = PluginDefinitionMapper.ToDefinition(plugin);
+        var toolNames = definition.Tools.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+
+        // A name the plugin does not have is dropped rather than refused: tools/list can lose a tool
+        // between the page loading and the user saving, and that is no reason to lose the rest.
+        var known = tools
+            .Where(entry => toolNames.Contains(entry.Key))
+            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+
+        if (known.Count > 0)
+        {
+            installation.ConfigJson = PluginToolPolicyStore.Write(installation.ConfigJson, known);
+            _unitOfWork.PluginInstallationRepository.Update(installation);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+
+        var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
+            c => c.UserId == userId && c.Provider == plugin.Provider,
+            ct: ct);
+
+        return Result.Success(PluginCatalogItemMapper.ToCatalogItem(definition, installation, connection));
     }
 
     public async Task<Result<PluginCatalogItemDto>> CreateMcpPluginAsync(

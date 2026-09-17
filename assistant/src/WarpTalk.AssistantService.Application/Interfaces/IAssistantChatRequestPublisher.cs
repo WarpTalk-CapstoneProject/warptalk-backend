@@ -30,5 +30,9 @@ public interface IAssistantChatRequestPublisher
         /// images_json for wire compatibility with what the worker already reads.
         /// </summary>
         string? attachmentsJson = null,
+        /// <summary>
+        /// WT-687: plugin keys switched off for this conversation, as a JSON array, or null.
+        /// </summary>
+        string? disabledPluginKeysJson = null,
         CancellationToken ct = default);
 }
