@@ -216,6 +216,13 @@ public static class PluginConstants
         /// </summary>
         public const string ToolBlocked = "tool_blocked";
 
+        /// <summary>
+        /// The tool ran and reported its own failure (<c>isError</c> in the result). WT-710. Kept
+        /// apart from <see cref="ProviderUnavailable"/> because the remedy differs: the server is up
+        /// and the connection works; the arguments or the request were refused.
+        /// </summary>
+        public const string ToolError = "tool_error";
+
         /// <summary>A tool policy update named a value other than allow, approval or blocked.</summary>
         public const string InvalidToolPolicy = "invalid_tool_policy";
 

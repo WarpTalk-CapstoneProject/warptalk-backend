@@ -131,7 +131,13 @@ public record PluginOAuthStateDto(
     string PluginKey,
     string? CodeVerifier = null,
     string? Issuer = null,
-    string? Client = null);
+    string? Client = null,
+    /// <summary>
+    /// The scopes the authorization request asked for. WT-710. RFC 6749 §5.1 lets a token response
+    /// omit <c>scope</c> when it is identical to what was requested, so the exchange needs this to
+    /// know what was granted; reading an omitted scope as "nothing" marked every such grant partial.
+    /// </summary>
+    IReadOnlyList<string>? RequestedScopes = null);
 
 /// <summary>
 /// What a finished OAuth callback has to say, in the terms the redirect needs.
