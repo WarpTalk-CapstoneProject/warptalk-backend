@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MimeKit;
 using System;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Shared.Configuration;
@@ -26,33 +27,7 @@ public class SmtpEmailService : IEmailService
     {
         try
         {
-            var message = new MimeMessage();
-            message.From.Add(new MailboxAddress(_settings.FromName, _settings.FromEmail));
-            message.To.Add(new MailboxAddress(participantName, toEmail));
-            message.Subject = $"Invitation to Meeting: {meetingTitle}";
-
-            var bodyBuilder = new BodyBuilder
-            {
-                HtmlBody = $@"
-                    <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;'>
-                        <h2 style='color: #4F46E5;'>WarpTalk Meeting Invitation</h2>
-                        <p>Hello <strong>{participantName}</strong>,</p>
-                        <p>You have been invited to a meeting:</p>
-                        <ul style='list-style-type: none; padding: 0;'>
-                            <li><strong>Title:</strong> {meetingTitle}</li>
-                            <li><strong>Scheduled Time:</strong> {scheduledTime}</li>
-                        </ul>
-                        <p style='margin-top: 30px;'>
-                            <a href='{meetingLink}' style='background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;'>Join Meeting</a>
-                        </p>
-                        <p style='margin-top: 30px; font-size: 12px; color: #666;'>
-                            If the button doesn't work, copy and paste this link into your browser: <br/>
-                            <a href='{meetingLink}'>{meetingLink}</a>
-                        </p>
-                    </div>"
-            };
-
-            message.Body = bodyBuilder.ToMessageBody();
+            var message = BuildMeetingInvitationMessage(toEmail, participantName, meetingLink, meetingTitle, scheduledTime);
             await SendEmailAsync(message, ct);
             _logger.LogInformation("Invitation email sent successfully to {Email}", toEmail);
         }
@@ -66,29 +41,7 @@ public class SmtpEmailService : IEmailService
     {
         try
         {
-            var message = new MimeMessage();
-            message.From.Add(new MailboxAddress(_settings.FromName, _settings.FromEmail));
-            message.To.Add(new MailboxAddress(participantName, toEmail));
-            message.Subject = $"Reminder: Meeting '{meetingTitle}' starts in {startsIn}";
-
-            var bodyBuilder = new BodyBuilder
-            {
-                HtmlBody = $@"
-                    <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;'>
-                        <h2 style='color: #E11D48;'>Meeting Reminder</h2>
-                        <p>Hello <strong>{participantName}</strong>,</p>
-                        <p>This is a reminder that your meeting is starting soon:</p>
-                        <ul style='list-style-type: none; padding: 0;'>
-                            <li><strong>Title:</strong> {meetingTitle}</li>
-                            <li><strong>Starts In:</strong> {startsIn}</li>
-                        </ul>
-                        <p style='margin-top: 30px;'>
-                            <a href='{meetingLink}' style='background-color: #E11D48; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;'>Join Meeting Now</a>
-                        </p>
-                    </div>"
-            };
-
-            message.Body = bodyBuilder.ToMessageBody();
+            var message = BuildMeetingReminderMessage(toEmail, participantName, meetingLink, meetingTitle, startsIn);
             await SendEmailAsync(message, ct);
             _logger.LogInformation("Reminder email sent successfully to {Email}", toEmail);
         }
@@ -96,6 +49,92 @@ public class SmtpEmailService : IEmailService
         {
             _logger.LogError(ex, "Failed to send reminder email to {Email}", toEmail);
         }
+    }
+
+    // The meeting title is chosen by the host and lands in other people's inboxes, so every value
+    // interpolated into the HTML is encoded. The subject is a MIME header, not HTML: MimeKit encodes
+    // it, and encoding it here would show recipients a literal "&lt;".
+    public MimeMessage BuildMeetingInvitationMessage(string toEmail, string participantName, string meetingLink, string meetingTitle, string scheduledTime)
+    {
+        var message = new MimeMessage();
+        message.From.Add(new MailboxAddress(_settings.FromName, _settings.FromEmail));
+        message.To.Add(new MailboxAddress(participantName, toEmail));
+        message.Subject = $"Invitation to Meeting: {meetingTitle}";
+
+        var name = WebUtility.HtmlEncode(participantName);
+        var title = WebUtility.HtmlEncode(meetingTitle);
+        var time = WebUtility.HtmlEncode(scheduledTime);
+        var link = WebUtility.HtmlEncode(RequireWebLink(meetingLink));
+
+        var bodyBuilder = new BodyBuilder
+        {
+            HtmlBody = $@"
+                    <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;'>
+                        <h2 style='color: #4F46E5;'>WarpTalk Meeting Invitation</h2>
+                        <p>Hello <strong>{name}</strong>,</p>
+                        <p>You have been invited to a meeting:</p>
+                        <ul style='list-style-type: none; padding: 0;'>
+                            <li><strong>Title:</strong> {title}</li>
+                            <li><strong>Scheduled Time:</strong> {time}</li>
+                        </ul>
+                        <p style='margin-top: 30px;'>
+                            <a href='{link}' style='background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;'>Join Meeting</a>
+                        </p>
+                        <p style='margin-top: 30px; font-size: 12px; color: #666;'>
+                            If the button doesn't work, copy and paste this link into your browser: <br/>
+                            <a href='{link}'>{link}</a>
+                        </p>
+                    </div>"
+        };
+
+        message.Body = bodyBuilder.ToMessageBody();
+        return message;
+    }
+
+    public MimeMessage BuildMeetingReminderMessage(string toEmail, string participantName, string meetingLink, string meetingTitle, string startsIn)
+    {
+        var message = new MimeMessage();
+        message.From.Add(new MailboxAddress(_settings.FromName, _settings.FromEmail));
+        message.To.Add(new MailboxAddress(participantName, toEmail));
+        message.Subject = $"Reminder: Meeting '{meetingTitle}' starts in {startsIn}";
+
+        var name = WebUtility.HtmlEncode(participantName);
+        var title = WebUtility.HtmlEncode(meetingTitle);
+        var startsInText = WebUtility.HtmlEncode(startsIn);
+        var link = WebUtility.HtmlEncode(RequireWebLink(meetingLink));
+
+        var bodyBuilder = new BodyBuilder
+        {
+            HtmlBody = $@"
+                    <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;'>
+                        <h2 style='color: #E11D48;'>Meeting Reminder</h2>
+                        <p>Hello <strong>{name}</strong>,</p>
+                        <p>This is a reminder that your meeting is starting soon:</p>
+                        <ul style='list-style-type: none; padding: 0;'>
+                            <li><strong>Title:</strong> {title}</li>
+                            <li><strong>Starts In:</strong> {startsInText}</li>
+                        </ul>
+                        <p style='margin-top: 30px;'>
+                            <a href='{link}' style='background-color: #E11D48; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;'>Join Meeting Now</a>
+                        </p>
+                    </div>"
+        };
+
+        message.Body = bodyBuilder.ToMessageBody();
+        return message;
+    }
+
+    // A join button must point at a web page. Anything else (javascript:, mailto:, a relative path
+    // from a missing FrontendBaseUrl) is refused rather than mailed, and the caller logs the failure.
+    private static string RequireWebLink(string meetingLink)
+    {
+        if (!Uri.TryCreate(meetingLink, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            throw new ArgumentException("Meeting link must be an absolute http(s) URL.", nameof(meetingLink));
+        }
+
+        return uri.AbsoluteUri;
     }
 
     private async Task SendEmailAsync(MimeMessage message, CancellationToken ct)

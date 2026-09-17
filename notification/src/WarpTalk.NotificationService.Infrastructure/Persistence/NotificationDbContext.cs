@@ -68,6 +68,10 @@ public partial class NotificationDbContext : DbContext
             entity.Property(e => e.Status)
                 .HasMaxLength(50)
                 .HasColumnName("status");
+            entity.Property(e => e.SentAt).HasColumnName("sent_at");
+            entity.Property(e => e.DeliveredCount).HasColumnName("delivered_count");
+            entity.Property(e => e.DeliveryChunkCount).HasColumnName("delivery_chunk_count");
+            entity.Property(e => e.DeliveredChunkCount).HasColumnName("delivered_chunk_count");
             entity.Property(e => e.CreatedBy).HasColumnName("created_by");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.CreatedAt)

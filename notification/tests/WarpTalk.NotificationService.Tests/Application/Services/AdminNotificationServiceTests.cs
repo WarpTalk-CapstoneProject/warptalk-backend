@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentValidation;
@@ -147,5 +148,59 @@ public class AdminNotificationServiceTests
             "admin-notifications-delivery",
             It.IsAny<DeliveryEventPayload>(),
             It.IsAny<CancellationToken>()), Times.Exactly(3));
+    }
+
+    [Fact]
+    public async Task CreateAdminNotificationAsync_RecordsHowManyChunksMustBeDeliveredBeforeItIsSent()
+    {
+        var userIds = Enumerable.Range(0, 2500).Select(_ => Guid.NewGuid()).ToList();
+        var dto = new CreateAdminNotificationDto(
+            "Title", "Content", NotificationConstants.TypeSystem, NotificationConstants.TargetModeSpecificUsers, userIds, null);
+        _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ValidationResult());
+
+        AdminNotification? saved = null;
+        var chunkCountAtSave = 0;
+        var mockRepo = new Mock<IAdminNotificationRepository>();
+        mockRepo.Setup(r => r.AddAsync(It.IsAny<AdminNotification>(), It.IsAny<CancellationToken>()))
+            .Callback<AdminNotification, CancellationToken>((n, _) => saved = n)
+            .Returns(Task.CompletedTask);
+        _mockUnitOfWork.Setup(u => u.AdminNotificationRepository).Returns(mockRepo.Object);
+        _mockUnitOfWork.Setup(u => u.SaveChangesAsync())
+            .Callback(() => chunkCountAtSave = saved!.DeliveryChunkCount)
+            .ReturnsAsync(1);
+
+        var result = await _sut.CreateAdminNotificationAsync(Guid.NewGuid(), dto);
+
+        Assert.True(result.IsSuccess);
+        // Written with the row, not after it: a fast consumer must already see the real total.
+        Assert.Equal(3, chunkCountAtSave);
+        Assert.Equal(0, saved!.DeliveredCount);
+        Assert.Null(saved.SentAt);
+    }
+
+    [Fact]
+    public async Task CreateAdminNotificationAsync_WhenPublishingFails_MarksTheAnnouncementFailed()
+    {
+        var userIds = Enumerable.Range(0, 2500).Select(_ => Guid.NewGuid()).ToList();
+        var dto = new CreateAdminNotificationDto(
+            "Title", "Content", NotificationConstants.TypeSystem, NotificationConstants.TargetModeSpecificUsers, userIds, null);
+        _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ValidationResult());
+
+        var mockRepo = new Mock<IAdminNotificationRepository>();
+        _mockUnitOfWork.Setup(u => u.AdminNotificationRepository).Returns(mockRepo.Object);
+        var published = 0;
+        _mockPublisher
+            .Setup(p => p.PublishAsync(It.IsAny<string>(), It.IsAny<DeliveryEventPayload>(), It.IsAny<CancellationToken>()))
+            .Returns(() => ++published == 2
+                ? Task.FromException(new InvalidOperationException("Redis unavailable"))
+                : Task.CompletedTask);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.CreateAdminNotificationAsync(Guid.NewGuid(), dto));
+
+        // Chunk 1 is already on the stream and will deliver; chunk 3 never will. Not Pending.
+        mockRepo.Verify(r => r.MarkFailedAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

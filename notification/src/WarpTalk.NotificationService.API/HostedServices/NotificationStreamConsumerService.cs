@@ -4,10 +4,9 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
 using WarpTalk.NotificationService.Application.DTOs.AdminNotifications;
+using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.Application.Mappers;
 using WarpTalk.NotificationService.Domain.Constants;
-using WarpTalk.NotificationService.Domain.Entities;
-using WarpTalk.NotificationService.Domain.Interfaces;
 
 namespace WarpTalk.NotificationService.API.HostedServices;
 
@@ -16,7 +15,6 @@ public class NotificationStreamConsumerService : BackgroundService
     private const string StreamName = "admin-notifications-delivery";
     private const string DeadLetterStreamName = "admin-notifications-delivery:dead-letter";
     private const string ConsumerGroupName = "notification-worker-group";
-    private const string InboxConsumerName = "admin-notification-delivery@v1";
     private const int MaxAttempts = 5;
     private const long ReclaimIdleMilliseconds = 60_000;
 
@@ -190,39 +188,12 @@ public class NotificationStreamConsumerService : BackgroundService
         IDatabase db,
         CancellationToken cancellationToken)
     {
-        if (payload.TargetAudienceMode != NotificationConstants.TargetModeSpecificUsers
-            || payload.SpecificUserIds is not { Length: > 0 })
-        {
-            throw new InvalidOperationException(
-                $"Unsupported admin notification audience mode '{payload.TargetAudienceMode}'.");
-        }
-
         using var scope = _scopeFactory.CreateScope();
-        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var inboxRepository = unitOfWork.NotificationInboxMessageRepository;
-        var eventId = StableEventId(logicalEventId);
-        if (await inboxRepository.HasProcessedAsync(eventId, InboxConsumerName, cancellationToken))
-            return;
-
-        var adminNotification = await unitOfWork.AdminNotificationRepository
-            .GetByIdAsync(payload.NotificationId, cancellationToken)
-            ?? throw new KeyNotFoundException(
-                $"Admin notification {payload.NotificationId} does not exist.");
-
-        var targetUserIds = payload.SpecificUserIds.Distinct().ToArray();
-        var messages = targetUserIds
-            .Select(userId => NotificationMessageMapper.ToEntity(adminNotification, userId))
-            .ToArray();
-
-        await unitOfWork.NotificationMessageRepository.AddRangeAsync(messages);
-        await inboxRepository.AddAsync(new NotificationInboxMessage
-        {
-            EventId = eventId,
-            Consumer = InboxConsumerName,
-            EventType = "admin.notification.delivery@v1",
-            ProcessedAt = DateTime.UtcNow
-        });
-        await unitOfWork.SaveChangesAsync();
+        var deliveryService = scope.ServiceProvider.GetRequiredService<IAdminNotificationDeliveryService>();
+        var messages = await deliveryService.DeliverChunkAsync(
+            payload,
+            StableEventId(logicalEventId),
+            cancellationToken);
 
         foreach (var notification in messages)
         {
@@ -259,6 +230,7 @@ public class NotificationStreamConsumerService : BackgroundService
                 "Admin notification delivery {EventId} moved to DLQ after {Attempts} attempts.",
                 logicalEventId,
                 nextAttempt);
+            await MarkAnnouncementFailedAsync(payload, logicalEventId);
         }
         else
         {
@@ -277,6 +249,51 @@ public class NotificationStreamConsumerService : BackgroundService
         }
 
         await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, source.Id);
+    }
+
+    /// <summary>
+    /// Before this, a dead-lettered chunk left its announcement "Pending" forever, identical in the
+    /// admin list to one still on its way. Best-effort: the event is already safe in the DLQ, so a
+    /// payload that cannot be read or a database that cannot be reached is logged, not rethrown —
+    /// rethrowing here would skip the acknowledgement below and re-dead-letter the same event.
+    /// </summary>
+    private async Task MarkAnnouncementFailedAsync(string? payload, string logicalEventId)
+    {
+        Guid notificationId;
+        try
+        {
+            notificationId = string.IsNullOrWhiteSpace(payload)
+                ? Guid.Empty
+                : JsonSerializer.Deserialize<DeliveryEventPayload>(payload)?.NotificationId ?? Guid.Empty;
+        }
+        catch (JsonException)
+        {
+            notificationId = Guid.Empty;
+        }
+
+        if (notificationId == Guid.Empty)
+        {
+            _logger.LogError(
+                "Dead-lettered admin notification delivery {EventId} names no announcement; its status cannot be updated.",
+                logicalEventId);
+            return;
+        }
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            await scope.ServiceProvider
+                .GetRequiredService<IAdminNotificationDeliveryService>()
+                .MarkDeliveryFailedAsync(notificationId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Could not mark admin notification {NotificationId} Failed after delivery {EventId} was dead-lettered.",
+                notificationId,
+                logicalEventId);
+        }
     }
 
     private static string? GetField(StreamEntry entry, string name)

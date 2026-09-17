@@ -72,6 +72,7 @@ public record StripeInvoiceCreationRequest(
 
 public record BillingCyclePaymentCreationRequest(
     Domain.Entities.Subscription Subscription,
+    string Currency,
     decimal Subtotal,
     decimal Tax,
     decimal Total,
@@ -83,6 +84,7 @@ public record BillingCycleInvoiceCreationRequest(
     Domain.Entities.Subscription Subscription,
     Domain.Entities.Plan Plan,
     Guid PaymentId,
+    string Currency,
     decimal ContractPrice,
     int OverageCredits,
     decimal OveragePricePerCredit,

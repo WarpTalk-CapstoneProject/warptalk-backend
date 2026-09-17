@@ -19,4 +19,18 @@ public interface IAdminNotificationRepository : IGenericRepository<AdminNotifica
     Task AddAsync(AdminNotification entity, CancellationToken ct);
     Task<AdminNotification?> GetByIdAsync(Guid id, CancellationToken ct);
     Task<(IEnumerable<AdminNotification> Items, int TotalCount)> GetPaginatedAsync(AdminNotificationFilter filter, CancellationToken ct = default);
+
+    /// <summary>
+    /// Counts one processed delivery chunk and its recipients, and flips a Pending announcement
+    /// to Sent (stamping SentAt) when that was the last chunk. One UPDATE statement, so replicas
+    /// finishing different chunks of the same announcement cannot lose each other's increment.
+    /// Runs immediately — call it inside the transaction that writes the chunk's rows.
+    /// </summary>
+    Task RecordChunkDeliveredAsync(Guid id, int recipientCount, CancellationToken ct);
+
+    /// <summary>
+    /// Marks a still-Pending announcement Failed. A Sent announcement is left alone.
+    /// Returns false when no Pending row matched.
+    /// </summary>
+    Task<bool> MarkFailedAsync(Guid id, CancellationToken ct);
 }
