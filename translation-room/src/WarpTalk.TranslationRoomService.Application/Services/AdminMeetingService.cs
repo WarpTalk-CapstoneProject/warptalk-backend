@@ -146,7 +146,7 @@ public class AdminMeetingService : IAdminMeetingService
         AdminInsightsQuery query,
         CancellationToken ct = default)
     {
-        if (!AdminComparisonRange.TryResolve(query, query.Compare, out var window, out var error))
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
         {
             return Result.Failure<AdminMeetingInsightsDto>(error!, ErrorCodes.ValidationError);
         }
@@ -164,10 +164,12 @@ public class AdminMeetingService : IAdminMeetingService
 
             var current = AdminMeetingInsightsCalculator.Totals(spans, window.From, window.To, now);
             var previous = AdminMeetingInsightsCalculator.Totals(spans, window.PreviousFrom, window.PreviousTo, now);
-            var byDay = AdminMeetingInsightsCalculator.ByDay(spans, window.From, window.To, now);
+            var byDay = AdminMeetingInsightsCalculator.ByDay(spans, window.From, window.To, now, window.TimeZone);
 
-            // Same instant and same definitions as GET /admin/meetings/counts.
-            var (live, startedToday) = await rooms.GetAdminCountsAsync(now.Date, ct);
+            // Same definitions as GET /admin/meetings/counts, but "today" is the local day of the
+            // request's tz: a Vietnam admin's today began at 17:00Z yesterday.
+            var todayStart = AdminComparisonRange.LocalDayOf(now, window.TimeZone).Start;
+            var (live, startedToday) = await rooms.GetAdminCountsAsync(todayStart, ct);
 
             return Result.Success(new AdminMeetingInsightsDto(
                 window.Range,

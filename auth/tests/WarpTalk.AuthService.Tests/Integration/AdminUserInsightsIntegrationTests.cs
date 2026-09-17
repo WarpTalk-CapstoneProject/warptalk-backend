@@ -29,8 +29,9 @@ public sealed class AdminUserInsightsIntegrationTests : BaseIntegrationTest
 {
     private const string Url = "/api/v1/admin/users/insights";
 
-    // Current window [8 Sep, 15 Sep); previous window [1 Sep, 8 Sep).
-    private const string Window = "?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z";
+    // Current window [8 Sep, 15 Sep); previous window [1 Sep, 8 Sep). On the UTC calendar, so the
+    // day keys below are UTC days; the Vietnam calendar (the default tz) has its own tests.
+    private const string Window = "?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z&tz=UTC";
 
     private static DateTime Utc(int month, int day, int hour = 0, int minute = 0) =>
         new(2026, month, day, hour, minute, 0, DateTimeKind.Utc);
@@ -148,6 +149,9 @@ public sealed class AdminUserInsightsIntegrationTests : BaseIntegrationTest
     [InlineData("?from=2026-09-15T00:00:00Z&to=2026-09-08T00:00:00Z")]
     [InlineData("?from=2025-01-01T00:00:00Z&to=2026-09-08T00:00:00Z")]
     [InlineData(Window + "&compare=lastYear")]
+    [InlineData("?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z&tz=Mars/Olympus_Mons")]
+    [InlineData("?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z&tz=../../etc/passwd")]
+    [InlineData("?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z&tz=%2B07:00")]
     public async Task Insights_RejectsAnInvalidWindow(string queryString)
     {
         var response = await ClientWithRole("admin").GetAsync(Url + queryString);
@@ -194,7 +198,7 @@ public sealed class AdminUserInsightsIntegrationTests : BaseIntegrationTest
         await SeedAsync();
 
         var body = await ClientWithRole("admin").GetFromJsonAsync<AdminUserInsightsDto>(
-            Url + "?from=2026-09-01T00:00:00Z&to=2026-09-15T00:00:00Z&compare=previousMonth", Json);
+            Url + "?from=2026-09-01T00:00:00Z&to=2026-09-15T00:00:00Z&compare=previousMonth&tz=UTC", Json);
 
         Assert.Equal(Utc(8, 1), body!.PreviousRange.From);
         Assert.Equal(Utc(8, 15), body.PreviousRange.To);
@@ -223,7 +227,62 @@ public sealed class AdminUserInsightsIntegrationTests : BaseIntegrationTest
     }
 
     [Fact]
-    public async Task NewUsersByDay_BucketsByUtcDayWhateverTheSessionTimeZone()
+    public async Task Insights_BucketsDaysOnTheVietnamCalendarByDefault()
+    {
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
+            db.Users.AddRange(
+                // 23:59 on 9 Sep in Vietnam.
+                NewUser("late@acme.com", Utc(9, 9, 16, 59)),
+                // 17:00Z is midnight in Vietnam: already 10 Sep there, still 9 Sep in UTC.
+                NewUser("midnight@acme.com", Utc(9, 9, 17)),
+                NewUser("morning@acme.com", Utc(9, 10, 1)));
+            await db.SaveChangesAsync();
+        }
+
+        // Vietnam's 9 and 10 September, as instants. No tz: the default is Asia/Ho_Chi_Minh.
+        var body = await ClientWithRole("admin").GetFromJsonAsync<AdminUserInsightsDto>(
+            Url + "?from=2026-09-08T17:00:00Z&to=2026-09-10T17:00:00Z", Json);
+
+        Assert.Equal(Utc(9, 8, 17), body!.Range.From);
+        Assert.Equal(Utc(9, 10, 17), body.Range.To);
+        Assert.Equal(3, body.Metrics.Single(m => m.Id == "newUsers").Value);
+        Assert.Equal(
+            new[] { ("2026-09-09", 1), ("2026-09-10", 2) },
+            body.NewUsersByDay.Select(d => (d.Date, d.Count)).ToArray());
+    }
+
+    [Fact]
+    public async Task Insights_ComparesAVietnamMonthWithTheVietnamMonthBefore()
+    {
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
+            db.Users.AddRange(
+                // 1 Aug 06:00 in Vietnam: August there, July in UTC.
+                NewUser("aug-first@acme.com", Utc(7, 31, 23)),
+                // 1 Sep 00:30 in Vietnam: September there, August in UTC.
+                NewUser("sep-first@acme.com", Utc(8, 31, 17, 30)));
+            await db.SaveChangesAsync();
+        }
+
+        var body = await ClientWithRole("admin").GetFromJsonAsync<AdminUserInsightsDto>(
+            Url + "?from=2026-08-31T17:00:00Z&to=2026-09-30T17:00:00Z&compare=previousMonth&tz=Asia/Ho_Chi_Minh", Json);
+
+        Assert.Equal(Utc(7, 31, 17), body!.PreviousRange.From);
+        Assert.Equal(Utc(8, 31, 17), body.PreviousRange.To);
+        var newUsers = body.Metrics.Single(m => m.Id == "newUsers");
+        Assert.Equal(1, newUsers.Value);
+        Assert.Equal(1, newUsers.Previous);
+        Assert.Equal(30, body.NewUsersByDay.Count);
+        Assert.Equal("2026-09-01", body.NewUsersByDay[0].Date);
+        Assert.Equal(1, body.NewUsersByDay[0].Count);
+        Assert.Equal("2026-09-30", body.NewUsersByDay[^1].Date);
+    }
+
+    [Fact]
+    public async Task CreatedAt_ComesBackAsUtcInstantsWhateverTheSessionTimeZone()
     {
         await SeedAsync();
 
@@ -231,14 +290,15 @@ public sealed class AdminUserInsightsIntegrationTests : BaseIntegrationTest
         var connectionString = scope.ServiceProvider.GetRequiredService<AuthDbContext>()
             .Database.GetConnectionString();
 
-        // UTC+7: 23:30 UTC on 14 Sep is already 15 Sep locally, and must still count for the 14th.
+        // A session in UTC+7 must not shift the instants the service buckets.
         await using var context = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>()
             .UseNpgsql(connectionString + ";Timezone=Asia/Ho_Chi_Minh")
             .Options);
 
-        var rows = await new UserRepository(context).CountCreatedByDayAsync(Utc(9, 8), Utc(9, 15));
+        var instants = await new UserRepository(context).GetCreatedAtBetweenAsync(Utc(9, 8), Utc(9, 15));
 
-        Assert.Contains(rows, row => row.Day == Utc(9, 14) && row.Count == 1);
-        Assert.DoesNotContain(rows, row => row.Day == Utc(9, 15));
+        Assert.Contains(Utc(9, 14, 23, 30), instants);
+        Assert.DoesNotContain(Utc(9, 15), instants);
+        Assert.All(instants, at => Assert.Equal(DateTimeKind.Utc, at.Kind));
     }
 }

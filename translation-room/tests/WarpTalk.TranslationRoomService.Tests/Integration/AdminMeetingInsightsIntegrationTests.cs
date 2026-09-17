@@ -21,7 +21,9 @@ namespace WarpTalk.TranslationRoomService.Tests.Integration;
 public sealed class AdminMeetingInsightsIntegrationTests : BaseIntegrationTest
 {
     private const string Url = "/api/v1/admin/meetings/insights";
-    private const string Window = "?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z";
+    // On the UTC calendar, so the day keys asserted below are UTC days; the default Vietnam calendar
+    // has its own test.
+    private const string Window = "?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z&tz=UTC";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -105,6 +107,7 @@ public sealed class AdminMeetingInsightsIntegrationTests : BaseIntegrationTest
     [InlineData("?from=2026-09-15T00:00:00Z&to=2026-09-08T00:00:00Z")]
     [InlineData("?from=2025-01-01T00:00:00Z&to=2026-09-08T00:00:00Z")]
     [InlineData(Window + "&compare=lastWeek")]
+    [InlineData("?from=2026-09-08T00:00:00Z&to=2026-09-15T00:00:00Z&tz=Europe/Atlantis")]
     public async Task Insights_RejectsAnInvalidWindow(string queryString)
     {
         var response = await Client.SendAsync(Get(Url + queryString, "admin"));
@@ -144,6 +147,27 @@ public sealed class AdminMeetingInsightsIntegrationTests : BaseIntegrationTest
 
         Assert.Equal(0, body.LiveNow);
         Assert.Equal(0, body.StartedToday);
+    }
+
+    [Fact]
+    public async Task Insights_SplitsDaysAtVietnamMidnightByDefault()
+    {
+        using (var scope = CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+            // 23:00 on 9 Sep → 01:00 on 10 Sep in Vietnam; in UTC both ends are on the 9th.
+            db.TranslationRooms.Add(Room("ENDED", startedAt: Utc(9, 9, 16), endedAt: Utc(9, 9, 18)));
+            await db.SaveChangesAsync();
+        }
+
+        // Vietnam's 9 and 10 September, as instants; no tz, so Asia/Ho_Chi_Minh.
+        var response = await Client.SendAsync(Get(Url + "?from=2026-09-08T17:00:00Z&to=2026-09-10T17:00:00Z", "admin"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<AdminMeetingInsightsDto>(Json);
+
+        Assert.Equal(new[] { "2026-09-09", "2026-09-10" }, body!.MeetingsByDay.Select(d => d.Date).ToArray());
+        Assert.Equal((1, 1m), Day(body, "2026-09-09"));
+        Assert.Equal((0, 1m), Day(body, "2026-09-10"));
     }
 
     private static (int, decimal) Day(AdminMeetingInsightsDto body, string date)

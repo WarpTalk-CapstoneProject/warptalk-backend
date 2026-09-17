@@ -56,7 +56,7 @@ public sealed class AdminMeetingInsightsCalculatorTests
     {
         var spans = new[] { Ended(Utc(9, 22), Utc(10, 2)), Ended(Utc(10, 9), Utc(10, 9, 45)) };
 
-        var days = AdminMeetingInsightsCalculator.ByDay(spans, From, To, Now);
+        var days = AdminMeetingInsightsCalculator.ByDay(spans, From, To, Now, TimeZoneInfo.Utc);
         var totals = AdminMeetingInsightsCalculator.Totals(spans, From, To, Now);
 
         Assert.Equal(7, days.Count);
@@ -74,11 +74,46 @@ public sealed class AdminMeetingInsightsCalculatorTests
     {
         var spans = new[] { Ended(Utc(8, 1), Utc(8, 5)) };
 
-        var days = AdminMeetingInsightsCalculator.ByDay(spans, Utc(8, 3), Utc(9), Now);
+        var days = AdminMeetingInsightsCalculator.ByDay(spans, Utc(8, 3), Utc(9), Now, TimeZoneInfo.Utc);
 
         var only = Assert.Single(days);
         Assert.Equal(0, only.Meetings);
         Assert.Equal(2m, only.Hours);
+    }
+
+    [Fact]
+    public void ByDay_OnTheVietnamCalendar_SplitsAtSeventeenHundredUtc()
+    {
+        var vietnam = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh");
+        var spans = new[]
+        {
+            // 23:00 on 9 Sep → 01:00 on 10 Sep in Vietnam: one meeting of the 9th, 1 h on each day.
+            Ended(Utc(9, 16), Utc(9, 18)),
+            // 17:30Z on 9 Sep is 00:30 on 10 Sep in Vietnam, although it is still the 9th in UTC.
+            Ended(Utc(9, 17, 30), Utc(9, 18)),
+        };
+
+        // Vietnam's 9 and 10 September, as instants.
+        var days = AdminMeetingInsightsCalculator.ByDay(spans, Utc(8, 17), Utc(10, 17), Now, vietnam);
+        var totals = AdminMeetingInsightsCalculator.Totals(spans, Utc(8, 17), Utc(10, 17), Now);
+
+        Assert.Equal(new[] { "2026-09-09", "2026-09-10" }, days.Select(d => d.Date).ToArray());
+        Assert.Equal((1, 1m), (days[0].Meetings, days[0].Hours));
+        Assert.Equal((1, 1.5m), (days[1].Meetings, days[1].Hours));
+        Assert.Equal(totals.Hours, days.Sum(d => d.Hours));
+    }
+
+    [Fact]
+    public void ByDay_OnTheVietnamCalendar_StartsThePartialFirstDayAtLocalMidnight()
+    {
+        var vietnam = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh");
+
+        // 10:00Z on 9 Sep is 17:00 local; the only bucket is Vietnam's 9 Sep, clipped to the window.
+        var days = AdminMeetingInsightsCalculator.ByDay([Ended(Utc(9, 9), Utc(9, 11))], Utc(9, 10), Utc(9, 12), Now, vietnam);
+
+        var only = Assert.Single(days);
+        Assert.Equal("2026-09-09", only.Date);
+        Assert.Equal((0, 1m), (only.Meetings, only.Hours));
     }
 
     [Fact]

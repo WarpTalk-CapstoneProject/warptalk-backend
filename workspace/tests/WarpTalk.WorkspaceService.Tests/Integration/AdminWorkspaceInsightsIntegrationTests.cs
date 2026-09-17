@@ -90,6 +90,8 @@ public class AdminWorkspaceInsightsIntegrationTests : BaseIntegrationTest
     [InlineData("?from=2026-09-15T00:00:00Z&to=2026-09-08T00:00:00Z")]
     [InlineData("?from=2025-01-01T00:00:00Z&to=2026-09-08T00:00:00Z")]
     [InlineData(Window + "&compare=yesterday")]
+    [InlineData(Window + "&tz=Not/AZone")]
+    [InlineData(Window + "&tz=Asia%2F..%2F..%2Fpasswd")]
     public async Task Insights_RejectsAnInvalidWindow(string queryString)
     {
         var response = await ClientWithRole("admin").GetAsync(Url + queryString);
@@ -131,6 +133,25 @@ public class AdminWorkspaceInsightsIntegrationTests : BaseIntegrationTest
         Assert.Equal(Utc(5, 10), body.PreviousRange.To);
         Assert.Equal(0, body.Metrics.Single().Value);
         Assert.Equal(1, body.Metrics.Single().Previous);
+    }
+
+    [Fact]
+    public async Task Insights_ShiftsPreviousMonthOnTheVietnamCalendar()
+    {
+        // Vietnam's 31 March 2026 as instants. Its previous-month counterpart is Vietnam's 28
+        // February: [27 Feb 17:00Z, 28 Feb 17:00Z). Shifted on the UTC calendar instead, the same
+        // instants would compare with a seven-hour sliver, [28 Feb 17:00Z, 1 Mar 00:00Z).
+        var body = await ClientWithRole("admin").GetFromJsonAsync<AdminWorkspaceInsightsDto>(
+            Url + "?from=2026-03-30T17:00:00Z&to=2026-03-31T17:00:00Z&compare=previousMonth", Json);
+
+        Assert.Equal(new DateTime(2026, 2, 27, 17, 0, 0, DateTimeKind.Utc), body!.PreviousRange.From);
+        Assert.Equal(new DateTime(2026, 2, 28, 17, 0, 0, DateTimeKind.Utc), body.PreviousRange.To);
+
+        var utc = await ClientWithRole("admin").GetFromJsonAsync<AdminWorkspaceInsightsDto>(
+            Url + "?from=2026-03-30T17:00:00Z&to=2026-03-31T17:00:00Z&compare=previousMonth&tz=UTC", Json);
+
+        Assert.Equal(new DateTime(2026, 2, 28, 17, 0, 0, DateTimeKind.Utc), utc!.PreviousRange.From);
+        Assert.Equal(new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc), utc.PreviousRange.To);
     }
 
     [Fact]

@@ -291,25 +291,17 @@ public class UserRepository : GenericRepository<User>, IUserRepository
             .AsNoTracking()
             .CountAsync(u => u.CreatedAt >= from && u.CreatedAt < to, ct);
 
-    public async Task<IReadOnlyList<AdminDailyCount>> CountCreatedByDayAsync(
+    public async Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
         DateTime from,
         DateTime to,
         CancellationToken ct = default)
     {
-        // Grouped in SQL into an ANONYMOUS type and mapped to the record afterwards — never a
-        // record projection the database is asked to order. On timestamptz, Npgsql translates
-        // DateTime.Date to date_trunc('day', created_at, 'UTC'), so the day is the UTC day
-        // whatever the session time zone is.
         var rows = await _dbSet
             .AsNoTracking()
             .Where(u => u.CreatedAt >= from && u.CreatedAt < to)
-            .GroupBy(u => u.CreatedAt.Date)
-            .Select(g => new { Day = g.Key, Count = g.Count() })
+            .Select(u => u.CreatedAt)
             .ToListAsync(ct);
 
-        return rows
-            .Select(r => new AdminDailyCount(DateTime.SpecifyKind(r.Day, DateTimeKind.Utc), r.Count))
-            .OrderBy(r => r.Day)
-            .ToList();
+        return rows.Select(at => DateTime.SpecifyKind(at, DateTimeKind.Utc)).ToList();
     }
 }

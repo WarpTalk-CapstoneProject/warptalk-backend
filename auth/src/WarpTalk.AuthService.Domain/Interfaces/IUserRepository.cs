@@ -49,9 +49,6 @@ public sealed record AdminUserSessionRow(
     DateTime CreatedAt,
     DateTime ExpiresAt);
 
-/// <summary>How many rows fell on one UTC calendar day. <paramref name="Day"/> is midnight UTC.</summary>
-public sealed record AdminDailyCount(DateTime Day, int Count);
-
 public interface IUserRepository : IGenericRepository<User>
 {
     Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default);
@@ -89,10 +86,11 @@ public interface IUserRepository : IGenericRepository<User>
     Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
 
     /// <summary>
-    /// The same accounts grouped by UTC day of creation, in the database. Days with no sign-up
-    /// are absent; the caller zero-fills.
+    /// The creation instants of the same accounts, unordered. Deliberately not grouped by day in
+    /// SQL: which day an instant belongs to depends on the caller's time zone (the insights
+    /// <c>tz</c>), and the caller buckets them on those local days.
     /// </summary>
-    Task<IReadOnlyList<AdminDailyCount>> CountCreatedByDayAsync(
+    Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
         DateTime from,
         DateTime to,
         CancellationToken ct = default);

@@ -146,7 +146,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         AdminInsightsQuery query,
         CancellationToken ct = default)
     {
-        if (!AdminComparisonRange.TryResolve(query, query.Compare, out var window, out var error))
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
         {
             return Result.Failure<AdminWorkspaceInsightsDto>(error!, ErrorCodes.ValidationError);
         }

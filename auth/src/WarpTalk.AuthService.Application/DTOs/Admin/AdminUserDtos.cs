@@ -86,12 +86,12 @@ public record AdminUserSessionDto(
 /// </summary>
 public record AdminUserActionRequest(string Reason);
 
-/// <summary>One point of a per-day series. <paramref name="Date"/> is a UTC day, <c>yyyy-MM-dd</c>.</summary>
+/// <summary>One point of a per-day series. <paramref name="Date"/> is a local day of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.</summary>
 public record AdminDailyCountDto(string Date, int Count);
 
 /// <summary>
 /// <c>GET /api/v1/admin/users/insights</c>: metrics <c>newUsers</c> and <c>activeUsers</c>, plus
-/// sign-ups per UTC day across the current range (zero-filled).
+/// sign-ups per local day (of the request's <c>tz</c>) across the current range (zero-filled).
 /// </summary>
 public record AdminUserInsightsDto(
     AdminInsightRange Range,

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -74,19 +75,24 @@ public static class AdminMeetingInsightsCalculator
         return new WindowTotals(held, ToHours(seconds), excluded, capped);
     }
 
-    /// <summary>Every UTC day of <c>[from, to)</c>, zero-filled; partial first/last days are clipped to the window.</summary>
-    public static IReadOnlyList<DayTotals> ByDay(IReadOnlyList<AdminMeetingSpan> spans, DateTime from, DateTime to, DateTime now)
+    /// <summary>
+    /// Every local day of <paramref name="timeZone"/> that <c>[from, to)</c> touches, zero-filled;
+    /// partial first/last days are clipped to the window. A meeting belongs to the local day it
+    /// started on, and its hours are split at LOCAL midnight — for Vietnam, 17:00Z.
+    /// </summary>
+    public static IReadOnlyList<DayTotals> ByDay(
+        IReadOnlyList<AdminMeetingSpan> spans, DateTime from, DateTime to, DateTime now, TimeZoneInfo timeZone)
     {
-        var days = WarpTalk.Shared.Contracts.Admin.AdminComparisonRange.DaysOf(from, to);
+        var days = AdminComparisonRange.DaysOf(from, to, timeZone);
         var meetings = new int[days.Count];
         var seconds = new double[days.Count];
-        var firstDay = days[0];
 
         foreach (var span in spans)
         {
             if (span.StartedAt >= from && span.StartedAt < to)
             {
-                meetings[(int)(span.StartedAt.Date - firstDay).TotalDays]++;
+                var startedOn = AdminComparisonRange.IndexOfDay(days, span.StartedAt);
+                if (startedOn >= 0) meetings[startedOn]++;
             }
 
             var (end, _) = ResolveEnd(span, now);
@@ -97,18 +103,16 @@ public static class AdminMeetingInsightsCalculator
             var clippedEnd = end.Value < to ? end.Value : to;
             if (clippedEnd <= clippedStart) continue;
 
-            for (var day = clippedStart.Date; day < clippedEnd; day = day.AddDays(1))
+            for (var index = AdminComparisonRange.IndexOfDay(days, clippedStart);
+                 index >= 0 && index < days.Count && days[index].Start < clippedEnd;
+                 index++)
             {
-                var index = (int)(day - firstDay).TotalDays;
-                seconds[index] += Overlap(clippedStart, clippedEnd, day, day.AddDays(1));
+                seconds[index] += Overlap(clippedStart, clippedEnd, days[index].Start, days[index].End);
             }
         }
 
         return days
-            .Select((day, i) => new DayTotals(
-                day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                meetings[i],
-                ToHours(seconds[i])))
+            .Select((day, i) => new DayTotals(day.Key, meetings[i], ToHours(seconds[i])))
             .ToList();
     }
 

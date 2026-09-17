@@ -135,7 +135,7 @@ public class AdminUserService : IAdminUserService
         AdminInsightsQuery query,
         CancellationToken ct = default)
     {
-        if (!AdminComparisonRange.TryResolve(query, query.Compare, out var window, out var error))
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
         {
             return Result.Failure<AdminUserInsightsDto>(error!, ErrorCodes.ValidationError);
         }
@@ -151,13 +151,18 @@ public class AdminUserService : IAdminUserService
             var activeUsers = await tokens.CountDistinctUsersIssuedBetweenAsync(window.From, window.To, ct);
             var activeUsersBefore = await tokens.CountDistinctUsersIssuedBetweenAsync(
                 window.PreviousFrom, window.PreviousTo, ct);
-            var byDay = (await users.CountCreatedByDayAsync(window.From, window.To, ct))
-                .ToDictionary(row => row.Day.Date, row => row.Count);
+            // Bucketed on the local days of the request's tz, not UTC days: a Vietnam sign-up at
+            // 23:30 local is 16:30Z, and a UTC bucket would file it under the right day only by luck.
+            var days = window.Days();
+            var counts = new int[days.Count];
+            foreach (var createdAt in await users.GetCreatedAtBetweenAsync(window.From, window.To, ct))
+            {
+                var index = AdminComparisonRange.IndexOfDay(days, createdAt);
+                if (index >= 0) counts[index]++;
+            }
 
-            var series = AdminComparisonRange.DaysOf(window.From, window.To)
-                .Select(day => new AdminDailyCountDto(
-                    day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-                    byDay.GetValueOrDefault(day.Date)))
+            var series = days
+                .Select((day, i) => new AdminDailyCountDto(day.Key, counts[i]))
                 .ToList();
 
             return Result.Success(new AdminUserInsightsDto(
