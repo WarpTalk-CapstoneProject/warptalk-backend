@@ -108,7 +108,7 @@ public class AssistantConversationServiceSendMessageTests
 
         await _publisher.Received(1).PublishAsync(
             assistantMessage.Id, _conversation.Id, _workspaceId, _userId, "Bearer token-1",
-            Arg.Any<IReadOnlyList<ChatTurnDto>>(), null, null, null, Arg.Any<CancellationToken>());
+            Arg.Any<IReadOnlyList<ChatTurnDto>>(), null, null, null, null, Arg.Any<CancellationToken>());
         var turn = Assert.Single(PublishedHistory());
         Assert.Equal(new ChatTurnDto("user", "What did we decide?"), turn);
     }
@@ -241,7 +241,7 @@ public class AssistantConversationServiceSendMessageTests
         _publisher
             .PublishAsync(
                 Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string?>(),
-                Arg.Any<IReadOnlyList<ChatTurnDto>>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
+                Arg.Any<IReadOnlyList<ChatTurnDto>>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("redis down"));
 
@@ -257,7 +257,7 @@ public class AssistantConversationServiceSendMessageTests
             _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>());
             _publisher.PublishAsync(
                 Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string?>(),
-                Arg.Any<IReadOnlyList<ChatTurnDto>>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
+                Arg.Any<IReadOnlyList<ChatTurnDto>>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<CancellationToken>());
         });
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());

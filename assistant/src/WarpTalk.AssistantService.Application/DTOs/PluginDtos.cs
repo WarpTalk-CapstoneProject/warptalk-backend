@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace WarpTalk.AssistantService.Application.DTOs;
 
@@ -245,7 +246,17 @@ public record McpToolDescriptorDto(
     string Description,
     string Effect,
     IReadOnlyList<string> RequiredScopes,
-    JsonObject Parameters);
+    JsonObject Parameters,
+    /// <summary>
+    /// The calling user's choice for this tool (<c>PluginConstants.ToolPolicy</c>), resolved. WT-687.
+    /// </summary>
+    /// <remarks>
+    /// Per user, so it is filled in only on the way out to a user - the catalog and the tool list -
+    /// and never stored in <c>tools_json</c>, which is one manifest shared by everyone. Null there,
+    /// and omitted when written, so a manifest round trip does not start carrying it.
+    /// </remarks>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Policy = null);
 
 public record McpToolExecutionRequest(
     Guid? WorkspaceId,
@@ -254,7 +265,19 @@ public record McpToolExecutionRequest(
     JsonObject? Arguments,
     Guid? ConversationId,
     Guid? AssistantMessageId,
-    string? ConfirmationToken);
+    string? ConfirmationToken,
+    /// <summary>
+    /// The user answered a confirmation card with "Always allow". WT-687. Honoured only together
+    /// with a confirmation token that validates, so it can record a choice the user made on a real
+    /// card and nothing else.
+    /// </summary>
+    bool AlwaysAllow = false);
+
+/// <summary>
+/// Tool name to <c>allow</c>, <c>approval</c> or <c>blocked</c>. Tools not named keep their current
+/// choice; names the plugin does not have are ignored. WT-687.
+/// </summary>
+public record UpdatePluginToolPolicyRequest(Dictionary<string, string> Tools);
 
 public record McpToolExecutionResult(
     bool IsSuccess,

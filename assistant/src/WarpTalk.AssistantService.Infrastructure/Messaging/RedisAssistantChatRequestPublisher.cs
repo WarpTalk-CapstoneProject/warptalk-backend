@@ -36,6 +36,7 @@ public class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
         string? pageContextJson = null,
         string? mentionsJson = null,
         string? attachmentsJson = null,
+        string? disabledPluginKeysJson = null,
         CancellationToken ct = default)
     {
         var db = _redis.GetDatabase();
@@ -57,6 +58,9 @@ public class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
             // defaults it to "" — an older worker reading a stream that carries it simply ignores
             // it, so this is safe to deploy before the AI side.
             new("images_json", attachmentsJson ?? ""),
+            // WT-687. Same compatibility story: from_redis() defaults it to "", so an older worker
+            // ignores it and simply offers every installed plugin.
+            new("disabled_plugin_keys_json", disabledPluginKeysJson ?? ""),
             new("timestamp_ms", timestampMs.ToString(CultureInfo.InvariantCulture)),
         };
 

@@ -1,4 +1,5 @@
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 
@@ -35,7 +36,9 @@ internal static class PluginCatalogItemMapper
             installationStatus,
             connectionStatus,
             connection?.ProviderEmail,
-            plugin.Tools,
+            // Each tool carries this user's choice for it, so the Manage dialog shows what WarpBot
+            // will actually do rather than what the tool's effect alone would suggest. WT-687.
+            PluginToolPolicyStore.WithPolicies(plugin.Tools, installation?.ConfigJson),
             grantedScopes,
             workspacePolicyBlockReason,
             plugin.IsFeatured,
