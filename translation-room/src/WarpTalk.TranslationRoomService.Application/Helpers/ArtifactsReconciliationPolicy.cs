@@ -65,8 +65,20 @@ public static class ArtifactsReconciliationPolicy
     public const string FinalizableStatus = "ENDED";
 
     /// <summary>
+    /// The one artifact type finalization does NOT write. Recording rows come from meeting-service's
+    /// recording events (RecordingLifecycleEventProcessor), on their own clock.
+    /// </summary>
+    private const string RecordingArtifactType = "OPTIONAL_RECORDING";
+
+    /// <summary>
     /// Rooms that ended, are past the grace period, are still inside the lookback, and have
     /// nothing to show for it.
+    ///
+    /// "Nothing" means no artifact FINALIZATION writes. rec-loss: a recording row is now created
+    /// the moment recording STARTS — mid-meeting — and a FAILED one stays with no file. Counting it
+    /// here would mark every recorded meeting as already finalized, so a meeting whose transcript
+    /// and summary never landed would never be retried simply because somebody pressed Record.
+    /// (It was already true of COMPLETED recordings; it just used to take a successful egress.)
     /// </summary>
     public static Expression<Func<TranslationRoom, bool>> AbandonedRooms(
         DateTime queuedBefore,
@@ -76,7 +88,7 @@ public static class ArtifactsReconciliationPolicy
             && room.EndedAt != null
             && room.EndedAt < queuedBefore
             && room.EndedAt > endedAfter
-            && !room.TranslationRoomArtifacts.Any();
+            && !room.TranslationRoomArtifacts.Any(artifact => artifact.ArtifactType != RecordingArtifactType);
 
     /// <summary>
     /// Rooms that ended recently and DO have artifacts — the candidates for a summary that landed

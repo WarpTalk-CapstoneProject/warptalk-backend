@@ -120,7 +120,7 @@ builder.Services.AddSingleton<IDocumentPdfConverter>(provider => new GotenbergPd
     builder.Configuration["Gotenberg:Url"] ?? Environment.GetEnvironmentVariable("GOTENBERG_URL")));
 builder.Services.AddScoped<IMeetingMinutesService, MeetingMinutesService>();
 builder.Services.AddScoped<IMeetingActionItemService, MeetingActionItemService>();
-builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();
+builder.Services.AddScoped<IRecordingLifecycleEventProcessor, RecordingLifecycleEventProcessor>();
 builder.Services.AddScoped<IRecordingCompletedStreamMessageHandler, RecordingCompletedStreamMessageHandler>();
 builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();
 builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>();
