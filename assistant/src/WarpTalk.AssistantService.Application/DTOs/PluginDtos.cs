@@ -120,7 +120,8 @@ public record PluginConnectUrlDto(string Url);
 /// it was connected on the spot and <see cref="Url"/> is null. Otherwise <see cref="Url"/> is the
 /// provider's consent page, exactly as <see cref="PluginConnectUrlDto"/> carries it.
 /// </remarks>
-public record PluginConnectResultDto(bool Connected, string? Url);
+/// <param name="ApiKeyRequired">An <c>api_key</c> row: there is no consent page, the user pastes a key on the plugins page.</param>
+public record PluginConnectResultDto(bool Connected, string? Url, bool ApiKeyRequired = false);
 
 /// <summary>
 /// What has to survive the browser round trip between building an authorization URL and handling

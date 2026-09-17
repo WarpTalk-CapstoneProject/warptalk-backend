@@ -1743,6 +1743,19 @@ public class PluginConnectionServiceTests
     }
 
     [Fact]
+    public async Task ConnectAsync_SendsAnApiKeyRowToTheKeyField_InsteadOfAConsentPage()
+    {
+        ArrangeApiKeyPlugin();
+
+        var result = await CreateSut().ConnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(result.Value!.Connected);
+        Assert.Null(result.Value.Url);
+        Assert.True(result.Value.ApiKeyRequired);
+    }
+
+    [Fact]
     public async Task DisconnectAsync_ClearsAnApiKey_WithoutSendingItToARevocationEndpoint()
     {
         ArrangeApiKeyPlugin();

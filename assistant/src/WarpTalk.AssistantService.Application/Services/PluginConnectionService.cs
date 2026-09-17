@@ -109,6 +109,10 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (installation == null)
             return Result.Failure<PluginConnectResultDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
+        // Nothing to redirect to: an API key is pasted on the plugins page, never typed at a provider.
+        if (plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+            return Result.Success(new PluginConnectResultDto(false, null, ApiKeyRequired: true));
+
         // Connected on the spot when the provider's grant already covers this plugin - Meet after
         // Calendar asks Google for nothing Calendar did not already get, and sending the user back
         // through consent for it is the round trip keying the grant by provider exists to avoid.
