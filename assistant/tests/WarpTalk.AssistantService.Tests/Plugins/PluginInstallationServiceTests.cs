@@ -345,6 +345,41 @@ public class PluginInstallationServiceTests
         await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task CreateMcpPluginAsync_MarksAnApiKeyRow_SoConnectAsksForAKey()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp", AuthMode: "api_key"),
+            UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+        await _pluginRepository.Received(1).AddAsync(
+            Arg.Is<Plugin>(plugin => plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_RefusesAnApiKeyRowThatAlsoCarriesAnOAuthClient()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest(
+                "linear", "Linear", "Issues.", "https://mcp.linear.app/mcp",
+                OAuth: new CreateMcpPluginOAuthRequest("client-1"),
+                AuthMode: "api_key"),
+            UserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidCatalogUpdate, result.ErrorCode);
+        await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
+    }
+
     // ---- WT-646: workspace plugin policy ------------------------------------------------------
 
     private static readonly Guid WorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777");

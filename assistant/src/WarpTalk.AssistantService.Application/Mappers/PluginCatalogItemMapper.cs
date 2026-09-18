@@ -47,6 +47,7 @@ internal static class PluginCatalogItemMapper
             plugin.SortOrder,
             plugin.Category,
             workspaceAvailability,
-            requestStatus);
+            requestStatus,
+            plugin.AuthMode);
     }
 }
