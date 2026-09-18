@@ -7,4 +7,7 @@ public interface IInvoiceRepository : IGenericRepository<Invoice>
     Task<PagedResult<Invoice>> GetPageAsync(PageRequest page, Guid? workspaceId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Invoice>> GetOverdueOpenInvoicesAsync(DateTime now, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Invoice>> GetOpenInvoicesDueBeforeAsync(DateTime threshold, CancellationToken cancellationToken = default);
+
+    /// <summary>Admin Insights: every issued invoice (open or issued) whose payment is not paid.</summary>
+    Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default);
 }

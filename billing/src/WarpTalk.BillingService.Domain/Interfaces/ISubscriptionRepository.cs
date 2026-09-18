@@ -68,6 +68,16 @@ public interface ISubscriptionRepository : IGenericRepository<Subscription>
     /// </summary>
     Task<IReadOnlyList<AdminSubscriptionRow>> GetActiveForRevenueAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Admin Insights: paying-subscription flow over [from, to). See <see cref="SubscriptionFlowCounts"/>
+    /// for every definition. <paramref name="now"/> caps cancellations so a cancel-at-period-end with a
+    /// future period end is not counted before it happens.
+    /// </summary>
+    Task<SubscriptionFlowCounts> GetSubscriptionFlowCountsAsync(DateTime from, DateTime to, DateTime now, CancellationToken ct = default);
+
+    /// <summary>Admin Insights: live subscriptions whose period ends in (now, until], soonest first.</summary>
+    Task<IReadOnlyList<EndingSoonSubscriptionRow>> GetEndingSoonAsync(DateTime now, DateTime until, int take, CancellationToken ct = default);
+
     Task DeactivateOtherActiveSubscriptionsAsync(Guid userId, Guid excludeSubscriptionId, CancellationToken cancellationToken);
     Task<PagedResult<Subscription>> GetPageAsync(PageRequest page, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Subscription>> GetActiveSubscriptionsAsync(CancellationToken cancellationToken = default);

@@ -209,4 +209,77 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
                 s.DeletedAt == null &&
                 (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow), cancellationToken);
     }
+
+    // ── Admin Insights (2026-09-17) ──────────────────────────────────────────
+
+    public async Task<SubscriptionFlowCounts> GetSubscriptionFlowCountsAsync(
+        DateTime from, DateTime to, DateTime now, CancellationToken ct = default)
+    {
+        var payments = _context.Payments.IgnoreQueryFilters();
+        var everySubscription = _dbSet.IgnoreQueryFilters();
+
+        // Soft-deleted subscriptions are excluded by the query filter: a deleted row is not a
+        // customer that joined or left.
+        var lifecycle = _dbSet.AsNoTracking().Select(s => new
+        {
+            s.Id,
+            s.WorkspaceId,
+            s.CreatedAt,
+            s.TrialEndsAt,
+            Start = s.ContractPriceVnd != null
+                ? (DateTime?)s.CreatedAt
+                : payments
+                    .Where(p => p.SubscriptionId == s.Id && p.Status == PaymentConstants.PaymentStatuses.Paid)
+                    .Min(p => (DateTime?)(p.PaidAt ?? p.UpdatedAt)),
+            // cancel-at-period-end (SubscriptionMapper.Cancel) never stamps cancelled_at, and
+            // updated_at moves on every usage charge, so the end of the paid period is the only
+            // stable date for it — and it is also when the revenue actually stops.
+            End = s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled
+                  || s.Status == SubscriptionConstants.SubscriptionStatuses.Expired
+                ? (DateTime?)(s.CancelledAt ?? s.CurrentPeriodEnd)
+                : null,
+        });
+
+        var cancelledBefore = to < now ? to : now;
+
+        var newSubscriptions = await lifecycle.CountAsync(x => x.Start >= from && x.Start < to, ct);
+        var trialsStarted = await lifecycle.CountAsync(
+            x => x.Start == null && x.TrialEndsAt != null && x.CreatedAt >= from && x.CreatedAt < to, ct);
+        var cancelled = await lifecycle.CountAsync(
+            x => x.Start != null
+                 && x.End >= from
+                 && x.End < cancelledBefore
+                 && !everySubscription.Any(o =>
+                     o.WorkspaceId == x.WorkspaceId
+                     && o.Id != x.Id
+                     && o.CreatedAt >= x.End!.Value.AddHours(-1)
+                     && o.CreatedAt <= x.End!.Value.AddHours(1)),
+            ct);
+        var activeAtStart = await lifecycle.CountAsync(
+            x => x.Start != null && x.Start < from && (x.End == null || x.End >= from), ct);
+
+        return new SubscriptionFlowCounts(newSubscriptions, trialsStarted, cancelled, activeAtStart);
+    }
+
+    public async Task<IReadOnlyList<EndingSoonSubscriptionRow>> GetEndingSoonAsync(
+        DateTime now, DateTime until, int take, CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s =>
+                s.IsActive
+                && s.CurrentPeriodEnd > now
+                && s.CurrentPeriodEnd <= until
+                // A trial's end is reported as trialsEndingThisWeek, not as a renewal.
+                && !(s.TrialEndsAt != null && s.TrialEndsAt > now))
+            .OrderBy(s => s.CurrentPeriodEnd)
+            .ThenBy(s => s.Id)
+            .Take(take)
+            .Select(s => new { s.WorkspaceId, PlanName = s.Plan.Name, s.CurrentPeriodEnd, s.AutoRenew, s.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new EndingSoonSubscriptionRow(r.WorkspaceId, r.PlanName, r.CurrentPeriodEnd, r.AutoRenew, r.Status))
+            .ToList();
+    }
 }

@@ -19,6 +19,12 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
     /// </summary>
     public const string EmailHeader = "X-Test-Email";
 
+    /// <summary>
+    /// Optional, comma-separated platform roles (e.g. "admin"), for the system-admin endpoints.
+    /// Omitting it behaves exactly as before: no role claims.
+    /// </summary>
+    public const string RolesHeader = "X-Test-Roles";
+
     public TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger, UrlEncoder encoder)
         : base(options, logger, encoder)
@@ -42,6 +48,14 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
         if (Context.Request.Headers.TryGetValue(EmailHeader, out var email))
         {
             claims.Add(new Claim(ClaimTypes.Email, email[0]!));
+        }
+
+        if (Context.Request.Headers.TryGetValue(RolesHeader, out var roles))
+        {
+            foreach (var role in roles[0]!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                claims.Add(new Claim(ClaimTypes.Role, role));
+            }
         }
 
         claims.Add(new Claim("email_verified", "true"));

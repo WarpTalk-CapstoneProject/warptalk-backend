@@ -85,4 +85,15 @@ public class RefreshTokenRepository : GenericRepository<RefreshToken>, IRefreshT
             .ExecuteUpdateAsync(
                 setters => setters.SetProperty(t => t.RevokedAt, DateTime.UtcNow),
                 ct);
+
+    public Task<int> CountDistinctUsersIssuedBetweenAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .Where(t => t.CreatedAt >= from && t.CreatedAt < to)
+            .Select(t => t.UserId)
+            .Distinct()
+            .CountAsync(ct);
 }

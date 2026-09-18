@@ -7,6 +7,7 @@ using WarpTalk.AuthService.Application.DTOs.Admin;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Contracts.Admin;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
@@ -39,6 +40,16 @@ public class AdminUsersController : ControllerBase
         CancellationToken ct)
     {
         var result = await _adminUserService.GetDirectoryAsync(query, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>New and active accounts over <c>[from, to)</c>, compared per <c>compare</c>.</summary>
+    [HttpGet("insights")]
+    public async Task<IActionResult> GetInsights(
+        [FromQuery] AdminInsightsQuery query,
+        CancellationToken ct)
+    {
+        var result = await _adminUserService.GetInsightsAsync(query, ct);
         return ToActionResult(result);
     }
 
