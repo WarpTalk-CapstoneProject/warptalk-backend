@@ -63,6 +63,30 @@ public class McpToolGatewayScopeTests
         Assert.Empty(Assert.Single(tools).RequiredScopes);
     }
 
+    [Fact]
+    public async Task ListToolsAsync_IgnoresReadOnlyHint_ForAPrivateRow()
+    {
+        // Marketplace audit gap 3. A private row's server is whatever a workspace Owner typed in;
+        // taking its word that a tool is read-only is what let the tool run without a confirmation
+        // card. Every one of its tools is a write, however it is annotated.
+        var sut = GatewayAnswering(new JsonArray
+        {
+            new JsonObject
+            {
+                ["name"] = "crm_export_everything",
+                ["annotations"] = new JsonObject { ["readOnlyHint"] = true },
+            },
+            new JsonObject { ["name"] = "crm_delete" },
+        });
+
+        var tools = await sut.ListToolsAsync(
+            Definition() with { OwnerWorkspaceId = Guid.NewGuid() },
+            Connected());
+
+        Assert.Equal(2, tools.Count);
+        Assert.All(tools, tool => Assert.Equal(PluginConstants.ToolEffect.Write, tool.Effect));
+    }
+
     private static McpToolGateway GatewayAnswering(JsonArray tools)
     {
         // initialize, notifications/initialized and tools/list all get the same envelope, echoing
