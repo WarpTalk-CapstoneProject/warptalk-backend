@@ -227,7 +227,8 @@ public class ArtifactsReconciliationWorker : BackgroundService
     /// `artifactRepo.AddAsync` — running it again here would give the meeting two summary
     /// artifacts rather than one correct one, and the page picks whichever it sees first.
     /// </summary>
-    private async Task RecoverLateSummariesAsync(CancellationToken ct)
+    /// <summary>One late-summary pass. Internal so the tests can drive it directly — see InternalsVisibleTo.</summary>
+    internal async Task RecoverLateSummariesAsync(CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -305,7 +306,17 @@ public class ArtifactsReconciliationWorker : BackgroundService
                 continue;
             }
 
-            artifact.Content = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
+            var rebuilt = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
+            var decision = DecideLateSummary(artifact.Content, rebuilt, structuredJson);
+
+            if (decision == LateSummaryDecision.Wait)
+            {
+                // Nothing to add, and the one thing still worth waiting for has not arrived: see
+                // DecideLateSummary. Neither rewritten nor deleted.
+                continue;
+            }
+
+            artifact.Content = rebuilt;
 
             // WT-432. A recovered summary and a first-try summary are the same artifact seen at
             // two different times — the reason SummaryContentBuilder was extracted at all — so the
@@ -320,13 +331,56 @@ public class ArtifactsReconciliationWorker : BackgroundService
 
             // Only after the update is committed. Deleting first would lose the summary if the
             // save then failed — the same ordering ArtifactsFinalizer settled on.
-            await db.KeyDeleteAsync(summaryKey);
+            //
+            // And only once the STRUCTURED summary has been saved. A rewrite from `content` alone
+            // is an improvement worth keeping (a placeholder becomes the markdown fallback), but
+            // the key is the only place structured_json can still land; deleting it there is how
+            // the fallback became permanent.
+            if (decision == LateSummaryDecision.UpgradeAndRelease)
+            {
+                await db.KeyDeleteAsync(summaryKey);
+            }
 
             recovered++;
             _logger.LogInformation(
                 "Recovered a late AI summary for room {RoomId} and updated its existing artifact.",
                 room.Id);
         }
+    }
+
+    internal enum LateSummaryDecision
+    {
+        /// <summary>Leave the artifact and the key exactly as they are.</summary>
+        Wait,
+
+        /// <summary>Save the rebuilt content, but keep the key: structured_json may still come.</summary>
+        UpgradeAndKeepWaiting,
+
+        /// <summary>Save the rebuilt content and delete the key: the structured summary is in.</summary>
+        UpgradeAndRelease,
+    }
+
+    /// <summary>
+    /// What to do with a replaceable summary artifact given what the Redis hash holds now.
+    ///
+    /// THE REVIEW FINDING ON WT-701 (#423). The finalizer saves the markdown fallback and keeps
+    /// <c>meeting:{id}:summary</c> precisely so the structured summary can land later. But a hash
+    /// holding only <c>content</c> passes <see cref="MeetingSummaryHash.HasAnything"/>, so the next
+    /// sweep rebuilt the very fallback that was already stored, saved it again and DELETED the
+    /// key — before ai_assistant_worker wrote structured_json. The upgrade the finalizer kept the
+    /// key for could then never happen.
+    ///
+    /// So: structured_json present → upgrade and release. Absent → rewrite only when that
+    /// actually changes the artifact (a placeholder becoming the fallback), and never release.
+    /// Absent and nothing would change → wait.
+    /// </summary>
+    internal static LateSummaryDecision DecideLateSummary(string? storedContent, string rebuiltContent, string? structuredJson)
+    {
+        if (!string.IsNullOrWhiteSpace(structuredJson)) return LateSummaryDecision.UpgradeAndRelease;
+
+        return string.Equals(storedContent, rebuiltContent, StringComparison.Ordinal)
+            ? LateSummaryDecision.Wait
+            : LateSummaryDecision.UpgradeAndKeepWaiting;
     }
 
     /// <summary>
