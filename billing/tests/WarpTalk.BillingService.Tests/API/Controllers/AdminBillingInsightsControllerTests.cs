@@ -45,8 +45,8 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
         builder.Logging.ClearProviders();
         builder.Services.AddControllers().AddApplicationPart(typeof(AdminBillingInsightsController).Assembly);
         builder.Services
-            .AddAuthentication(TestAuthHandler.Scheme)
-            .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.Scheme, _ => { });
+            .AddAuthentication(TestAuthHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
         builder.Services.AddAuthorization();
         builder.Services.AddWarpTalkSystemAdminAuthorization();
         builder.Services.AddScoped<IAdminBillingInsightsService>(_ => _useRealService
@@ -201,7 +201,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
 
     private sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     {
-        public const string Scheme = "Test";
+        public const string SchemeName = "Test";
         public const string RoleHeader = "X-Test-Role";
 
         public TestAuthHandler(
@@ -217,8 +217,8 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
 
             var identity = new ClaimsIdentity(
                 [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim(ClaimTypes.Role, role.ToString())],
-                Scheme);
-            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme)));
+                SchemeName);
+            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
         }
     }
 }
