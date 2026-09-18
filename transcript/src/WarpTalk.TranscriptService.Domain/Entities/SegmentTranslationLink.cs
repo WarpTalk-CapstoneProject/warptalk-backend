@@ -21,6 +21,14 @@ public partial class SegmentTranslationLink
 
     public bool IsCurrent { get; set; } = true;
 
+    /// <summary>
+    /// WT-704: the source sentence was corrected after this translation was produced, so it no
+    /// longer matches the line. Set by the correction flow; cleared when the retranslation lands
+    /// (same content re-linked, or a new link superseding this one). Lives on the link because
+    /// TranslationContent is shared across segments. Clients render a stale translation as outdated.
+    /// </summary>
+    public bool IsStale { get; set; }
+
     public DateTime? DeliveredAt { get; set; }
 
     public DateTime CreatedAt { get; set; }
