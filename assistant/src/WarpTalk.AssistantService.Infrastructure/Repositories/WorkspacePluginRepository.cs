@@ -16,9 +16,15 @@ public class WorkspacePluginRepository : GenericRepository<WorkspacePlugin>, IWo
 
     public async Task<IReadOnlyDictionary<Guid, int>> CountWorkspacesByPluginAsync(CancellationToken ct = default)
     {
+        // Only rows whose workspace has a curation record. The marketplace writes the two together,
+        // so today this excludes nothing - but a list row without a curation record is one
+        // WorkspacePluginAvailability never reads (an uncurated workspace is judged by the legacy
+        // switch alone), and counting it would report a workspace as having a plugin it cannot use.
+        //
         // Projected into an anonymous type and materialised before anything else touches it: EF
         // cannot translate an ordering over a positional-record projection.
         var counts = await _db.WorkspacePlugins
+            .Where(row => _db.WorkspacePluginCurations.Any(curation => curation.WorkspaceId == row.WorkspaceId))
             .GroupBy(row => row.PluginId)
             .Select(group => new { PluginId = group.Key, Count = group.Count() })
             .ToListAsync(ct);

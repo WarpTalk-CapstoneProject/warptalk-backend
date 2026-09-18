@@ -47,6 +47,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         // row is neither listed here nor reachable by typing its key.
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.OwnerWorkspaceId == null, ct: ct);
         var installationCounts = await _unitOfWork.PluginInstallationRepository.CountByPluginAsync(ct);
+        // Curated workspaces only - see PluginCatalogAdminListItemDto.CuratedWorkspaceCount for why a
+        // workspace still on the legacy AllowAnyPlugins default cannot be counted from here.
         var workspaceCounts = await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct);
 
         var items = plugins
@@ -58,6 +60,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 plugin.PluginKey,
                 plugin.Label,
                 plugin.Description,
+                plugin.AvatarUrl,
                 plugin.Kind,
                 plugin.Provider,
                 plugin.IsActive,

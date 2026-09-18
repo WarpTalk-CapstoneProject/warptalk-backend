@@ -1073,7 +1073,7 @@ public class PluginCatalogAdminServiceTests
     }
 
     [Fact]
-    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsWorkspacesUsing()
+    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsCuratedWorkspaces()
     {
         var marketplace = WorkspacePluginGuardTests.Marketplace("linear");
         var privateRow = WorkspacePluginGuardTests.Marketplace("ws_crm_1a2b3c4d");
@@ -1086,7 +1086,33 @@ public class PluginCatalogAdminServiceTests
 
         var row = Assert.Single(result.Value!);
         Assert.Equal("linear", row.PluginKey);
-        Assert.Equal(6, row.WorkspaceCount);
+        Assert.Equal(6, row.CuratedWorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_ReportsZeroCuratedWorkspaces_ForARowNoCuratedListHolds()
+    {
+        // Zero, not a guess: workspaces still on the legacy AllowAnyPlugins default may well have
+        // this plugin, but only the workspace service knows, one workspace per call. The field is
+        // named for what it counts so a zero here is not read as "nobody has it".
+        StubAllPlugins(McpPlugin());
+
+        var row = Assert.Single((await CreateSut().ListAsync()).Value!);
+
+        Assert.Equal(0, row.CuratedWorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_CarriesTheAvatar_SoTheListingCanDrawTheGlyph()
+    {
+        var plugin = McpPlugin();
+        plugin.AvatarUrl = "https://cdn.example.test/remote-app.svg";
+        StubAllPlugins(plugin, NativePlugin());
+
+        var rows = (await CreateSut().ListAsync()).Value!;
+
+        Assert.Equal("https://cdn.example.test/remote-app.svg", rows.Single(r => r.PluginKey == McpKey).AvatarUrl);
+        Assert.Null(rows.Single(r => r.PluginKey == NativeKey).AvatarUrl);
     }
 
     // Applies the predicate it is handed, as StubAllPlugins does. The lookup's filter IS the
