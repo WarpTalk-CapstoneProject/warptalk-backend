@@ -24,7 +24,13 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
         _membershipClient = membershipClient;
     }
 
-    public async Task<WorkspacePluginAvailability> GetAvailabilityAsync(Guid workspaceId, CancellationToken ct = default)
+    public Task<WorkspacePluginAvailability> GetAvailabilityAsync(Guid workspaceId, CancellationToken ct = default) =>
+        ReadAvailabilityAsync(workspaceId, callerIsOwner: false, ct);
+
+    private async Task<WorkspacePluginAvailability> ReadAvailabilityAsync(
+        Guid workspaceId,
+        bool callerIsOwner,
+        CancellationToken ct)
     {
         var curation = await _unitOfWork.WorkspacePluginCurationRepository.GetByIdAsync(workspaceId, ct);
         if (curation is not null)
@@ -34,7 +40,8 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
                 workspaceId,
                 isCurated: true,
                 legacyAllowsEveryPlugin: false,
-                rows.Select(row => row.PluginId).ToHashSet());
+                rows.Select(row => row.PluginId).ToHashSet(),
+                callerIsOwner);
         }
 
         // Not curated yet: still the pre-marketplace switch. The policy client answers false when
@@ -45,7 +52,8 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
             workspaceId,
             isCurated: false,
             legacyAllowsEveryPlugin: allowsAll,
-            new HashSet<Guid>());
+            new HashSet<Guid>(),
+            callerIsOwner);
     }
 
     public async Task<Result<WorkspacePluginAvailability>> GetAvailabilityForMemberAsync(
@@ -60,12 +68,13 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
 
         // Membership before the list, so a caller cannot probe which plugins an arbitrary workspace
         // has by watching which refusal comes back.
-        if (!await IsActiveMemberAsync(workspaceId.Value, userId, ct))
+        var membership = await _membershipClient.GetMembershipAsync(workspaceId.Value, userId, ct);
+        if (!membership.IsMember || !membership.IsActive)
             return Result.Failure<WorkspacePluginAvailability>(
                 PluginConstants.WorkspacePolicyMessages.NotAWorkspaceMember,
                 PluginConstants.ErrorCodes.PermissionDenied);
 
-        return Result.Success(await GetAvailabilityAsync(workspaceId.Value, ct));
+        return Result.Success(await ReadAvailabilityAsync(workspaceId.Value, membership.IsOwner, ct));
     }
 
     public async Task<Result> CanUsePluginAsync(

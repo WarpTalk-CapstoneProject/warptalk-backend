@@ -313,6 +313,31 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task TheOwner_CannotRequestAPluginFromThemselves()
+    {
+        // Gap 9. It used to be saved, notify nobody, and wait on the Owner's own Requests list.
+        AllowAnyPlugins(false);
+
+        var result = await Sut().CreateRequestAsync(WorkspaceId, OwnerId, null, new CreatePluginRequestRequest("linear"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.RequestByOwner, result.ErrorCode);
+        Assert.Equal(409, WorkspacePluginsController.StatusFor(result.ErrorCode));
+        Assert.Empty(_requests);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task AnAdmin_StillRequests_BecauseOnlyTheOwnerDecides()
+    {
+        AllowAnyPlugins(false);
+
+        var result = await Sut().CreateRequestAsync(WorkspaceId, AdminId, null, new CreatePluginRequestRequest("linear"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(OwnerId, Assert.Single(_sent).UserId);
+    }
+
+    [Fact]
     public async Task ADuplicatePendingRequest_IsAConflict()
     {
         AllowAnyPlugins(false);

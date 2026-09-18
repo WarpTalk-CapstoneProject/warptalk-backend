@@ -85,7 +85,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         return Result.Success(new WorkspacePluginsOverviewDto(
             workspaceId,
             availability.IsCurated,
-            IsOwner(membership),
+            membership.IsOwner,
             inWorkspace,
             marketplace,
             pending));
@@ -328,8 +328,18 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         CreatePluginRequestRequest request,
         CancellationToken ct = default)
     {
-        if (!await IsActiveMemberAsync(workspaceId, callerId, ct))
+        var membership = await _membershipClient.GetMembershipAsync(workspaceId, callerId, ct);
+        if (!membership.IsMember || !membership.IsActive)
             return Denied<WorkspacePluginRequestDto>(PluginConstants.WorkspacePolicyMessages.NotAWorkspaceMember);
+
+        // Gap 9. The Owner is who a request goes TO. One from them was saved, notified nobody (the
+        // notification skips the requester) and then sat on their own Requests list asking them a
+        // question they could have answered with Add. The member catalog marks those rows canAdd so
+        // the page offers Add instead; this is the backstop for a client that still sends it.
+        if (membership.IsOwner)
+            return Result.Failure<WorkspacePluginRequestDto>(
+                WorkspacePluginConstants.Messages.OwnerAddsDirectly,
+                WorkspacePluginConstants.ErrorCodes.RequestByOwner);
 
         var reason = string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim();
         if (reason is { Length: > WorkspacePluginConstants.MaxRequestReasonLength })
@@ -775,12 +785,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
     }
 
     private async Task<bool> IsOwnerAsync(Guid workspaceId, Guid userId, CancellationToken ct) =>
-        IsOwner(await _membershipClient.GetMembershipAsync(workspaceId, userId, ct));
-
-    private static bool IsOwner(WorkspaceMembership membership) =>
-        membership.IsMember
-        && membership.IsActive
-        && string.Equals(membership.RoleName, WorkspaceRoleConstants.Owner, StringComparison.OrdinalIgnoreCase);
+        (await _membershipClient.GetMembershipAsync(workspaceId, userId, ct)).IsOwner;
 
     private static Result<T> Denied<T>(string message) =>
         Result.Failure<T>(message, PluginConstants.ErrorCodes.PermissionDenied);

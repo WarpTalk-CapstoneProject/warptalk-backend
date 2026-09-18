@@ -43,6 +43,9 @@ public static class WorkspacePluginConstants
     {
         public const string RequestAlreadyPending = "plugin_request_already_pending";
         public const string RequestNotPending = "plugin_request_not_pending";
+
+        /// <summary>The workspace Owner asked themselves for a plugin; they add it instead. 409.</summary>
+        public const string RequestByOwner = "plugin_request_by_owner";
         public const string UnknownRequest = "unknown_plugin_request";
         public const string InvalidRequest = "invalid_plugin_request";
         public const string PluginAlreadyAvailable = "plugin_already_available";
@@ -71,6 +74,7 @@ public static class WorkspacePluginConstants
         public const string PrivatePluginNeedsItsWorkspace = "This plugin belongs to a workspace. Use it from that workspace.";
         public const string PolicyUnavailable = "Couldn't read this workspace's plugin settings right now, so nothing was changed. Try again in a moment.";
         public const string ListChangedConcurrently = "This workspace's plugins changed while you were editing them. Refresh and try again.";
+        public const string OwnerAddsDirectly = "You own this workspace, so there's no one to ask. Add the plugin from the workspace's Plugins settings instead.";
     }
 
     /// <summary>
