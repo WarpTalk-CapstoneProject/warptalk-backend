@@ -520,10 +520,14 @@ public sealed class SummaryLanguageVariantTests
 
         Assert.Equal(SummaryVariantStatus.Failed, result.Value!.Status);
         Assert.Equal("Could not read the transcript.", result.Value.Error);
-        // Released, so asking again starts a new run rather than replaying this answer forever.
+        // Released, so asking again starts a new run rather than replaying this answer forever —
+        // and released only while it still names the failed run (compare-and-delete).
+        redis.Verify(
+            item => item.KeyDeleteIfEqualsAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:")), requestId),
+            Times.Once);
         redis.Verify(
             item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
-            Times.Once);
+            Times.Never);
         redis.Verify(
             item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
             Times.Never);
@@ -561,8 +565,11 @@ public sealed class SummaryLanguageVariantTests
         Assert.NotNull(claimed);
         Assert.NotEqual(firstRequestId, claimed);
         redis.Verify(
-            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
+            item => item.KeyDeleteIfEqualsAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:")), firstRequestId),
             Times.Once);
+        redis.Verify(
+            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
+            Times.Never);
         redis.Verify(
             item => item.KeyDeleteAsync(TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + firstRequestId),
             Times.Once);
@@ -608,11 +615,16 @@ public sealed class SummaryLanguageVariantTests
         Assert.Equal(SummaryVariantStatus.Failed, result.Value!.Status);
         Assert.False(string.IsNullOrWhiteSpace(result.Value.Error));
         redis.Verify(
-            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
+            item => item.KeyDeleteIfEqualsAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:")), retryRequestId),
             Times.Once);
         redis.Verify(
-            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith(TranslationRoomConstants.SummaryVariantRequeueKeyPrefix))),
+            item => item.KeyDeleteIfEqualsAsync(
+                It.Is<string>(key => key.StartsWith(TranslationRoomConstants.SummaryVariantRequeueKeyPrefix)), retryRequestId),
             Times.Once);
+        redis.Verify(
+            item => item.KeyDeleteAsync(It.Is<string>(key =>
+                key.StartsWith("summary_variant_inflight:") || key.StartsWith(TranslationRoomConstants.SummaryVariantRequeueKeyPrefix))),
+            Times.Never);
         redis.Verify(
             item => item.StringSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()),
             Times.Never);
