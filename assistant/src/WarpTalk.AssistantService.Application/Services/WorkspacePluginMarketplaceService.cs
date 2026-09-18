@@ -452,7 +452,17 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         if (plugin is null) return UnknownPlugin<WorkspacePluginRequestDto>();
 
         IReadOnlyList<PluginRequest> settled;
-        if (decision == WorkspacePluginConstants.RequestStatus.Approved)
+        if (decision == WorkspacePluginConstants.RequestStatus.Approved && !plugin.IsActive)
+        {
+            // Retired since it was asked for. Refusing the approval left the request pending for
+            // good - the Owner could not add it, and nothing else would ever answer it. Retirement
+            // IS the answer, for every member waiting on this plugin, so they are all declined and
+            // told; the caller sees status=declined on a 200 rather than an error, because the
+            // decision was made and saved.
+            settled = await SettlePendingRequestsAsync(
+                workspaceId, plugin.Id, callerId, WorkspacePluginConstants.RequestStatus.Declined, ct);
+        }
+        else if (decision == WorkspacePluginConstants.RequestStatus.Approved)
         {
             var added = await AddToListAsync(workspaceId, callerId, plugin, ct);
             if (!added.IsSuccess) return Result.Failure<WorkspacePluginRequestDto>(added.Error!, added.ErrorCode);

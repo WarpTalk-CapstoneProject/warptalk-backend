@@ -48,6 +48,10 @@ public static class PluginRequestNotifications
     }
 
     /// <summary>To the member who asked.</summary>
+    /// <remarks>
+    /// A decline of a plugin that has since been retired says so: "decided not to, for now" would
+    /// invite asking again for something no Owner can add.
+    /// </remarks>
     public static UserNotification Decided(WorkspaceProfile workspace, PluginRequest request, Plugin plugin)
     {
         var approved = request.Status == WorkspacePluginConstants.RequestStatus.Approved;
@@ -61,7 +65,9 @@ public static class PluginRequestNotifications
                 : $"{plugin.Label} was not added to {workspace.Name}",
             approved
                 ? $"Your workspace owner added {plugin.Label}. You can connect it from Plugins."
-                : $"Your workspace owner decided not to add {plugin.Label} for now.",
+                : plugin.IsActive
+                    ? $"Your workspace owner decided not to add {plugin.Label} for now."
+                    : $"{plugin.Label} is no longer offered in the marketplace, so it can't be added.",
             // The member's own plugins page, which is where Connect lives.
             "/settings/plugins",
             Metadata(workspace, request, plugin));

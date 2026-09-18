@@ -402,6 +402,38 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task ApprovingARequestForAPluginRetiredSinceItWasAskedFor_DeclinesIt_AndTellsEveryoneWaiting()
+    {
+        // Gap 7. The approval used to fail with plugin_retired and leave the request pending with
+        // nothing that could ever answer it.
+        AllowAnyPlugins(false);
+        var sut = Sut();
+        var first = (await sut.CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+        await sut.CreateRequestAsync(WorkspaceId, AdminId, null, new CreatePluginRequestRequest("linear"));
+        _sent.Clear();
+        _linear.IsActive = false;
+
+        var result = await sut.ApproveRequestAsync(WorkspaceId, OwnerId, first.Id);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspacePluginConstants.RequestStatus.Declined, result.Value!.Status);
+        Assert.All(_requests, r =>
+        {
+            Assert.Equal(WorkspacePluginConstants.RequestStatus.Declined, r.Status);
+            Assert.Equal(OwnerId, r.DecidedBy);
+        });
+        Assert.Empty(_workspacePlugins);
+        // Nothing was added, so this was not the workspace's first edit either.
+        Assert.Empty(_curations);
+        Assert.Equal([AdminId, MemberId], _sent.Select(n => n.UserId).Order());
+        Assert.All(_sent, n =>
+        {
+            Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestDeclined, n.Type);
+            Assert.Contains("no longer offered", n.Body);
+        });
+    }
+
+    [Fact]
     public async Task ARequestFromAnotherWorkspace_IsUnknownHere()
     {
         _requests.Add(new PluginRequest
