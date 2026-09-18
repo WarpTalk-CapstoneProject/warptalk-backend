@@ -34,6 +34,8 @@ public class WorkspacePluginMarketplaceServiceTests
     private readonly List<WorkspacePluginCuration> _curations = [];
     private readonly List<PluginRequest> _requests = [];
     private readonly List<UserNotification> _sent = [];
+    private readonly List<PluginConnection> _connections = [];
+    private readonly List<PluginInstallation> _installations = [];
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IWorkspacePluginPolicyClient _policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
@@ -56,7 +58,10 @@ public class WorkspacePluginMarketplaceServiceTests
                 .Where(r => r.WorkspaceId == call.ArgAt<Guid>(0) && r.Status == call.ArgAt<string>(1))
                 .OrderBy(r => r.CreatedAt)
                 .ToList());
-        var connectionRepository = Substitute.For<IPluginConnectionRepository>();
+        var connectionRepository = InMemory<IPluginConnectionRepository, PluginConnection>(_connections, c => c.Id);
+        connectionRepository.CountForPluginAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => _connections.Count(c => c.PluginId == call.Arg<Guid>()));
+        var installationRepository = InMemory<IPluginInstallationRepository, PluginInstallation>(_installations, i => i.Id);
         var auditRepository = Substitute.For<IPluginToolAuditRepository>();
         auditRepository.CountDistinctUsersByPluginForWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(new Dictionary<Guid, int>());
@@ -66,6 +71,7 @@ public class WorkspacePluginMarketplaceServiceTests
         _unitOfWork.WorkspacePluginCurationRepository.Returns(curationRepository);
         _unitOfWork.PluginRequestRepository.Returns(requestRepository);
         _unitOfWork.PluginConnectionRepository.Returns(connectionRepository);
+        _unitOfWork.PluginInstallationRepository.Returns(installationRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(auditRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
 
@@ -591,6 +597,59 @@ public class WorkspacePluginMarketplaceServiceTests
         Assert.Contains(own, _plugins);
     }
 
+    [Fact]
+    public async Task RemovingAPrivatePlugin_EndsEveryMembersConnection_AndNoOneElses()
+    {
+        // Gap 5. A retired row leaves every catalog, and with it every member's Disconnect button;
+        // whatever it did not revoke at retirement was never revoked.
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        _plugins.Add(own);
+        _connections.AddRange([
+            Connection(MemberId, own),
+            Connection(AdminId, own),
+            Connection(MemberId, _linear),
+        ]);
+        _installations.AddRange([
+            ConnectedInstallation(MemberId, own),
+            ConnectedInstallation(AdminId, own),
+            ConnectedInstallation(MemberId, _linear),
+        ]);
+
+        var result = await Sut().RemovePluginAsync(WorkspaceId, OwnerId, own.PluginKey);
+
+        Assert.True(result.IsSuccess);
+        Assert.All(_connections.Where(c => c.Provider == own.Provider), c =>
+        {
+            Assert.Equal(PluginConstants.ConnectionStatus.Revoked, c.Status);
+            Assert.Null(c.EncryptedAccessToken);
+            Assert.Null(c.EncryptedRefreshToken);
+            Assert.Null(c.AccessTokenExpiresAt);
+        });
+        Assert.All(_installations.Where(i => i.PluginId == own.Id), i => Assert.Null(i.ConnectedAt));
+
+        // Linear shares nothing with the private row, so it is untouched.
+        var linear = _connections.Single(c => c.Provider == _linear.Provider);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, linear.Status);
+        Assert.NotNull(linear.EncryptedAccessToken);
+        Assert.NotNull(_installations.Single(i => i.PluginId == _linear.Id).ConnectedAt);
+    }
+
+    [Fact]
+    public async Task RemovingAMarketplacePlugin_LeavesMembersConnectionsAlone()
+    {
+        // Removing it from ONE workspace's list is not a reason to end a personal grant that the
+        // same member may be using in another workspace.
+        AlreadyCurated();
+        _workspacePlugins.Add(new WorkspacePlugin { Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, PluginId = _linear.Id });
+        _connections.Add(Connection(MemberId, _linear));
+        _installations.Add(ConnectedInstallation(MemberId, _linear));
+
+        await Sut().RemovePluginAsync(WorkspaceId, OwnerId, "linear");
+
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, Assert.Single(_connections).Status);
+        Assert.NotNull(Assert.Single(_installations).ConnectedAt);
+    }
+
     // ---- helpers the rest of the marketplace relies on -----------------------------------------
 
     [Theory]
@@ -656,6 +715,30 @@ public class WorkspacePluginMarketplaceServiceTests
     {
         public override string? SqlState { get; } = sqlState;
     }
+
+    private static PluginConnection Connection(Guid userId, Plugin plugin) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = userId,
+        PluginId = plugin.Id,
+        Provider = plugin.Provider,
+        Status = PluginConstants.ConnectionStatus.Connected,
+        EncryptedAccessToken = "protected-access",
+        EncryptedRefreshToken = "protected-refresh",
+        AccessTokenExpiresAt = DateTime.UtcNow.AddHours(1),
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow,
+    };
+
+    private static PluginInstallation ConnectedInstallation(Guid userId, Plugin plugin) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = userId,
+        PluginId = plugin.Id,
+        Status = PluginConstants.InstallationStatus.Installed,
+        InstalledAt = DateTime.UtcNow,
+        ConnectedAt = DateTime.UtcNow,
+    };
 
     private void AlreadyCurated() =>
         _curations.Add(new WorkspacePluginCuration { WorkspaceId = WorkspaceId, CuratedAt = DateTime.UtcNow, CuratedBy = OwnerId });

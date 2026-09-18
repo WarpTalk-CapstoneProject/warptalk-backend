@@ -166,13 +166,19 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
 
         if (plugin.OwnerWorkspaceId == workspaceId)
         {
-            // Retired, never deleted. Members may have connected it, so it holds OAuth grants and
-            // audit history that a hard delete would take with it; is_active=false removes it from
-            // every catalog and stops every tool call, which is what "remove" means to the Owner.
+            // Retired, never deleted. Members may have connected it, so it holds audit history a
+            // hard delete would take with it; is_active=false removes it from every catalog and
+            // stops every tool call, which is what "remove" means to the Owner.
             plugin.IsActive = false;
             plugin.UpdatedBy = callerId;
             plugin.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.PluginRepository.Update(plugin);
+
+            // Gap 5. The catalog lists active rows only, so a retired plugin vanishes from every
+            // member's page - and with it the only Disconnect that could have ended their grant.
+            // Retirement is therefore where it ends, in the same commit.
+            await RevokeMemberConnectionsAsync(plugin, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
@@ -317,6 +323,63 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         await _unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success(ToItemDto(plugin, WorkspacePluginConstants.Availability.Private, row: null, 0));
+    }
+
+    /// <summary>
+    /// Ends every member's connection to one PRIVATE plugin: each stored credential is cleared and
+    /// no installation is left marked connected - what Disconnect does for one member, for all of
+    /// them. Staged, not saved.
+    /// </summary>
+    /// <remarks>
+    /// Private rows only, and that is what makes "by provider" exact: a private row's provider is
+    /// its own generated key, so the connections under it are this row's and nobody else's. The
+    /// same query on a marketplace row keyed <c>google</c> would end every Google grant in the
+    /// product.
+    /// <para>
+    /// No call to the server's revocation endpoint, the same choice the admin catalog makes when it
+    /// repoints a host: one best-effort network call per member inside an Owner's click turns a
+    /// remove into a timeout, and an <c>api_key</c> row has nothing to revoke upstream anyway. The
+    /// grant at the member's MCP server outlives this, as one they can withdraw there and one this
+    /// product can no longer reach or use.
+    /// </para>
+    /// </remarks>
+    private async Task RevokeMemberConnectionsAsync(Plugin plugin, CancellationToken ct)
+    {
+        if (plugin.OwnerWorkspaceId is null)
+            throw new InvalidOperationException(
+                $"Refusing to revoke every '{plugin.Provider}' connection for marketplace plugin '{plugin.PluginKey}'.");
+
+        var now = DateTime.UtcNow;
+        var connections = await _unitOfWork.PluginConnectionRepository.FindAsync(
+            connection => connection.Provider == plugin.Provider,
+            ct: ct);
+        foreach (var connection in connections)
+        {
+            connection.Status = PluginConstants.ConnectionStatus.Revoked;
+            connection.EncryptedAccessToken = null;
+            connection.EncryptedRefreshToken = null;
+            connection.AccessTokenExpiresAt = null;
+            connection.TokenRotatedAt = null;
+            connection.UpdatedAt = now;
+            _unitOfWork.PluginConnectionRepository.Update(connection);
+        }
+
+        var connectedInstallations = await _unitOfWork.PluginInstallationRepository.FindAsync(
+            installation => installation.PluginId == plugin.Id && installation.ConnectedAt != null,
+            ct: ct);
+        foreach (var installation in connectedInstallations)
+        {
+            installation.ConnectedAt = null;
+            _unitOfWork.PluginInstallationRepository.Update(installation);
+        }
+
+        if (connections.Count > 0)
+        {
+            _logger.LogInformation(
+                "Revoked {Count} member connection(s) to private plugin {PluginKey}.",
+                connections.Count,
+                plugin.PluginKey);
+        }
     }
 
     // ---- requests -------------------------------------------------------------------------------
