@@ -29,7 +29,23 @@ public record PluginDefinitionDto(
     /// <summary>Operator-curated presentation. See the same members on <see cref="PluginCatalogItemDto"/>.</summary>
     bool IsFeatured = false,
     int SortOrder = 0,
-    string? Category = null);
+    string? Category = null,
+    /// <summary><c>oauth</c> or <c>api_key</c>; see <c>PluginConstants.AuthMode</c>.</summary>
+    string AuthMode = "oauth",
+    /// <summary>
+    /// The workspace that owns a PRIVATE plugin; null for a marketplace or native row.
+    /// </summary>
+    /// <remarks>
+    /// Carried here because it is a trust level, not just an owner. A marketplace row's server was
+    /// vetted by an operator; a private row's server is whatever a workspace Owner typed in, so
+    /// anything it says about itself - <c>readOnlyHint</c> above all - is a claim, not a fact. See
+    /// <see cref="IsPrivate"/>.
+    /// </remarks>
+    Guid? OwnerWorkspaceId = null)
+{
+    /// <summary>A workspace Owner's own MCP server rather than an operator-vetted catalog row.</summary>
+    public bool IsPrivate => OwnerWorkspaceId is not null;
+}
 
 public record PluginCatalogItemDto(
     string Key,
@@ -90,7 +106,15 @@ public record PluginCatalogItemDto(
     /// </remarks>
     string? WorkspaceAvailability = null,
     /// <summary><c>pending</c> when the caller has asked this workspace's Owner for the plugin.</summary>
-    string? RequestStatus = null);
+    string? RequestStatus = null,
+    /// <summary>
+    /// <c>oauth</c>: Connect sends the user to the provider. <c>api_key</c>: Connect asks the user
+    /// for their own API key and posts it to <c>{key}/api-key</c>.
+    /// </summary>
+    string AuthMode = "oauth");
+
+/// <summary>A user's own API key for an <c>api_key</c> row. Never echoed back by any endpoint.</summary>
+public record ConnectPluginApiKeyRequest(string? ApiKey);
 
 public record InstallPluginRequest();
 
@@ -110,7 +134,8 @@ public record PluginConnectUrlDto(string Url);
 /// it was connected on the spot and <see cref="Url"/> is null. Otherwise <see cref="Url"/> is the
 /// provider's consent page, exactly as <see cref="PluginConnectUrlDto"/> carries it.
 /// </remarks>
-public record PluginConnectResultDto(bool Connected, string? Url);
+/// <param name="ApiKeyRequired">An <c>api_key</c> row: there is no consent page, the user pastes a key on the plugins page.</param>
+public record PluginConnectResultDto(bool Connected, string? Url, bool ApiKeyRequired = false);
 
 /// <summary>
 /// What has to survive the browser round trip between building an authorization URL and handling

@@ -116,6 +116,73 @@ public class AdminUserService : IAdminUserService
         }
     }
 
+    /// <summary>
+    /// Metric definitions:
+    /// <list type="bullet">
+    /// <item><c>newUsers</c> — accounts whose <c>created_at</c> is in the window, including ones
+    /// soft-deleted since, so a past period's figure never shrinks after the fact.</item>
+    /// <item><c>activeUsers</c> — distinct accounts issued a refresh token in the window. Every
+    /// sign-in (password or Google) and every access-token refresh inserts a
+    /// <c>refresh_tokens</c> row, and rows are never deleted, so this is an event history.
+    /// <c>users.last_login_at</c> was rejected: it keeps only the LATEST sign-in, so anyone who
+    /// signed in during a past window and again later disappears from it.
+    /// Limitation: someone whose whole visit fit inside an access token issued before the window
+    /// (&lt; 30 minutes by default) is not counted in it, and an open tab that silently refreshes
+    /// counts as active. There is no per-request activity log to do better from.</item>
+    /// </list>
+    /// </summary>
+    public async Task<Result<AdminUserInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default)
+    {
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
+        {
+            return Result.Failure<AdminUserInsightsDto>(error!, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var users = _unitOfWork.UserRepository;
+            var tokens = _unitOfWork.RefreshTokenRepository;
+
+            // Sequential: one DbContext cannot run two queries at once.
+            var newUsers = await users.CountCreatedBetweenAsync(window.From, window.To, ct);
+            var newUsersBefore = await users.CountCreatedBetweenAsync(window.PreviousFrom, window.PreviousTo, ct);
+            var activeUsers = await tokens.CountDistinctUsersIssuedBetweenAsync(window.From, window.To, ct);
+            var activeUsersBefore = await tokens.CountDistinctUsersIssuedBetweenAsync(
+                window.PreviousFrom, window.PreviousTo, ct);
+            // Bucketed on the local days of the request's tz, not UTC days: a Vietnam sign-up at
+            // 23:30 local is 16:30Z, and a UTC bucket would file it under the right day only by luck.
+            var days = window.Days();
+            var counts = new int[days.Count];
+            foreach (var createdAt in await users.GetCreatedAtBetweenAsync(window.From, window.To, ct))
+            {
+                var index = AdminComparisonRange.IndexOfDay(days, createdAt);
+                if (index >= 0) counts[index]++;
+            }
+
+            var series = days
+                .Select((day, i) => new AdminDailyCountDto(day.Key, counts[i]))
+                .ToList();
+
+            return Result.Success(new AdminUserInsightsDto(
+                window.Range,
+                window.PreviousRange,
+                [
+                    new AdminInsightMetric("newUsers", newUsers, newUsersBefore, AdminInsightUnits.Count, true),
+                    new AdminInsightMetric("activeUsers", activeUsers, activeUsersBefore, AdminInsightUnits.Count, true),
+                ],
+                series));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin user insights read failed.");
+            return Result.Failure<AdminUserInsightsDto>(
+                "An unexpected error occurred while reading user insights.",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
     public Task<Result<AdminUserDetailDto>> RevokeSessionsAsync(
         Guid userId,
         AdminActorContext actor,

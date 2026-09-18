@@ -262,6 +262,20 @@ public class PluginInstallationService : IPluginInstallationService
         if (!valid.IsSuccess)
             return Result.Failure<PluginCatalogItemDto>(valid.Error!, valid.ErrorCode);
 
+        var authMode = string.IsNullOrWhiteSpace(request.AuthMode)
+            ? PluginConstants.AuthMode.OAuth
+            : request.AuthMode.Trim();
+        if (!PluginConstants.AuthMode.IsKnown(authMode))
+            return Result.Failure<PluginCatalogItemDto>(
+                $"'{authMode}' is not a way to connect. Use oauth or api_key.",
+                PluginConstants.ErrorCodes.InvalidCatalogUpdate);
+
+        // An API-key row never sends an OAuth client, and the database refuses to store one on it.
+        if (authMode == PluginConstants.AuthMode.ApiKey && !string.IsNullOrWhiteSpace(request.OAuth?.ClientId))
+            return Result.Failure<PluginCatalogItemDto>(
+                "A plugin that connects with an API key cannot also have an OAuth client.",
+                PluginConstants.ErrorCodes.InvalidCatalogUpdate);
+
         // A marketplace row: no owning workspace. Every workspace Owner can add it from there.
         var plugin = McpPluginRows.Build(
             key,
@@ -273,6 +287,10 @@ public class PluginInstallationService : IPluginInstallationService
             ownerWorkspaceId: null,
             createdBy: userId == Guid.Empty ? null : userId,
             DateTime.UtcNow);
+
+        // Each user pastes their own key; the row holds no client and never walks the ladder.
+        if (authMode == PluginConstants.AuthMode.ApiKey)
+            plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
 
         if (request.OAuth is { } oauth && !string.IsNullOrWhiteSpace(oauth.ClientId))
         {

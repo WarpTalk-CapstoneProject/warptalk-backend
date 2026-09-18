@@ -98,3 +98,14 @@ public record AdminWorkspaceMemberDto(
     string Status,
     bool CanCreateMeetings,
     DateTime JoinedAt);
+
+/// <summary>
+/// <c>GET /api/v1/admin/workspaces/insights</c>: metric <c>newWorkspaces</c> over the window, and
+/// <paramref name="SuspendedNow"/>, which is a point-in-time count independent of the window.
+/// </summary>
+public record AdminWorkspaceInsightsDto(
+    AdminInsightRange Range,
+    AdminInsightRange PreviousRange,
+    IReadOnlyList<AdminInsightMetric> Metrics,
+    int SuspendedNow);
+

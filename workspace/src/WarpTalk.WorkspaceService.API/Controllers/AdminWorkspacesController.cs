@@ -43,6 +43,16 @@ public class AdminWorkspacesController : ControllerBase
         return ToActionResult(result);
     }
 
+    /// <summary>Workspaces created over <c>[from, to)</c>, compared per <c>compare</c>, and suspended now.</summary>
+    [HttpGet("insights")]
+    public async Task<IActionResult> GetInsights(
+        [FromQuery] AdminInsightsQuery query,
+        CancellationToken ct)
+    {
+        var result = await _adminWorkspaceService.GetInsightsAsync(query, ct);
+        return ToActionResult(result);
+    }
+
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetDetail(Guid id, CancellationToken ct)
     {
