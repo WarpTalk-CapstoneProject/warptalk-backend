@@ -1,5 +1,6 @@
 using System.Text.Json;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 
 namespace WarpTalk.AssistantService.Application.Mappers;
@@ -28,6 +29,7 @@ internal static class PluginDefinitionMapper
             plugin.McpServerUrl,
             plugin.IsFeatured,
             plugin.SortOrder,
-            plugin.Category);
+            plugin.Category,
+            PluginConstants.AuthMode.Of(plugin.OAuthClientSource));
     }
 }

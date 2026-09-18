@@ -40,6 +40,21 @@ public interface IPluginConnectionService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Connects an <c>api_key</c> row with the user's own key.
+    /// </summary>
+    /// <remarks>
+    /// The key is verified by listing the server's tools with it before anything is stored, so a
+    /// wrong key is refused in the dialog it was typed into. On success it is kept encrypted in the
+    /// user's connection, the plugin is marked connected and its tool list is synced.
+    /// </remarks>
+    Task<Result<PluginCatalogItemDto>> ConnectWithApiKeyAsync(
+        string pluginKey,
+        Guid userId,
+        string? apiKey,
+        Guid? workspaceId = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Completes a callback that arrived on the legacy per-plugin path,
     /// <c>{pluginKey}/oauth/callback</c>.
     /// </summary>

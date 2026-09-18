@@ -644,6 +644,60 @@ public class PluginCatalogAdminServiceTests
         Assert.Null(connection.AccessTokenExpiresAt);
     }
 
+    // ---- API-key auth ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task UpdateAsync_SwitchingToApiKey_DropsTheOAuthClient_AndEndsExistingConnections()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Preregistered;
+        plugin.OAuthClientId = "client-1";
+        plugin.OAuthClientSecretEncrypted = "enc:secret";
+        StubLookup(plugin);
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            Provider = McpKey,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "enc:oauth-token",
+        };
+        _connectionRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([connection]);
+
+        var result = await CreateSut().UpdateAsync(
+            McpKey,
+            new UpdatePluginCatalogRequest { AuthMode = PluginConstants.AuthMode.ApiKey },
+            AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, plugin.OAuthClientSource);
+        Assert.Null(plugin.OAuthClientId);
+        Assert.Null(plugin.OAuthClientSecretEncrypted);
+        // An OAuth token must not keep working against a row that now expects each user's key.
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+    }
+
+    [Fact]
+    public async Task SetOAuthClientAsync_RefusesAnApiKeyRow()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        StubLookup(plugin);
+
+        var result = await CreateSut().SetOAuthClientAsync(
+            McpKey,
+            new SetPluginOAuthClientRequest("client-1"),
+            AdminUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidCatalogUpdate, result.ErrorCode);
+        Assert.Null(plugin.OAuthClientId);
+    }
+
     [Fact]
     public async Task UpdateAsync_LeavesConnectionsAlone_WhenTheServerUrlIsResubmittedUnchanged()
     {
