@@ -230,8 +230,32 @@ public record TranslationRoomDto(
     /// Trailing and defaulted so every existing positional construction site still compiles, and
     /// <c>null</c> is read as "same as the booker" rather than "nobody".
     /// </summary>
-    Guid? EffectiveHostId = null
+    Guid? EffectiveHostId = null,
+    /// <summary>
+    /// WT-703: which languages new artifact content may be generated in for this room — see
+    /// <see cref="RoomArtifactLanguagesDto"/>. Set only by the room detail read and only once the
+    /// meeting is finished; <c>null</c> everywhere else.
+    ///
+    /// Trailing and defaulted so every existing positional construction site still compiles.
+    /// </summary>
+    RoomArtifactLanguagesDto? ArtifactLanguages = null
 );
+
+/// <summary>
+/// WT-703: the languages a finished meeting's shared artifacts (summary renderings, summary
+/// regenerates, minutes translations) may be GENERATED in — the room's source and target languages
+/// narrowed by the workspace whitelist and the active catalog, exactly what
+/// <c>IRoomArtifactLanguagePolicy</c> will accept. The server exposes it because the client cannot
+/// compute it: a guest cannot read the workspace settings the answer depends on.
+///
+/// It only bounds generating NEW content. Renderings and translations that already exist stay
+/// readable whatever this list says.
+///
+/// Carried as <see cref="TranslationRoomDto.ArtifactLanguages"/>, which is <c>null</c> while the
+/// meeting is not finished (there is nothing to generate yet, and a live page should not pay for
+/// the lookup) and when the list could not be computed.
+/// </summary>
+public record RoomArtifactLanguagesDto(IReadOnlyList<string> Generatable);
 
 public record TranslationRoomListItemDto(
     Guid Id,

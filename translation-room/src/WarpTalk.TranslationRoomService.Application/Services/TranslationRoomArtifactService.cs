@@ -26,6 +26,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     private readonly IArtifactUrlSigner _urlSigner;
     private readonly IRedisStateRepository _redisStateRepo;
     private readonly IArtifactsFinalizationQueue _finalizationQueue;
+    private readonly IRoomArtifactLanguagePolicy _languagePolicy;
 
     // Moved to TranslationRoomConstants: ArtifactsFinalizer publishes to this stream too, and
     // two private copies of a stream name is how one of them ends up renamed alone.
@@ -36,13 +37,15 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         ILogger<TranslationRoomArtifactService> logger,
         IArtifactUrlSigner urlSigner,
         IRedisStateRepository redisStateRepo,
-        IArtifactsFinalizationQueue finalizationQueue)
+        IArtifactsFinalizationQueue finalizationQueue,
+        IRoomArtifactLanguagePolicy languagePolicy)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _urlSigner = urlSigner;
         _redisStateRepo = redisStateRepo;
         _finalizationQueue = finalizationQueue;
+        _languagePolicy = languagePolicy;
     }
 
     public async Task<Result<string>> RegenerateSummaryAsync(
@@ -71,6 +74,28 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
                 return Result.Failure<string>("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
+
+            // THE HOST DECIDES WHAT THE MEETING'S SUMMARY IS (WT-703).
+            //
+            // A rewrite REPLACES the canonical summary — the one minutes draw their primary
+            // language from and the knowledge index is rebuilt from. The gate above is the READ
+            // gate, and with artifact access set to ALL_PARTICIPANTS it admitted every participant
+            // to overwrite what everyone else reads. A reader who wants another shape or language
+            // has GetOrQueueSummaryVariantAsync, which changes nothing for anybody else.
+            //
+            // Host only, not host-or-Owner/Admin (RoomHostAccess): same reasoning as
+            // ApproveArtifactConsentAsync — the artifact gate above does not admit an Owner/Admin
+            // who is not the host, so a wider rule here could never be reached anyway. The
+            // effective host (IsHostedBy), so a handover moves this right with the meeting.
+            if (!room.IsHostedBy(userId))
+                return Result.Failure<string>("Only the meeting's host can rewrite its summary.", ErrorCodes.Unauthorized);
+
+            // Before BOTH branches below: the finalization redirect writes a summary in this
+            // language just as surely as the rewrite does, so neither may be reached with a
+            // language the meeting does not offer.
+            var languageAllowed = await _languagePolicy.EnsureCanGenerateAsync(room, summaryLanguage, ct);
+            if (!languageAllowed.IsSuccess)
+                return Result.Failure<string>(languageAllowed.Error!, languageAllowed.ErrorCode);
 
             // A REWRITE NEEDS SOMETHING TO REWRITE.
             //
@@ -386,6 +411,18 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
                 isRequeue = true;
             }
+
+            // READ FIRST, GUARD ONLY WHAT WOULD BE WRITTEN (WT-703).
+            //
+            // Everything above answers with content that already exists — the published summary,
+            // a cached rendering, a run already in progress — and none of it is re-filtered: a
+            // language the meeting has since stopped offering does not make what was written in it
+            // unreadable. Only from here on does this GET create something new, so this is the
+            // one place the meeting's languages get a say, and it must come before the claim so a
+            // refusal leaves no in-flight key behind.
+            var languageAllowed = await _languagePolicy.EnsureCanGenerateAsync(room, wantedLanguage, ct);
+            if (!languageAllowed.IsSuccess)
+                return Result.Failure<SummaryVariantDto>(languageAllowed.Error!, languageAllowed.ErrorCode);
 
             var variantRequestId = Guid.NewGuid().ToString();
             if (!await _redisStateRepo.StringSetIfAbsentAsync(

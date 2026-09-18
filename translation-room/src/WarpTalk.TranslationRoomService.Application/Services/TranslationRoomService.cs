@@ -51,6 +51,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly string _frontendBaseUrl;
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
     private readonly WarpTalk.Shared.Protos.UserService.UserServiceClient? _userClient;
+    private readonly IRoomArtifactLanguagePolicy? _artifactLanguagePolicy;
 
     private const string MeetingInvitedNotificationType = "MEETING_INVITED";
 
@@ -143,9 +144,13 @@ public class TranslationRoomService : ITranslationRoomService
         // rooms and still sends the invitation email; it just cannot ring the bell.
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
         WarpTalk.Shared.Protos.UserService.UserServiceClient? userClient = null,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        // WT-703: optional for the same reason as the clients above. Without it the room detail
+        // simply carries no ArtifactLanguages, which the client already treats as "nothing to offer".
+        IRoomArtifactLanguagePolicy? artifactLanguagePolicy = null)
     {
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
+        _artifactLanguagePolicy = artifactLanguagePolicy;
         _notificationClient = notificationClient;
         _userClient = userClient;
         _unitOfWork = unitOfWork;
@@ -721,14 +726,47 @@ public class TranslationRoomService : ITranslationRoomService
             if (!await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            return Result.Success(translationRoom.ToResponseDto(
+            var dto = translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
-                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct));
+
+            return Result.Success(dto with
+            {
+                ArtifactLanguages = await ResolveArtifactLanguagesAsync(translationRoom, ct)
+            });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while fetching translation room: {RoomId}", translationRoomId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while fetching the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-703: the generatable artifact languages for the room detail, or <c>null</c>.
+    ///
+    /// Only a finished room gets an answer — same terminal set the artifact endpoints gate on — so a
+    /// live page never pays for the workspace lookup behind it. A failure here degrades to
+    /// <c>null</c> rather than failing the read: the detail page is on the join path, and the
+    /// generate endpoints enforce the same policy on their own, so a missing list only hides the
+    /// language choice, it never widens it.
+    /// </summary>
+    private async Task<RoomArtifactLanguagesDto?> ResolveArtifactLanguagesAsync(
+        TranslationRoom room,
+        CancellationToken ct)
+    {
+        if (_artifactLanguagePolicy is null || !TranslationRoomConstants.TerminalStatuses.Contains(room.Status))
+            return null;
+
+        try
+        {
+            return new RoomArtifactLanguagesDto(
+                await _artifactLanguagePolicy.GetGeneratableLanguagesAsync(room, ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not resolve generatable artifact languages for room {RoomId}", room.Id);
+            return null;
         }
     }
 

@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
+using WarpTalk.TranscriptService.Application.Services;
 
 using Microsoft.AspNetCore.Authorization;
 
@@ -108,7 +109,8 @@ public class TranscriptTranslationsController : ControllerBase
             "FORBIDDEN" => Forbid(),
             "VALIDATION_ERROR" => BadRequest(new { Message = error }),
             "TOO_LARGE" => BadRequest(new { Message = error }),
-            "RATE_LIMITED" => StatusCode(429, new { Message = error }),
+            TranscriptTranslationBackfillService.BudgetExhaustedCode =>
+                StatusCode(429, new { Message = error, Code = errorCode }),
             _ => StatusCode(500, new { Message = error })
         };
 }
