@@ -93,7 +93,7 @@ public class McpToolGateway : IMcpToolGateway
                 if (result.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
                 {
                     descriptors.AddRange(tools.EnumerateArray()
-                        .Select(tool => ToDescriptor(plugin.Key, plugin.RequiredScopes, tool))
+                        .Select(tool => ToDescriptor(plugin.Key, plugin.RequiredScopes, !plugin.IsPrivate, tool))
                         .Where(tool => tool is not null)
                         .Select(tool => tool!));
                 }
@@ -567,16 +567,25 @@ public class McpToolGateway : IMcpToolGateway
     /// own annotations say it is read-only. MCP's <c>readOnlyHint</c> is a hint from a server we do
     /// not control, so the safe reading of silence is "this may write" - which routes the call
     /// through the confirmation gate rather than around it.
+    /// <para>
+    /// For a PRIVATE row (<paramref name="trustsReadOnlyHint"/> false) even an explicit hint is
+    /// ignored and every tool is a write. An operator vetted a marketplace row's server; a private
+    /// row's server is whatever a workspace Owner typed in, and the one thing a hostile server
+    /// gains by marking a tool read-only is that it runs without the user ever seeing a card. The
+    /// user can still choose "allow" per tool - that is their decision to make, not the server's.
+    /// </para>
     /// </remarks>
     private static McpToolDescriptorDto? ToDescriptor(
         string pluginKey,
         IReadOnlyList<string> pluginScopes,
+        bool trustsReadOnlyHint,
         JsonElement tool)
     {
         var name = ReadString(tool, "name");
         if (string.IsNullOrWhiteSpace(name)) return null;
 
-        var readOnly = tool.TryGetProperty("annotations", out var annotations)
+        var readOnly = trustsReadOnlyHint
+            && tool.TryGetProperty("annotations", out var annotations)
             && annotations.ValueKind == JsonValueKind.Object
             && annotations.TryGetProperty("readOnlyHint", out var hint)
             && hint.ValueKind == JsonValueKind.True;

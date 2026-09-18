@@ -117,11 +117,48 @@ public class WorkspacePluginGuardTests
     [Fact]
     public async Task NoWorkspace_PermitsAnyMarketplacePlugin_WithoutAskingAnything()
     {
-        // The personal plugins page: installing and connecting are personal.
+        // The personal plugins page: installing and connecting are personal. The documented legacy
+        // path - even a caller who belongs to no workspace at all gets through it.
+        Member(false);
+
         Assert.True((await Guard().CanUsePluginAsync(null, UserId, _linear)).IsSuccess);
 
         await _policyClient.DidNotReceive().AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
         await _curations.DidNotReceive().GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _membershipClient.DidNotReceive()
+            .GetMembershipAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Personal_NamingAWorkspaceTheCallerDoesNotBelongTo_IsRefused_ForAMarketplacePlugin()
+    {
+        // Gap 4 of the marketplace audit. The workspace has the plugin, so before this the named
+        // workspace's list alone decided and a non-member got through on someone else's curation.
+        Member(false);
+        Curated(_linear);
+
+        var result = await Guard().CanUsePluginAsync(WorkspaceId, UserId, _linear);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);
+        Assert.Equal(PluginConstants.WorkspacePolicyMessages.NotAWorkspaceMember, result.Error);
+        // Refused before the list is read, so the answer does not reveal what that workspace has.
+        await _curations.DidNotReceive().GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _policyClient.DidNotReceive().AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Personal_NamingTheCallersOwnWorkspace_IsJudgedByItsList()
+    {
+        Curated(_notion);
+
+        Assert.True((await Guard().CanUsePluginAsync(WorkspaceId, UserId, _notion)).IsSuccess);
+
+        var linear = await Guard().CanUsePluginAsync(WorkspaceId, UserId, _linear);
+        Assert.False(linear.IsSuccess);
+        Assert.Equal(WorkspacePluginConstants.Messages.NotAdded, linear.Error);
+        await _membershipClient.Received()
+            .GetMembershipAsync(WorkspaceId, UserId, Arg.Any<CancellationToken>());
     }
 
     [Fact]
