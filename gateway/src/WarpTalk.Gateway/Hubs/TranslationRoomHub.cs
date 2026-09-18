@@ -208,6 +208,15 @@ public class TranslationRoomHub : Hub
         var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
         var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
 
+        // WT-707: the join writes both languages straight into Redis for STT/translation/dub, so
+        // it must honour the workspace whitelist exactly like Set*Language. Checked before any
+        // side effect (kick, group, presence, broadcast, Redis) so a refusal leaves no trace.
+        await EnsureLanguageAllowedAsync(translationRoomId, speakLanguage);
+        if (normalizedListenLanguage != normalizedSpeakLanguage)
+        {
+            await EnsureLanguageAllowedAsync(translationRoomId, listenLanguage);
+        }
+
         // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
         if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
         {
