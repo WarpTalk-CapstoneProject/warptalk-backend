@@ -37,6 +37,22 @@ public interface ITranslationRoomDirectoryService
         Guid translationRoomId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-704: the same mesh read, optionally carrying
+    /// <see cref="TranslationRoomDto.ArtifactLanguages"/> — the languages new content may be
+    /// generated in for this room (L2 ∩ L1 ∩ active catalog).
+    ///
+    /// Opt-in because the answer costs a workspace RPC plus a catalog read, and the plain read is on
+    /// hot paths across the mesh that never need it. Unlike the user-facing room detail it is
+    /// computed for ANY status: the caller asked, so it is deciding something about this room now.
+    /// A failure to compute it leaves <see cref="TranslationRoomDto.ArtifactLanguages"/> <c>null</c>
+    /// rather than failing the read; the caller falls back to the room's own set.
+    /// </summary>
+    Task<Result<TranslationRoomDto>> GetRoomAsync(
+        Guid translationRoomId,
+        bool includeArtifactLanguages,
+        CancellationToken ct = default);
+
     Task<Result<IReadOnlyList<TranslationRoomParticipantSummaryDto>>> GetParticipantsAsync(
         Guid translationRoomId,
         CancellationToken ct = default);
