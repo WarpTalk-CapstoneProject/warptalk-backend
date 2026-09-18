@@ -129,7 +129,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
 
             // Subscriptions right now. The same row set and rules as the subscriptions page summary.
             var active = await _unitOfWork.SubscriptionRepository.GetActiveForRevenueAsync(ct);
-            var recurring = active.Where(AdminSubscriptionRevenue.IsRecurring).ToList();
+            var recurring = active.Where(row => AdminSubscriptionRevenue.IsRecurring(row, now)).ToList();
             var mrr = ToVnd(
                 AdminSubscriptionRevenue.MonthlyRecurring(recurring).Select(m => new MoneyPart(m.Currency, m.Amount, 1)),
                 fx);
