@@ -84,6 +84,8 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 
+        AddCartesiaUsageSync(services, configuration);
+
         // WT-263: the entitlement layer. The resolver is the single place entitlements are computed;
         // the publisher is the single place they leave this service.
         services.AddScoped<
@@ -94,6 +96,28 @@ public static class BillingInfrastructureServiceCollectionExtensions
             WarpTalk.BillingService.Application.Entitlements.EntitlementChangePublisher>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Cartesia usage sync: options, the HTTP client, and the status the Insights snapshot reads.
+    /// Registered whether or not an admin key is configured — without one the worker only marks
+    /// itself disabled, and Insights fall back to rate-card estimates.
+    /// </summary>
+    private static void AddCartesiaUsageSync(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(CartesiaUsageOptions.SectionName);
+        services.AddOptions<CartesiaUsageOptions>().Bind(section);
+
+        var options = section.Get<CartesiaUsageOptions>() ?? new CartesiaUsageOptions();
+        services.AddHttpClient(CartesiaUsageOptions.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+        });
+        services.AddSingleton<ICartesiaUsageClient, CartesiaUsageClient>();
+        services.AddSingleton<ICartesiaUsageSyncStatus>(_ =>
+            new CartesiaUsageSyncStatus(
+                configured: options.IsConfigured && options.UsageSyncIntervalMinutes > 0,
+                filteredToApiKey: options.IsFilteredToApiKey));
     }
 
     public static void VerifyBillingDatabase(this IServiceProvider serviceProvider)

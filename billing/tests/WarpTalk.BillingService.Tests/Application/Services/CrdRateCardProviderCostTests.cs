@@ -143,7 +143,7 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
         var cost = M(dto, "aiProviderCost");
         cost.Value.Should().Be(2_695m);
         cost.Note.Should().Be(
-            "covers 100% of consumed credits (3 of 3 transactions have a provider cost); USD converted at 25,000 VND/USD");
+            "covers 100% of consumed credits (3 of 3 transactions have a provider cost); dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period; USD converted at 25,000 VND/USD");
 
         var margin = M(dto, "grossMargin");
         margin.Value.Should().Be(-2_695m, "no payments in the period, so the margin is the cost, negated");
@@ -162,7 +162,7 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
         var cost = M(dto, "aiProviderCost");
         cost.Value.Should().Be(2_695m);
         cost.Note.Should().Be(
-            "covers 73% of consumed credits (3 of 4 transactions have a provider cost); no provider cost for TRANSLATION (27%); USD converted at 25,000 VND/USD");
+            "covers 73% of consumed credits (3 of 4 transactions have a provider cost); no provider cost for TRANSLATION (27%); dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period; USD converted at 25,000 VND/USD");
         M(dto, "grossMargin").Note.Should().Be(
             "AI cost covers only 73% of consumed credits (no provider cost for TRANSLATION (27%)), so this margin is overstated");
     }

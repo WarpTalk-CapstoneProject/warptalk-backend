@@ -1,3 +1,5 @@
+using WarpTalk.BillingService.Domain.Constants;
+
 namespace WarpTalk.BillingService.Application.DTOs;
 
 public record UsageRateCardDto(
@@ -74,7 +76,11 @@ public record PricingConfigDto(
     decimal DefaultInvoiceTermsDays,
     decimal DefaultInvoiceGraceHours,
     string Formula,
-    string ResolverKey);
+    string ResolverKey,
+    // USD per Cartesia credit (billing_pricing_config cartesia_usd_per_credit). Insights price the
+    // dubbing provider cost as measured Cartesia credits × this × FX. Default: the Startup plan's
+    // $49 / 1,250,000 credits.
+    decimal CartesiaUsdPerCredit = ProviderUsageConstants.DefaultCartesiaUsdPerCredit);
 
 public record UpdatePricingConfigRequest(
     decimal FxRateUsdVnd,
@@ -88,4 +94,6 @@ public record UpdatePricingConfigRequest(
     decimal SalesAiServicesWeight,
     decimal DefaultOverageCapRatio,
     decimal DefaultInvoiceTermsDays,
-    decimal DefaultInvoiceGraceHours);
+    decimal DefaultInvoiceGraceHours,
+    // Null leaves the stored value as it is, so a client that predates the field cannot reset it.
+    decimal? CartesiaUsdPerCredit = null);

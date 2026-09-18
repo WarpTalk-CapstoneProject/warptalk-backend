@@ -130,6 +130,58 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
                 .ToList());
     }
 
+    public async Task<IReadOnlyList<DailyChargeTypeConsumption>> GetConsumptionByUtcDayAsync(
+        DateTime from, DateTime to, IReadOnlyCollection<string> chargeTypes, CancellationToken cancellationToken = default)
+    {
+        var types = chargeTypes.ToArray();
+        if (types.Length == 0) return Array.Empty<DailyChargeTypeConsumption>();
+
+        // Same type key and coverage rule as GetConsumptionTotalsAsync, so the rows this returns are
+        // exactly the part of those totals they describe.
+        var rows =
+            from t in ConsumeIn(@from, to)
+            join u in _context.UsageRecords.IgnoreQueryFilters() on t.UsageRecordId equals (Guid?)u.Id into usage
+            from u in usage.DefaultIfEmpty()
+            join r in _context.UsageRateCards on t.PricingRateCardId equals (Guid?)r.Id into cards
+            from r in cards.DefaultIfEmpty()
+            select new
+            {
+                Type = t.ChargeType != null && t.ChargeType != "" ? t.ChargeType : (u != null ? u.UsageType : "UNKNOWN"),
+                Day = t.CreatedAt.Date,
+                Credits = -t.Amount,
+                Covered = u != null && r != null && r.ProviderUnitCost != null && (r.Unit == null || r.Unit == u.Unit),
+                CostUsd = (decimal?)u!.Quantity * r!.ProviderUnitCost,
+            };
+
+        var grouped = await rows
+            .Where(x => types.Contains(x.Type))
+            .GroupBy(x => new { x.Day, x.Type })
+            .Select(g => new
+            {
+                g.Key.Day,
+                g.Key.Type,
+                Credits = g.Sum(x => (long)x.Credits),
+                Transactions = g.Count(),
+                CoveredCredits = g.Sum(x => x.Covered ? (long)x.Credits : 0L),
+                CoveredTransactions = g.Count(x => x.Covered),
+                CostUsd = g.Sum(x => x.Covered ? x.CostUsd : 0m),
+            })
+            .ToListAsync(cancellationToken);
+
+        return grouped
+            .Select(x => new DailyChargeTypeConsumption(
+                DateOnly.FromDateTime(x.Day),
+                x.Type,
+                x.Credits,
+                x.Transactions,
+                x.CoveredCredits,
+                x.CoveredTransactions,
+                x.CostUsd ?? 0m))
+            .OrderBy(x => x.UtcDate)
+            .ThenBy(x => x.ChargeType, StringComparer.Ordinal)
+            .ToList();
+    }
+
     public async Task<IReadOnlyList<CreditsByChargeType>> GetConsumedByChargeTypeAsync(
         DateTime from, DateTime to, CancellationToken cancellationToken = default)
     {

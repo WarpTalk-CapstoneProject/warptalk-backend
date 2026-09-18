@@ -264,6 +264,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             var defaultOverageCapRatio = await _repository.ReadPricingConfigValueAsync(DefaultOverageCapRatioConfigKey, SubscriptionConstants.RateCardDefaults.DefaultOverageCapRatio, cancellationToken);
             var defaultInvoiceTermsDays = await _repository.ReadPricingConfigValueAsync(DefaultInvoiceTermsDaysConfigKey, SubscriptionConstants.PlanDefaults.InvoiceTermsDays, cancellationToken);
             var defaultInvoiceGraceHours = await _repository.ReadPricingConfigValueAsync(DefaultInvoiceGraceHoursConfigKey, SubscriptionConstants.PlanDefaults.InvoiceGraceHours, cancellationToken);
+            var cartesiaUsdPerCredit = await _repository.ReadPricingConfigValueAsync(
+                ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, ProviderUsageConstants.DefaultCartesiaUsdPerCredit, cancellationToken);
 
             return Result.Success(CreatePricingConfig(
                 fxRate,
@@ -277,7 +279,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 salesAiServicesWeight,
                 defaultOverageCapRatio,
                 defaultInvoiceTermsDays,
-                defaultInvoiceGraceHours));
+                defaultInvoiceGraceHours,
+                cartesiaUsdPerCredit));
         }
         catch (Exception ex)
         {
@@ -303,6 +306,12 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             request.DefaultInvoiceGraceHours <= 0)
             return Result.Failure<PricingConfigDto>("Pricing config values must be positive.", ErrorCodes.ValidationError);
 
+        // 0 is allowed: it is the honest marginal price of credits already paid for. Above $1 per
+        // credit is a typo (the list price is ~$0.00004), not a price.
+        if (request.CartesiaUsdPerCredit is < 0 or > 1)
+            return Result.Failure<PricingConfigDto>(
+                "Cartesia USD per credit must be between 0 and 1.", ErrorCodes.ValidationError);
+
         var salesWeightTotal = request.SalesUsageWeight + request.SalesMembersWeight + request.SalesLanguagesWeight + request.SalesAiServicesWeight;
         if (salesWeightTotal <= 0)
             return Result.Failure<PricingConfigDto>("Sales pricing weights must have a positive total.", ErrorCodes.ValidationError);
@@ -323,6 +332,18 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             await _repository.UpsertPricingConfigValueAsync(DefaultOverageCapRatioConfigKey, request.DefaultOverageCapRatio, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(DefaultInvoiceTermsDaysConfigKey, request.DefaultInvoiceTermsDays, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(DefaultInvoiceGraceHoursConfigKey, request.DefaultInvoiceGraceHours, cancellationToken);
+            var cartesiaUsdPerCredit = request.CartesiaUsdPerCredit;
+            if (cartesiaUsdPerCredit is { } usdPerCredit)
+            {
+                await _repository.UpsertPricingConfigValueAsync(
+                    ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, usdPerCredit, cancellationToken);
+            }
+            else
+            {
+                cartesiaUsdPerCredit = await _repository.ReadPricingConfigValueAsync(
+                    ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, ProviderUsageConstants.DefaultCartesiaUsdPerCredit, cancellationToken);
+            }
+
             await _repository.CommitTransactionAsync(cancellationToken);
 
             return Result.Success(CreatePricingConfig(
@@ -337,7 +358,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 request.SalesAiServicesWeight,
                 request.DefaultOverageCapRatio,
                 request.DefaultInvoiceTermsDays,
-                request.DefaultInvoiceGraceHours));
+                request.DefaultInvoiceGraceHours,
+                cartesiaUsdPerCredit.Value));
         }
         catch (Exception ex)
         {
@@ -415,7 +437,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         decimal salesAiServicesWeight,
         decimal defaultOverageCapRatio,
         decimal defaultInvoiceTermsDays,
-        decimal defaultInvoiceGraceHours)
+        decimal defaultInvoiceGraceHours,
+        decimal cartesiaUsdPerCredit)
     {
         return new PricingConfigDto(
             fxRateUsdVnd,
@@ -431,7 +454,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             defaultInvoiceTermsDays,
             defaultInvoiceGraceHours,
             PricingFormula,
-            ResolverKey);
+            ResolverKey,
+            cartesiaUsdPerCredit);
     }
 
     private readonly record struct RateCardIdentity(

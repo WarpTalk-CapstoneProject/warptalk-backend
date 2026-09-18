@@ -31,19 +31,26 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
     private readonly IWorkspaceClient _workspaceClient;
     private readonly ILogger<AdminBillingInsightsService> _logger;
     private readonly TimeProvider _time;
+    private readonly ICartesiaUsageSyncStatus _cartesiaSync;
+
+    public const string CartesiaRemainingCreditsNote =
+        "Cartesia's API reports usage only, not the credit balance; see play.cartesia.ai/subscription";
 
     public AdminBillingInsightsService(
         IUnitOfWork unitOfWork,
         IUsageRateCardRepository pricingConfig,
         IWorkspaceClient workspaceClient,
         ILogger<AdminBillingInsightsService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ICartesiaUsageSyncStatus? cartesiaSync = null)
     {
         _unitOfWork = unitOfWork;
         _pricingConfig = pricingConfig;
         _workspaceClient = workspaceClient;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
+        // No status registered means no worker: the same thing as not configured.
+        _cartesiaSync = cartesiaSync ?? new CartesiaUsageSyncStatus(configured: false, filteredToApiKey: false);
     }
 
     public async Task<Result<AdminBillingInsightsDto>> GetInsightsAsync(AdminInsightsQuery query, CancellationToken ct = default)
@@ -57,8 +64,9 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         {
             var now = _time.GetUtcNow().UtcDateTime;
             var fx = await ReadFxAsync(ct);
-            var current = await ReadPeriodAsync(window.Range, now, fx, ct);
-            var previous = await ReadPeriodAsync(window.PreviousRange, now, fx, ct);
+            var usdPerCredit = await ReadCartesiaUsdPerCreditAsync(ct);
+            var current = await ReadPeriodAsync(window.Range, now, fx, usdPerCredit, ct);
+            var previous = await ReadPeriodAsync(window.PreviousRange, now, fx, usdPerCredit, ct);
 
             // Series on the local calendar of the request's tz (default Asia/Ho_Chi_Minh).
             var dayPayments = await _unitOfWork.PaymentRepository.GetCountedPaidAmountsAsync(window.From, window.To, ct);
@@ -98,7 +106,14 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 revenueByMonth,
                 revenueByMonthNote,
                 byService.Select(s => new AdminCreditsByServiceDto(s.UsageType, s.Credits)).ToList(),
-                top.Select(t => new AdminTopWorkspaceCreditsDto(t.WorkspaceId, NameOf(names, t.WorkspaceId), t.Credits)).ToList()));
+                top.Select(t => new AdminTopWorkspaceCreditsDto(t.WorkspaceId, NameOf(names, t.WorkspaceId), t.Credits)).ToList(),
+                new AdminAiProviderCostBasisDto(
+                    current.Dubbing.Basis,
+                    current.Dubbing.MeasuredDays,
+                    current.Dubbing.EstimatedDays,
+                    current.Dubbing.MeasuredCredits,
+                    usdPerCredit,
+                    _cartesiaSync.Current.Status)));
         }
         catch (Exception ex)
         {
@@ -153,6 +168,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 now, now.AddDays(EndingSoonDays), EndingSoonCount, ct);
             var highUsage = await _unitOfWork.CreditTransactionRepository.GetTopConsumingWorkspacesAsync(
                 now.AddHours(-24), now, HighUsageAlertCount, HighUsageCredits24h, ct);
+            var cartesia = await ReadCartesiaSnapshotAsync(now, ct);
 
             var names = await ResolveNamesAsync(
                 recent.Where(p => p.WorkspaceId.HasValue).Select(p => p.WorkspaceId!.Value)
@@ -206,7 +222,8 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                         s.EndsAt,
                         !s.AutoRenew || s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled))
                     .ToList(),
-                highUsage.Select(h => new AdminHighUsageAlertDto(h.WorkspaceId, NameOf(names, h.WorkspaceId), h.Credits)).ToList()));
+                highUsage.Select(h => new AdminHighUsageAlertDto(h.WorkspaceId, NameOf(names, h.WorkspaceId), h.Credits)).ToList(),
+                cartesia));
         }
         catch (Exception ex)
         {
@@ -217,7 +234,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
     }
 
     private async Task<PeriodMetrics> ReadPeriodAsync(
-        AdminInsightRange range, DateTime now, decimal? fx, CancellationToken ct)
+        AdminInsightRange range, DateTime now, decimal? fx, decimal usdPerCredit, CancellationToken ct)
     {
         var paid = await _unitOfWork.PaymentRepository.GetCountedPaidTotalsAsync(range.From, range.To, ct);
         var duplicates = await _unitOfWork.PaymentRepository.CountStripeInvoiceDuplicatesAsync(range.From, range.To, ct);
@@ -225,8 +242,12 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         var consumption = await _unitOfWork.CreditTransactionRepository.GetConsumptionTotalsAsync(range.From, range.To, ct);
         var flows = await _unitOfWork.SubscriptionRepository.GetSubscriptionFlowCountsAsync(range.From, range.To, now, ct);
 
+        // Dubbing is priced from measured Cartesia credits on every UTC day the sync covers.
+        var dubbing = await MeasureDubbingAsync(range, now, usdPerCredit, ct);
+        consumption = CartesiaDubbingCost.Apply(consumption, dubbing);
+
         var (revenue, revenueTotal) = Revenue(paid, duplicates, fx);
-        var aiCost = AiProviderCost(consumption, fx);
+        var aiCost = AiProviderCost(consumption, fx, dubbing, _cartesiaSync.Current.FilteredToApiKey);
 
         return new PeriodMetrics(
             revenue,
@@ -238,7 +259,78 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             new MetricSide(consumption.OverageCredits, OverageNote),
             aiCost,
             GrossMargin(revenue, aiCost, consumption),
-            RevenuePerPayment(revenue, revenueTotal));
+            RevenuePerPayment(revenue, revenueTotal),
+            dubbing);
+    }
+
+    private async Task<MeasuredDubbing> MeasureDubbingAsync(
+        AdminInsightRange range, DateTime now, decimal usdPerCredit, CancellationToken ct)
+    {
+        var days = CartesiaDubbingCost.UtcDaysOf(range.From, range.To, now).ToList();
+        if (days.Count == 0)
+        {
+            return CartesiaDubbingCost.Measure(range.From, range.To, now, [], [], usdPerCredit);
+        }
+
+        var cartesiaDays = await ReadCartesiaDaysAsync(days[0], days[^1], ct);
+        var dubbing = await _unitOfWork.CreditTransactionRepository.GetConsumptionByUtcDayAsync(
+            range.From, range.To, ProviderUsageConstants.CartesiaChargeTypes.ToArray(), ct);
+        return CartesiaDubbingCost.Measure(range.From, range.To, now, cartesiaDays, dubbing, usdPerCredit);
+    }
+
+    /// <summary>Synced Cartesia days: the day total, and the speech-to-text part of it from the capability split.</summary>
+    private async Task<IReadOnlyList<CartesiaUsageDay>> ReadCartesiaDaysAsync(DateOnly from, DateOnly to, CancellationToken ct)
+    {
+        var provider = ProviderUsageConstants.Providers.Cartesia;
+        var totals = await _unitOfWork.ProviderUsageDaily.GetDaysAsync(provider, ProviderUsageConstants.GroupKinds.Total, from, to, ct);
+        if (totals.Count == 0) return Array.Empty<CartesiaUsageDay>();
+
+        var capabilities = await _unitOfWork.ProviderUsageDaily.GetDaysAsync(provider, ProviderUsageConstants.GroupKinds.Capability, from, to, ct);
+        var speechToText = capabilities
+            .Where(row => ProviderUsageConstants.IsSpeechToTextCapability(row.GroupId, row.GroupLabel))
+            .GroupBy(row => row.UsageDate)
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.Credits));
+
+        return totals
+            .Select(row => new CartesiaUsageDay(
+                row.UsageDate,
+                row.Credits,
+                speechToText.GetValueOrDefault(row.UsageDate),
+                DateTime.SpecifyKind(row.SyncedAt, DateTimeKind.Utc)))
+            .ToList();
+    }
+
+    private async Task<AdminCartesiaUsageDto> ReadCartesiaSnapshotAsync(DateTime now, CancellationToken ct)
+    {
+        var sync = _cartesiaSync.Current;
+        var usdPerCredit = await ReadCartesiaUsdPerCreditAsync(ct);
+
+        // Cartesia's calendar is UTC: this month and today are UTC's, not the admin's tz.
+        var today = DateOnly.FromDateTime(now);
+        var monthStart = new DateOnly(today.Year, today.Month, 1);
+        var month = await _unitOfWork.ProviderUsageDaily.GetDaysAsync(
+            ProviderUsageConstants.Providers.Cartesia, ProviderUsageConstants.GroupKinds.Total, monthStart, today, ct);
+        var lastSyncedAt = await _unitOfWork.ProviderUsageDaily.GetLastSyncedAtAsync(ProviderUsageConstants.Providers.Cartesia, ct);
+
+        return new AdminCartesiaUsageDto(
+            sync.Status,
+            sync.Message,
+            sync.FilteredToApiKey,
+            month.Count == 0 ? null : month.Sum(row => row.Credits),
+            month.FirstOrDefault(row => row.UsageDate == today)?.Credits,
+            null,
+            CartesiaRemainingCreditsNote,
+            lastSyncedAt is { } synced ? DateTime.SpecifyKind(synced, DateTimeKind.Utc) : null,
+            sync.LastAttemptAt,
+            usdPerCredit);
+    }
+
+    /// <summary>USD per Cartesia credit; the Startup-plan default when the key is missing (0 is a legal price).</summary>
+    private async Task<decimal> ReadCartesiaUsdPerCreditAsync(CancellationToken ct)
+    {
+        var value = await _pricingConfig.ReadPricingConfigValueAsync(
+            ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, ProviderUsageConstants.DefaultCartesiaUsdPerCredit, ct);
+        return value >= 0 ? value : ProviderUsageConstants.DefaultCartesiaUsdPerCredit;
     }
 
     private async Task<decimal?> ReadFxAsync(CancellationToken ct)
@@ -279,5 +371,6 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         MetricSide OverageCredits,
         MetricSide AiProviderCost,
         MetricSide GrossMargin,
-        MetricSide RevenuePerPayment);
+        MetricSide RevenuePerPayment,
+        MeasuredDubbing Dubbing);
 }

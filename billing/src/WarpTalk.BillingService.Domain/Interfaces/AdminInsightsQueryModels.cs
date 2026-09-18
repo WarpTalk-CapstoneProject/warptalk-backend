@@ -57,6 +57,20 @@ public sealed record ChargeTypeCoverage(string ChargeType, long Credits, long Co
     public long UncoveredCredits => Credits - CoveredCredits;
 }
 
+/// <summary>
+/// Consume rows of one charge type on one UTC calendar day (the day of <c>created_at</c> in UTC),
+/// with the same coverage rule as <see cref="ConsumptionTotals"/>. Used to swap the rate-card
+/// estimate of a Cartesia-served charge type for measured Cartesia credits, day by day.
+/// </summary>
+public sealed record DailyChargeTypeConsumption(
+    DateOnly UtcDate,
+    string ChargeType,
+    long Credits,
+    int Transactions,
+    long CoveredCredits,
+    int CoveredTransactions,
+    decimal CostUsd);
+
 /// <summary>Consumed credits for one charge / usage type.</summary>
 public sealed record CreditsByChargeType(string UsageType, long Credits);
 

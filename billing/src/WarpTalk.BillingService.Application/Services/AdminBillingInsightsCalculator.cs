@@ -168,20 +168,34 @@ public static class AdminBillingInsightsCalculator
     /// aiProviderCost = Σ usage quantity × rate card provider_unit_cost (USD) over consume rows whose
     /// settled rate card carries a provider cost in the usage record's unit, converted to VND.
     /// A partial figure says how much of the usage it covers and names the charge types it leaves out.
+    ///
+    /// With <paramref name="dubbing"/>, <paramref name="consumption"/> must already be
+    /// <see cref="CartesiaDubbingCost.Apply"/>-ed: the Cartesia-served charge types are then priced from
+    /// measured Cartesia credits on every synced UTC day, and the note says which days were measured
+    /// and which estimated. Measured Cartesia usage with no WarpTalk charge at all is still a cost.
     /// </summary>
-    public static MetricSide AiProviderCost(ConsumptionTotals consumption, decimal? fxUsdVnd)
+    public static MetricSide AiProviderCost(ConsumptionTotals consumption, decimal? fxUsdVnd, MeasuredDubbing? dubbing = null, bool filteredToApiKey = true)
     {
+        var dubbingNote = dubbing is null ? null : CartesiaDubbingCost.Note(dubbing, filteredToApiKey);
+
         if (consumption.Transactions == 0)
         {
-            return new MetricSide(0m, null);
+            if (dubbing is not { MeasuredUsd: > 0 }) return new MetricSide(0m, null);
+            if (fxUsdVnd is not > 0)
+                return MetricSide.Unavailable($"provider cost is in USD and no {FxRateConfigKey} is configured");
+            return new MetricSide(
+                RoundVnd(dubbing.MeasuredUsd * fxUsdVnd.Value),
+                string.Join("; ", new[] { dubbingNote, string.Create(Invariant, $"USD converted at {fxUsdVnd.Value:N0} VND/USD") }
+                    .Where(part => part is not null)));
         }
 
         var uncovered = UncoveredChargeTypes(consumption);
-        if (consumption.CostCoveredTransactions == 0)
+        if (consumption.CostCoveredTransactions == 0 && dubbing is not { MeasuredUsd: > 0 })
         {
             return MetricSide.Unavailable(string.Create(Invariant,
                 $"cannot be reconstructed: none of the {consumption.Transactions} consume transaction(s) was settled on a rate card with a provider_unit_cost")
-                + (uncovered is null ? string.Empty : $" ({uncovered})"));
+                + (uncovered is null ? string.Empty : $" ({uncovered})")
+                + (dubbingNote is null ? string.Empty : $"; {dubbingNote}"));
         }
 
         if (fxUsdVnd is not > 0)
@@ -196,6 +210,7 @@ public static class AdminBillingInsightsCalculator
                 $"covers {coverage:0.#}% of consumed credits ({consumption.CostCoveredTransactions} of {consumption.Transactions} transactions have a provider cost)"),
         };
         if (uncovered is not null) notes.Add(uncovered);
+        if (dubbingNote is not null) notes.Add(dubbingNote);
         notes.Add(string.Create(Invariant, $"USD converted at {fxUsdVnd.Value:N0} VND/USD"));
         return new MetricSide(RoundVnd(consumption.ProviderCostUsd * fxUsdVnd.Value), string.Join("; ", notes));
     }

@@ -332,6 +332,9 @@ public class UsageRateCardAdminServiceTests
                 It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .Callback<string, decimal, CancellationToken>((key, _, _) => writtenKeys.Add(key))
             .Returns(Task.CompletedTask);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00003m);
 
         var result = await service.UpdatePricingConfigAsync(request);
 
@@ -339,9 +342,44 @@ public class UsageRateCardAdminServiceTests
         result.Value!.CreditValueVnd.Should().Be(request.CreditValueVnd);
         result.Value.FxRateUsdVnd.Should().Be(request.FxRateUsdVnd);
 
-        // Every configured key is written, each exactly once, inside a single transaction.
-        writtenKeys.Should().HaveCount(12).And.OnlyHaveUniqueItems();
+        // Every configured key is written, each exactly once, inside a single transaction. The
+        // request left the Cartesia price out, so it is not written — and not reset — but echoed.
+        writtenKeys.Should().HaveCount(12).And.OnlyHaveUniqueItems().And.NotContain("cartesia_usd_per_credit");
+        result.Value.CartesiaUsdPerCredit.Should().Be(0.00003m);
         calls.Should().Equal("begin", "commit");
+    }
+
+    [Fact]
+    public async Task UpdatePricingConfigAsync_WithCartesiaPrice_WritesIt()
+    {
+        var (service, repository, _) = CreateService();
+        var written = new Dictionary<string, decimal>();
+        repository
+            .Setup(r => r.UpsertPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
+            .Returns(Task.CompletedTask);
+
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { CartesiaUsdPerCredit = 0.0000392m });
+
+        result.IsSuccess.Should().BeTrue();
+        written.Should().HaveCount(13);
+        written["cartesia_usd_per_credit"].Should().Be(0.0000392m);
+        result.Value!.CartesiaUsdPerCredit.Should().Be(0.0000392m);
+    }
+
+    [Theory]
+    [InlineData(-0.0001)]
+    [InlineData(2)]
+    public async Task UpdatePricingConfigAsync_ImplausibleCartesiaPrice_IsRejected(double price)
+    {
+        var (service, _, calls) = CreateService();
+
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { CartesiaUsdPerCredit = (decimal)price });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
     }
 
     [Fact]
@@ -396,13 +434,15 @@ public class UsageRateCardAdminServiceTests
         var result = await service.GetPricingConfigAsync();
 
         result.IsSuccess.Should().BeTrue();
-        requestedDefaults.Should().HaveCount(12);
+        requestedDefaults.Should().HaveCount(13);
 
         var config = result.Value!;
         config.FxRateUsdVnd.Should().BePositive();
         config.CreditValueVnd.Should().BePositive();
         config.Formula.Should().NotBeNullOrWhiteSpace();
         config.ResolverKey.Should().NotBeNullOrWhiteSpace();
+        // No row yet: the Startup plan's $49 / 1,250,000 credits.
+        config.CartesiaUsdPerCredit.Should().Be(0.0000392m);
     }
 
     [Fact]
