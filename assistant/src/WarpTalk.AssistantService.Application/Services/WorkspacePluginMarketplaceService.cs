@@ -178,8 +178,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
 
         // Materialised first, so removing one plugin from a workspace still on "every plugin" leaves
         // it with every OTHER plugin rather than with none.
-        var seeded = await EnsureCuratedAsync(workspaceId, callerId, ct);
-        var row = seeded.FirstOrDefault(r => r.PluginId == plugin.Id)
+        var curated = await EnsureCuratedAsync(workspaceId, callerId, ct);
+        if (!curated.IsSuccess) return Result.Failure(curated.Error!, curated.ErrorCode);
+
+        var row = curated.Value!.FirstOrDefault(r => r.PluginId == plugin.Id)
             ?? await _unitOfWork.WorkspacePluginRepository.FirstOrDefaultAsync(
                 r => r.WorkspaceId == workspaceId && r.PluginId == plugin.Id,
                 ct: ct);
@@ -479,8 +481,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
                 $"{plugin.Label} has been retired from the marketplace and can no longer be added.",
                 WorkspacePluginConstants.ErrorCodes.PluginRetired);
 
-        var seeded = await EnsureCuratedAsync(workspaceId, callerId, ct);
-        var existing = seeded.FirstOrDefault(row => row.PluginId == plugin.Id)
+        var curated = await EnsureCuratedAsync(workspaceId, callerId, ct);
+        if (!curated.IsSuccess) return Result.Failure<WorkspacePlugin>(curated.Error!, curated.ErrorCode);
+
+        var existing = curated.Value!.FirstOrDefault(row => row.PluginId == plugin.Id)
             ?? await _unitOfWork.WorkspacePluginRepository.FirstOrDefaultAsync(
                 row => row.WorkspaceId == workspaceId && row.PluginId == plugin.Id,
                 ct: ct);
@@ -508,16 +512,37 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
     /// first write to its list records the curation and, if the switch was on, seeds the list with
     /// every active marketplace plugin - so the change the Owner is making is the ONLY change.
     /// </summary>
-    /// <returns>The rows seeded by this call (staged, unsaved); empty if nothing was seeded.</returns>
-    private async Task<IReadOnlyList<WorkspacePlugin>> EnsureCuratedAsync(
+    /// <remarks>
+    /// Refuses, rather than guesses, when the workspace service cannot say what the switch was.
+    /// This is the one read of AllowAnyPlugins that is written down: once the curation row exists
+    /// the switch is never consulted again, so an outage read as "off" here would not be a
+    /// momentary refusal but a permanent, empty list - every member losing every plugin because
+    /// the Owner happened to click during a blip. Nothing is staged before the answer is known.
+    /// </remarks>
+    /// <returns>
+    /// The rows seeded by this call (staged, unsaved), empty if nothing was seeded; or
+    /// <see cref="WorkspacePluginConstants.ErrorCodes.PolicyUnavailable"/>.
+    /// </returns>
+    private async Task<Result<IReadOnlyList<WorkspacePlugin>>> EnsureCuratedAsync(
         Guid workspaceId,
         Guid callerId,
         CancellationToken ct)
     {
         if (await _unitOfWork.WorkspacePluginCurationRepository.GetByIdAsync(workspaceId, ct) is not null)
-            return [];
+            return Result.Success<IReadOnlyList<WorkspacePlugin>>([]);
 
-        var allowedEverything = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+        var answer = await _policyClient.ReadAllowAnyPluginsAsync(workspaceId, ct);
+        if (answer == WorkspacePluginPolicyAnswer.Unknown)
+        {
+            _logger.LogWarning(
+                "Refused the first edit of workspace {WorkspaceId}'s plugin list: AllowAnyPlugins could not be read, and seeding from a guess would be permanent.",
+                workspaceId);
+            return Result.Failure<IReadOnlyList<WorkspacePlugin>>(
+                WorkspacePluginConstants.Messages.PolicyUnavailable,
+                WorkspacePluginConstants.ErrorCodes.PolicyUnavailable);
+        }
+
+        var allowedEverything = answer == WorkspacePluginPolicyAnswer.Allowed;
         var now = DateTime.UtcNow;
 
         await _unitOfWork.WorkspacePluginCurationRepository.AddAsync(new WorkspacePluginCuration
@@ -528,7 +553,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             SeededFromAllowAnyPlugins = allowedEverything,
         }, ct);
 
-        if (!allowedEverything) return [];
+        if (!allowedEverything) return Result.Success<IReadOnlyList<WorkspacePlugin>>([]);
 
         var marketplace = await _unitOfWork.PluginRepository.FindAsync(
             p => p.IsActive && p.OwnerWorkspaceId == null,
@@ -554,7 +579,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             workspaceId,
             marketplace.Count);
 
-        return seeded;
+        return Result.Success<IReadOnlyList<WorkspacePlugin>>(seeded);
     }
 
     private async Task<IReadOnlyList<PluginRequest>> SettlePendingRequestsAsync(

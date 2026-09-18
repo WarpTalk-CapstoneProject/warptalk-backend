@@ -226,6 +226,56 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task Transition_WhenAllowAnyPluginsCannotBeRead_TheFirstEditChangesNothing()
+    {
+        // Gap 1 of the marketplace audit. The policy client used to answer an outage with "off",
+        // and the first edit wrote that down: a curation row with nothing seeded, i.e. every member
+        // of a workspace that had every plugin permanently left with the one the Owner clicked.
+        PolicyUnreadable();
+        var sut = Sut();
+
+        var add = await sut.AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+        var remove = await sut.RemovePluginAsync(WorkspaceId, OwnerId, "notion");
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, add.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, remove.ErrorCode);
+        Assert.Empty(_curations);
+        Assert.Empty(_workspacePlugins);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Transition_ApprovingDuringAnOutage_LeavesTheRequestPending()
+    {
+        AllowAnyPlugins(false);
+        var sut = Sut();
+        var request = (await sut.CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+        _sent.Clear();
+        PolicyUnreadable();
+
+        var result = await sut.ApproveRequestAsync(WorkspaceId, OwnerId, request.Id);
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, result.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.RequestStatus.Pending, Assert.Single(_requests).Status);
+        Assert.Empty(_curations);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task ACuratedWorkspace_DoesNotNeedThePolicy_ToChangeItsList()
+    {
+        // Only the transition reads the switch; once the list is the list, an outage is irrelevant.
+        AlreadyCurated();
+        PolicyUnreadable();
+
+        var result = await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal([_linear.Id], _workspacePlugins.Select(r => r.PluginId));
+        await _policyClient.DidNotReceive().ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task Transition_RetiredPluginsAreNotSeeded()
     {
         AllowAnyPlugins(true);
@@ -456,6 +506,7 @@ public class WorkspacePluginMarketplaceServiceTests
     [InlineData(WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending, 409)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.PluginRetired, 409)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, 400)]
+    [InlineData(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, 503)]
     public void TheControllerMapsRefusalsToStatuses(string errorCode, int status)
     {
         Assert.Equal(status, WorkspacePluginsController.StatusFor(errorCode));
@@ -473,8 +524,23 @@ public class WorkspacePluginMarketplaceServiceTests
 
     // ---- plumbing ------------------------------------------------------------------------------
 
-    private void AllowAnyPlugins(bool allow) =>
+    private void AllowAnyPlugins(bool allow)
+    {
         _policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(allow);
+        _policyClient.ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(allow ? WorkspacePluginPolicyAnswer.Allowed : WorkspacePluginPolicyAnswer.NotAllowed);
+    }
+
+    /// <summary>The workspace service is down: the guard hears "no", the transition hears "unknown".</summary>
+    private void PolicyUnreadable()
+    {
+        _policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(false);
+        _policyClient.ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(WorkspacePluginPolicyAnswer.Unknown);
+    }
+
+    private void AlreadyCurated() =>
+        _curations.Add(new WorkspacePluginCuration { WorkspaceId = WorkspaceId, CuratedAt = DateTime.UtcNow, CuratedBy = OwnerId });
 
     private static TRepository InMemory<TRepository, T>(List<T> store, Func<T, Guid> id)
         where TRepository : class, IGenericRepository<T>

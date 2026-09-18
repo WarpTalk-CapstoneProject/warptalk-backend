@@ -50,6 +50,13 @@ public static class WorkspacePluginConstants
         public const string NotAPrivatePlugin = "not_a_private_plugin";
         public const string InvalidPrivatePlugin = "invalid_private_plugin";
         public const string ListChangedConcurrently = "workspace_plugin_list_changed";
+
+        /// <summary>
+        /// The workspace service could not say whether AllowAnyPlugins was on, and the change would
+        /// have written the workspace's list for the first time from that answer. 503: nothing was
+        /// changed, and trying again later is the whole remedy.
+        /// </summary>
+        public const string PolicyUnavailable = "workspace_plugin_policy_unavailable";
     }
 
     public static class Messages
@@ -58,6 +65,7 @@ public static class WorkspacePluginConstants
         public const string OwnerOnly = "Only the workspace owner can change which plugins this workspace has.";
         public const string OwnerOrAdminOnly = "Only a workspace owner or admin can see this workspace's plugins and requests.";
         public const string PrivatePluginNeedsItsWorkspace = "This plugin belongs to a workspace. Use it from that workspace.";
+        public const string PolicyUnavailable = "Couldn't read this workspace's plugin settings right now, so nothing was changed. Try again in a moment.";
     }
 
     /// <summary>
