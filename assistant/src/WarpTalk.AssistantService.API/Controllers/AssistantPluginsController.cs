@@ -147,6 +147,32 @@ public class AssistantPluginsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Connects an <c>api_key</c> plugin with the caller's own key. The key is never returned.
+    /// </summary>
+    [HttpPost("{pluginKey}/api-key")]
+    [ProducesResponseType(typeof(PluginCatalogItemDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ConnectWithApiKey(
+        string pluginKey,
+        [FromBody] ConnectPluginApiKeyRequest request,
+        [FromQuery] Guid? workspaceId,
+        CancellationToken ct)
+    {
+        var result = await _connectionService.ConnectWithApiKeyAsync(pluginKey, CurrentUserId, request.ApiKey, workspaceId, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
+            if (result.ErrorCode == PluginConstants.ErrorCodes.PluginNotInstalled) return Conflict(result.Error);
+            if (IsWorkspacePolicyRefusal(result.ErrorCode)) return StatusCode(StatusCodes.Status403Forbidden, result.Error);
+            return BadRequest(result.Error);
+        }
+        return Ok(result.Value);
+    }
+
     [HttpGet("{pluginKey}/connection")]
     [ProducesResponseType(typeof(PluginConnectionStatusDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
