@@ -165,6 +165,48 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task AnAdmin_SeesRequestsReadOnly_TheOwnerCanManage()
+    {
+        // Gap 12: the page learns from canManage that an Admin may look but not decide.
+        AllowAnyPlugins(false);
+        var sut = Sut();
+        var request = (await sut.CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+
+        var asAdmin = (await sut.GetOverviewAsync(WorkspaceId, AdminId)).Value!;
+        var asOwner = (await sut.GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
+
+        Assert.False(asAdmin.CanManage);
+        Assert.Single(asAdmin.PendingRequests);
+        Assert.True(asOwner.CanManage);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, (await sut.ApproveRequestAsync(WorkspaceId, AdminId, request.Id)).ErrorCode);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, (await sut.DeclineRequestAsync(WorkspaceId, AdminId, request.Id)).ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.RequestStatus.Pending, Assert.Single(_requests).Status);
+    }
+
+    [Fact]
+    public async Task TheOverview_NamesTheCallersOwnAdditions_AndCarriesAuthMode()
+    {
+        AlreadyCurated();
+        _workspacePlugins.Add(new WorkspacePlugin { Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, PluginId = _linear.Id, AddedBy = OwnerId });
+        _workspacePlugins.Add(new WorkspacePlugin { Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, PluginId = _notion.Id, AddedBy = null });
+        _notion.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+
+        var asOwner = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId, "owner@warptalk.io.vn")).Value!;
+        var asAdmin = (await Sut().GetOverviewAsync(WorkspaceId, AdminId, "admin@warptalk.io.vn")).Value!;
+
+        var linear = asOwner.InWorkspace.Single(p => p.Key == "linear");
+        Assert.Equal("owner@warptalk.io.vn", linear.AddedByName);
+        Assert.Equal(PluginConstants.AuthMode.OAuth, linear.AuthMode);
+        var notion = asOwner.InWorkspace.Single(p => p.Key == "notion");
+        Assert.Null(notion.AddedByName);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, notion.AuthMode);
+        // Someone else's addition: the id stays, the name is the page's to resolve.
+        var seenByAdmin = asAdmin.InWorkspace.Single(p => p.Key == "linear");
+        Assert.Equal(OwnerId, seenByAdmin.AddedBy);
+        Assert.Null(seenByAdmin.AddedByName);
+    }
+
+    [Fact]
     public async Task TheOwner_CanAdd_AndTheWorkspaceBecomesCurated()
     {
         AllowAnyPlugins(false);

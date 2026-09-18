@@ -45,11 +45,18 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
     public async Task<Result<WorkspacePluginsOverviewDto>> GetOverviewAsync(
         Guid workspaceId,
         Guid callerId,
+        string? callerEmail = null,
         CancellationToken ct = default)
     {
         var membership = await _membershipClient.GetMembershipAsync(workspaceId, callerId, ct);
         if (!membership.IsOwnerOrAdmin)
             return Denied<WorkspacePluginsOverviewDto>(WorkspacePluginConstants.Messages.OwnerOrAdminOnly);
+
+        // Only the Owner adds, so nearly every added row was added by the person most often looking
+        // at this page - and for them the token already names them. Anyone else's name would take a
+        // user directory this service does not have; those rows keep addedBy for the page to resolve.
+        var callerName = string.IsNullOrWhiteSpace(callerEmail) ? null : callerEmail.Trim();
+        string? NameOf(Guid? addedBy) => addedBy == callerId ? callerName : null;
 
         var availability = await _guard.GetAvailabilityAsync(workspaceId, ct);
         var plugins = await _unitOfWork.PluginRepository.FindAsync(
@@ -62,11 +69,12 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         WorkspacePluginItemDto ToItem(Plugin plugin)
         {
             rowsByPlugin.TryGetValue(plugin.Id, out var row);
-            return ToItemDto(
+            var item = ToItemDto(
                 plugin,
                 availability.Of(plugin),
                 row,
                 usedCounts.TryGetValue(plugin.Id, out var used) ? used : 0);
+            return item with { AddedByName = NameOf(item.AddedBy) };
         }
 
         var ordered = plugins

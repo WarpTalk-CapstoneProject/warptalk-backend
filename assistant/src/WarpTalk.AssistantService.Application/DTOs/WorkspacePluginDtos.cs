@@ -18,6 +18,12 @@ namespace WarpTalk.AssistantService.Application.DTOs;
 /// <c>oauth</c> or <c>api_key</c> (<c>PluginConstants.AuthMode</c>): how members connect it - by
 /// signing in, or by each pasting their own key.
 /// </param>
+/// <param name="AddedByName">
+/// Who <paramref name="AddedBy"/> is, when this service can say: on the overview, the caller's own
+/// email for rows the caller added (only the Owner adds, so that is most rows the Owner sees).
+/// Null otherwise - this service has no user directory - and the page resolves
+/// <paramref name="AddedBy"/> from the workspace's member list instead.
+/// </param>
 public record WorkspacePluginItemDto(
     string Key,
     string Provider,
@@ -30,7 +36,8 @@ public record WorkspacePluginItemDto(
     Guid? AddedBy,
     DateTime? AddedAt,
     int MembersUsedCount,
-    string AuthMode);
+    string AuthMode,
+    string? AddedByName = null);
 
 public record WorkspacePluginRequestDto(
     Guid Id,

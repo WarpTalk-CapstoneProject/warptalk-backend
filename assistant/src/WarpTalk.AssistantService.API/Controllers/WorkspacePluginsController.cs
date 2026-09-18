@@ -41,7 +41,7 @@ public class WorkspacePluginsController : ControllerBase
     [ProducesResponseType(typeof(WorkspacePluginsOverviewDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetOverview(Guid workspaceId, CancellationToken ct) =>
-        ToResponse(await _service.GetOverviewAsync(workspaceId, CurrentUserId, ct));
+        ToResponse(await _service.GetOverviewAsync(workspaceId, CurrentUserId, User.GetEmail(), ct));
 
     /// <summary>Adds a marketplace plugin. Owner.</summary>
     [HttpPost("marketplace/{pluginKey}")]
