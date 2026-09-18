@@ -143,6 +143,61 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     }
 
     /// <summary>
+    /// Records the provider cost of an internal credit-unit (CRD) card — the cards usage is actually
+    /// settled on, and the only thing Insights can compute AI provider cost from. Zero is refused:
+    /// no provider in the pipeline is free, and a zero would read as a real cost of nothing.
+    /// </summary>
+    public async Task<Result<UsageRateCardDto>> SetProviderCostAsync(
+        Guid id, SetRateCardProviderCostRequest request, CancellationToken cancellationToken = default)
+    {
+        if (id == Guid.Empty)
+            return Result.Failure<UsageRateCardDto>("A rate-card id is required.", ErrorCodes.ValidationError);
+
+        if (request?.ProviderUnitCostUsd is not > 0)
+        {
+            return Result.Failure<UsageRateCardDto>(
+                "Provider cost must be a positive USD amount per unit.", ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            await _repository.BeginTransactionAsync(cancellationToken);
+
+            var outcome = await _repository.SetCreditRateCardProviderCostAsync(
+                id, request.ProviderUnitCostUsd.Value, cancellationToken);
+            if (outcome is null)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>($"Rate card {id} was not found.", ErrorCodes.NotFound);
+            }
+
+            if (outcome.Change == RateCardProviderCostChange.Refused)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>(RefusalReason(outcome.Card), ErrorCodes.ValidationError);
+            }
+
+            await _repository.CommitTransactionAsync(cancellationToken);
+            return Result.Success(outcome.Card);
+        }
+        catch (Exception ex)
+        {
+            await _repository.RollbackTransactionAsync(cancellationToken);
+            _logger.LogError(ex, "Error setting provider cost on usage rate card {RateCardId}", id);
+            return Result.Failure<UsageRateCardDto>("Unable to set the provider cost.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    private static string RefusalReason(UsageRateCardDto card)
+    {
+        if (!string.Equals(card.Currency?.Trim(), "CRD", StringComparison.OrdinalIgnoreCase))
+            return "Only credit-unit (CRD) cards take a provider cost on its own; edit this card with the rate-card editor, which reprices it from the cost.";
+        if (!card.IsActive || card.EffectiveTo is not null)
+            return "This rate card is retired; set the cost on the card that is in effect.";
+        return "This rate card has no unit, so a per-unit cost cannot be applied to it.";
+    }
+
+    /// <summary>
     /// Prices a proposed rate without publishing it. Read-only: no transaction, no writes.
     /// Shares <see cref="RateCardPricingCalculator"/> with any server-side derivation, so
     /// what the admin sees here is what the formula produces.

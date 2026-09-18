@@ -86,19 +86,27 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
             from r in cards.DefaultIfEmpty()
             select new
             {
+                // Same key as GetConsumedByChargeTypeAsync, so the coverage note and the
+                // credits-by-type breakdown name usage the same way.
+                Type = t.ChargeType != null && t.ChargeType != "" ? t.ChargeType : (u != null ? u.UsageType : "UNKNOWN"),
                 Credits = -t.Amount,
                 // The part of this charge that went below a zero balance. settle_usage_charge:
                 // prev >= 0 → max(0, credits - prev); prev < 0 → credits. With
                 // prev = balance_after - amount, both reduce to max(0, -after) - max(0, -prev).
                 Overage = Math.Max(0, -t.BalanceAfter) - Math.Max(0, t.Amount - t.BalanceAfter),
+                // The card the row was settled on — CRD or VND alike — must carry a cost in the
+                // unit the usage was metered in. A card with no unit predates Phase 2 and is
+                // taken at its word.
                 Covered = u != null && r != null && r.ProviderUnitCost != null && (r.Unit == null || r.Unit == u.Unit),
                 CostUsd = (decimal?)u!.Quantity * r!.ProviderUnitCost,
             };
 
-        var totals = await rows
-            .GroupBy(_ => 1)
+        // One row per charge type; the grand totals are their sums.
+        var byType = await rows
+            .GroupBy(x => x.Type)
             .Select(g => new
             {
+                Type = g.Key,
                 Credits = g.Sum(x => (long)x.Credits),
                 Transactions = g.Count(),
                 Overage = g.Sum(x => (long)x.Overage),
@@ -106,17 +114,20 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
                 CoveredTransactions = g.Count(x => x.Covered),
                 CostUsd = g.Sum(x => x.Covered ? x.CostUsd : 0m),
             })
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
 
-        return totals is null
-            ? new ConsumptionTotals(0, 0, 0, 0, 0, 0m)
-            : new ConsumptionTotals(
-                totals.Credits,
-                totals.Transactions,
-                totals.Overage,
-                totals.CoveredCredits,
-                totals.CoveredTransactions,
-                totals.CostUsd ?? 0m);
+        return new ConsumptionTotals(
+            byType.Sum(x => x.Credits),
+            byType.Sum(x => x.Transactions),
+            byType.Sum(x => x.Overage),
+            byType.Sum(x => x.CoveredCredits),
+            byType.Sum(x => x.CoveredTransactions),
+            byType.Sum(x => x.CostUsd ?? 0m),
+            byType
+                .Select(x => new ChargeTypeCoverage(x.Type, x.Credits, x.CoveredCredits))
+                .OrderByDescending(x => x.Credits)
+                .ThenBy(x => x.ChargeType, StringComparer.Ordinal)
+                .ToList());
     }
 
     public async Task<IReadOnlyList<CreditsByChargeType>> GetConsumedByChargeTypeAsync(

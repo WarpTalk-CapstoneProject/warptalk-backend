@@ -192,10 +192,17 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         cost.Value.Should().Be(30_000m);
         cost.Previous.Should().Be(0m);
         cost.HigherIsBetter.Should().BeFalse();
-        cost.Note.Should().StartWith("covers 1.8% of consumed credits (2 of 5 transactions have a provider cost)");
+        // The partial figure names what it leaves out: tx6 (no usage row) and the costless dubbing
+        // card are TRANSLATION / AUDIO_DUBBING_STANDARD; tx3 has no charge type, so its usage type.
+        cost.Note.Should().Be(
+            "covers 1.8% of consumed credits (2 of 5 transactions have a provider cost); "
+            + "no provider cost for TRANSLATION (97.6%), AUDIO_DUBBING_STANDARD (0.5%), STT (0.1%); "
+            + "USD converted at 25,000 VND/USD");
 
         M(dto, "grossMargin").Value.Should().Be(4_120_000m);
-        M(dto, "grossMargin").Note.Should().Contain("overstated");
+        M(dto, "grossMargin").Note.Should().Be(
+            "AI cost covers only 1.8% of consumed credits (no provider cost for TRANSLATION (97.6%), "
+            + "AUDIO_DUBBING_STANDARD (0.5%), STT (0.1%)), so this margin is overstated");
     }
 
     [DockerFact]

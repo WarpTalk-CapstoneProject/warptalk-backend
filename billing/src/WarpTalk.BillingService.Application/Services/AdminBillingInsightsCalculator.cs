@@ -167,6 +167,7 @@ public static class AdminBillingInsightsCalculator
     /// <summary>
     /// aiProviderCost = Σ usage quantity × rate card provider_unit_cost (USD) over consume rows whose
     /// settled rate card carries a provider cost in the usage record's unit, converted to VND.
+    /// A partial figure says how much of the usage it covers and names the charge types it leaves out.
     /// </summary>
     public static MetricSide AiProviderCost(ConsumptionTotals consumption, decimal? fxUsdVnd)
     {
@@ -175,10 +176,12 @@ public static class AdminBillingInsightsCalculator
             return new MetricSide(0m, null);
         }
 
+        var uncovered = UncoveredChargeTypes(consumption);
         if (consumption.CostCoveredTransactions == 0)
         {
             return MetricSide.Unavailable(string.Create(Invariant,
-                $"cannot be reconstructed: none of the {consumption.Transactions} consume transaction(s) was settled on a rate card with a provider_unit_cost"));
+                $"cannot be reconstructed: none of the {consumption.Transactions} consume transaction(s) was settled on a rate card with a provider_unit_cost")
+                + (uncovered is null ? string.Empty : $" ({uncovered})"));
         }
 
         if (fxUsdVnd is not > 0)
@@ -187,9 +190,14 @@ public static class AdminBillingInsightsCalculator
         }
 
         var coverage = Coverage(consumption);
-        var note = string.Create(Invariant,
-            $"covers {coverage:0.#}% of consumed credits ({consumption.CostCoveredTransactions} of {consumption.Transactions} transactions have a provider cost); USD converted at {fxUsdVnd.Value:N0} VND/USD");
-        return new MetricSide(RoundVnd(consumption.ProviderCostUsd * fxUsdVnd.Value), note);
+        var notes = new List<string>
+        {
+            string.Create(Invariant,
+                $"covers {coverage:0.#}% of consumed credits ({consumption.CostCoveredTransactions} of {consumption.Transactions} transactions have a provider cost)"),
+        };
+        if (uncovered is not null) notes.Add(uncovered);
+        notes.Add(string.Create(Invariant, $"USD converted at {fxUsdVnd.Value:N0} VND/USD"));
+        return new MetricSide(RoundVnd(consumption.ProviderCostUsd * fxUsdVnd.Value), string.Join("; ", notes));
     }
 
     /// <summary>Share of consumed credits with a reconstructable provider cost, 0–100. 100 when nothing was consumed.</summary>
@@ -198,6 +206,31 @@ public static class AdminBillingInsightsCalculator
             ? 100m
             : Math.Round(consumption.CostCoveredCredits * 100m / consumption.CreditsConsumed, 1, MidpointRounding.AwayFromZero);
 
+    /// <summary>
+    /// "no provider cost for TRANSLATION (48.1%), UNKNOWN (&lt;0.1%)" — each charge type with credits that
+    /// carry no provider cost, and its share of all consumed credits, largest first. Null when every
+    /// credit is covered or the per-type split is unknown.
+    /// </summary>
+    public static string? UncoveredChargeTypes(ConsumptionTotals consumption)
+    {
+        if (consumption.ByChargeType is not { Count: > 0 } byType || consumption.CreditsConsumed <= 0) return null;
+
+        var parts = byType
+            .Where(type => type.UncoveredCredits > 0)
+            .OrderByDescending(type => type.UncoveredCredits)
+            .ThenBy(type => type.ChargeType, StringComparer.Ordinal)
+            .Select(type =>
+            {
+                var share = Math.Round(type.UncoveredCredits * 100m / consumption.CreditsConsumed, 1, MidpointRounding.AwayFromZero);
+                return share == 0m
+                    ? $"{type.ChargeType} (<0.1%)"
+                    : string.Create(Invariant, $"{type.ChargeType} ({share:0.#}%)");
+            })
+            .ToList();
+
+        return parts.Count == 0 ? null : "no provider cost for " + string.Join(", ", parts);
+    }
+
     /// <summary>grossMargin = revenue − aiProviderCost; null if either is null.</summary>
     public static MetricSide GrossMargin(MetricSide revenue, MetricSide aiCost, ConsumptionTotals consumption)
     {
@@ -205,9 +238,15 @@ public static class AdminBillingInsightsCalculator
         if (aiCost.Value is null) return MetricSide.Unavailable("AI provider cost is unavailable");
 
         var coverage = Coverage(consumption);
-        var note = coverage < 100m
-            ? string.Create(Invariant, $"AI cost covers only {coverage:0.#}% of consumed credits, so this margin is overstated")
-            : null;
+        string? note = null;
+        if (coverage < 100m)
+        {
+            var uncovered = UncoveredChargeTypes(consumption);
+            note = string.Create(Invariant, $"AI cost covers only {coverage:0.#}% of consumed credits")
+                + (uncovered is null ? string.Empty : $" ({uncovered})")
+                + ", so this margin is overstated";
+        }
+
         return new MetricSide(revenue.Value.Value - aiCost.Value.Value, note);
     }
 
