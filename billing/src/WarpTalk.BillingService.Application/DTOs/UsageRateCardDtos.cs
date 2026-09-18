@@ -30,6 +30,14 @@ public record UpsertUsageRateCardRequest(
     bool? IsActive = true);
 
 /// <summary>
+/// Records what the provider charges per unit on an internal credit-unit (CRD) card — the cards
+/// billing_worker actually settles on. Their credit price is not derived from a provider cost, so the
+/// full editor (which reprices from cost × markup) cannot be used for them; this changes the cost only.
+/// <see cref="ProviderUnitCostUsd"/> is USD per the card's own unit.
+/// </summary>
+public record SetRateCardProviderCostRequest(decimal? ProviderUnitCostUsd);
+
+/// <summary>
 /// Prices a hypothetical rate change before it is published. FX rate and credit value
 /// fall back to the stored pricing config when omitted, so an admin can preview against
 /// live economics or against a proposed change to them.

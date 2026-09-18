@@ -125,6 +125,60 @@ public class AdminBillingInsightsCalculatorTests
         margin.Note.Should().Be("AI cost covers only 50% of consumed credits, so this margin is overstated");
     }
 
+    [Fact]
+    public void AiProviderCost_NamesEachUncoveredChargeType_LargestFirst()
+    {
+        var consumption = new ConsumptionTotals(10_000, 40, 0, 7_000, 30, 3m,
+        [
+            new ChargeTypeCoverage("AUDIO_DUBBING_STANDARD", 7_000, 7_000),
+            new ChargeTypeCoverage("TRANSLATION", 2_995, 0),
+            new ChargeTypeCoverage("UNKNOWN", 4, 0),
+            new ChargeTypeCoverage("STT", 1, 0),
+        ]);
+
+        AiProviderCost(consumption, Fx).Note.Should().Be(
+            "covers 70% of consumed credits (30 of 40 transactions have a provider cost); "
+            + "no provider cost for TRANSLATION (30%), UNKNOWN (<0.1%), STT (<0.1%); USD converted at 25,000 VND/USD");
+    }
+
+    [Fact]
+    public void AiProviderCost_FullyCovered_SaysSoAndNamesNothing()
+    {
+        var consumption = new ConsumptionTotals(73, 3, 0, 73, 3, 0.1078m,
+        [
+            new ChargeTypeCoverage("AUDIO_DUBBING_VOICE_CLONE", 40, 40),
+            new ChargeTypeCoverage("AUDIO_DUBBING_STANDARD", 33, 33),
+        ]);
+
+        var cost = AiProviderCost(consumption, Fx);
+
+        cost.Value.Should().Be(2_695m);
+        cost.Note.Should().Be("covers 100% of consumed credits (3 of 3 transactions have a provider cost); USD converted at 25,000 VND/USD");
+        UncoveredChargeTypes(consumption).Should().BeNull();
+        GrossMargin(new MetricSide(10_000m, null), cost, consumption).Should().Be(new MetricSide(7_305m, null));
+    }
+
+    [Fact]
+    public void AiProviderCost_WithNoCoveredRows_NamesWhatIsMissing()
+    {
+        var cost = AiProviderCost(
+            new ConsumptionTotals(500, 4, 0, 0, 0, 0m, [new ChargeTypeCoverage("TRANSLATION", 500, 0)]), Fx);
+
+        cost.Value.Should().BeNull();
+        cost.Note.Should().Be(
+            "cannot be reconstructed: none of the 4 consume transaction(s) was settled on a rate card with a provider_unit_cost (no provider cost for TRANSLATION (100%))");
+    }
+
+    [Fact]
+    public void GrossMargin_NamesTheUncoveredChargeTypes()
+    {
+        var consumption = new ConsumptionTotals(1000, 2, 0, 500, 1, 1m,
+            [new ChargeTypeCoverage("TRANSLATION", 500, 0), new ChargeTypeCoverage("AUDIO_DUBBING_STANDARD", 500, 500)]);
+
+        GrossMargin(new MetricSide(100_000m, null), new MetricSide(25_000m, null), consumption).Note.Should().Be(
+            "AI cost covers only 50% of consumed credits (no provider cost for TRANSLATION (50%)), so this margin is overstated");
+    }
+
     // ── Churn ────────────────────────────────────────────────────────────────
 
     [Theory]

@@ -505,6 +505,86 @@ public class UsageRateCardAdminServiceTests
     }
 
     // ---------------------------------------------------------------------
+    // SetProviderCostAsync — the provider cost of a credit-unit (CRD) card
+    // ---------------------------------------------------------------------
+
+    private static UsageRateCardDto CrdCard(decimal? cost = null, bool active = true) =>
+        new(Guid.NewGuid(), "AUDIO_DUBBING_STANDARD", "second", "", "", null, null, 0.25m, "CRD", cost, null,
+            DateTime.UtcNow, active ? null : DateTime.UtcNow, active);
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0.0)]
+    [InlineData(-0.0001)]
+    public async Task SetProviderCostAsync_MissingZeroOrNegativeCost_IsRejectedBeforeOpeningATransaction(double? cost)
+    {
+        var (service, _, calls) = CreateService();
+
+        var result = await service.SetProviderCostAsync(
+            Guid.NewGuid(), new SetRateCardProviderCostRequest(cost is null ? null : (decimal)cost.Value));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SetProviderCostAsync_UnknownId_RollsBackAndReportsNotFound()
+    {
+        var (service, repository, calls) = CreateService();
+        var id = Guid.NewGuid();
+        repository
+            .Setup(r => r.SetCreditRateCardProviderCostAsync(id, 0.00049m, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("set"))
+            .ReturnsAsync((RateCardProviderCostOutcome?)null);
+
+        var result = await service.SetProviderCostAsync(id, new SetRateCardProviderCostRequest(0.00049m));
+
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        calls.Should().Equal("begin", "set", "rollback");
+    }
+
+    [Theory]
+    [InlineData("VND", true, "Only credit-unit (CRD) cards")]
+    [InlineData("CRD", false, "retired")]
+    public async Task SetProviderCostAsync_RefusedCard_RollsBackWithTheReason(string currency, bool active, string reason)
+    {
+        var (service, repository, calls) = CreateService();
+        var card = CrdCard(active: active) with { Currency = currency };
+        repository
+            .Setup(r => r.SetCreditRateCardProviderCostAsync(card.Id, 0.00049m, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("set"))
+            .ReturnsAsync(new RateCardProviderCostOutcome(RateCardProviderCostChange.Refused, card));
+
+        var result = await service.SetProviderCostAsync(card.Id, new SetRateCardProviderCostRequest(0.00049m));
+
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Contain(reason);
+        calls.Should().Equal("begin", "set", "rollback");
+    }
+
+    [Theory]
+    [InlineData(RateCardProviderCostChange.Recorded)]
+    [InlineData(RateCardProviderCostChange.Superseded)]
+    [InlineData(RateCardProviderCostChange.Unchanged)]
+    public async Task SetProviderCostAsync_AcceptedChange_CommitsAndReturnsTheCardInEffect(RateCardProviderCostChange change)
+    {
+        var (service, repository, calls) = CreateService();
+        var id = Guid.NewGuid();
+        var inEffect = CrdCard(cost: 0.00049m);
+        repository
+            .Setup(r => r.SetCreditRateCardProviderCostAsync(id, 0.00049m, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("set"))
+            .ReturnsAsync(new RateCardProviderCostOutcome(change, inEffect));
+
+        var result = await service.SetProviderCostAsync(id, new SetRateCardProviderCostRequest(0.00049m));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(inEffect);
+        calls.Should().Equal("begin", "set", "commit");
+    }
+
+    // ---------------------------------------------------------------------
     // PreviewRateCardAsync — pricing a proposed rate without publishing it
     // ---------------------------------------------------------------------
 
