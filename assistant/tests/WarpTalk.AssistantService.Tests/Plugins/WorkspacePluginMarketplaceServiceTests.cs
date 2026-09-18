@@ -409,7 +409,11 @@ public class WorkspacePluginMarketplaceServiceTests
             Assert.NotNull(r.DecidedAt);
         });
         Assert.Equal([AdminId, MemberId], _sent.Select(n => n.UserId).Order());
-        Assert.All(_sent, n => Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestApproved, n.Type));
+        Assert.All(_sent, n =>
+        {
+            Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestApproved, n.Type);
+            Assert.Equal($"/settings/plugins?workspace={WorkspaceId}", n.ActionUrl);
+        });
     }
 
     [Fact]
@@ -427,6 +431,8 @@ public class WorkspacePluginMarketplaceServiceTests
         var notification = Assert.Single(_sent);
         Assert.Equal(MemberId, notification.UserId);
         Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestDeclined, notification.Type);
+        // Gap 13: opens the member's plugins page on THIS workspace, not whichever was last active.
+        Assert.Equal($"/settings/plugins?workspace={WorkspaceId}", notification.ActionUrl);
 
         var again = await sut.DeclineRequestAsync(WorkspaceId, OwnerId, request.Id);
         Assert.Equal(WorkspacePluginConstants.ErrorCodes.RequestNotPending, again.ErrorCode);

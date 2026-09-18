@@ -68,10 +68,24 @@ public static class PluginRequestNotifications
                 : plugin.IsActive
                     ? $"Your workspace owner decided not to add {plugin.Label} for now."
                     : $"{plugin.Label} is no longer offered in the marketplace, so it can't be added.",
-            // The member's own plugins page, which is where Connect lives.
-            "/settings/plugins",
+            MemberPluginsUrl(workspace),
             Metadata(workspace, request, plugin));
     }
+
+    /// <summary>
+    /// The member's own plugins page, which is where Connect lives - opened on the workspace the
+    /// decision was made in.
+    /// </summary>
+    /// <remarks>
+    /// Gap 13. <c>/settings/plugins</c> is deliberately not workspace-shaped (the web reads the
+    /// active workspace from its store), so a bare link opened on whichever workspace the member
+    /// last had active - and a member of two workspaces was told "added" and shown "Request". The
+    /// id rather than the slug: the web's store keys the active workspace by id, and an id cannot go
+    /// stale when a workspace's slug changes between the decision and the click. The web honours
+    /// <c>?workspace=</c> by switching to that workspace first.
+    /// </remarks>
+    public static string MemberPluginsUrl(WorkspaceProfile workspace) =>
+        $"/settings/plugins?workspace={workspace.WorkspaceId}";
 
     /// <summary>
     /// The notification service refuses a title or body that looks like HTML, and refuses the whole
