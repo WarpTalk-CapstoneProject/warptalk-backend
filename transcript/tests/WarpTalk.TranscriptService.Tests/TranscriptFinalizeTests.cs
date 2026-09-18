@@ -53,6 +53,7 @@ public class TranscriptFinalizeTests
             _unitOfWork,
             Substitute.For<ITranscriptReadAccess>(),
             _roomClient,
+            Substitute.For<ITranscriptRoomLanguagePolicy>(),
             Substitute.For<ITranscriptTranslationBackfillService>(),
             _logger);
     }
