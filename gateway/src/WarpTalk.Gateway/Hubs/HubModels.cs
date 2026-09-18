@@ -24,7 +24,33 @@ public record TranscriptSegmentDto(
     // not as a score.
     float? Confidence,
     int StartTimeMs,
-    int EndTimeMs);
+    int EndTimeMs,
+    // WT-716 tier 1. APPENDED, never inserted — positional record, see AiSuggestionDto.
+    //
+    // CleanText: the line with fillers and stutters removed by stt_worker. NULL means NOT CLEANED
+    // (an stt_worker that predates cleaning) and the client shows OriginalText; an EMPTY string
+    // means the line was filler only and the Clean view hides it. Never fold one into the other.
+    string? CleanText = null,
+    // Subset of filler_only, fillers_removed, stutter_removed, escalate. Always an array on the
+    // wire — empty, never null.
+    IReadOnlyList<string>? CleanFlags = null);
+
+/// <summary>
+/// WT-716 tier 2, live: one whole cleaned sentence over raw segments, relayed from
+/// <c>transcript:clean</c> as "TranscriptCleanSentenceReceived". Same shape as TranscriptService's
+/// <c>TranscriptCleanSentenceDto</c> from GET /api/v1/transcripts/{id}/clean-sentences, minus
+/// UpdatedAt, so the client merges live and loaded sentences with one reducer: same Id with a
+/// higher Revision replaces, lower or equal is ignored.
+/// </summary>
+public record TranscriptCleanSentenceDto(
+    Guid Id,
+    Guid? SpeakerId,
+    IReadOnlyList<Guid> SegmentIds,
+    string CleanText,
+    string Language,
+    IReadOnlyList<string> Flags,
+    string Source,
+    int Revision);
 
 public record ChatMessageDto(
     Guid MessageId,

@@ -42,6 +42,8 @@ public partial class TranscriptDbContext : DbContext
 
     public virtual DbSet<TranscriptPauseWindow> TranscriptPauseWindows { get; set; }
 
+    public virtual DbSet<TranscriptCleanSentence> TranscriptCleanSentences { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -462,6 +464,9 @@ public partial class TranscriptDbContext : DbContext
                 .HasDefaultValue(true)
                 .HasColumnName("is_final");
             entity.Property(e => e.MatchedSegmentId).HasColumnName("matched_segment_id");
+            // WT-716 tier 1. See migration 20260917072013_add_transcript_clean_text.
+            entity.Property(e => e.CleanText).HasColumnName("clean_text");
+            entity.Property(e => e.CleanFlags).HasColumnName("clean_flags");
 
             entity.HasOne(d => d.Transcript).WithMany(p => p.TranscriptSegments)
                 .HasForeignKey(d => d.TranscriptId)
@@ -594,6 +599,38 @@ public partial class TranscriptDbContext : DbContext
                 .HasColumnName("resumed_by");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<TranscriptCleanSentence>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("transcript_clean_sentences_pkey");
+
+            entity.ToTable("transcript_clean_sentences", "transcript");
+
+            entity.HasIndex(e => e.TranscriptId, "transcript_clean_sentences_transcript_id_idx");
+
+            // No default: the id is the producer's sentence_id, so a later revision finds the row.
+            entity.Property(e => e.Id).ValueGeneratedNever().HasColumnName("id");
+            entity.Property(e => e.TranscriptId).HasColumnName("transcript_id");
+            entity.Property(e => e.SpeakerParticipantId)
+                .HasComment("External TranslationRoomService participant id. No physical FK.")
+                .HasColumnName("speaker_participant_id");
+            entity.Property(e => e.SegmentIds).HasColumnName("segment_ids");
+            entity.Property(e => e.CleanText).HasColumnName("clean_text");
+            entity.Property(e => e.Language).HasMaxLength(15).HasColumnName("language");
+            entity.Property(e => e.Flags).HasDefaultValueSql("'{}'::text[]").HasColumnName("flags");
+            entity.Property(e => e.Source).HasMaxLength(20).HasColumnName("source");
+            // Concurrency token — see TranscriptCleanSentence.Revision.
+            entity.Property(e => e.Revision).IsConcurrencyToken().HasColumnName("revision");
+            entity.Property(e => e.StartTimeMs).HasColumnName("start_time_ms");
+            entity.Property(e => e.ProducedAt).HasColumnName("produced_at");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+
+            entity.HasOne(d => d.Transcript).WithMany()
+                .HasForeignKey(d => d.TranscriptId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("transcript_clean_sentences_transcript_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);
