@@ -559,6 +559,135 @@ public class WorkspacePluginMarketplaceServiceTests
         Assert.False(elsewhere.IsUsable(plugin));
     }
 
+    [Fact]
+    public async Task APrivatePlugin_CanConnectWithEachMembersApiKey()
+    {
+        var result = await Sut().CreatePrivatePluginAsync(
+            WorkspaceId, OwnerId, new CreatePrivatePluginRequest("Linear (team)", "https://mcp.linear.app/mcp", AuthMode: "api_key"));
+
+        Assert.True(result.IsSuccess);
+        var plugin = _plugins.Single(p => p.OwnerWorkspaceId == WorkspaceId);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, plugin.OAuthClientSource);
+        Assert.Null(plugin.OAuthClientId);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("oauth")]
+    public async Task APrivatePlugin_ConnectsWithOAuth_UnlessToldOtherwise(string? authMode)
+    {
+        var result = await Sut().CreatePrivatePluginAsync(
+            WorkspaceId, OwnerId, new CreatePrivatePluginRequest("CRM", "https://crm.example.com/mcp", AuthMode: authMode));
+
+        Assert.Equal(PluginConstants.AuthMode.OAuth, result.Value!.AuthMode);
+        Assert.Equal(
+            PluginConstants.OAuthClientSource.Unresolved,
+            _plugins.Single(p => p.OwnerWorkspaceId == WorkspaceId).OAuthClientSource);
+    }
+
+    [Fact]
+    public async Task APrivatePlugin_WithAnUnknownAuthMode_IsRefused()
+    {
+        var result = await Sut().CreatePrivatePluginAsync(
+            WorkspaceId, OwnerId, new CreatePrivatePluginRequest("CRM", "https://crm.example.com/mcp", AuthMode: "basic"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, result.ErrorCode);
+        Assert.DoesNotContain(_plugins, p => p.OwnerWorkspaceId is not null);
+    }
+
+    [Fact]
+    public async Task SwitchingAPrivatePluginToApiKeys_DropsTheLaddersClient_AndEndsEveryConnection()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.Dcr;
+        own.OAuthClientId = "dcr-client";
+        own.OAuthClientSecretEncrypted = "protected-secret";
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+        _installations.Add(ConnectedInstallation(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(AuthMode: "api_key"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, own.OAuthClientSource);
+        // plugins_api_key_forbids_oauth_client.
+        Assert.Null(own.OAuthClientId);
+        Assert.Null(own.OAuthClientSecretEncrypted);
+        // An OAuth token is not a key; the member reconnects by pasting theirs.
+        var connection = Assert.Single(_connections);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+        Assert.Null(Assert.Single(_installations).ConnectedAt);
+    }
+
+    [Fact]
+    public async Task SwitchingAPrivatePluginBackToOAuth_ReturnsItToTheLadder()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(AuthMode: "oauth"));
+
+        Assert.Equal(PluginConstants.AuthMode.OAuth, result.Value!.AuthMode);
+        Assert.Equal(PluginConstants.OAuthClientSource.Unresolved, own.OAuthClientSource);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, Assert.Single(_connections).Status);
+    }
+
+    [Fact]
+    public async Task EditingAPrivatePlugin_WithoutChangingItsAuthMode_LeavesConnectionsAlone()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(Label: "CRM", AuthMode: "api_key"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, Assert.Single(_connections).Status);
+    }
+
+    [Fact]
+    public async Task CorrectingAnApiKeyPluginsUrl_KeepsItOnApiKeys()
+    {
+        // The URL reset sent every learnt OAuth fact back to "unresolved" - including the auth mode
+        // of a row that never had any.
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _plugins.Add(own);
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(McpServerUrl: "https://crm2.example.com/mcp"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("https://crm2.example.com/mcp", own.McpServerUrl);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, own.OAuthClientSource);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+    }
+
+    [Fact]
+    public async Task AnUnknownAuthModeOnEdit_ChangesNothing()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(Label: "Renamed", AuthMode: "basic"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, result.ErrorCode);
+        Assert.Equal("ws_crm_00000000", own.Label);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, Assert.Single(_connections).Status);
+    }
+
     [Theory]
     [InlineData("http://crm.example.com/mcp")]
     [InlineData("https://localhost/mcp")]

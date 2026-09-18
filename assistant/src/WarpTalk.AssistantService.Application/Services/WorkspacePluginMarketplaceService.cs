@@ -221,6 +221,13 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         var urlCheck = McpPluginRows.ValidatePublicServerUrl(url, WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin);
         if (!urlCheck.IsSuccess) return Result.Failure<WorkspacePluginItemDto>(urlCheck.Error!, urlCheck.ErrorCode);
 
+        // Omitted means OAuth, as on the admin create. There is no OAuth client on this request to
+        // conflict with api_key: a private row always finds its client on the ladder.
+        var authMode = string.IsNullOrWhiteSpace(request.AuthMode)
+            ? PluginConstants.AuthMode.OAuth
+            : request.AuthMode.Trim();
+        if (!PluginConstants.AuthMode.IsKnown(authMode)) return UnknownAuthMode<WorkspacePluginItemDto>(authMode);
+
         // The key is derived, and derived with a random suffix, so a collision is astronomically
         // unlikely - but the check that refuses one is the check that keeps a new row from being
         // handed another plugin's OAuth grant, so it still runs, and a collision just rolls again.
@@ -248,6 +255,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             ownerWorkspaceId: workspaceId,
             createdBy: callerId,
             DateTime.UtcNow);
+
+        // Each member pastes their own key; the row holds no client and never walks the ladder.
+        if (authMode == PluginConstants.AuthMode.ApiKey)
+            plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
 
         await _unitOfWork.PluginRepository.AddAsync(plugin, ct);
         await _unitOfWork.SaveChangesAsync(ct);
@@ -280,6 +291,15 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         var fields = ValidatePrivateFields(label, description);
         if (!fields.IsSuccess) return Result.Failure<WorkspacePluginItemDto>(fields.Error!, fields.ErrorCode);
 
+        // Validated before anything below mutates the row, so a refusal leaves it as it was.
+        var currentAuthMode = PluginConstants.AuthMode.Of(plugin.OAuthClientSource);
+        var authMode = currentAuthMode;
+        if (request.AuthMode is not null)
+        {
+            authMode = request.AuthMode.Trim();
+            if (!PluginConstants.AuthMode.IsKnown(authMode)) return UnknownAuthMode<WorkspacePluginItemDto>(authMode);
+        }
+
         if (request.McpServerUrl is not null)
         {
             var url = request.McpServerUrl.Trim();
@@ -308,11 +328,38 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
                 plugin.OAuthRegistrationEndpoint = null;
                 plugin.OAuthClientId = null;
                 plugin.OAuthClientSecretEncrypted = null;
-                plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+                // Back to the ladder - unless members connect with their own key, which has no
+                // ladder. Resetting that to Unresolved turned an api_key plugin into an OAuth one
+                // the moment its URL was corrected.
+                plugin.OAuthClientSource = authMode == PluginConstants.AuthMode.ApiKey
+                    ? PluginConstants.OAuthClientSource.ApiKey
+                    : PluginConstants.OAuthClientSource.Unresolved;
                 plugin.OAuthCimdSupported = null;
                 plugin.OAuthIssParameterSupported = null;
                 plugin.OAuthTokenEndpointAuthMethod = null;
             }
+        }
+
+        if (authMode != currentAuthMode)
+        {
+            if (authMode == PluginConstants.AuthMode.ApiKey)
+            {
+                plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+                // plugins_api_key_forbids_oauth_client: the row cannot keep the client the ladder
+                // registered for it.
+                plugin.OAuthClientId = null;
+                plugin.OAuthClientSecretEncrypted = null;
+            }
+            else
+            {
+                // Back to the ladder, which picks CIMD or DCR on the next connect.
+                plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+            }
+
+            // Every connection was made with the other kind of credential - a token where a key is
+            // now expected, or the reverse - so none may be used past this edit. Members reconnect
+            // the new way; the admin catalog treats its own auth-mode switch the same.
+            await RevokeMemberConnectionsAsync(plugin, ct);
         }
 
         plugin.Label = label;
@@ -824,7 +871,13 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             plugin.OwnerWorkspaceId is null ? null : plugin.McpServerUrl,
             plugin.OwnerWorkspaceId is null ? row?.AddedBy : plugin.CreatedBy,
             plugin.OwnerWorkspaceId is null ? row?.AddedAt : plugin.CreatedAt,
-            membersUsed);
+            membersUsed,
+            PluginConstants.AuthMode.Of(plugin.OAuthClientSource));
+
+    private static Result<T> UnknownAuthMode<T>(string authMode) =>
+        Result.Failure<T>(
+            $"'{authMode}' is not a way to connect. Use {PluginConstants.AuthMode.OAuth} or {PluginConstants.AuthMode.ApiKey}.",
+            WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin);
 
     private static Result ValidatePrivateFields(string label, string description)
     {
