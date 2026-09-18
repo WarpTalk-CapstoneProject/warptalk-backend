@@ -932,6 +932,59 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-707: the first of <paramref name="languages"/> (normalized) that the room's workspace
+    /// whitelist excludes, or null when all are allowed. Null also answers every case where the
+    /// whitelist cannot be read — failure, null result, exception — and an empty whitelist,
+    /// which means "no restriction". The null-safe pattern matters: the lookup's Result can come
+    /// back null (a loose mock, or a client that swallowed its own error), and that must read as
+    /// "unknown", not throw inside join.
+    /// </summary>
+    private async Task<string?> FindLanguageDisallowedByWorkspaceAsync(
+        TranslationRoom room,
+        IEnumerable<string?> languages,
+        CancellationToken ct)
+    {
+        try
+        {
+            var allowed = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+            if (allowed is not { IsSuccess: true, Value: { Count: > 0 } list })
+            {
+                if (allowed is not { IsSuccess: true })
+                {
+                    _logger.LogWarning(
+                        "Workspace language policy lookup failed for workspace {WorkspaceId} (room {RoomId}): {Error}. Allowing the join.",
+                        room.WorkspaceId, room.Id, allowed?.Error);
+                }
+                return null;
+            }
+
+            var allowedSet = list
+                .Select(LanguageHelper.NormalizeLanguageCode)
+                .Where(code => !string.IsNullOrEmpty(code))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (allowedSet.Count == 0)
+                return null;
+
+            foreach (var language in languages)
+            {
+                if (string.IsNullOrWhiteSpace(language))
+                    continue;
+                var normalized = LanguageHelper.NormalizeLanguageCode(language);
+                if (!allowedSet.Contains(normalized))
+                    return normalized;
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Workspace language policy lookup threw for workspace {WorkspaceId} (room {RoomId}). Allowing the join.",
+                room.WorkspaceId, room.Id);
+            return null;
+        }
+    }
+
     /// <summary>Both limits unknown, which every consumer reads as "offer everything".</summary>
     private static JoinLanguagePolicyDto EmptyJoinLanguagePolicy =>
         new(Array.Empty<string>(), Array.Empty<string>());
@@ -990,6 +1043,29 @@ public class TranslationRoomService : ITranslationRoomService
             if (validationError != null)
             {
                 return Result.Failure<JoinTranslationRoomResponse>(validationError, ErrorCodes.ValidationError);
+            }
+
+            // WT-707: the workspace's whitelist (L1). The platform check above only asks "does
+            // WarpTalk support this language at all" — nothing on this path asked the owner, so a
+            // participant row stored `ja` in a workspace that permits only vi/en, and the STT/TTS
+            // pipeline then served a language the owner had ruled out. The picker narrows what is
+            // OFFERED (GetJoinLanguagePolicyByCodeAsync); this is where it is ENFORCED, because a
+            // client that skips the picker — an old build, a direct API call — skips the offer too.
+            //
+            // Fails OPEN on a lookup error, like the suspension check above and the hub's
+            // Set*Language: a WorkspaceService blip must not lock everyone out of a live call.
+            // A lookup that SUCCEEDS and excludes the language is refused outright — there is no
+            // "closest allowed language" to fall back to that the participant actually asked for.
+            if (translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var disallowed = await FindLanguageDisallowedByWorkspaceAsync(
+                    translationRoom, [speakLang, listenLang], ct);
+                if (disallowed != null)
+                {
+                    return Result.Failure<JoinTranslationRoomResponse>(
+                        string.Format(TranslationRoomConstants.ValidationLanguageNotAllowedByWorkspace, disallowed),
+                        ErrorCodes.ValidationError);
+                }
             }
 
             // BR-010: Block KICKED participants
@@ -2430,6 +2506,63 @@ public class TranslationRoomService : ITranslationRoomService
                     ErrorCodes.ValidationError);
             }
 
+            // WT-65: Update and Validate Source Language
+            string? normSourceLang = null;
+            if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
+            {
+                normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
+                if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
+                    return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
+            }
+
+            // WT-65: Update and Validate Target Languages
+            List<string>? normTargetLangs = null;
+            if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
+            {
+                // Deduped after normalizing: "vi" and "vi-VN" collapse to the same target, which
+                // must be stored — and counted against the plan's quota — once (WT-707).
+                normTargetLangs = request.TargetLanguages
+                    .Select(LanguageHelper.NormalizeLanguageCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                foreach (var lang in normTargetLangs)
+                {
+                    if (!await _languagePolicy.IsSupportedAsync(lang))
+                        return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
+                }
+            }
+
+            // WT-466: the workspace's whitelist applies to an EDIT as well.
+            //
+            // Everything above this line checks only that the PLATFORM supports the code. That was
+            // the entire language rule on this path, so a workspace narrowed to vi/en/ja could have
+            // any of its rooms edited into Spanish afterwards — creation enforced the owner's
+            // setting once, and every subsequent write ignored it. Both values are validated
+            // together, and BEFORE either is assigned, so a rejected edit leaves the room exactly
+            // as it was rather than half-applied.
+            // An external-bridge room can carry Guid.Empty here: it belongs to no workspace, so
+            // there is no whitelist to apply and asking would only produce a lookup that fails.
+            if ((normSourceLang != null || normTargetLangs != null) && translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                    translationRoom.WorkspaceId,
+                    normSourceLang,
+                    normTargetLangs ?? Enumerable.Empty<string>(),
+                    ct);
+
+                if (!languagePolicy.IsSuccess)
+                    return Result.Failure(
+                        languagePolicy.Error ?? "The workspace does not allow one of the requested languages.",
+                        languagePolicy.ErrorCode);
+            }
+
+            // WT-707: every check above, every side effect below. This method used to assign the
+            // title/schedule and add invitations — sending each invitee an email and an in-app
+            // notification — BEFORE the language checks ran, so an edit refused for a language
+            // the workspace forbids had already mailed people about a meeting that was never
+            // saved. An email cannot be rolled back with the transaction; the only safe order is
+            // to refuse first. The field assignments stay ahead of the invitations because the
+            // invitation email quotes the (possibly edited) title and scheduled time.
             if (!string.IsNullOrWhiteSpace(request.Title))
                 translationRoom.Title = request.Title;
 
@@ -2473,51 +2606,6 @@ public class TranslationRoomService : ITranslationRoomService
                         invitationsAdded = true;
                     }
                 }
-            }
-
-            // WT-65: Update and Validate Source Language
-            string? normSourceLang = null;
-            if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
-            {
-                normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
-                if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
-                    return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
-            }
-
-            // WT-65: Update and Validate Target Languages
-            List<string>? normTargetLangs = null;
-            if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
-            {
-                normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
-                foreach (var lang in normTargetLangs)
-                {
-                    if (!await _languagePolicy.IsSupportedAsync(lang))
-                        return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
-                }
-            }
-
-            // WT-466: the workspace's whitelist applies to an EDIT as well.
-            //
-            // Everything above this line checks only that the PLATFORM supports the code. That was
-            // the entire language rule on this path, so a workspace narrowed to vi/en/ja could have
-            // any of its rooms edited into Spanish afterwards — creation enforced the owner's
-            // setting once, and every subsequent write ignored it. Both values are validated
-            // together, and BEFORE either is assigned, so a rejected edit leaves the room exactly
-            // as it was rather than half-applied.
-            // An external-bridge room can carry Guid.Empty here: it belongs to no workspace, so
-            // there is no whitelist to apply and asking would only produce a lookup that fails.
-            if ((normSourceLang != null || normTargetLangs != null) && translationRoom.WorkspaceId != Guid.Empty)
-            {
-                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
-                    translationRoom.WorkspaceId,
-                    normSourceLang,
-                    normTargetLangs ?? Enumerable.Empty<string>(),
-                    ct);
-
-                if (!languagePolicy.IsSuccess)
-                    return Result.Failure(
-                        languagePolicy.Error ?? "The workspace does not allow one of the requested languages.",
-                        languagePolicy.ErrorCode);
             }
 
             if (normSourceLang != null)
