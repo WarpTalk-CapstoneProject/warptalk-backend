@@ -31,8 +31,11 @@ public interface IWorkspaceMeetingPolicy
         CancellationToken ct = default);
 
     /// <summary>
-    /// WT-466: applies the workspace's allowed-language whitelist to a language set, and NOTHING
-    /// else — no host permission, no plan quota, no active-room count.
+    /// WT-466: applies the workspace's allowed-language whitelist to a language set. WT-707: and
+    /// the plan's max_languages quota, counted on DISTINCT normalized target languages — the same
+    /// limit the creation gate applies, read from the same settings response, so a room created
+    /// with 2 languages cannot be edited to 6. NOTHING else — no host permission, no active-room
+    /// count.
     ///
     /// It exists because editing a room is not creating one. <c>UpdateTranslationRoomAsync</c>
     /// rewrites SourceLanguage and TargetLanguages after checking only that the platform supports

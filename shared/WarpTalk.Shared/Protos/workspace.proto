@@ -119,6 +119,17 @@ message GetWorkspaceSettingsResponse {
   // Plugin installations and OAuth tokens remain personal; this only gates usage in a
   // workspace-scoped chat.
   bool allow_any_plugins = 8;
+  // WT-707: the plan's effective max_languages limit
+  // (WorkspaceEntitlements.Limit(EntitlementKeys.MaxLanguages)), counted as DISTINCT normalized
+  // target languages per room.
+  //
+  // It exists so the EDIT path applies the same quota ValidateMeetingCreation applies at create,
+  // without borrowing the create gate: otherwise a room created with 2 languages could be edited
+  // to 6. Same reason allowed_target_languages lives here.
+  //
+  // 0 MEANS NO QUOTA APPLIES (no subscription snapshot / cold start), mirroring the create path.
+  // A caller must branch on 0 before comparing, or every such workspace is locked out of edits.
+  int32 max_languages = 9;
 }
 
 message GetWorkspacePreflightRequest {
