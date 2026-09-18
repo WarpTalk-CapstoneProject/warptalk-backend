@@ -43,7 +43,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         //
         // Marketplace rows only. A workspace Owner's private plugin is that workspace's, not the
         // marketplace's: listing it here would present it as something the admin curates and every
-        // Owner could add. It stays reachable by key for support, but is not a marketplace row.
+        // Owner could add. FindAsync applies the same rule to every by-key action, so a private
+        // row is neither listed here nor reachable by typing its key.
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.OwnerWorkspaceId == null, ct: ct);
         var installationCounts = await _unitOfWork.PluginInstallationRepository.CountByPluginAsync(ct);
         var workspaceCounts = await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct);
@@ -511,12 +512,35 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         return Result.Success(new PluginToolAuditPageDto(items, page, pageSize, totalCount));
     }
 
+    /// <summary>
+    /// The one lookup every by-key action on this surface goes through: a marketplace row, active
+    /// or retired, or nothing.
+    /// </summary>
+    /// <remarks>
+    /// No IsActive filter: a retired row is precisely what an operator comes here to inspect or
+    /// reinstate.
+    /// <para>
+    /// <c>OwnerWorkspaceId == null</c> is the filter that matters. A private plugin belongs to the
+    /// workspace whose Owner created it and is edited and removed from that workspace's page. Keyed
+    /// by plugin_key alone, this surface let a platform admin who typed the key flip it active,
+    /// repoint its server - which revokes every member's connection - switch its auth mode, or
+    /// hard-delete it, all under a workspace that never asked and whose Owner's page would then
+    /// disagree with what the row says. The listing already left it out, so the only way in was a
+    /// URL; closing it here, once, closes it for get, update, set-oauth, replace-tools,
+    /// rediscover, delete and audits alike rather than per endpoint.
+    /// </para>
+    /// <para>
+    /// A private row answers exactly as a key nobody holds does - <c>unknown_plugin</c>, a 404. To
+    /// this surface it is not a marketplace row, and there is no second error code a caller would
+    /// act on differently.
+    /// </para>
+    /// </remarks>
     private Task<Plugin?> FindAsync(string pluginKey, CancellationToken ct)
     {
         var key = pluginKey?.Trim() ?? string.Empty;
-        // No IsActive filter: a retired row is precisely what an operator comes here to inspect or
-        // reinstate.
-        return _unitOfWork.PluginRepository.FirstOrDefaultAsync(plugin => plugin.PluginKey == key, ct: ct);
+        return _unitOfWork.PluginRepository.FirstOrDefaultAsync(
+            plugin => plugin.PluginKey == key && plugin.OwnerWorkspaceId == null,
+            ct: ct);
     }
 
     /// <summary>
@@ -638,7 +662,9 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
     private static Result<T> UnknownPlugin<T>(string pluginKey) =>
-        Result.Failure<T>($"No plugin is keyed '{pluginKey}'.", PluginConstants.ErrorCodes.UnknownPlugin);
+        // "Marketplace" because FindAsync looks nowhere else: a workspace's private plugin may hold
+        // this key, and "no plugin is keyed" would then be untrue.
+        Result.Failure<T>($"No marketplace plugin is keyed '{pluginKey}'.", PluginConstants.ErrorCodes.UnknownPlugin);
 
     private static Result<T> Invalid<T>(IReadOnlyList<string> errors, string errorCode) =>
         Result.Failure<T>(string.Join(" ", errors), errorCode);

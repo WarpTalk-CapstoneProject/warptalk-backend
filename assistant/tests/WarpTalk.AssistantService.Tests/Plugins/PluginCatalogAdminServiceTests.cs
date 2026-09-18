@@ -989,6 +989,72 @@ public class PluginCatalogAdminServiceTests
     }
 
     // -----------------------------------------------------------------------------------------
+    // Marketplace rows only
+    // -----------------------------------------------------------------------------------------
+
+    /// <summary>Every action on this surface that finds its row by key.</summary>
+    public static TheoryData<string> ByKeyActions => new()
+    {
+        "get", "update", "set-oauth", "replace-tools", "rediscover", "retire", "hard-delete", "audits",
+    };
+
+    [Theory]
+    [MemberData(nameof(ByKeyActions))]
+    public async Task EveryByKeyAction_AnswersUnknownPlugin_ForAWorkspacesPrivatePlugin_AndTouchesNothing(string action)
+    {
+        // A private plugin is its workspace Owner's to edit and remove. The listing already left it
+        // out; before this, typing its key still let an admin retire it, repoint it (revoking every
+        // member's connection) or hard-delete it under a workspace that never asked.
+        var privateRow = McpPlugin();
+        privateRow.OwnerWorkspaceId = Guid.NewGuid();
+        StubLookup(privateRow);
+        StubAudits(1, Audit("remote_app_search", "success"));
+
+        var errorCode = await RunByKeyAsync(action);
+
+        Assert.Equal(PluginConstants.ErrorCodes.UnknownPlugin, errorCode);
+        Assert.True(privateRow.IsActive);
+        Assert.Equal("https://example.test/mcp", privateRow.McpServerUrl);
+        _pluginRepository.DidNotReceive().Update(Arg.Any<Plugin>());
+        _pluginRepository.DidNotReceive().Remove(Arg.Any<Plugin>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _auditRepository.DidNotReceive().ListForPluginAsync(
+            Arg.Any<Guid>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [MemberData(nameof(ByKeyActions))]
+    public async Task EveryByKeyAction_StillFindsAMarketplaceRow(string action)
+    {
+        // The control for the test above: the same calls against the same row with no owning
+        // workspace get past the lookup, so the 404 there is the filter and not a broken call.
+        StubLookup(McpPlugin());
+        StubAudits(1, Audit("remote_app_search", "success"));
+
+        var errorCode = await RunByKeyAsync(action);
+
+        Assert.NotEqual(PluginConstants.ErrorCodes.UnknownPlugin, errorCode);
+    }
+
+    /// <summary>Runs one by-key action against <see cref="McpKey"/> and returns its error code, or null.</summary>
+    private async Task<string?> RunByKeyAsync(string action)
+    {
+        var sut = CreateSut();
+        return action switch
+        {
+            "get" => (await sut.GetAsync(McpKey)).ErrorCode,
+            "update" => (await sut.UpdateAsync(McpKey, new UpdatePluginCatalogRequest(IsActive: false, McpServerUrl: "https://elsewhere.test/mcp"), AdminUserId)).ErrorCode,
+            "set-oauth" => (await sut.SetOAuthClientAsync(McpKey, new SetPluginOAuthClientRequest("client-abc"), AdminUserId)).ErrorCode,
+            "replace-tools" => (await sut.ReplaceToolsAsync(McpKey, new ReplacePluginToolsRequest([]), AdminUserId)).ErrorCode,
+            "rediscover" => (await sut.RediscoverAsync(McpKey, AdminUserId)).ErrorCode,
+            "retire" => (await sut.DeleteAsync(McpKey, hard: false, AdminUserId)).ErrorCode,
+            "hard-delete" => (await sut.DeleteAsync(McpKey, hard: true, AdminUserId)).ErrorCode,
+            "audits" => (await sut.ListAuditsAsync(McpKey, new PluginToolAuditQueryDto())).ErrorCode,
+            _ => throw new ArgumentOutOfRangeException(nameof(action), action, "Not a by-key action."),
+        };
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------------------------
 
@@ -1023,12 +1089,18 @@ public class PluginCatalogAdminServiceTests
         Assert.Equal(6, row.WorkspaceCount);
     }
 
+    // Applies the predicate it is handed, as StubAllPlugins does. The lookup's filter IS the
+    // marketplace-only rule, so a stub that ignored it would hand the service a private row the
+    // real query never could, and every test of that rule would pass against a service without it.
     private void StubLookup(Plugin? plugin) =>
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
-            .Returns(plugin);
+            .Returns(call => plugin is not null
+                             && call.Arg<Expression<Func<Plugin, bool>>>().Compile()(plugin)
+                ? plugin
+                : null);
 
     // The listing filters in the query (marketplace rows only), so the stub applies the predicate
     // it is handed rather than ignoring it.
