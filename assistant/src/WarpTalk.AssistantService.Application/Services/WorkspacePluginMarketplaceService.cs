@@ -142,7 +142,8 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         var settled = await SettlePendingRequestsAsync(
             workspaceId, plugin.Id, callerId, WorkspacePluginConstants.RequestStatus.Approved, ct);
 
-        await _unitOfWork.SaveChangesAsync(ct);
+        var saved = await SaveListChangeAsync(workspaceId, ct);
+        if (!saved.IsSuccess) return Result.Failure<WorkspacePluginItemDto>(saved.Error!, saved.ErrorCode);
         await NotifyDecidedAsync(workspaceId, settled, plugin, ct);
 
         return Result.Success(ToItemDto(plugin, WorkspacePluginConstants.Availability.Added, added.Value, 0));
@@ -190,8 +191,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         // outcome: the plugin is not on the list that gets written.
         if (row is not null) _unitOfWork.WorkspacePluginRepository.Remove(row);
 
-        await _unitOfWork.SaveChangesAsync(ct);
-        return Result.Success();
+        return await SaveListChangeAsync(workspaceId, ct);
     }
 
     // ---- private plugins ------------------------------------------------------------------------
@@ -374,7 +374,20 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             CreatedAt = DateTime.UtcNow,
         };
         await _unitOfWork.PluginRequestRepository.AddAsync(entity, ct);
-        await _unitOfWork.SaveChangesAsync(ct);
+
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            // The check above and this insert are not atomic: a double-clicked Send lands two
+            // requests between them, and plugin_requests_one_pending refuses the second. That is
+            // the same answer the check gives, so it gets the same code rather than a 500.
+            return Result.Failure<WorkspacePluginRequestDto>(
+                $"You have already asked for {plugin.Label}. Your workspace owner has not decided yet.",
+                WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending);
+        }
 
         // After the commit, and best-effort: a lost notification leaves the request on the Owner's
         // Plugins page and on the sidebar's count, which is where it would be found anyway.
@@ -453,7 +466,8 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             settled = [request];
         }
 
-        await _unitOfWork.SaveChangesAsync(ct);
+        var saved = await SaveListChangeAsync(workspaceId, ct);
+        if (!saved.IsSuccess) return Result.Failure<WorkspacePluginRequestDto>(saved.Error!, saved.ErrorCode);
         await NotifyDecidedAsync(workspaceId, settled, plugin, ct);
 
         return Result.Success(ToRequestDto(request, plugin));
@@ -580,6 +594,37 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             marketplace.Count);
 
         return Result.Success<IReadOnlyList<WorkspacePlugin>>(seeded);
+    }
+
+    /// <summary>
+    /// Commits a change to the workspace's list, turning a lost race into
+    /// <see cref="WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently"/>.
+    /// </summary>
+    /// <remarks>
+    /// Every list write reads, decides and then inserts, and nothing locks between the read and the
+    /// insert. Two first edits both find no curation row and both insert one; two adds of one
+    /// plugin both find no row for it. The database's keys (workspace_plugin_curations_pkey,
+    /// workspace_plugins_workspace_plugin_key) keep the data right; this keeps the answer right -
+    /// 409 "refetch", not 500 "something broke". Unique violations only, recognised by SQLSTATE:
+    /// any other failure is a real fault and still throws.
+    /// </remarks>
+    private async Task<Result> SaveListChangeAsync(Guid workspaceId, CancellationToken ct)
+    {
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            _logger.LogInformation(
+                ex,
+                "A concurrent change to workspace {WorkspaceId}'s plugin list won; this one was refused by a unique key.",
+                workspaceId);
+            return Result.Failure(
+                WorkspacePluginConstants.Messages.ListChangedConcurrently,
+                WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently);
+        }
     }
 
     private async Task<IReadOnlyList<PluginRequest>> SettlePendingRequestsAsync(

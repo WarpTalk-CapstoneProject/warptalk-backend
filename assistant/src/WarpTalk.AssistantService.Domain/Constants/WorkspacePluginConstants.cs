@@ -49,6 +49,10 @@ public static class WorkspacePluginConstants
         public const string PluginRetired = "plugin_retired";
         public const string NotAPrivatePlugin = "not_a_private_plugin";
         public const string InvalidPrivatePlugin = "invalid_private_plugin";
+        /// <summary>
+        /// Another write to the same list landed first - two first edits both creating the curation
+        /// row, or two adds of one plugin - and a unique key refused this one. 409: refetch.
+        /// </summary>
         public const string ListChangedConcurrently = "workspace_plugin_list_changed";
 
         /// <summary>
@@ -66,6 +70,7 @@ public static class WorkspacePluginConstants
         public const string OwnerOrAdminOnly = "Only a workspace owner or admin can see this workspace's plugins and requests.";
         public const string PrivatePluginNeedsItsWorkspace = "This plugin belongs to a workspace. Use it from that workspace.";
         public const string PolicyUnavailable = "Couldn't read this workspace's plugin settings right now, so nothing was changed. Try again in a moment.";
+        public const string ListChangedConcurrently = "This workspace's plugins changed while you were editing them. Refresh and try again.";
     }
 
     /// <summary>

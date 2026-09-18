@@ -122,7 +122,8 @@ public class WorkspacePluginsController : ControllerBase
         WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending
             or WorkspacePluginConstants.ErrorCodes.RequestNotPending
             or WorkspacePluginConstants.ErrorCodes.PluginAlreadyAvailable
-            or WorkspacePluginConstants.ErrorCodes.PluginRetired => StatusCodes.Status409Conflict,
+            or WorkspacePluginConstants.ErrorCodes.PluginRetired
+            or WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently => StatusCodes.Status409Conflict,
         // The workspace service did not answer, so nothing was written: the page should say "try
         // again", not "you did something wrong".
         WorkspacePluginConstants.ErrorCodes.PolicyUnavailable => StatusCodes.Status503ServiceUnavailable,

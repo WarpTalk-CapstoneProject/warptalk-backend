@@ -1,4 +1,6 @@
+using System.Data.Common;
 using System.Linq.Expressions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using WarpTalk.AssistantService.API.Controllers;
@@ -418,6 +420,54 @@ public class WorkspacePluginMarketplaceServiceTests
         Assert.Empty(_workspacePlugins);
     }
 
+    // ---- races ---------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task TwoFirstEditsAtOnce_TheLoserGetsA409_NotA500()
+    {
+        // Gap 6. Both edits found no curation row and both inserted one; the primary key refused the
+        // second. The data is already right - the answer has to be "refetch".
+        AllowAnyPlugins(false);
+        var request = (await Sut().CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+        _sent.Clear();
+        SavesLoseARace();
+
+        // Approve first: the in-memory store applies a staged change before the save is refused,
+        // which a real rolled-back transaction would not.
+        var approve = await Sut().ApproveRequestAsync(WorkspaceId, OwnerId, request.Id);
+        var add = await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+        var remove = await Sut().RemovePluginAsync(WorkspaceId, OwnerId, "notion");
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, add.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, remove.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, approve.ErrorCode);
+        // Nothing committed, so nobody is told it was added.
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task ADoubleClickedRequest_TheLoserIsAlreadyPending_NotA500()
+    {
+        AllowAnyPlugins(false);
+        SavesLoseARace();
+
+        var result = await Sut().CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending, result.ErrorCode);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task AFailureThatIsNotAUniqueViolation_StillThrows()
+    {
+        // Narrow on purpose: a foreign-key or connection failure is a fault, not a race to explain.
+        AllowAnyPlugins(false);
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>())
+            .Returns<int>(_ => throw new DbUpdateException("fk", new FakeDbException("23503")));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear"));
+    }
+
     // ---- private plugins -----------------------------------------------------------------------
 
     [Fact]
@@ -507,6 +557,7 @@ public class WorkspacePluginMarketplaceServiceTests
     [InlineData(WorkspacePluginConstants.ErrorCodes.PluginRetired, 409)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, 400)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, 503)]
+    [InlineData(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, 409)]
     public void TheControllerMapsRefusalsToStatuses(string errorCode, int status)
     {
         Assert.Equal(status, WorkspacePluginsController.StatusFor(errorCode));
@@ -537,6 +588,16 @@ public class WorkspacePluginMarketplaceServiceTests
         _policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(false);
         _policyClient.ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(WorkspacePluginPolicyAnswer.Unknown);
+    }
+
+    /// <summary>Every save is refused by a unique key, as a concurrent writer's commit would cause.</summary>
+    private void SavesLoseARace() =>
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>())
+            .Returns<int>(_ => throw new DbUpdateException("duplicate key", new FakeDbException("23505")));
+
+    private sealed class FakeDbException(string sqlState) : DbException("test")
+    {
+        public override string? SqlState { get; } = sqlState;
     }
 
     private void AlreadyCurated() =>
