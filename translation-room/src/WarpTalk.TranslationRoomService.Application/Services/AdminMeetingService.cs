@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.TranslationRoomService.Application.DTOs.Admin;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -137,6 +138,58 @@ public class AdminMeetingService : IAdminMeetingService
             _logger.LogError(ex, "Admin meeting counts read failed.");
             return Result.Failure<AdminMeetingCountsDto>(
                 "An unexpected error occurred while counting meetings.",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<AdminMeetingInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default)
+    {
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
+        {
+            return Result.Failure<AdminMeetingInsightsDto>(error!, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var rooms = _unitOfWork.TranslationRoomRepository;
+
+            // One read covering both windows (previousMonth of a long window can overlap the
+            // current one), then clipped per window in memory.
+            var spanFrom = window.PreviousFrom < window.From ? window.PreviousFrom : window.From;
+            var spanTo = window.PreviousTo > window.To ? window.PreviousTo : window.To;
+            var spans = await rooms.GetAdminMeetingSpansAsync(spanFrom, spanTo, ct);
+
+            var current = AdminMeetingInsightsCalculator.Totals(spans, window.From, window.To, now);
+            var previous = AdminMeetingInsightsCalculator.Totals(spans, window.PreviousFrom, window.PreviousTo, now);
+            var byDay = AdminMeetingInsightsCalculator.ByDay(spans, window.From, window.To, now, window.TimeZone);
+
+            // Same definitions as GET /admin/meetings/counts, but "today" is the local day of the
+            // request's tz: a Vietnam admin's today began at 17:00Z yesterday.
+            var todayStart = AdminComparisonRange.LocalDayOf(now, window.TimeZone).Start;
+            var (live, startedToday) = await rooms.GetAdminCountsAsync(todayStart, ct);
+
+            return Result.Success(new AdminMeetingInsightsDto(
+                window.Range,
+                window.PreviousRange,
+                [
+                    new AdminInsightMetric(
+                        "meetingsHeld", current.MeetingsHeld, previous.MeetingsHeld, AdminInsightUnits.Count, true),
+                    new AdminInsightMetric(
+                        "hoursTranslated", current.Hours, previous.Hours, AdminInsightUnits.Hours, true,
+                        AdminMeetingInsightsCalculator.HoursNote(current, previous)),
+                ],
+                byDay.Select(d => new AdminMeetingDayDto(d.Date, d.Meetings, d.Hours)).ToList(),
+                live,
+                startedToday));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin meeting insights read failed.");
+            return Result.Failure<AdminMeetingInsightsDto>(
+                "An unexpected error occurred while reading meeting insights.",
                 ErrorCodes.InternalServerError);
         }
     }

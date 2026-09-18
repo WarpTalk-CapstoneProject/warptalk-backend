@@ -85,3 +85,17 @@ public record AdminUserSessionDto(
 /// client-supplied actor would make the trail forgeable.
 /// </summary>
 public record AdminUserActionRequest(string Reason);
+
+/// <summary>One point of a per-day series. <paramref name="Date"/> is a local day of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.</summary>
+public record AdminDailyCountDto(string Date, int Count);
+
+/// <summary>
+/// <c>GET /api/v1/admin/users/insights</c>: metrics <c>newUsers</c> and <c>activeUsers</c>, plus
+/// sign-ups per local day (of the request's <c>tz</c>) across the current range (zero-filled).
+/// </summary>
+public record AdminUserInsightsDto(
+    AdminInsightRange Range,
+    AdminInsightRange PreviousRange,
+    IReadOnlyList<AdminInsightMetric> Metrics,
+    IReadOnlyList<AdminDailyCountDto> NewUsersByDay);
+

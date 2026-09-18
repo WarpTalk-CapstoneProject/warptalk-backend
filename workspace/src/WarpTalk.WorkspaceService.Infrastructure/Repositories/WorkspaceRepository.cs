@@ -115,6 +115,18 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
         return (items, totalCount);
     }
 
+    public Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default)
+        => _context.Workspaces
+            .AsNoTracking()
+            .CountAsync(w => w.CreatedAt >= from && w.CreatedAt < to, ct);
+
+    // The same predicate GetAdminDirectoryAsync uses for status=suspended, so the header figure
+    // and the filtered list cannot disagree.
+    public Task<int> CountSuspendedAsync(CancellationToken ct = default)
+        => _context.Workspaces
+            .AsNoTracking()
+            .CountAsync(w => w.DeletedAt == null && !w.IsActive, ct);
+
     public async Task<WorkspaceDirectoryRow?> GetAdminDetailAsync(Guid workspaceId, CancellationToken ct = default)
     {
         return await Project(_context.Workspaces.AsNoTracking().Where(w => w.Id == workspaceId))
