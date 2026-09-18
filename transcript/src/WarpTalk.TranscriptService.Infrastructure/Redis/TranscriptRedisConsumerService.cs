@@ -629,12 +629,30 @@ public class TranscriptRedisConsumerService : BackgroundService
             // 3. Link the segment to this content — idempotent on the (segment_id, translation_content_id)
             // composite PK, since a Redis Streams redelivery would otherwise try to insert the same
             // pair twice.
-            var alreadyLinked = (await unitOfWork.SegmentTranslationLinks.FindAsync(
+            var existingLink = (await unitOfWork.SegmentTranslationLinks.FindAsync(
                     l => l.SegmentId == segmentId && l.TranslationContentId == content.Id,
                     cancellationToken))
-                .Any();
+                .FirstOrDefault();
 
-            if (!alreadyLinked)
+            if (existingLink != null)
+            {
+                // WT-704: a retranslation after an STT correction that comes out word-for-word the
+                // same dedups onto the content this segment is already linked to, so nothing new is
+                // inserted. That arrival is still the answer to "is this translation up to date?",
+                // and it is the only place the stale mark can be cleared for it — without this the
+                // line would read as outdated forever. Only the current link: a superseded one is
+                // not shown, and re-promoting it here could let a redelivered old message win over
+                // a newer translation.
+                if (existingLink.IsCurrent && existingLink.IsStale)
+                {
+                    existingLink.IsStale = false;
+                    unitOfWork.SegmentTranslationLinks.Update(existingLink);
+                    await unitOfWork.SaveChangesAsync(cancellationToken);
+
+                    _logger.LogInformation("Cleared stale mark on segment {SegmentId} translation {ContentId} ({TargetLang})", segmentId, content.Id, targetLang);
+                }
+            }
+            else
             {
                 // Supersede any current link for this (segment, language) pair — re-translation
                 // (e.g. after a correction) must flip the old head rather than leave two "current" rows.
@@ -653,6 +671,10 @@ public class TranscriptRedisConsumerService : BackgroundService
                     TranslationContentId = content.Id,
                     TargetLanguage = targetLang,
                     IsCurrent = true,
+                    // WT-704: a freshly linked translation was produced from the line as it reads
+                    // now. The superseded head keeps whatever stale mark it had — it is history,
+                    // and only the current link is ever shown.
+                    IsStale = false,
                     DeliveredAt = DateTime.UtcNow
                 }, cancellationToken);
 
