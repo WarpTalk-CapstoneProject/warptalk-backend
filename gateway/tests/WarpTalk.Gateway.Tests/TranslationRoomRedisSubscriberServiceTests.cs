@@ -1,3 +1,4 @@
+using WarpTalk.Gateway.Tests.Helpers;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -51,7 +52,8 @@ public class TranslationRoomRedisSubscriberServiceTests
         _service = new TranslationRoomRedisSubscriberService(
             redis.Object,
             hubContext.Object,
-            new Mock<ILogger<TranslationRoomRedisSubscriberService>>().Object);
+            new Mock<ILogger<TranslationRoomRedisSubscriberService>>().Object,
+            new TestPubSubLeadership());
     }
 
     // ── Pause Transcript (WT-605) ─────────────────────────────
