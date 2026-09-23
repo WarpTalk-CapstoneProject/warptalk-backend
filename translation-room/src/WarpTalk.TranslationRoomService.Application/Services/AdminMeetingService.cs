@@ -56,7 +56,7 @@ public class AdminMeetingService : IAdminMeetingService
         if (status != null && !Statuses.Contains(status, StringComparer.OrdinalIgnoreCase))
         {
             return Result.Failure<AdminPagedResult<AdminMeetingSummaryDto>>(
-                $"Unknown status. Expected one of: {string.Join(", ", Statuses)}.",
+                $"Unknown status. Expected all or one of: {string.Join(", ", Statuses)}.",
                 ErrorCodes.ValidationError);
         }
 
@@ -235,6 +235,18 @@ public class AdminMeetingService : IAdminMeetingService
     }
 
 
+    /// <summary>
+    /// Blank and "all" both mean "no status filter".
+    ///
+    /// WT-693: the directory's default tab is "all" and the page sent it verbatim. Validating it
+    /// as a status answered 400 to the first request of every visit, so the page never loaded.
+    /// "all" is a filter value, not a status, and it is accepted as one here rather than relying on
+    /// every client to remember to drop it.
+    /// </summary>
     private static string? Normalize(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim();
+        return trimmed.Equals("all", StringComparison.OrdinalIgnoreCase) ? null : trimmed;
+    }
 }
