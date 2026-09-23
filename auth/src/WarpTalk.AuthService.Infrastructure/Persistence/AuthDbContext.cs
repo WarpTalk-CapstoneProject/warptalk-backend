@@ -554,6 +554,12 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.QualityScore)
                 .HasPrecision(4, 3)
                 .HasColumnName("quality_score");
+            entity.Property(e => e.CloneErrorCode)
+                .HasMaxLength(64)
+                .HasColumnName("clone_error_code");
+            entity.Property(e => e.CloneError)
+                .HasMaxLength(500)
+                .HasColumnName("clone_error");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
