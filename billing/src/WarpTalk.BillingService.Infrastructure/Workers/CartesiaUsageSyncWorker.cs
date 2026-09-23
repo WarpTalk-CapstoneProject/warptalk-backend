@@ -65,6 +65,13 @@ public sealed class CartesiaUsageSyncWorker : BackgroundService
     /// <summary>How often a replica without the turn asks for it. One Redis SET NX; cheap.</summary>
     private static readonly TimeSpan TurnPoll = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// The longest one sync may run: the turn lease minus a margin for clock drift, the write and
+    /// the lease extension. Past it the sync is cancelled, so it can never still be calling
+    /// Cartesia when another replica is allowed to take the turn.
+    /// </summary>
+    public static readonly TimeSpan SyncBudget = RedisCartesiaSyncCoordinator.TurnTimeout - TimeSpan.FromSeconds(30);
+
     private readonly IServiceProvider _serviceProvider;
     private readonly ICartesiaUsageClient _client;
     private readonly ICartesiaUsageSyncStatus _status;
@@ -174,9 +181,18 @@ public sealed class CartesiaUsageSyncWorker : BackgroundService
 
         CartesiaUsageSyncResult result;
         TimeSpan next;
+
+        // The turn lease is taken for TurnTimeout and NOT renewed while the sync runs, so a sync
+        // that outlived it would overlap with the next replica's turn — two replicas calling
+        // Cartesia's admin API and replacing the same snapshot window at once. Three requests at
+        // the configurable per-request timeout (up to 120 s each) can exceed the 5-minute lease,
+        // so the sync is cut off a safety margin before the lease can expire. A cut-off sync
+        // writes nothing (the write is one SaveChanges) and takes the ordinary failure path.
+        using var runBudget = new CancellationTokenSource(SyncBudget, _time);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, runBudget.Token);
         try
         {
-            result = await SyncOnceAsync(turn.Backfill, ct);
+            result = await SyncOnceAsync(turn.Backfill, bounded.Token);
             next = await AfterSyncAsync(result, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
