@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -20,18 +21,24 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 public class BillingAggregationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<BillingAggregationWorker> _logger;
     private readonly BillingWorkerOptions _options;
 
     public BillingAggregationWorker(
         IServiceProvider serviceProvider,
         ILogger<BillingAggregationWorker> logger,
-        IOptions<BillingWorkerOptions> options)
+        IOptions<BillingWorkerOptions> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
     }
+
+    /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
+    public const string LockResource = "billing:usage-aggregation";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -41,7 +48,17 @@ public class BillingAggregationWorker : BackgroundService
         {
             try
             {
-                await AggregateAndSyncTempLogsAsync(stoppingToken);
+                // SINGLE RUNNER. A tick reads a window of the Redis usage list (LRANGE), settles it, then
+                // trims it (LTRIM) — two non-atomic calls. Two replicas overlapping either debit the same
+                // usage twice (different windows → different idempotency keys) or trim entries nobody settled,
+                // and both push the carry-over entries. Released at the end: running again right away on
+                // another replica is fine, only running concurrently is not.
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(2),
+                    ct => AggregateAndSyncTempLogsAsync(ct),
+                    _logger,
+                    stoppingToken);
             }
             catch (Exception ex)
             {

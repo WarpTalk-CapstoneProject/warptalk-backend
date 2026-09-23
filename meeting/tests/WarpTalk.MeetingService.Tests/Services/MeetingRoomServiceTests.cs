@@ -62,6 +62,21 @@ public class MeetingRoomServiceTests
         roomRepoMock
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(meetingRoom);
+        // Emulates the conditional UPDATE: clears only when the expected host still holds the room.
+        roomRepoMock
+            .Setup(r => r.ClearActiveHostIfAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid translationRoomId, Guid expectedHostId, CancellationToken _) =>
+            {
+                if (meetingRoom is null
+                    || meetingRoom.TranslationRoomId != translationRoomId
+                    || meetingRoom.ActiveHostId != expectedHostId)
+                {
+                    return 0;
+                }
+
+                meetingRoom.ActiveHostId = null;
+                return 1;
+            });
         unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
         return roomRepoMock;
     }
@@ -612,8 +627,33 @@ public class MeetingRoomServiceTests
         Assert.True(result.IsSuccess);
         // Host-less, even though two participants are still in the room and available.
         Assert.Null(meetingRoom.ActiveHostId);
-        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        roomRepoMock.Verify(r => r.ClearActiveHostIfAsync(translationRoomId, departedHostId, It.IsAny<CancellationToken>()), Times.Once);
+        roomRepoMock.Verify(r => r.Update(It.IsAny<MeetingRoom>()), Times.Never);
         _redisServiceMock.Verify(r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Multi-replica: every meeting-service replica receives the same participant-offline pub/sub
+    /// message. Handling it twice must clear the host once and never touch a later claim.
+    /// </summary>
+    [Fact]
+    public async Task HandleHostOfflineAsync_HandledByEveryReplica_ClearsOnce_AndKeepsAHostClaimedInBetween()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var departedHostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = departedHostId, ProviderRoomName = "room-1" };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var first = await _sut.HandleHostOfflineAsync(translationRoomId, departedHostId);
+
+        // Someone claims the host seat before the slower replica gets to the same message.
+        var newHostId = Guid.NewGuid();
+        meetingRoom.ActiveHostId = newHostId;
+        var second = await _sut.HandleHostOfflineAsync(translationRoomId, departedHostId);
+
+        Assert.True(first.Value);
+        Assert.False(second.Value);
+        Assert.Equal(newHostId, meetingRoom.ActiveHostId);
     }
 
     [Fact]
@@ -648,6 +688,7 @@ public class MeetingRoomServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(currentHostId, meetingRoom.ActiveHostId);
+        Assert.False(result.Value);
         roomRepoMock.Verify(r => r.Update(It.IsAny<MeetingRoom>()), Times.Never);
         _redisServiceMock.Verify(r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()), Times.Never);
     }
@@ -670,7 +711,8 @@ public class MeetingRoomServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Null(meetingRoom.ActiveHostId);
-        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        roomRepoMock.Verify(r => r.ClearActiveHostIfAsync(translationRoomId, departedHostId, It.IsAny<CancellationToken>()), Times.Once);
+        roomRepoMock.Verify(r => r.Update(It.IsAny<MeetingRoom>()), Times.Never);
         _redisServiceMock.Verify(r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()), Times.Never);
     }
 

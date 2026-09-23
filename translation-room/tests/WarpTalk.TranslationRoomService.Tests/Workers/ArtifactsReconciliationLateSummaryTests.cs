@@ -191,7 +191,8 @@ public sealed class ArtifactsReconciliationLateSummaryTests
                 new Mock<IArtifactsFinalizationQueue>().Object,
                 redis.Object,
                 Options.Create(new ArtifactFinalizationSettings()),
-                NullLogger<ArtifactsReconciliationWorker>.Instance);
+                NullLogger<ArtifactsReconciliationWorker>.Instance,
+                new WarpTalk.Shared.Coordination.DistributedLockProvider(new WarpTalk.Shared.Coordination.InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
         }
     }
 }

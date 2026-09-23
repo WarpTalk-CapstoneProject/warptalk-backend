@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Threading;
@@ -16,18 +17,24 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 public class SubscriptionExpirationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<SubscriptionExpirationWorker> _logger;
     private readonly BillingWorkerOptions _options;
 
     public SubscriptionExpirationWorker(
         IServiceProvider serviceProvider,
         ILogger<SubscriptionExpirationWorker> logger,
-        IOptions<BillingWorkerOptions> options)
+        IOptions<BillingWorkerOptions> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
     }
+
+    /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
+    public const string LockResource = "billing:subscription-expiration";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -37,7 +44,14 @@ public class SubscriptionExpirationWorker : BackgroundService
         {
             try
             {
-                await SweepAsync(stoppingToken);
+                // SINGLE RUNNER. xmin already prevents a double write; this stops the losing replica from
+                // rolling back its batch with a concurrency error on every tick.
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(5),
+                    ct => SweepAsync(ct),
+                    _logger,
+                    stoppingToken);
             }
             catch (Exception ex)
             {
