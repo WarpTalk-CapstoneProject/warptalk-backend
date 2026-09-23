@@ -229,6 +229,12 @@ public sealed class LeaderElectedRelayTests
         var clients = new Mock<IHubClients>();
         clients.Setup(c => c.Group(It.IsAny<string>())).Returns(proxy.Object);
         clients.Setup(c => c.All).Returns(proxy.Object);
+        // Since WT-699 (TC1806) RoomEnded also reaches the room's lobby group. That copy goes to a
+        // separate proxy so the counts below still measure relay broadcasts, one per message.
+        var lobbyProxy = new Mock<IClientProxy>();
+        lobbyProxy.Setup(p => p.SendCoreAsync(It.IsAny<string>(), It.IsAny<object?[]>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        clients.Setup(c => c.Group(It.Is<string>(g => g.EndsWith(":lobby")))).Returns(lobbyProxy.Object);
         var context = new Mock<IHubContext<THub>>();
         context.Setup(c => c.Clients).Returns(clients.Object);
         return context.Object;

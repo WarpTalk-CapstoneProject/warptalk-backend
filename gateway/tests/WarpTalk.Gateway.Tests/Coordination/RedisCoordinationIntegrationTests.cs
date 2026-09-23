@@ -210,6 +210,12 @@ public sealed class RedisCoordinationIntegrationTests : IAsyncLifetime
             .Returns(Task.CompletedTask);
         var clients = new Mock<IHubClients>();
         clients.Setup(c => c.Group(It.IsAny<string>())).Returns(proxy.Object);
+        // Since WT-699 (TC1806) RoomEnded also reaches the room's lobby group. That copy goes to a
+        // separate proxy so the counts below still measure relay broadcasts, one per message.
+        var lobbyProxy = new Mock<IClientProxy>();
+        lobbyProxy.Setup(p => p.SendCoreAsync(It.IsAny<string>(), It.IsAny<object?[]>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        clients.Setup(c => c.Group(It.Is<string>(g => g.EndsWith(":lobby")))).Returns(lobbyProxy.Object);
         var hub = new Mock<IHubContext<TranslationRoomHub>>();
         hub.Setup(h => h.Clients).Returns(clients.Object);
 
