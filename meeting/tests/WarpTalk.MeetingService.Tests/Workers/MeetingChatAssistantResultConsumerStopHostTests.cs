@@ -24,7 +24,8 @@ public sealed class MeetingChatAssistantResultConsumerStopHostTests
         var service = new MeetingChatAssistantResultConsumerService(
             FailingRedis(),
             Mock.Of<IServiceScopeFactory>(),
-            logger.Object);
+            logger.Object,
+            Mock.Of<WarpTalk.Shared.Coordination.ILeaderElection>(l => l.IsLeader == true));
 
         await service.StartAsync(CancellationToken.None);
         await WaitForErrorLogAsync(logger);
