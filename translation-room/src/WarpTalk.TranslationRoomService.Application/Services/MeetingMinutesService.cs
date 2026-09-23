@@ -1355,6 +1355,7 @@ public class MeetingMinutesService : IMeetingMinutesService
                 TranslationRoomId = minutes.TranslationRoomId,
                 WorkspaceId = minutes.WorkspaceId,
                 SourceMinutesId = minutes.Id,
+                Source = MeetingActionItemConstants.SourceMinutes,
                 SeriesId = room?.SeriesId,
                 Task = item.Text.Trim(),
                 // Kept exactly as the meeting said it, whether or not it resolved to anybody.
