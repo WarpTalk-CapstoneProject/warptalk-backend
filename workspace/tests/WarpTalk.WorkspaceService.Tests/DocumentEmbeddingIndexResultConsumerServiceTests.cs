@@ -20,6 +20,7 @@ public class DocumentEmbeddingIndexResultConsumerServiceTests
     private readonly IWorkspaceDocumentRepository _documentRepository;
     private readonly IWorkspaceDocumentAuditRepository _auditRepository;
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
+    private readonly IKnowledgeChunkWriter _chunkWriter = Substitute.For<IKnowledgeChunkWriter>();
     private readonly DocumentEmbeddingResultProcessor _processor;
 
     public DocumentEmbeddingIndexResultConsumerServiceTests()
@@ -35,6 +36,7 @@ public class DocumentEmbeddingIndexResultConsumerServiceTests
         _processor = new DocumentEmbeddingResultProcessor(
             _unitOfWork,
             _eventPublisher,
+            _chunkWriter,
             Substitute.For<ILogger<DocumentEmbeddingResultProcessor>>());
     }
 
@@ -274,5 +276,51 @@ public class DocumentEmbeddingIndexResultConsumerServiceTests
 
         Assert.False(document.AiEligible);
         Assert.Equal(WorkspaceDocumentStatus.rejected.ToString(), document.Status);
+    }
+
+    private WorkspaceDocument IndexedDocument(WorkspaceDocumentStatus status) => new()
+    {
+        Id = Guid.NewGuid(),
+        WorkspaceId = Guid.NewGuid(),
+        IsAiAllowed = true,
+        ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+        RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+        Status = status.ToString(),
+        IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString(),
+    };
+
+    private Task Indexed(WorkspaceDocument document) => _processor.ProcessResultAsync(new Dictionary<string, string>
+    {
+        ["job_id"] = "job-1",
+        ["source_type"] = "document",
+        ["source_id"] = document.Id.ToString(),
+        ["status"] = "indexed",
+        ["chunks_indexed"] = "3",
+    }, CancellationToken.None);
+
+    [Fact]
+    public async Task AnIndexedResult_ForADocumentMadePrivateMeanwhile_DeletesTheChunksItJustWrote()
+    {
+        // The revoke deletes the vectors it can see. A job still in the embedding worker writes
+        // its chunks afterwards, and without this they would outlive the decision.
+        var document = IndexedDocument(WorkspaceDocumentStatus.@private);
+        _documentRepository.GetByIdAsync(document.Id, Arg.Any<CancellationToken>()).Returns(document);
+
+        await Indexed(document);
+
+        Assert.False(document.AiEligible);
+        await _chunkWriter.Received(1).DeleteDocumentChunksAsync(document.WorkspaceId, document.Id, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AnIndexedResult_ForAStillEligibleDocument_KeepsItsChunks()
+    {
+        var document = IndexedDocument(WorkspaceDocumentStatus.@public);
+        _documentRepository.GetByIdAsync(document.Id, Arg.Any<CancellationToken>()).Returns(document);
+
+        await Indexed(document);
+
+        Assert.True(document.AiEligible);
+        await _chunkWriter.DidNotReceive().DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 }

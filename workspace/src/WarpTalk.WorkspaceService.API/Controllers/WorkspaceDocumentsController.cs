@@ -337,6 +337,42 @@ public class WorkspaceDocumentsController : ControllerBase
         return ToNoContentResult(result);
     }
 
+    /// <summary>
+    /// Takes a published document back from the workspace (public → private). Returns the
+    /// updated document so the page can show the new state without a second round trip.
+    /// </summary>
+    [Authorize]
+    [HttpPost("{documentId:guid}/unpublish")]
+    public async Task<IActionResult> UnpublishDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
+    /// Shares a private document with the workspace again — directly for an Owner/Admin, back
+    /// through approval for the uploader.
+    /// </summary>
+    [Authorize]
+    [HttpPost("{documentId:guid}/publish")]
+    public async Task<IActionResult> PublishDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.PublishDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
     private IActionResult ToActionResult<T>(Result<T> result)
     {
         if (result.IsSuccess)
