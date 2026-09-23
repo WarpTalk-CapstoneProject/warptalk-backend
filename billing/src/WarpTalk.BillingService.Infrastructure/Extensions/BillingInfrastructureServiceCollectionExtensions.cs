@@ -114,10 +114,17 @@ public static class BillingInfrastructureServiceCollectionExtensions
             client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
         });
         services.AddSingleton<ICartesiaUsageClient, CartesiaUsageClient>();
-        services.AddSingleton<ICartesiaUsageSyncStatus>(_ =>
-            new CartesiaUsageSyncStatus(
+
+        // Shared through Redis: billing runs several replicas, only one syncs at a time, and every
+        // replica's Insights snapshot has to report the sync that actually ran.
+        services.AddSingleton<ICartesiaSyncCoordinator>(sp =>
+            new RedisCartesiaSyncCoordinator(sp.GetRequiredService<IConnectionMultiplexer>()));
+        services.AddSingleton<ICartesiaUsageSyncStatus>(sp =>
+            new RedisCartesiaUsageSyncStatus(
+                sp.GetRequiredService<IConnectionMultiplexer>(),
                 configured: options.IsConfigured && options.UsageSyncIntervalMinutes > 0,
-                filteredToApiKey: options.IsFilteredToApiKey));
+                filteredToApiKey: options.IsFilteredToApiKey,
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RedisCartesiaUsageSyncStatus>>()));
     }
 
     public static void VerifyBillingDatabase(this IServiceProvider serviceProvider)

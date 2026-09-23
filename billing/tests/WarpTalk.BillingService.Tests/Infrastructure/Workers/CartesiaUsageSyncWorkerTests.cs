@@ -5,12 +5,17 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Options;
 using WarpTalk.BillingService.Infrastructure.Services;
 using WarpTalk.BillingService.Infrastructure.Workers;
+using WarpTalk.BillingService.Tests.Integration;
+using DotNet.Testcontainers.Builders;
+using Microsoft.Extensions.Logging.Abstractions;
+using StackExchange.Redis;
 
 namespace WarpTalk.BillingService.Tests.Infrastructure.Workers;
 
@@ -31,16 +36,28 @@ public sealed class CartesiaUsageSyncWorkerTests
     private readonly Mock<IProviderUsageDailyRepository> _repository = new();
     private readonly List<(DateOnly From, DateOnly To, IReadOnlyCollection<ProviderUsageDaily> Rows)> _writes = new();
     private CartesiaUsageSyncStatus _status = null!;
+    private ICartesiaSyncCoordinator _coordinator = null!;
 
-    private CartesiaUsageSyncWorker Build(string? key = Key, string? keyId = ProductionKeyId, int interval = 10, FakeTime? time = null)
+    public CartesiaUsageSyncWorkerTests()
     {
         _repository
             .Setup(r => r.ReplaceWindowAsync(
                 It.IsAny<string>(), It.IsAny<DateOnly>(), It.IsAny<DateOnly>(), It.IsAny<IReadOnlyCollection<string>>(),
                 It.IsAny<IReadOnlyCollection<ProviderUsageDaily>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .Callback<string, DateOnly, DateOnly, IReadOnlyCollection<string>, IReadOnlyCollection<ProviderUsageDaily>, DateTime, CancellationToken>(
-                (_, from, to, _, rows, _, _) => _writes.Add((from, to, rows)))
+                (_, from, to, _, rows, _, _) => { lock (_writes) _writes.Add((from, to, rows)); })
             .Returns(Task.CompletedTask);
+    }
+
+    private CartesiaUsageSyncWorker Build(
+        string? key = Key,
+        string? keyId = ProductionKeyId,
+        int interval = 10,
+        FakeTime? time = null,
+        ICartesiaSyncCoordinator? coordinator = null,
+        CartesiaUsageSyncStatus? status = null,
+        FakeHandler? http = null)
+    {
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(u => u.ProviderUsageDaily).Returns(_repository.Object);
 
@@ -53,18 +70,25 @@ public sealed class CartesiaUsageSyncWorkerTests
             UsageApiKeyId = keyId,
             UsageSyncIntervalMinutes = interval,
         });
-        _status = new CartesiaUsageSyncStatus(options.Value.IsConfigured, options.Value.IsFilteredToApiKey);
+        time ??= new FakeTime(Now);
+        _status = status ?? new CartesiaUsageSyncStatus(options.Value.IsConfigured, options.Value.IsFilteredToApiKey);
+        _coordinator = coordinator ?? new InProcessCartesiaSyncCoordinator(time);
+        var handler = http ?? _http;
         var factory = new Mock<IHttpClientFactory>();
-        factory.Setup(f => f.CreateClient(CartesiaUsageOptions.HttpClientName)).Returns(() => new HttpClient(_http));
+        factory.Setup(f => f.CreateClient(CartesiaUsageOptions.HttpClientName)).Returns(() => new HttpClient(handler));
 
         return new CartesiaUsageSyncWorker(
             services.BuildServiceProvider(),
             new CartesiaUsageClient(factory.Object, options),
             _status,
+            _coordinator,
             options,
             _logger,
-            time ?? new FakeTime(Now));
+            time);
     }
+
+    private static async Task<CartesiaUsageSyncResult> SyncAsync(CartesiaUsageSyncWorker worker)
+        => (await worker.RunTurnAsync(CancellationToken.None)).Result!;
 
     // ── A good sync ─────────────────────────────────────────────────────────
 
@@ -91,12 +115,14 @@ public sealed class CartesiaUsageSyncWorkerTests
               {"id":"sonic-3.5","buckets":[{"start_ts":"2026-09-18T00:00:00.000Z","end_ts":"2026-09-19T00:00:00.000Z","credits":300}]}]}
             """);
 
-        var result = await worker.SyncOnceAsync(CancellationToken.None);
+        var outcome = await worker.RunTurnAsync(CancellationToken.None);
+        var result = outcome.Result!;
 
         result.Outcome.Should().Be(CartesiaUsageOutcome.Ok);
         result.Backfill.Should().BeTrue();
         result.FromDate.Should().Be(new DateOnly(2026, 8, 15), "35 UTC days, today included");
         result.ToDate.Should().Be(new DateOnly(2026, 9, 18));
+        outcome.NextSyncIn.Should().Be(TimeSpan.FromMinutes(10));
 
         // What was asked: one ungrouped and two grouped day-interval reads of the same window, for the
         // production key only, with the version header and the key only in Authorization.
@@ -121,28 +147,131 @@ public sealed class CartesiaUsageSyncWorkerTests
             });
         rows.Single(r => r.GroupId == "tts" && r.UsageDate.Day == 17).GroupLabel.Should().Be("Text to speech");
 
-        _status.Current.Status.Should().Be("ok");
-        _status.Current.LastSuccessAt.Should().Be(Now);
-        worker.AfterSync(result).Should().Be(TimeSpan.FromMinutes(10));
+        var state = await _status.GetAsync();
+        state.Status.Should().Be("ok");
+        state.LastSuccessAt.Should().Be(Now);
     }
 
     [Fact]
-    public async Task LaterSyncs_ReadTheLastThreeDays_UntilTheDailyBackfillIsDue()
+    public async Task LaterSyncs_ReadTheLastThreeDays_WaitForTheInterval_AndBackfillDaily()
     {
         var time = new FakeTime(Now);
         var worker = Build(keyId: null, time: time);
         for (var i = 0; i < 9; i++) _http.Enqueue(HttpStatusCode.OK, """{"data":[]}""");
 
-        (await worker.SyncOnceAsync(CancellationToken.None)).Backfill.Should().BeTrue();
-        time.Advance(TimeSpan.FromMinutes(10));
-        var recent = await worker.SyncOnceAsync(CancellationToken.None);
+        (await SyncAsync(worker)).Backfill.Should().BeTrue();
+
+        // Not due yet: the turn is held until the interval has passed, and Cartesia is not called.
+        time.Advance(TimeSpan.FromMinutes(5));
+        (await worker.RunTurnAsync(CancellationToken.None)).Result.Should().BeNull();
+        _http.Requests.Should().HaveCount(3);
+
+        time.Advance(TimeSpan.FromMinutes(5));
+        var recent = await SyncAsync(worker);
         time.Advance(TimeSpan.FromHours(24));
-        var daily = await worker.SyncOnceAsync(CancellationToken.None);
+        var daily = await SyncAsync(worker);
 
         recent.Backfill.Should().BeFalse();
         recent.FromDate.Should().Be(new DateOnly(2026, 9, 16), "today and the two days before it");
         daily.Backfill.Should().BeTrue();
+        _http.Requests.Should().HaveCount(9);
         _http.Requests.Should().NotContain(r => r.Uri.Query.Contains("api_key_id"), "no production key id is configured");
+    }
+
+    // ── Several replicas ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ThreeReplicas_ShareOneSchedule_SoCartesiaSeesOneSyncPerInterval()
+    {
+        var time = new FakeTime(Now);
+        var coordinator = new InProcessCartesiaSyncCoordinator(time);
+        var status = new CartesiaUsageSyncStatus(configured: true, filteredToApiKey: true);
+        var replicas = Enumerable.Range(0, 3).Select(_ => Build(time: time, coordinator: coordinator, status: status)).ToList();
+        for (var i = 0; i < 30; i++) _http.Enqueue(HttpStatusCode.OK, """{"data":[]}""");
+
+        // An hour of every replica polling every minute.
+        var synced = 0;
+        for (var minute = 0; minute < 60; minute++)
+        {
+            foreach (var replica in replicas)
+            {
+                if ((await replica.RunTurnAsync(CancellationToken.None)).Result is not null) synced++;
+            }
+
+            time.Advance(TimeSpan.FromMinutes(1));
+        }
+
+        synced.Should().Be(6, "one sync every 10 minutes, not one per replica");
+        _http.Requests.Should().HaveCount(18);
+        _writes.Count(w => w.From == new DateOnly(2026, 8, 15)).Should().Be(1, "one backfill across all replicas");
+    }
+
+    [Fact]
+    public async Task ABackoffHoldsForEveryReplica_AndTheStreakCarriesAcrossThem()
+    {
+        var time = new FakeTime(Now);
+        var coordinator = new InProcessCartesiaSyncCoordinator(time);
+        var status = new CartesiaUsageSyncStatus(configured: true, filteredToApiKey: true);
+        var first = Build(time: time, coordinator: coordinator, status: status);
+        var second = Build(time: time, coordinator: coordinator, status: status);
+        _http.Enqueue(HttpStatusCode.BadGateway, "");
+        _http.Enqueue(HttpStatusCode.BadGateway, "");
+
+        (await first.RunTurnAsync(CancellationToken.None)).NextSyncIn.Should().Be(TimeSpan.FromMinutes(10));
+        time.Advance(TimeSpan.FromMinutes(9));
+        (await second.RunTurnAsync(CancellationToken.None)).Result.Should().BeNull("the backoff is shared");
+        time.Advance(TimeSpan.FromMinutes(1));
+
+        // The other replica takes the next turn and keeps doubling rather than restarting at 10 min.
+        (await second.RunTurnAsync(CancellationToken.None)).NextSyncIn.Should().Be(TimeSpan.FromMinutes(20));
+        (await status.GetAsync()).FailureStreak.Should().Be(2);
+        _http.Requests.Should().HaveCount(2);
+    }
+
+    [DockerFact]
+    public async Task TheRedisLease_LetsOnlyOneReplicaSync_AndSharesTheStatus()
+    {
+        await using var redis = new ContainerBuilder()
+            .WithImage("redis:7-alpine")
+            .WithPortBinding(6379, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Ready to accept connections"))
+            .Build();
+        await redis.StartAsync();
+        await using var connection = await ConnectionMultiplexer.ConnectAsync($"{redis.Hostname}:{redis.GetMappedPublicPort(6379)}");
+
+        var time = new FakeTime(Now);
+        for (var i = 0; i < 3; i++) _http.Enqueue(HttpStatusCode.OK, """{"data":[]}""");
+        var statuses = Enumerable.Range(0, 2)
+            .Select(_ => new RedisCartesiaUsageSyncStatus(connection, true, true, NullLogger<RedisCartesiaUsageSyncStatus>.Instance))
+            .ToList();
+        // Two replicas: each its own coordinator and status object, sharing only the Redis server.
+        var workers = statuses
+            .Select(status => BuildWithStatus(time, new RedisCartesiaSyncCoordinator(connection, time), status))
+            .ToList();
+
+        var outcomes = await Task.WhenAll(workers.Select(worker => worker.RunTurnAsync(CancellationToken.None)));
+
+        outcomes.Count(o => o.Result is not null).Should().Be(1, "the lease admits one replica");
+        _http.Requests.Should().HaveCount(3);
+        (await statuses[0].GetAsync()).Status.Should().Be("ok");
+        (await statuses[1].GetAsync()).Status.Should().Be("ok", "the replica that did not sync reads the shared status");
+
+        var ttl = await connection.GetDatabase().KeyTimeToLiveAsync(RedisCartesiaSyncCoordinator.TurnKey);
+        ttl.Should().BeCloseTo(TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(30), "the lease is held until the next sync is due");
+        (await connection.GetDatabase().KeyExistsAsync(RedisCartesiaSyncCoordinator.BackfillKey)).Should().BeTrue();
+    }
+
+    private CartesiaUsageSyncWorker BuildWithStatus(FakeTime time, ICartesiaSyncCoordinator coordinator, ICartesiaUsageSyncStatus status)
+    {
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.Setup(u => u.ProviderUsageDaily).Returns(_repository.Object);
+        var services = new ServiceCollection();
+        services.AddSingleton(unitOfWork.Object);
+        var options = Options.Create(new CartesiaUsageOptions { AdminApiKey = Key, UsageApiKeyId = ProductionKeyId });
+        var factory = new Mock<IHttpClientFactory>();
+        factory.Setup(f => f.CreateClient(CartesiaUsageOptions.HttpClientName)).Returns(() => new HttpClient(_http));
+        return new CartesiaUsageSyncWorker(
+            services.BuildServiceProvider(), new CartesiaUsageClient(factory.Object, options), status, coordinator, options, _logger, time);
     }
 
     // ── Failures ────────────────────────────────────────────────────────────
@@ -150,20 +279,21 @@ public sealed class CartesiaUsageSyncWorkerTests
     [Fact]
     public async Task ARejectedKey_WritesNothing_LogsOneLine_WaitsTheMaximum_AndNeverLogsTheKey()
     {
-        var worker = Build();
+        var time = new FakeTime(Now);
+        var worker = Build(time: time);
         _http.Enqueue(HttpStatusCode.Unauthorized, """{"error":"invalid key"}""");
         _http.Enqueue(HttpStatusCode.Unauthorized, """{"error":"invalid key"}""");
 
-        var first = await worker.SyncOnceAsync(CancellationToken.None);
-        var firstDelay = worker.AfterSync(first);
-        var second = await worker.SyncOnceAsync(CancellationToken.None);
-        worker.AfterSync(second);
+        var first = await worker.RunTurnAsync(CancellationToken.None);
+        time.Advance(first.NextSyncIn);
+        await worker.RunTurnAsync(CancellationToken.None);
 
-        first.Outcome.Should().Be(CartesiaUsageOutcome.Unauthorized);
+        first.Result!.Outcome.Should().Be(CartesiaUsageOutcome.Unauthorized);
         _writes.Should().BeEmpty();
-        firstDelay.Should().Be(TimeSpan.FromMinutes(60));
-        _status.Current.Status.Should().Be("error");
-        _status.Current.Message.Should().Contain("HTTP 401").And.Contain("CARTESIA_ADMIN_API_KEY");
+        first.NextSyncIn.Should().Be(TimeSpan.FromMinutes(60));
+        var state = await _status.GetAsync();
+        state.Status.Should().Be("error");
+        state.Message.Should().Contain("HTTP 401").And.Contain("CARTESIA_ADMIN_API_KEY");
         _logger.Lines.Where(l => l.Level == LogLevel.Warning).Should().ContainSingle("one line per failure streak");
         _logger.Lines.Should().NotContain(l => l.Message.Contains(Key));
     }
@@ -174,22 +304,25 @@ public sealed class CartesiaUsageSyncWorkerTests
         var worker = Build();
         _http.Enqueue(HttpStatusCode.TooManyRequests, "{}", retryAfterSeconds: 300);
 
-        var result = await worker.SyncOnceAsync(CancellationToken.None);
+        var outcome = await worker.RunTurnAsync(CancellationToken.None);
 
-        result.Outcome.Should().Be(CartesiaUsageOutcome.RateLimited);
-        worker.AfterSync(result).Should().Be(TimeSpan.FromMinutes(5));
-        _status.Current.Message.Should().Contain("429");
+        outcome.Result!.Outcome.Should().Be(CartesiaUsageOutcome.RateLimited);
+        outcome.NextSyncIn.Should().Be(TimeSpan.FromMinutes(5));
+        (await _status.GetAsync()).Message.Should().Contain("429");
     }
 
     [Fact]
     public async Task ServerErrors_BackOffByDoubling_UpToAnHour_AndRecoveryIsLoggedOnce()
     {
-        var worker = Build();
+        var time = new FakeTime(Now);
+        var worker = Build(time: time);
         var delays = new List<TimeSpan>();
         for (var i = 0; i < 5; i++)
         {
             _http.Enqueue(HttpStatusCode.BadGateway, "");
-            delays.Add(worker.AfterSync(await worker.SyncOnceAsync(CancellationToken.None)));
+            var outcome = await worker.RunTurnAsync(CancellationToken.None);
+            delays.Add(outcome.NextSyncIn);
+            time.Advance(outcome.NextSyncIn);
         }
 
         delays.Should().Equal(
@@ -198,9 +331,9 @@ public sealed class CartesiaUsageSyncWorkerTests
         _logger.Lines.Count(l => l.Level == LogLevel.Warning).Should().Be(1);
 
         for (var i = 0; i < 3; i++) _http.Enqueue(HttpStatusCode.OK, """{"data":[]}""");
-        worker.AfterSync(await worker.SyncOnceAsync(CancellationToken.None)).Should().Be(TimeSpan.FromMinutes(10));
+        (await worker.RunTurnAsync(CancellationToken.None)).NextSyncIn.Should().Be(TimeSpan.FromMinutes(10));
         _logger.Lines.Should().ContainSingle(l => l.Message.Contains("recovered after 5 failed attempt"));
-        _status.Current.Status.Should().Be("ok");
+        (await _status.GetAsync()).Status.Should().Be("ok");
     }
 
     [Fact]
@@ -210,12 +343,29 @@ public sealed class CartesiaUsageSyncWorkerTests
         _http.Throw(new HttpRequestException("connection refused"));
 
         await worker.StartAsync(CancellationToken.None);
-        await WaitUntilAsync(() => _status.Current.Status == "error");
+        await WaitUntilAsync(async () => (await _status.GetAsync()).Status == "error");
         await worker.StopAsync(CancellationToken.None);
 
         worker.ExecuteTask!.IsFaulted.Should().BeFalse("an escaping exception would stop the whole billing host");
-        _status.Current.Message.Should().Be("Cartesia usage sync failed (HttpRequestException)");
+        (await _status.GetAsync()).Message.Should().Be("Cartesia usage sync failed (HttpRequestException)");
         _logger.Lines.Should().NotContain(l => l.Message.Contains(Key));
+    }
+
+    [Fact]
+    public async Task ACoordinatorFailure_SkipsTheTurn_AndDoesNotStopTheHost()
+    {
+        var coordinator = new Mock<ICartesiaSyncCoordinator>();
+        coordinator
+            .Setup(c => c.TryBeginTurnAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RedisConnectionException(ConnectionFailureType.UnableToConnect, "redis down"));
+        var worker = Build(coordinator: coordinator.Object);
+
+        await worker.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => Task.FromResult(_logger.Lines.Any(l => l.Message.Contains("could not coordinate"))));
+        await worker.StopAsync(CancellationToken.None);
+
+        worker.ExecuteTask!.IsFaulted.Should().BeFalse();
+        _http.Requests.Should().BeEmpty("without the lease no replica calls Cartesia");
     }
 
     // ── Not configured ──────────────────────────────────────────────────────
@@ -229,8 +379,9 @@ public sealed class CartesiaUsageSyncWorkerTests
         await worker.ExecuteTask!;
         await worker.StopAsync(CancellationToken.None);
 
-        _status.Current.Status.Should().Be("disabled");
-        _status.Current.Message.Should().Contain("CARTESIA_ADMIN_API_KEY is not set");
+        var state = await _status.GetAsync();
+        state.Status.Should().Be("disabled");
+        state.Message.Should().Contain("CARTESIA_ADMIN_API_KEY is not set");
         _http.Requests.Should().BeEmpty();
         _writes.Should().BeEmpty();
         _logger.Lines.Should().ContainSingle(l => l.Message.Contains("is disabled"));
@@ -251,10 +402,10 @@ public sealed class CartesiaUsageSyncWorkerTests
         model.Buckets.Single().Credits.Should().Be(7);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition)
     {
-        for (var i = 0; i < 200 && !condition(); i++) await Task.Delay(25);
-        condition().Should().BeTrue();
+        for (var i = 0; i < 200 && !await condition(); i++) await Task.Delay(25);
+        (await condition()).Should().BeTrue();
     }
 
     // ── Fakes ───────────────────────────────────────────────────────────────
@@ -280,6 +431,11 @@ public sealed class CartesiaUsageSyncWorkerTests
         public void Throw(Exception exception) => _throw = exception;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (this) return Send(request);
+        }
+
+        private Task<HttpResponseMessage> Send(HttpRequestMessage request)
         {
             Requests.Add(new SeenRequest(
                 request.RequestUri!,

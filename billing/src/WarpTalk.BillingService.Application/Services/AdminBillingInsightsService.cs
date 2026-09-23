@@ -65,8 +65,9 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             var now = _time.GetUtcNow().UtcDateTime;
             var fx = await ReadFxAsync(ct);
             var usdPerCredit = await ReadCartesiaUsdPerCreditAsync(ct);
-            var current = await ReadPeriodAsync(window.Range, now, fx, usdPerCredit, ct);
-            var previous = await ReadPeriodAsync(window.PreviousRange, now, fx, usdPerCredit, ct);
+            var sync = await _cartesiaSync.GetAsync(ct);
+            var current = await ReadPeriodAsync(window.Range, now, fx, usdPerCredit, sync, ct);
+            var previous = await ReadPeriodAsync(window.PreviousRange, now, fx, usdPerCredit, sync, ct);
 
             // Series on the local calendar of the request's tz (default Asia/Ho_Chi_Minh).
             var dayPayments = await _unitOfWork.PaymentRepository.GetCountedPaidAmountsAsync(window.From, window.To, ct);
@@ -113,7 +114,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                     current.Dubbing.EstimatedDays,
                     current.Dubbing.MeasuredCredits,
                     usdPerCredit,
-                    _cartesiaSync.Current.Status)));
+                    sync.Status)));
         }
         catch (Exception ex)
         {
@@ -234,7 +235,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
     }
 
     private async Task<PeriodMetrics> ReadPeriodAsync(
-        AdminInsightRange range, DateTime now, decimal? fx, decimal usdPerCredit, CancellationToken ct)
+        AdminInsightRange range, DateTime now, decimal? fx, decimal usdPerCredit, CartesiaUsageSyncState sync, CancellationToken ct)
     {
         var paid = await _unitOfWork.PaymentRepository.GetCountedPaidTotalsAsync(range.From, range.To, ct);
         var duplicates = await _unitOfWork.PaymentRepository.CountStripeInvoiceDuplicatesAsync(range.From, range.To, ct);
@@ -247,7 +248,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         consumption = CartesiaDubbingCost.Apply(consumption, dubbing);
 
         var (revenue, revenueTotal) = Revenue(paid, duplicates, fx);
-        var aiCost = AiProviderCost(consumption, fx, dubbing, _cartesiaSync.Current.FilteredToApiKey);
+        var aiCost = AiProviderCost(consumption, fx, dubbing, sync.FilteredToApiKey);
 
         return new PeriodMetrics(
             revenue,
@@ -302,7 +303,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
 
     private async Task<AdminCartesiaUsageDto> ReadCartesiaSnapshotAsync(DateTime now, CancellationToken ct)
     {
-        var sync = _cartesiaSync.Current;
+        var sync = await _cartesiaSync.GetAsync(ct);
         var usdPerCredit = await ReadCartesiaUsdPerCreditAsync(ct);
 
         // Cartesia's calendar is UTC: this month and today are UTC's, not the admin's tz.

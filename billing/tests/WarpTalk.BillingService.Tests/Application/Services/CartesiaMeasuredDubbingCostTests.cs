@@ -91,7 +91,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
     public async Task EverySyncedDay_PricesDubbingFromCartesiaCredits_WithTheDefaultPriceWhenNoneIsConfigured()
     {
         await SeedSeptemberCartesiaAsync(firstDay: 1);
-        _sync.MarkSucceeded(Utc(10, 2, 7));
+        await _sync.MarkSucceededAsync(Utc(10, 2, 7));
 
         var dto = await PeriodAsync(Utc(9, 1), Utc(10, 1), "UTC");
 
@@ -144,7 +144,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
     [DockerFact]
     public async Task NoSyncedUsage_KeepsTheRateCardEstimate()
     {
-        _sync.MarkDisabled(CartesiaUsageSyncStatus.NotConfiguredMessage);
+        await _sync.MarkDisabledAsync(CartesiaUsageSyncStatus.NotConfiguredMessage);
 
         var dto = await PeriodAsync(Utc(9, 1), Utc(10, 1), "UTC");
 
@@ -194,7 +194,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
         await SeedSeptemberCartesiaAsync(firstDay: 1);
         await SeedCartesiaDayAsync(new DateOnly(2026, 10, 1), 300, Utc(10, 2, 6));
         await SeedCartesiaDayAsync(new DateOnly(2026, 10, 2), 50, Utc(10, 2, 7));
-        _sync.MarkSucceeded(Utc(10, 2, 7));
+        await _sync.MarkSucceededAsync(Utc(10, 2, 7));
 
         var result = await _service.GetSnapshotAsync("Asia/Ho_Chi_Minh");
 
@@ -215,7 +215,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
     [DockerFact]
     public async Task Snapshot_WhenNeverSyncedAndDisabled_SaysWhyAndReportsNoFigures()
     {
-        _sync.MarkDisabled(CartesiaUsageSyncStatus.NotConfiguredMessage);
+        await _sync.MarkDisabledAsync(CartesiaUsageSyncStatus.NotConfiguredMessage);
 
         var cartesia = (await _service.GetSnapshotAsync(null)).Value!.Cartesia!;
 
