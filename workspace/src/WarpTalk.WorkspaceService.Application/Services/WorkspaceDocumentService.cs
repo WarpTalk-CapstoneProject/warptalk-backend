@@ -35,6 +35,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
+    private readonly IKnowledgeChunkWriter _chunkWriter;
     private readonly ILogger<WorkspaceDocumentService> _logger;
 
     public WorkspaceDocumentService(
@@ -46,6 +47,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         ITranslationRoomClient translationRoomClient,
         IWorkspaceDocumentStorage storage,
         IDocumentTextExtractor textExtractor,
+        IKnowledgeChunkWriter chunkWriter,
         ILogger<WorkspaceDocumentService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -56,6 +58,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _translationRoomClient = translationRoomClient;
         _storage = storage;
         _textExtractor = textExtractor;
+        _chunkWriter = chunkWriter;
         _logger = logger;
     }
 
@@ -1633,6 +1636,258 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         {
             _logger.LogError(ex, "Error occurred while restoring document. DocumentId: {DocumentId}", documentId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Takes a published document back from the workspace: public → private.
+    /// </summary>
+    /// <remarks>
+    /// WHAT "PUBLIC" WAS, AND WHY IT COULD NOT BE UNDONE
+    ///   `public` is the approval state, not a share link — there is no anonymous or tokenised
+    ///   document route anywhere in this service. It means every internal member reads the
+    ///   document by default, and the assistant may index it. Once approved, the only ways out
+    ///   were archive (retire it) and delete; nothing could say "keep it, but stop sharing it".
+    ///
+    /// WHAT PRIVATE CUTS, SERVER-SIDE
+    ///   - Reads: DocumentAccessEvaluator refuses the default audience (403) and ignores the broad
+    ///     Role/MembershipType ALLOWs, so list, detail, download, extracted-text and the
+    ///     ai-retrievable allowlist all stop returning it to anyone not named.
+    ///   - The index: IsIndexEligible requires `public`, so nothing re-indexes it; and the vectors
+    ///     already in Qdrant are deleted HERE, synchronously, because the invalidation event this
+    ///     service publishes elsewhere has no consumer at all.
+    ///
+    /// WHO: Owner/Admin, or the document's uploader/owner — the same people who may archive it.
+    /// Withdrawing your own contribution only ever narrows access, so it needs no approver.
+    /// Idempotent: making a private document private again succeeds without touching anything.
+    /// </remarks>
+    public async Task<Result<WorkspaceDocumentDto>> UnpublishDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var (loaded, isOwnerOrAdmin, isDocOwner, failure) = await LoadForVisibilityChangeAsync(workspaceId, documentId, userId, ct);
+            if (failure != null || loaded == null)
+            {
+                return failure ?? Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            var document = loaded;
+
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "Forbidden. Only an owner, an admin or the document's uploader can make it private.",
+                    ErrorCodes.Forbidden);
+            }
+
+            if (document.IsPrivate())
+            {
+                return Result.Success(document.ToDto(_urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id)));
+            }
+
+            if (!document.IsPublic())
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "Only a published document can be made private.",
+                    ErrorCodes.ValidationError);
+            }
+
+            var previousStatus = document.Status;
+            document.Status = WorkspaceDocumentStatus.@private.ToString();
+            document.AiEligible = false;
+            // Skipped and un-dated, because after the purge below that is the truth: nothing of
+            // this document is in the index. Leaving `completed` + a LastIndexedAt would describe
+            // vectors that no longer exist.
+            document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+            document.LastIndexedAt = null;
+            document.UpdatedAt = DateTime.UtcNow;
+
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // After the commit, not before: the row is the authority on who may read, and a purge
+            // that ran ahead of a failed save would strip the assistant of a document that is
+            // still public. A purge failure is logged and audited but does not undo the
+            // revocation — the evaluator already refuses the reads and the ai-retrievable
+            // allowlist already excludes it; what would linger is chunks that only an Owner/Admin
+            // can see on the Knowledge page, and they can delete them there.
+            var vectorsPurged = await TryPurgeDocumentChunksAsync(workspaceId, documentId, ct);
+
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Unpublished,
+                document.UpdatedAt,
+                userId,
+                ct);
+
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.UnpublishDocument,
+                new { previousStatus, vectorsPurged },
+                _logger,
+                ct);
+
+            return Result.Success(document.ToDto(_urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id)));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while making document private. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Shares a private document with the workspace again.
+    /// </summary>
+    /// <remarks>
+    /// An Owner/Admin publishes it directly — they hold approval authority, and this is the same
+    /// transition ApproveDocumentAsync makes, re-ingestion included. The uploader alone does NOT:
+    /// taking a document back needs nobody's sign-off, but putting it in front of the whole
+    /// workspace is what approval exists to gate, so their document goes back to
+    /// `pending_approval` and waits for a reviewer like any other member upload.
+    /// </remarks>
+    public async Task<Result<WorkspaceDocumentDto>> PublishDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var (loaded, isOwnerOrAdmin, isDocOwner, failure) = await LoadForVisibilityChangeAsync(workspaceId, documentId, userId, ct);
+            if (failure != null || loaded == null)
+            {
+                return failure ?? Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            var document = loaded;
+
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "Forbidden. Only an owner, an admin or the document's uploader can publish it.",
+                    ErrorCodes.Forbidden);
+            }
+
+            if (document.IsPublic())
+            {
+                return Result.Success(document.ToDto(_urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id)));
+            }
+
+            if (!document.IsPrivate())
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "Only a private document can be published again.",
+                    ErrorCodes.ValidationError);
+            }
+
+            string lifecycleEvent;
+            document.AiEligible = false;
+            if (isOwnerOrAdmin)
+            {
+                document.Status = WorkspaceDocumentStatus.@public.ToString();
+                document.IngestionStatus = document.IsAiAllowed
+                    ? WorkspaceDocumentIngestionStatus.pending.ToString()
+                    : WorkspaceDocumentIngestionStatus.skipped.ToString();
+                lifecycleEvent = WorkspaceDocumentConstants.LifecycleEvents.Published;
+
+                if (document.IsAiAllowed)
+                {
+                    // The full pipeline, not a bare index request: the security scan decides
+                    // again whether this text may be embedded, exactly as it did at approval.
+                    await _eventPublisher.PublishDocumentUploadedAsync(
+                        document.Id,
+                        workspaceId,
+                        document.StorageKey,
+                        document.FileName,
+                        document.FileExtension,
+                        document.UploadedBy ?? userId,
+                        document.ConfidentialityLevel,
+                        ct);
+                }
+            }
+            else
+            {
+                document.Status = WorkspaceDocumentStatus.pending_approval.ToString();
+                document.IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval.ToString();
+                lifecycleEvent = WorkspaceDocumentConstants.LifecycleEvents.PendingApproval;
+            }
+
+            document.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                lifecycleEvent,
+                document.UpdatedAt,
+                userId,
+                ct);
+
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.PublishDocument,
+                new { status = document.Status },
+                _logger,
+                ct);
+
+            return Result.Success(document.ToDto(_urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id)));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while publishing document. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    private async Task<(WorkspaceDocument? Document, bool IsOwnerOrAdmin, bool IsDocOwner, Result<WorkspaceDocumentDto>? Failure)>
+        LoadForVisibilityChangeAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct)
+    {
+        if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+        {
+            return (null, false, false, Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound));
+        }
+
+        var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+        if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+        {
+            return (null, false, false, Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound));
+        }
+
+        var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+        if (member == null)
+        {
+            return (null, false, false, Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden));
+        }
+
+        var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+        var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+        return (document, roleName.IsOwnerOrAdmin(), isDocOwner, null);
+    }
+
+    /// <returns>Whether the store confirmed the delete.</returns>
+    private async Task<bool> TryPurgeDocumentChunksAsync(Guid workspaceId, Guid documentId, CancellationToken ct)
+    {
+        try
+        {
+            await _chunkWriter.DeleteDocumentChunksAsync(workspaceId, documentId, ct);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Could not delete indexed chunks of document {DocumentId} in workspace {WorkspaceId}. Access is already revoked; the chunks remain visible on the Knowledge page until deleted.",
+                documentId,
+                workspaceId);
+            return false;
         }
     }
 

@@ -98,6 +98,52 @@ public class QdrantKnowledgeChunkWriter : IKnowledgeChunkWriter
     }
 
     /// <summary>
+    /// Every source_type a workspace document has been indexed under.
+    /// </summary>
+    /// <remarks>
+    /// Two producers, two spellings, one collection: RedisEmbeddingIndexPublisher (the upload
+    /// pipeline) writes `document`; WorkspaceDocumentAuxiliaryPublisher (PUT extracted-text)
+    /// writes `workspace_document`. Deleting by one spelling would leave the other's chunks
+    /// answering questions about a document that is no longer shared.
+    /// </remarks>
+    private static readonly string[] DocumentSourceTypes = ["document", "workspace_document"];
+
+    /// <summary>
+    /// Where the extracted-text path has always written, beside the per-workspace collection.
+    /// </summary>
+    private const string LegacyDocumentCollection = "warptalk_workspace_documents";
+
+    public async Task DeleteDocumentChunksAsync(Guid workspaceId, Guid documentId, CancellationToken ct = default)
+    {
+        var filter = new
+        {
+            must = new object[]
+            {
+                new { key = "workspace_id", match = new { value = workspaceId.ToString() } },
+                new { key = "source_id", match = new { value = documentId.ToString() } },
+                new { key = "source_type", match = new { any = DocumentSourceTypes } },
+            },
+        };
+
+        foreach (var collection in new[] { $"workspace_{workspaceId}", LegacyDocumentCollection })
+        {
+            using var response = await _httpClient.PostAsJsonAsync(
+                $"collections/{collection}/points/delete?wait=true",
+                new { filter },
+                SerializerOptions,
+                ct);
+
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                // No collection means nothing was ever indexed there — already the state asked for.
+                continue;
+            }
+
+            response.EnsureSuccessStatusCode();
+        }
+    }
+
+    /// <summary>
     /// Qdrant ids are a uuid or an unsigned integer and it rejects the wrong JSON type rather
     /// than coercing, so the type comes from the value. Same rule as the reader's.
     /// </summary>
