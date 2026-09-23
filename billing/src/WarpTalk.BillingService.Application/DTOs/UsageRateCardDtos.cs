@@ -82,10 +82,22 @@ public record PricingConfigDto(
     // $49 / 1,250,000 credits.
     decimal CartesiaUsdPerCredit = ProviderUsageConstants.DefaultCartesiaUsdPerCredit);
 
+/// <summary>
+/// <c>PUT /usages/pricing-config</c>.
+///
+/// WT-690: <see cref="CreditValueVnd"/> and <see cref="MinimumPricePerCreditVnd"/> are no longer
+/// knobs in the admin UI — Stripe owns pricing — but they are NOT dead config, so the stored values
+/// stay and so does this write path. <c>credit_value_vnd</c> prices every credit top-up
+/// (<c>PaymentAppService</c> turns the credit count into the Stripe amount with it) and feeds the
+/// rate-card preview; <c>minimum_price_per_credit_vnd</c> is the floor <c>PlanService</c> and
+/// <c>SubscriptionService</c> validate plan and contract prices against. Both are therefore
+/// optional here: null keeps the stored value, so a client that no longer shows them cannot reset
+/// money-critical economics by leaving them out. Changing either is a migration now.
+/// </summary>
 public record UpdatePricingConfigRequest(
     decimal FxRateUsdVnd,
-    decimal CreditValueVnd,
-    decimal MinimumPricePerCreditVnd,
+    decimal? CreditValueVnd,
+    decimal? MinimumPricePerCreditVnd,
     decimal MinimumContractPriceVnd,
     decimal MinimumContractPriceUsd,
     decimal SalesUsageWeight,

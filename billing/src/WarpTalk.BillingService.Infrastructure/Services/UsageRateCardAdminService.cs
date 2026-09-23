@@ -291,9 +291,11 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
     public async Task<Result<PricingConfigDto>> UpdatePricingConfigAsync(UpdatePricingConfigRequest request, CancellationToken cancellationToken = default)
     {
+        // Null credit value / price floor = "keep what is stored" (WT-690); a value, when sent,
+        // must still be positive.
         if (request.FxRateUsdVnd <= 0 ||
-            request.CreditValueVnd <= 0 ||
-            request.MinimumPricePerCreditVnd <= 0 ||
+            request.CreditValueVnd is <= 0 ||
+            request.MinimumPricePerCreditVnd is <= 0 ||
             request.MinimumContractPriceVnd <= 0 ||
             request.MinimumContractPriceUsd <= 0 ||
             request.SalesUsageWeight < 0 ||
@@ -321,8 +323,12 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
             await _repository.BeginTransactionAsync(cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(FxRateConfigKey, request.FxRateUsdVnd, cancellationToken);
-            await _repository.UpsertPricingConfigValueAsync(CreditValueConfigKey, request.CreditValueVnd, cancellationToken);
-            await _repository.UpsertPricingConfigValueAsync(MinimumPricePerCreditVndConfigKey, request.MinimumPricePerCreditVnd, cancellationToken);
+            var creditValue = await WriteOrReadAsync(
+                CreditValueConfigKey, request.CreditValueVnd,
+                SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
+            var minimumPricePerCredit = await WriteOrReadAsync(
+                MinimumPricePerCreditVndConfigKey, request.MinimumPricePerCreditVnd,
+                SubscriptionConstants.PlanDefaults.PriceFloorPerCredit, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(MinimumContractPriceVndConfigKey, request.MinimumContractPriceVnd, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(MinimumContractPriceUsdConfigKey, request.MinimumContractPriceUsd, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(SalesUsageWeightConfigKey, request.SalesUsageWeight, cancellationToken);
@@ -348,8 +354,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
             return Result.Success(CreatePricingConfig(
                 request.FxRateUsdVnd,
-                request.CreditValueVnd,
-                request.MinimumPricePerCreditVnd,
+                creditValue,
+                minimumPricePerCredit,
                 request.MinimumContractPriceVnd,
                 request.MinimumContractPriceUsd,
                 request.SalesUsageWeight,
@@ -423,6 +429,22 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             model.Trim().ToLowerInvariant(),
             NormalizeLanguageCode(sourceLanguageCode),
             NormalizeLanguageCode(targetLanguageCode));
+    }
+
+    /// <summary>
+    /// Writes <paramref name="value"/> under <paramref name="key"/> when one was sent, otherwise
+    /// reads back what is stored — the value the response must echo either way.
+    /// </summary>
+    private async Task<decimal> WriteOrReadAsync(
+        string key, decimal? value, decimal fallback, CancellationToken cancellationToken)
+    {
+        if (value is { } provided)
+        {
+            await _repository.UpsertPricingConfigValueAsync(key, provided, cancellationToken);
+            return provided;
+        }
+
+        return await _repository.ReadPricingConfigValueAsync(key, fallback, cancellationToken);
     }
 
     private static PricingConfigDto CreatePricingConfig(

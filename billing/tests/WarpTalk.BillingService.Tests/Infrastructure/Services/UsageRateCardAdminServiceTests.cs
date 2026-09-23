@@ -349,6 +349,54 @@ public class UsageRateCardAdminServiceTests
         calls.Should().Equal("begin", "commit");
     }
 
+    /// <summary>
+    /// WT-690: the admin UI no longer sends the credit value or the per-credit price floor. Both
+    /// are money-critical (top-up pricing, plan/contract floor), so leaving them out must neither
+    /// write them nor reset them to a default — the stored values are echoed back untouched.
+    /// </summary>
+    [Fact]
+    public async Task UpdatePricingConfigAsync_WithoutCreditValueOrPriceFloor_KeepsTheStoredValues()
+    {
+        var (service, repository, calls) = CreateService();
+        var written = new Dictionary<string, decimal>();
+        repository
+            .Setup(r => r.UpsertPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
+            .Returns(Task.CompletedTask);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("credit_value_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(312m);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("minimum_price_per_credit_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2.6m);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00003m);
+
+        var result = await service.UpdatePricingConfigAsync(
+            ValidPricingConfig() with { CreditValueVnd = null, MinimumPricePerCreditVnd = null });
+
+        result.IsSuccess.Should().BeTrue();
+        written.Should().NotContainKey("credit_value_vnd").And.NotContainKey("minimum_price_per_credit_vnd");
+        written.Should().HaveCount(10);
+        result.Value!.CreditValueVnd.Should().Be(312m);
+        result.Value.MinimumPricePerCreditVnd.Should().Be(2.6m);
+        calls.Should().Equal("begin", "commit");
+    }
+
+    [Fact]
+    public async Task UpdatePricingConfigAsync_NonPositivePriceFloor_WhenSent_IsStillRejected()
+    {
+        var (service, _, calls) = CreateService();
+
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { MinimumPricePerCreditVnd = 0m });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task UpdatePricingConfigAsync_WithCartesiaPrice_WritesIt()
     {
