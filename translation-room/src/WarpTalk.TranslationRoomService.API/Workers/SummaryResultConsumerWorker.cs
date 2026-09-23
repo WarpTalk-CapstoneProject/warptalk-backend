@@ -154,6 +154,25 @@ public class SummaryResultConsumerWorker : BackgroundService
         // keeps the behaviour it was published under.
         if (SummaryDelivery.OrDefault(fields.GetValueOrDefault("delivery")) == SummaryDelivery.Variant)
         {
+            // WT-701's open half. The rendering is filed under the pair stamped in the content, and
+            // the endpoint looks it up under the pair that was ASKED for. When the two differ the
+            // run "completes", nothing matches, the endpoint requeues, and the retry reproduces the
+            // same mismatch — so it is caught here, where both pairs are in hand, and reported as
+            // the failure it is with a reason that names them, instead of as a success nobody can
+            // find. Checked only when the worker echoed the request (see SummaryResultMessage);
+            // an older worker's result keeps the previous behaviour.
+            var mismatch = DescribeRequestMismatch(fields, content);
+            if (mismatch != null)
+            {
+                _logger.LogWarning(
+                    "Summary rendering {RequestId} for room {RoomId} does not match its request: {Mismatch}",
+                    requestId,
+                    roomId,
+                    mismatch);
+                await PublishOutcomeAsync(requestId, "failed", mismatch);
+                return;
+            }
+
             await ApplyVariantAsync(unitOfWork, roomId, content, ct);
             await PublishOutcomeAsync(requestId, "completed", null);
             return;
@@ -326,11 +345,39 @@ public class SummaryResultConsumerWorker : BackgroundService
     }
 
     /// <summary>
+    /// Why a rendering cannot be filed where its request will look for it, or null when it can.
+    ///
+    /// The request's pair comes back on the result as `requested_template_key` and
+    /// `summary_language` (warptalk-ai echoes them); the content's pair is what the rendering is
+    /// actually in. Absent echo fields mean a worker that predates them, and there is nothing to
+    /// compare against.
+    /// </summary>
+    internal static string? DescribeRequestMismatch(IReadOnlyDictionary<string, string> fields, string contentJson)
+    {
+        if (!fields.TryGetValue("requested_template_key", out var requestedTemplateRaw)
+            || string.IsNullOrWhiteSpace(requestedTemplateRaw))
+        {
+            return null;
+        }
+
+        var requestedTemplate = requestedTemplateRaw.Trim().ToLowerInvariant();
+        var requestedLanguage = LanguageHelper.NormalizeLanguageCode(fields.GetValueOrDefault("summary_language"));
+        var (stampedTemplate, stampedLanguage) = ReadSummaryKey(contentJson);
+
+        if (stampedTemplate == requestedTemplate && stampedLanguage == requestedLanguage) return null;
+
+        static string Label(string language) => language.Length > 0 ? language : "as spoken";
+
+        return $"The summary came back as {stampedTemplate} in {Label(stampedLanguage)}, "
+            + $"not the {requestedTemplate} in {Label(requestedLanguage)} that was asked for, so it was not saved.";
+    }
+
+    /// <summary>
     /// The (shape, language) a generated summary is in, as stamped by the AI worker. A content
     /// that will not parse is filed as general/as-spoken — the same pair an older summary
     /// without either key is, which is what it was.
     /// </summary>
-    private static (string TemplateKey, string Language) ReadSummaryKey(string contentJson)
+    internal static (string TemplateKey, string Language) ReadSummaryKey(string contentJson)
     {
         try
         {

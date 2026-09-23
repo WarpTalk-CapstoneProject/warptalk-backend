@@ -251,7 +251,28 @@ public class MeetingMinutesService : IMeetingMinutesService
                 "This meeting no longer has a summary to translate the record from."));
         }
 
-        if (rendering.Value!.Status != SummaryVariantStatus.Ready)
+        // A FAILED RENDERING IS AN ANSWER, NOT "STILL GENERATING".
+        //
+        // This read every non-ready status as generating. A rendering that failed was therefore
+        // reported as still on its way, the web kept polling, and each poll that read the failed
+        // outcome released the claim so the NEXT one queued the whole job again — one failing
+        // model call every eight seconds until the ninety-second deadline, and then a generic
+        // "has not arrived" with the reason thrown away. Production shows exactly that cadence
+        // (twelve Japanese requests eight seconds apart on one room on 12 Sep, every one of them
+        // failing with the same reason). The reason is the reader's to see; the choice stays
+        // askable again because the variant endpoint has already released its claim.
+        if (rendering.Value!.Status == SummaryVariantStatus.Failed)
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                string.IsNullOrWhiteSpace(rendering.Value.Error)
+                    ? "This record could not be translated into that language. Please try again."
+                    : rendering.Value.Error));
+        }
+
+        if (rendering.Value.Status != SummaryVariantStatus.Ready)
         {
             return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
                 wanted, null, MinutesTranslationStatus.Generating, null));
