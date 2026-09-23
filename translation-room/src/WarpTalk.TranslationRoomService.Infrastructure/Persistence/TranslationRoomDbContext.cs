@@ -622,6 +622,8 @@ public partial class TranslationRoomDbContext : DbContext
             // a missing HasColumnName 500s every SELECT over the table rather than failing loudly
             // at startup.
             entity.Property(e => e.RecordingStartedAt).HasColumnName("recording_started_at");
+            // WT-824. Hand-mapped for the same reason as the line above.
+            entity.Property(e => e.FailureReason).HasColumnName("failure_reason");
             entity.Property(e => e.DeletedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("deleted_by");

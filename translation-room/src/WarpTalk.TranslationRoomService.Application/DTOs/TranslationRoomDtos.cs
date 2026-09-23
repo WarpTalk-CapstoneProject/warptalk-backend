@@ -437,7 +437,12 @@ public record TranslationRoomArtifactDto(
     /// SEEKABLE rather than as zero: substituting zero produces a plausible-looking, silently wrong
     /// position on every click.
     /// </summary>
-    DateTime? RecordingStartedAt = null
+    DateTime? RecordingStartedAt = null,
+    /// <summary>
+    /// WT-824: why a FAILED recording has no file — the host-facing sentence plus LiveKit's egress
+    /// status and error, URLs redacted. Null on every other artifact.
+    /// </summary>
+    string? FailureReason = null
 );
 
 public record CreateArtifactRequest(
