@@ -264,6 +264,22 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             return;
         }
 
+        // "Move this to the widget so I can keep discussing." The worker publishes this when the
+        // model calls continue_in_widget; the requester's own client opens the widget on the
+        // thread. Addressed with RequestedByUserId because the group is the whole room, and the
+        // worker's copy of that id is only as good as the request it was given — this row is the
+        // service's own record of who asked.
+        if (resultType == "handoff")
+        {
+            await notifier.BroadcastAssistantHandoffAsync(
+                groupRoomId,
+                request.Id,
+                request.RequestedByUserId,
+                fields.GetValueOrDefault("tool_calls_json", ""),
+                ct);
+            return;
+        }
+
         // `tool_call_completed` belongs with these and was missing, which is the whole of the
         // reported defect. OpenAI's HOSTED web search never enters the worker's dispatch loop, so
         // no function call is ever dispatched for it — the worker publishes the step by hand off
