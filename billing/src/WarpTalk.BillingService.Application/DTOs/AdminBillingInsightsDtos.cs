@@ -22,7 +22,23 @@ public sealed record AdminBillingInsightsDto(
     IReadOnlyList<AdminRevenueByMonthDto> RevenueByMonth,
     string? RevenueByMonthNote,
     IReadOnlyList<AdminCreditsByServiceDto> CreditsByService,
-    IReadOnlyList<AdminTopWorkspaceCreditsDto> TopWorkspaces);
+    IReadOnlyList<AdminTopWorkspaceCreditsDto> TopWorkspaces,
+    AdminAiProviderCostBasisDto? AiProviderCostBasis = null);
+
+/// <summary>
+/// How the current period's <c>aiProviderCost</c> priced dubbing. <paramref name="Basis"/> is
+/// <c>measured</c> (every UTC day of the period had synced Cartesia usage), <c>mixed</c> (some did)
+/// or <c>estimated</c> (none did: rate-card seconds × an assumed 12.5 characters/s).
+/// <paramref name="CartesiaCredits"/> are the measured dubbing credits inside the period (UTC days at
+/// its edges pro-rated by hours); <paramref name="SyncStatus"/> is the sync's status right now.
+/// </summary>
+public sealed record AdminAiProviderCostBasisDto(
+    string Basis,
+    int MeasuredDays,
+    int EstimatedDays,
+    decimal CartesiaCredits,
+    decimal CartesiaUsdPerCredit,
+    string SyncStatus);
 
 /// <summary>
 /// <paramref name="Date"/> is a local calendar date of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.
@@ -67,7 +83,31 @@ public sealed record AdminBillingSnapshotDto(
     IReadOnlyList<AdminSubscriptionsByPlanDto> SubscriptionsByPlan,
     IReadOnlyList<AdminRecentPaymentDto> RecentPayments,
     IReadOnlyList<AdminEndingSoonDto> EndingSoon,
-    IReadOnlyList<AdminHighUsageAlertDto> HighUsageAlerts);
+    IReadOnlyList<AdminHighUsageAlertDto> HighUsageAlerts,
+    AdminCartesiaUsageDto? Cartesia = null);
+
+/// <summary>
+/// Cartesia, measured: what the usage sync has read from Cartesia's admin usage API.
+///
+/// <paramref name="Status"/> is <c>ok</c> | <c>disabled</c> (no admin key configured) | <c>error</c>
+/// (the last attempt failed; <paramref name="StatusNote"/> says how) | <c>pending</c> (configured, first
+/// sync since start not finished). <paramref name="CreditsThisMonth"/> and <paramref name="CreditsToday"/>
+/// are every credit on the account (or on the production key, when <paramref name="FilteredToApiKey"/>)
+/// for the UTC calendar month and UTC day — Cartesia buckets by UTC day. Null when nothing was synced
+/// for them. <paramref name="RemainingCredits"/> is always null today: Cartesia's API has no balance
+/// endpoint, and <paramref name="RemainingCreditsNote"/> says so.
+/// </summary>
+public sealed record AdminCartesiaUsageDto(
+    string Status,
+    string? StatusNote,
+    bool FilteredToApiKey,
+    long? CreditsThisMonth,
+    long? CreditsToday,
+    long? RemainingCredits,
+    string? RemainingCreditsNote,
+    DateTime? LastSyncedAt,
+    DateTime? LastAttemptAt,
+    decimal UsdPerCredit);
 
 public sealed record AdminActiveByCycleDto(int Monthly, int Yearly, int Other);
 

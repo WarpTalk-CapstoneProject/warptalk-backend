@@ -143,6 +143,61 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     }
 
     /// <summary>
+    /// Records the provider cost of an internal credit-unit (CRD) card — the cards usage is actually
+    /// settled on, and the only thing Insights can compute AI provider cost from. Zero is refused:
+    /// no provider in the pipeline is free, and a zero would read as a real cost of nothing.
+    /// </summary>
+    public async Task<Result<UsageRateCardDto>> SetProviderCostAsync(
+        Guid id, SetRateCardProviderCostRequest request, CancellationToken cancellationToken = default)
+    {
+        if (id == Guid.Empty)
+            return Result.Failure<UsageRateCardDto>("A rate-card id is required.", ErrorCodes.ValidationError);
+
+        if (request?.ProviderUnitCostUsd is not > 0)
+        {
+            return Result.Failure<UsageRateCardDto>(
+                "Provider cost must be a positive USD amount per unit.", ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            await _repository.BeginTransactionAsync(cancellationToken);
+
+            var outcome = await _repository.SetCreditRateCardProviderCostAsync(
+                id, request.ProviderUnitCostUsd.Value, cancellationToken);
+            if (outcome is null)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>($"Rate card {id} was not found.", ErrorCodes.NotFound);
+            }
+
+            if (outcome.Change == RateCardProviderCostChange.Refused)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>(RefusalReason(outcome.Card), ErrorCodes.ValidationError);
+            }
+
+            await _repository.CommitTransactionAsync(cancellationToken);
+            return Result.Success(outcome.Card);
+        }
+        catch (Exception ex)
+        {
+            await _repository.RollbackTransactionAsync(cancellationToken);
+            _logger.LogError(ex, "Error setting provider cost on usage rate card {RateCardId}", id);
+            return Result.Failure<UsageRateCardDto>("Unable to set the provider cost.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    private static string RefusalReason(UsageRateCardDto card)
+    {
+        if (!string.Equals(card.Currency?.Trim(), "CRD", StringComparison.OrdinalIgnoreCase))
+            return "Only credit-unit (CRD) cards take a provider cost on its own; edit this card with the rate-card editor, which reprices it from the cost.";
+        if (!card.IsActive || card.EffectiveTo is not null)
+            return "This rate card is retired; set the cost on the card that is in effect.";
+        return "This rate card has no unit, so a per-unit cost cannot be applied to it.";
+    }
+
+    /// <summary>
     /// Prices a proposed rate without publishing it. Read-only: no transaction, no writes.
     /// Shares <see cref="RateCardPricingCalculator"/> with any server-side derivation, so
     /// what the admin sees here is what the formula produces.
@@ -209,6 +264,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             var defaultOverageCapRatio = await _repository.ReadPricingConfigValueAsync(DefaultOverageCapRatioConfigKey, SubscriptionConstants.RateCardDefaults.DefaultOverageCapRatio, cancellationToken);
             var defaultInvoiceTermsDays = await _repository.ReadPricingConfigValueAsync(DefaultInvoiceTermsDaysConfigKey, SubscriptionConstants.PlanDefaults.InvoiceTermsDays, cancellationToken);
             var defaultInvoiceGraceHours = await _repository.ReadPricingConfigValueAsync(DefaultInvoiceGraceHoursConfigKey, SubscriptionConstants.PlanDefaults.InvoiceGraceHours, cancellationToken);
+            var cartesiaUsdPerCredit = await _repository.ReadPricingConfigValueAsync(
+                ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, ProviderUsageConstants.DefaultCartesiaUsdPerCredit, cancellationToken);
 
             return Result.Success(CreatePricingConfig(
                 fxRate,
@@ -222,7 +279,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 salesAiServicesWeight,
                 defaultOverageCapRatio,
                 defaultInvoiceTermsDays,
-                defaultInvoiceGraceHours));
+                defaultInvoiceGraceHours,
+                cartesiaUsdPerCredit));
         }
         catch (Exception ex)
         {
@@ -248,6 +306,12 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             request.DefaultInvoiceGraceHours <= 0)
             return Result.Failure<PricingConfigDto>("Pricing config values must be positive.", ErrorCodes.ValidationError);
 
+        // 0 is allowed: it is the honest marginal price of credits already paid for. Above $1 per
+        // credit is a typo (the list price is ~$0.00004), not a price.
+        if (request.CartesiaUsdPerCredit is < 0 or > 1)
+            return Result.Failure<PricingConfigDto>(
+                "Cartesia USD per credit must be between 0 and 1.", ErrorCodes.ValidationError);
+
         var salesWeightTotal = request.SalesUsageWeight + request.SalesMembersWeight + request.SalesLanguagesWeight + request.SalesAiServicesWeight;
         if (salesWeightTotal <= 0)
             return Result.Failure<PricingConfigDto>("Sales pricing weights must have a positive total.", ErrorCodes.ValidationError);
@@ -268,6 +332,18 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             await _repository.UpsertPricingConfigValueAsync(DefaultOverageCapRatioConfigKey, request.DefaultOverageCapRatio, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(DefaultInvoiceTermsDaysConfigKey, request.DefaultInvoiceTermsDays, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(DefaultInvoiceGraceHoursConfigKey, request.DefaultInvoiceGraceHours, cancellationToken);
+            var cartesiaUsdPerCredit = request.CartesiaUsdPerCredit;
+            if (cartesiaUsdPerCredit is { } usdPerCredit)
+            {
+                await _repository.UpsertPricingConfigValueAsync(
+                    ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, usdPerCredit, cancellationToken);
+            }
+            else
+            {
+                cartesiaUsdPerCredit = await _repository.ReadPricingConfigValueAsync(
+                    ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, ProviderUsageConstants.DefaultCartesiaUsdPerCredit, cancellationToken);
+            }
+
             await _repository.CommitTransactionAsync(cancellationToken);
 
             return Result.Success(CreatePricingConfig(
@@ -282,7 +358,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 request.SalesAiServicesWeight,
                 request.DefaultOverageCapRatio,
                 request.DefaultInvoiceTermsDays,
-                request.DefaultInvoiceGraceHours));
+                request.DefaultInvoiceGraceHours,
+                cartesiaUsdPerCredit.Value));
         }
         catch (Exception ex)
         {
@@ -360,7 +437,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         decimal salesAiServicesWeight,
         decimal defaultOverageCapRatio,
         decimal defaultInvoiceTermsDays,
-        decimal defaultInvoiceGraceHours)
+        decimal defaultInvoiceGraceHours,
+        decimal cartesiaUsdPerCredit)
     {
         return new PricingConfigDto(
             fxRateUsdVnd,
@@ -376,7 +454,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             defaultInvoiceTermsDays,
             defaultInvoiceGraceHours,
             PricingFormula,
-            ResolverKey);
+            ResolverKey,
+            cartesiaUsdPerCredit);
     }
 
     private readonly record struct RateCardIdentity(

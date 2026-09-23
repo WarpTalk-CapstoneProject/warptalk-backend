@@ -1,3 +1,5 @@
+using WarpTalk.BillingService.Domain.Constants;
+
 namespace WarpTalk.BillingService.Application.DTOs;
 
 public record UsageRateCardDto(
@@ -28,6 +30,14 @@ public record UpsertUsageRateCardRequest(
     decimal? ProviderUnitCostUsd,
     decimal? MarkupMultiplier,
     bool? IsActive = true);
+
+/// <summary>
+/// Records what the provider charges per unit on an internal credit-unit (CRD) card — the cards
+/// billing_worker actually settles on. Their credit price is not derived from a provider cost, so the
+/// full editor (which reprices from cost × markup) cannot be used for them; this changes the cost only.
+/// <see cref="ProviderUnitCostUsd"/> is USD per the card's own unit.
+/// </summary>
+public record SetRateCardProviderCostRequest(decimal? ProviderUnitCostUsd);
 
 /// <summary>
 /// Prices a hypothetical rate change before it is published. FX rate and credit value
@@ -66,7 +76,11 @@ public record PricingConfigDto(
     decimal DefaultInvoiceTermsDays,
     decimal DefaultInvoiceGraceHours,
     string Formula,
-    string ResolverKey);
+    string ResolverKey,
+    // USD per Cartesia credit (billing_pricing_config cartesia_usd_per_credit). Insights price the
+    // dubbing provider cost as measured Cartesia credits × this × FX. Default: the Startup plan's
+    // $49 / 1,250,000 credits.
+    decimal CartesiaUsdPerCredit = ProviderUsageConstants.DefaultCartesiaUsdPerCredit);
 
 public record UpdatePricingConfigRequest(
     decimal FxRateUsdVnd,
@@ -80,4 +94,6 @@ public record UpdatePricingConfigRequest(
     decimal SalesAiServicesWeight,
     decimal DefaultOverageCapRatio,
     decimal DefaultInvoiceTermsDays,
-    decimal DefaultInvoiceGraceHours);
+    decimal DefaultInvoiceGraceHours,
+    // Null leaves the stored value as it is, so a client that predates the field cannot reset it.
+    decimal? CartesiaUsdPerCredit = null);

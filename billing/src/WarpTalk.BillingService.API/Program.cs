@@ -206,6 +206,9 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // snapshot cannot stay silently stale after a change that did not go through billing's own
     // write paths. Disabled by setting Billing:Workers:EntitlementReconcileIntervalMinutes to 0.
     builder.Services.AddHostedService<EntitlementReconcileWorker>();
+    // Measured Cartesia credits for admin Insights' dubbing cost. Disabled (logged once) when no
+    // Cartesia:AdminApiKey (CARTESIA_ADMIN_API_KEY) is configured.
+    builder.Services.AddHostedService<CartesiaUsageSyncWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>
