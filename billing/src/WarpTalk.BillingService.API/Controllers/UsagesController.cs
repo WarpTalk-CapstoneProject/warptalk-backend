@@ -130,6 +130,25 @@ public class UsagesController : ControllerBase
         return Ok(result.Value);
     }
 
+    [HttpPut("rate-card/{id:guid}/provider-cost")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<UsageRateCardDto>> SetUsageRateCardProviderCost(
+        Guid id, [FromBody] SetRateCardProviderCostRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _rateCardAdminService.SetProviderCostAsync(id, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+            return result.ErrorCode switch
+            {
+                ErrorCodes.NotFound => NotFound(error),
+                ErrorCodes.InternalServerError => StatusCode(500, error),
+                _ => BadRequest(error),
+            };
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPost("rate-card/preview")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<RateCardPreviewDto>> PreviewUsageRateCard([FromBody] RateCardPreviewRequest request, CancellationToken cancellationToken)

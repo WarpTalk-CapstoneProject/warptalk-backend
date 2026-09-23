@@ -22,6 +22,9 @@ public partial class BillingDbContext
     /// <summary>WT-263: the workspace self-service entitlement overrides (migration 050).</summary>
     public DbSet<WorkspaceEntitlementOverride> WorkspaceEntitlementOverrides => Set<WorkspaceEntitlementOverride>();
 
+    /// <summary>Provider-measured usage per UTC day (migration 20260918120000, Cartesia usage sync).</summary>
+    public DbSet<ProviderUsageDaily> ProviderUsageDaily => Set<ProviderUsageDaily>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
         // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
@@ -84,13 +87,33 @@ public partial class BillingDbContext
             entity.Property(e => e.Notes).HasColumnName("notes");
         });
 
+        modelBuilder.Entity<ProviderUsageDaily>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("provider_usage_daily_pkey");
+            entity.ToTable("provider_usage_daily", "subscription");
+            entity.HasIndex(e => new { e.Provider, e.UsageDate, e.GroupKind, e.GroupId })
+                .IsUnique()
+                .HasDatabaseName("ux_provider_usage_daily_day_group");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.UsageDate).HasColumnName("usage_date");
+            entity.Property(e => e.GroupKind).HasColumnName("group_kind").HasMaxLength(20);
+            entity.Property(e => e.GroupId).HasColumnName("group_id").HasMaxLength(200);
+            entity.Property(e => e.GroupLabel).HasColumnName("group_label").HasMaxLength(300);
+            entity.Property(e => e.Credits).HasColumnName("credits");
+            entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
         modelBuilder.Entity<BillingPricingConfig>(entity =>
         {
             entity.HasKey(e => e.Key).HasName("billing_pricing_config_pkey");
             entity.ToTable("billing_pricing_config", "subscription");
 
             entity.Property(e => e.Key).HasColumnName("key").HasMaxLength(80);
-            entity.Property(e => e.Value).HasColumnName("value").HasPrecision(18, 6);
+            // (24,10) since migration 20260918120000: USD per Cartesia credit is 0.0000392, which
+            // (18,6) rounded to 0.000039 — a 0.5% error on every measured dubbing cost.
+            entity.Property(e => e.Value).HasColumnName("value").HasPrecision(24, 10);
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
         });
 
