@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -57,6 +58,7 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 public class ArtifactsReconciliationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly IArtifactsFinalizationQueue _queue;
     private readonly IConnectionMultiplexer _redis;
     private readonly ArtifactFinalizationSettings _settings;
@@ -86,14 +88,24 @@ public class ArtifactsReconciliationWorker : BackgroundService
         IArtifactsFinalizationQueue queue,
         IConnectionMultiplexer redis,
         IOptions<ArtifactFinalizationSettings> options,
-        ILogger<ArtifactsReconciliationWorker> logger)
+        ILogger<ArtifactsReconciliationWorker> logger,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _queue = queue;
         _redis = redis;
         _settings = options.Value;
         _logger = logger;
     }
+
+    /// <summary>
+    /// One replica per tick. The retry counter is shared in Redis, but every replica that read a
+    /// count under the budget queued the room into its OWN in-memory finalization channel, so N
+    /// replicas finalized the same room N times: duplicate transcript/summary artifacts (the index
+    /// is not unique) and a MEETING_SUMMARY_READY notification per replica.
+    /// </summary>
+    public const string LockResource = "translation-room:artifacts-reconciliation";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -106,8 +118,16 @@ public class ArtifactsReconciliationWorker : BackgroundService
         {
             try
             {
-                await SweepAsync(stoppingToken);
-                await RecoverLateSummariesAsync(stoppingToken);
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(2),
+                    async ct =>
+                    {
+                        await SweepAsync(ct);
+                        await RecoverLateSummariesAsync(ct);
+                    },
+                    _logger,
+                    stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

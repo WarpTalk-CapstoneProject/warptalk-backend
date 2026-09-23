@@ -1221,21 +1221,15 @@ public class MeetingRoomService : IMeetingRoomService
     /// </summary>
     public async Task<Result<bool>> HandleHostOfflineAsync(Guid translationRoomId, Guid departedUserId)
     {
-        var meetingRoom = await _unitOfWork.MeetingRoomRepository
-            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
-        if (meetingRoom == null)
-            return Result.Success(false);
-
         // Only the departing host's own claim is released. Anyone else leaving changes nothing,
         // and a room that is already host-less stays that way.
-        if (meetingRoom.ActiveHostId != departedUserId)
-            return Result.Success(false);
-
-        meetingRoom.ActiveHostId = null;
-        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-        await _unitOfWork.SaveChangesAsync();
-
-        return Result.Success(true);
+        //
+        // One conditional UPDATE rather than read, compare, Update(row), save: every meeting-service
+        // replica receives the same participant-offline message, and the old read-modify-write let
+        // a slow replica erase a host claimed in between (or write stale values over the rest of
+        // the row). The compare-and-set is idempotent, so N replicas handling it is harmless.
+        var cleared = await _unitOfWork.MeetingRoomRepository.ClearActiveHostIfAsync(translationRoomId, departedUserId);
+        return Result.Success(cleared > 0);
     }
 
     // ── Helpers ────────────────────────────────────────────

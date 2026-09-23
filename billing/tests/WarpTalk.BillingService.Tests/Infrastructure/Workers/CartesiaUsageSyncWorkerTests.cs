@@ -274,6 +274,21 @@ public sealed class CartesiaUsageSyncWorkerTests
             services.BuildServiceProvider(), new CartesiaUsageClient(factory.Object, options), status, coordinator, options, _logger, time);
     }
 
+    /// <summary>
+    /// Multi-replica: the turn lease is not renewed while a sync runs, so a sync that outlived it
+    /// would overlap with the next replica's turn and both would call Cartesia. The sync is cut off
+    /// before the lease can expire — and the budget still fits three requests at the default timeout.
+    /// </summary>
+    [Fact]
+    public void ASyncCanNeverOutliveTheTurnLease()
+    {
+        CartesiaUsageSyncWorker.SyncBudget.Should().BeLessThan(RedisCartesiaSyncCoordinator.TurnTimeout);
+        (RedisCartesiaSyncCoordinator.TurnTimeout - CartesiaUsageSyncWorker.SyncBudget)
+            .Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(30));
+        CartesiaUsageSyncWorker.SyncBudget.Should().BeGreaterThan(
+            TimeSpan.FromSeconds(3 * new CartesiaUsageOptions().RequestTimeoutSeconds));
+    }
+
     // ── Failures ────────────────────────────────────────────────────────────
 
     [Fact]

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,7 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 public class IdleRoomMonitoringWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<IdleRoomMonitoringWorker> _logger;
     private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
@@ -24,8 +26,10 @@ public class IdleRoomMonitoringWorker : BackgroundService
     public IdleRoomMonitoringWorker(
         IServiceProvider serviceProvider,
         IConnectionMultiplexer redis,
-        ILogger<IdleRoomMonitoringWorker> logger)
+        ILogger<IdleRoomMonitoringWorker> logger,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _redis = redis;
         _logger = logger;
@@ -39,7 +43,12 @@ public class IdleRoomMonitoringWorker : BackgroundService
         {
             try
             {
-                await CheckAndEndIdleRoomsAsync(stoppingToken);
+                await _locks.TryRunExclusiveAsync(
+                    RoomEndingSweepLock.Resource,
+                    TimeSpan.FromMinutes(2),
+                    CheckAndEndIdleRoomsAsync,
+                    _logger,
+                    stoppingToken);
             }
             catch (Exception ex)
             {

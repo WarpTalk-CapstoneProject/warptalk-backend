@@ -8,25 +8,42 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Redis;
 
+/// <summary>
+/// Applies the AI pipeline's room system events (pause/resume, language change, session_ends) to
+/// the audio route state machine.
+///
+/// Multi-replica: ONE replica consumes at a time (<see cref="ILeaderElection"/>). The route state
+/// machine is a read-modify-write with no concurrency token, and a consumer group would hand one
+/// room's consecutive events to different replicas to apply concurrently — losing updates and
+/// reordering pause/resume. A single reader keeps the order a single replica had. On failover
+/// nothing is lost: the new leader first reclaims entries a previous leader read but never
+/// acknowledged (idle for <see cref="StaleAfter"/>).
+/// </summary>
 public class TranslationRoomEventConsumerService : BackgroundService
 {
+    internal static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(30);
+
     private readonly IRedisStreamRepository _redisStreamRepository;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TranslationRoomEventConsumerService> _logger;
+    private readonly ILeaderElection _leadership;
 
     public TranslationRoomEventConsumerService(
         IRedisStreamRepository redisStreamRepository,
         IServiceScopeFactory scopeFactory,
-        ILogger<TranslationRoomEventConsumerService> logger)
+        ILogger<TranslationRoomEventConsumerService> logger,
+        ILeaderElection leadership)
     {
         _redisStreamRepository = redisStreamRepository;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _leadership = leadership;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -48,15 +65,36 @@ public class TranslationRoomEventConsumerService : BackgroundService
         {
             try
             {
-                var messages = await _redisStreamRepository.ReadGroupAsync(
+                if (!_leadership.IsLeader)
+                {
+                    await Task.Delay(500, stoppingToken);
+                    continue;
+                }
+
+                // A previous leader's read-but-unacknowledged entries first (crash or handover
+                // mid-batch), then new ones.
+                var messages = await _redisStreamRepository.ClaimStaleAsync(
                     streamName,
                     groupName,
                     consumerName,
-                    ">",
+                    StaleAfter,
                     count: 10);
+                if (messages.Count == 0)
+                {
+                    messages = await _redisStreamRepository.ReadGroupAsync(
+                        streamName,
+                        groupName,
+                        consumerName,
+                        ">",
+                        count: 10);
+                }
 
                 foreach (var message in messages)
                 {
+                    // Leadership can move mid-batch; the rest stays pending for the new leader.
+                    if (!_leadership.IsLeader)
+                        break;
+
                     await ProcessMessageWithRetryAsync(message, stoppingToken);
                     await _redisStreamRepository.AcknowledgeAsync(streamName, groupName, message.Id);
                 }
@@ -72,6 +110,15 @@ public class TranslationRoomEventConsumerService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error occurred while consuming Redis stream {StreamName}", streamName);
+                // Without a pause an unreachable Redis turned this into a hot loop.
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
     }

@@ -1,4 +1,5 @@
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using Npgsql;
 using Npgsql.NameTranslation;
 using Microsoft.EntityFrameworkCore;
@@ -143,6 +144,18 @@ builder.Services.AddScoped<IRedisStateRepository, RedisStateRepository>();
 builder.Services.AddSingleton<IRedisStreamRepository, RedisStreamRepository>();
 builder.Services.AddScoped<ITranscriptCacheService, TranscriptCacheService>();
 builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalizationQueue>();
+// Multi-replica coordination. Periodic sweeps take a Redis lease per tick (IDistributedLockProvider);
+// the pub/sub consumers (participant offline/online, telemetry) and the room system-event stream
+// are handled by ONE elected replica at a time — see each class's remarks. Registered before the
+// workers so the elector starts first and stops (releasing its lease) last.
+builder.Services.AddWarpTalkDistributedLocks();
+builder.Services.AddWarpTalkPubSubLeadership(
+    "translation-room:event-consumers",
+    [
+        ParticipantOfflineConsumerWorker.ParticipantOfflineChannel,
+        ParticipantOfflineConsumerWorker.ParticipantOnlineChannel,
+        TelemetryRedisSubscriber.TelemetryChannel,
+    ]);
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 // Recovers the failures the two workers above cannot see: a finalization that never ran,

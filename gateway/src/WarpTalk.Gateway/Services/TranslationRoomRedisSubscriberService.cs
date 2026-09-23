@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
 using System.Text.Json;
@@ -15,18 +16,21 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
     private readonly IConnectionMultiplexer _redis;
     private readonly IHubContext<TranslationRoomHub> _hubContext;
     private readonly ILogger<TranslationRoomRedisSubscriberService> _logger;
+    private readonly IPubSubLeadership _relay;
 
     public TranslationRoomRedisSubscriberService(
         IConnectionMultiplexer redis,
         IHubContext<TranslationRoomHub> hubContext,
-        ILogger<TranslationRoomRedisSubscriberService> logger)
+        ILogger<TranslationRoomRedisSubscriberService> logger,
+        IPubSubLeadership relay)
     {
         _redis = redis;
         _hubContext = hubContext;
         _logger = logger;
+        _relay = relay;
     }
 
-    private const string CommandsChannel = "warptalk:translation-room:commands";
+    private const string CommandsChannel = WarpTalk.Gateway.Constants.RealtimeConstants.RedisChannels.TranslationRoomCommands;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -35,6 +39,9 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
         {
             try
             {
+                // Only the relay leader forwards; the backplane delivers that one send to every
+                // gateway pod's room members. See RealtimeRelay.
+                if (!_relay.ShouldHandle) return;
                 if (message.IsNullOrEmpty) return;
 
                 var payload = JsonSerializer.Deserialize<TranslationRoomCommandMessage>(message.ToString());
@@ -301,6 +308,7 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
             try
             {
                 await subscriber.SubscribeAsync(RedisChannel.Literal(CommandsChannel), handler);
+                _relay.MarkSubscribed(RealtimeRelay.Key(nameof(TranslationRoomRedisSubscriberService), CommandsChannel));
                 _logger.LogInformation("TranslationRoomRedisSubscriberService started listening to '{Channel}'.", CommandsChannel);
                 return;
             }

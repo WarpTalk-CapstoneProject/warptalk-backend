@@ -72,7 +72,8 @@ public sealed class MeetingChatAssistantHandoffTests
         return new MeetingChatAssistantResultConsumerService(
             Mock.Of<IConnectionMultiplexer>(),
             scopeFactory.Object,
-            Mock.Of<ILogger<MeetingChatAssistantResultConsumerService>>());
+            Mock.Of<ILogger<MeetingChatAssistantResultConsumerService>>(),
+            Mock.Of<WarpTalk.Shared.Coordination.ILeaderElection>(l => l.IsLeader == true));
     }
 
     private Task ProcessAsync(MeetingChatAssistantResultConsumerService service, string type, string origin = "meeting_chat")
