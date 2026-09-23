@@ -83,6 +83,18 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 window.From, window.To, TopWorkspaceCount, cancellationToken: ct);
             var names = await ResolveNamesAsync(top.Select(t => t.WorkspaceId), ct);
 
+            // WT-692: usage-active workspaces, for the period (with its comparison) and per month.
+            var transactions = _unitOfWork.CreditTransactionRepository;
+            var activeWorkspaces = await transactions.CountConsumingWorkspacesAsync(window.From, window.To, ct);
+            var activeWorkspacesBefore = await transactions.CountConsumingWorkspacesAsync(
+                window.PreviousFrom, window.PreviousTo, ct);
+            var activeByMonth = new List<AdminActiveWorkspacesByMonthDto>(AdminComparisonRange.GrowthMonths);
+            foreach (var month in AdminComparisonRange.MonthsEnding(window.To, window.TimeZone))
+            {
+                activeByMonth.Add(new AdminActiveWorkspacesByMonthDto(
+                    month.Key, await transactions.CountConsumingWorkspacesAsync(month.Start, month.End, ct)));
+            }
+
             var metrics = new List<AdminInsightMetric>
             {
                 Metric("revenue", AdminInsightUnits.Money, true, current.Revenue, previous.Revenue),
@@ -95,6 +107,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 Metric("aiProviderCost", AdminInsightUnits.Money, false, current.AiProviderCost, previous.AiProviderCost),
                 Metric("grossMargin", AdminInsightUnits.Money, true, current.GrossMargin, previous.GrossMargin),
                 Metric("revenuePerPayment", AdminInsightUnits.Money, true, current.RevenuePerPayment, previous.RevenuePerPayment),
+                new AdminInsightMetric("activeWorkspaces", activeWorkspaces, activeWorkspacesBefore, AdminInsightUnits.Count, true),
             };
 
             return Result.Success(new AdminBillingInsightsDto(
@@ -114,7 +127,8 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                     current.Dubbing.EstimatedDays,
                     current.Dubbing.MeasuredCredits,
                     usdPerCredit,
-                    sync.Status)));
+                    sync.Status),
+                activeByMonth));
         }
         catch (Exception ex)
         {

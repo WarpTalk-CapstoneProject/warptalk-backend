@@ -23,7 +23,16 @@ public sealed record AdminBillingInsightsDto(
     string? RevenueByMonthNote,
     IReadOnlyList<AdminCreditsByServiceDto> CreditsByService,
     IReadOnlyList<AdminTopWorkspaceCreditsDto> TopWorkspaces,
-    AdminAiProviderCostBasisDto? AiProviderCostBasis = null);
+    AdminAiProviderCostBasisDto? AiProviderCostBasis = null,
+    IReadOnlyList<AdminActiveWorkspacesByMonthDto>? ActiveWorkspacesByMonth = null);
+
+/// <summary>
+/// WT-692: workspaces that USED the product in a local calendar month (<c>yyyy-MM</c> of the
+/// request's <c>tz</c>) — at least one credit consumption row, i.e. translated or dubbed something.
+/// Same six months as <c>revenueByMonth</c>. Paying is not the test: a trial workspace that ran a
+/// meeting is active, a paid one that ran none is not.
+/// </summary>
+public sealed record AdminActiveWorkspacesByMonthDto(string Month, int ActiveWorkspaces);
 
 /// <summary>
 /// How the current period's <c>aiProviderCost</c> priced dubbing. <paramref name="Basis"/> is

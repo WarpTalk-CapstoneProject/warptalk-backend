@@ -40,6 +40,9 @@ public interface IWorkspaceRepository : IGenericRepository<Workspace>
     /// </summary>
     Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
 
+    /// <summary>WT-692: workspaces that existed at <paramref name="instant"/> — created before it, not deleted by then.</summary>
+    Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default);
+
     /// <summary>Suspended right now: not deleted and not active — the directory's "suspended".</summary>
     Task<int> CountSuspendedAsync(CancellationToken ct = default);
 

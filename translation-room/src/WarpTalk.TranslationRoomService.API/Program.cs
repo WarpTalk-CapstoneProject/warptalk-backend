@@ -95,6 +95,8 @@ builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>()
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
+// WT-691: language catalog writes, each recorded in the platform audit log before it is saved.
+builder.Services.AddScoped<IAdminLanguageService, AdminLanguageService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -268,6 +270,18 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// WT-691: the platform audit log lives in the workspace service, and this service has no bus —
+// the same situation, and the same synchronous transport, as auth's admin actions. Same address as
+// the workspace client above: one workspace service, two contracts on it.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.TranslationRoomService.Infrastructure.Clients.AdminAuditGrpcClient>();
 // WT-14: reused by ReminderNotificationWorker to push reminder notifications through the
 // same NotificationService gRPC path other services use (see NotificationGrpcServiceImpl.SendNotification).
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>

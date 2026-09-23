@@ -295,6 +295,11 @@ public class UserRepository : GenericRepository<User>, IUserRepository
         _ => query.OrderByDescending(u => u.CreatedAt),
     };
 
+    public Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .CountAsync(u => u.CreatedAt < instant && (u.DeletedAt == null || u.DeletedAt >= instant), ct);
+
     public Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default)
         => _dbSet
             .AsNoTracking()

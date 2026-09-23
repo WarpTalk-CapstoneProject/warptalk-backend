@@ -92,6 +92,12 @@ public interface IUserRepository : IGenericRepository<User>
     Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
 
     /// <summary>
+    /// WT-692: accounts that existed at <paramref name="instant"/> — created before it and not
+    /// soft-deleted by then. A later deletion does not rewrite an earlier month's total.
+    /// </summary>
+    Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default);
+
+    /// <summary>
     /// The creation instants of the same accounts, unordered. Deliberately not grouped by day in
     /// SQL: which day an instant belongs to depends on the caller's time zone (the insights
     /// <c>tz</c>), and the caller buckets them on those local days.

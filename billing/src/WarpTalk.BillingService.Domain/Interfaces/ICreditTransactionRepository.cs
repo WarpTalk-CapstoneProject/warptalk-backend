@@ -22,6 +22,9 @@ public interface ICreditTransactionRepository : IGenericRepository<CreditTransac
 
     Task<IReadOnlyList<CreditsByChargeType>> GetConsumedByChargeTypeAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
+    /// <summary>WT-692: distinct workspaces with at least one consume row in [from, to).</summary>
+    Task<int> CountConsumingWorkspacesAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
     /// <summary>Workspaces consuming at least <paramref name="minCredits"/> in [from, to), largest first.</summary>
     Task<IReadOnlyList<WorkspaceCredits>> GetTopConsumingWorkspacesAsync(
         DateTime from, DateTime to, int take, long minCredits = 1, CancellationToken cancellationToken = default);
