@@ -23,7 +23,11 @@ public static class VoiceProfileMapper
             activeConsent is null ? null : "granted",
             activeConsent?.ConsentTextVersion,
             activeConsent?.GrantedAt,
-            profile.Source
+            profile.Source,
+            // Only a failed row carries a reason; a stale code on a row that has since cloned
+            // would put a failure explanation beside a working voice.
+            profile.Status == "clone_failed" ? profile.CloneErrorCode : null,
+            profile.Status == "clone_failed" ? profile.CloneError : null
         );
     }
 }
