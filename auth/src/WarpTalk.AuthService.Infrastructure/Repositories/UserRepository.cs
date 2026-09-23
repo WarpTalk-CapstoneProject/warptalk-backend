@@ -14,6 +14,15 @@ public class UserRepository : GenericRepository<User>, IUserRepository
     {
     }
 
+    public async Task<IReadOnlyList<Guid>> GetActiveUserIdsPageAsync(Guid? afterId, int pageSize, CancellationToken ct = default)
+    {
+        var query = _dbSet.AsNoTracking().Where(u => u.IsActive && u.DeletedAt == null);
+        if (afterId is { } after)
+            query = query.Where(u => u.Id.CompareTo(after) > 0);
+
+        return await query.OrderBy(u => u.Id).Select(u => u.Id).Take(pageSize).ToListAsync(ct);
+    }
+
     public async Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default)
     {
         return await _dbSet.AnyAsync(u => u.Email == email, ct);

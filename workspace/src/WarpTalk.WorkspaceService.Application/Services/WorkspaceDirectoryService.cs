@@ -51,6 +51,20 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         _translationRoomClient = translationRoomClient;
     }
 
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<Guid>?>> ListActiveMemberUserIdsAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+        if (workspace == null || workspace.DeletedAt != null)
+            return Result.Success<IReadOnlyList<Guid>?>(null);
+
+        var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+        IReadOnlyList<Guid> userIds = members.Select(m => m.UserId).Distinct().ToList();
+        return Result.Success<IReadOnlyList<Guid>?>(userIds);
+    }
+
     public async Task<Result<WorkspaceMemberDetailsDto?>> GetMemberDetailsAsync(
         Guid workspaceId,
         Guid userId,

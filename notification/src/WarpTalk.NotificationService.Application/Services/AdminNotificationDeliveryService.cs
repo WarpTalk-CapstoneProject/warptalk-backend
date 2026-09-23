@@ -39,7 +39,11 @@ public class AdminNotificationDeliveryService : IAdminNotificationDeliveryServic
         Guid eventId,
         CancellationToken ct = default)
     {
-        if (payload.TargetAudienceMode != NotificationConstants.TargetModeSpecificUsers
+        // WT-699 / TC4104: every mode arrives with its recipients already resolved to ids by
+        // AdminNotificationService, so the ids — not the mode — decide what is deliverable.
+        if (payload.TargetAudienceMode is not (NotificationConstants.TargetModeSpecificUsers
+                or NotificationConstants.TargetModeBroadcast
+                or NotificationConstants.TargetModeSegment)
             || payload.SpecificUserIds is not { Length: > 0 })
         {
             throw new InvalidOperationException(

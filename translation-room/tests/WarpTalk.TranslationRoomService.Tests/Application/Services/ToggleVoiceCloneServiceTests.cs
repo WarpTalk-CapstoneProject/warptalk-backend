@@ -23,21 +23,34 @@ public class ToggleVoiceCloneServiceTests
     private readonly Mock<ITranslationRoomAudioRouteRepository> _mockRouteRepository = new();
     private readonly Mock<IAudioRouteCacheService> _mockCacheService = new();
     private readonly Mock<ILogger<TranslationRoomAudioRouteService>> _mockLogger = new();
+    private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipants = new();
+    private readonly Mock<IVoiceConsentDirectory> _mockConsent = new();
     private readonly TranslationRoomAudioRouteService _service;
 
     private static readonly Guid RoomId = Guid.NewGuid();
 
+    /// <summary>The route's speaker — the only caller WT-699 / TC1905 lets through.</summary>
+    private static readonly Guid SpeakerUserId = Guid.NewGuid();
+    private static readonly Guid SpeakerParticipantId = Guid.NewGuid();
+
     public ToggleVoiceCloneServiceTests()
     {
         _mockUnitOfWork.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockRouteRepository.Object);
-        _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(Mock.Of<ITranslationRoomParticipantRepository>());
+        _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipants.Object);
+
+        _mockParticipants
+            .Setup(p => p.GetByRoomAndUserAsync(It.IsAny<Guid>(), SpeakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoomParticipant { Id = SpeakerParticipantId, UserId = SpeakerUserId, TranslationRoomId = RoomId });
+        _mockConsent
+            .Setup(c => c.HasVoiceCloneConsentAsync(SpeakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
 
         _service = new TranslationRoomAudioRouteService(
             _mockUnitOfWork.Object,
             _mockCacheService.Object,
             Mock.Of<IAudioRouteEventProcessor>(),
             Mock.Of<ILanguagePolicy>(),
-            Mock.Of<IVoiceConsentDirectory>(),
+            _mockConsent.Object,
             Mock.Of<IUserSettingsDirectory>(),
             Mock.Of<IRedisStateRepository>(),
             _mockLogger.Object);
@@ -50,7 +63,7 @@ public class ToggleVoiceCloneServiceTests
         {
             Id = Guid.NewGuid(),
             TranslationRoomId = roomId,
-            SourceParticipantId = Guid.NewGuid(),
+            SourceParticipantId = SpeakerParticipantId,
             TargetParticipantId = Guid.NewGuid(),
             SourceLanguage = "vi",
             TargetLanguage = "en",
@@ -75,7 +88,7 @@ public class ToggleVoiceCloneServiceTests
     {
         var route = RouteExists(RoomId, voiceCloneEnabled: false);
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.VoiceCloneEnabled.Should().BeTrue();
@@ -93,7 +106,7 @@ public class ToggleVoiceCloneServiceTests
             .Setup(r => r.GetByIdAsync(routeId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((TranslationRoomAudioRoute?)null);
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, routeId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, routeId, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
 
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().Be(AudioRouteConstants.ErrorRouteNotFound);
@@ -106,7 +119,7 @@ public class ToggleVoiceCloneServiceTests
     {
         var route = RouteExists(Guid.NewGuid(), voiceCloneEnabled: false);
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
 
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().Be(AudioRouteConstants.ErrorRouteNotBelongToRoom);
@@ -120,7 +133,7 @@ public class ToggleVoiceCloneServiceTests
     {
         var route = RouteExists(RoomId, voiceCloneEnabled: false, AudioRouteStatus.COMPLETED);
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
 
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().Be(AudioRouteConstants.ErrorCannotUpdateCompletedRoute);
@@ -134,7 +147,7 @@ public class ToggleVoiceCloneServiceTests
     {
         var route = RouteExists(RoomId, voiceCloneEnabled: true);
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, new ToggleVoiceCloneDto { VoiceCloneEnabled = false });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = false });
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.VoiceCloneEnabled.Should().BeFalse();
@@ -149,10 +162,62 @@ public class ToggleVoiceCloneServiceTests
     {
         var route = RouteExists(RoomId, voiceCloneEnabled: true);
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.VoiceCloneEnabled.Should().BeTrue();
+        VerifyNothingWritten();
+    }
+
+    /// <summary>
+    /// WT-699 / TC1905. The listener on the other end of the route, the host, or any logged-in
+    /// stranger used to be able to switch cloning of the speaker's voice on. Only the speaker may.
+    /// </summary>
+    [Fact]
+    public async Task ToggleVoiceCloneAsync_ShouldReturnForbidden_WhenCallerIsNotTheRoutesSpeaker()
+    {
+        var route = RouteExists(RoomId, voiceCloneEnabled: false);
+        var listenerUserId = Guid.NewGuid();
+        _mockParticipants
+            .Setup(p => p.GetByRoomAndUserAsync(RoomId, listenerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoomParticipant { Id = route.TargetParticipantId, UserId = listenerUserId, TranslationRoomId = RoomId });
+
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, listenerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        result.Error.Should().Be(AudioRouteConstants.ErrorNotRouteSpeaker);
+        route.VoiceCloneEnabled.Should().BeFalse();
+        VerifyNothingWritten();
+    }
+
+    [Fact]
+    public async Task ToggleVoiceCloneAsync_ShouldReturnForbidden_WhenCallerIsNotInTheRoomAtAll()
+    {
+        var route = RouteExists(RoomId, voiceCloneEnabled: true);
+
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, Guid.NewGuid(), new ToggleVoiceCloneDto { VoiceCloneEnabled = false });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        route.VoiceCloneEnabled.Should().BeTrue();
+        VerifyNothingWritten();
+    }
+
+    /// <summary>ON needs the speaker's standing consent record, as the self-service switch does.</summary>
+    [Fact]
+    public async Task ToggleVoiceCloneAsync_ShouldReturnForbidden_WhenEnablingWithoutConsentRecord()
+    {
+        var route = RouteExists(RoomId, voiceCloneEnabled: false);
+        _mockConsent
+            .Setup(c => c.HasVoiceCloneConsentAsync(SpeakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        result.Error.Should().Be(AudioRouteConstants.ErrorVoiceCloneConsentMissing);
         VerifyNothingWritten();
     }
 
@@ -175,7 +240,7 @@ public class ToggleVoiceCloneServiceTests
                 .ThrowsAsync(new InvalidOperationException("redis down"));
         }
 
-        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
+        var result = await _service.ToggleVoiceCloneAsync(RoomId, route.Id, SpeakerUserId, new ToggleVoiceCloneDto { VoiceCloneEnabled = true });
 
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().Be(AudioRouteConstants.ErrorUnexpected);

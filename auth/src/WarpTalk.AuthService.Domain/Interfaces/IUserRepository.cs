@@ -52,6 +52,12 @@ public sealed record AdminUserSessionRow(
 public interface IUserRepository : IGenericRepository<User>
 {
     Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-699 / TC4104: one keyset page of ACTIVE, undeleted user ids, ascending by id, strictly
+    /// after <paramref name="afterId"/> when given. Ids only — the broadcast audience needs nothing else.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> GetActiveUserIdsPageAsync(Guid? afterId, int pageSize, CancellationToken ct = default);
     Task<User?> GetByEmailWithRolesAsync(string email, CancellationToken ct = default);
     Task<User?> GetByIdWithRolesAsync(Guid id, CancellationToken ct = default);
     Task<User?> GetByGoogleIdWithRolesAsync(string googleId, CancellationToken ct = default);
