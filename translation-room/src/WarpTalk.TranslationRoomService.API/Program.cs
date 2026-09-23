@@ -187,10 +187,16 @@ builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
 // abortConnect=false: room CRUD and the gRPC surface are Postgres-backed; Redis is the event
-// bus. Safe here specifically because the two Redis-backed *gates* fail CLOSED rather than
-// open — SubscriptionQuotaInterceptor and RateLimitingFilter let the RedisConnectionException
-// surface, so the guarded call is rejected rather than silently allowed. If either is ever
-// changed to catch-and-allow, this line becomes a quota bypass and must be revisited.
+// bus. Safe here specifically because RateLimitingFilter, the Redis-backed gate, fails CLOSED
+// rather than open — it lets the RedisConnectionException surface, so the guarded call is
+// rejected rather than silently allowed. If it is ever changed to catch-and-allow, this line
+// becomes a bypass and must be revisited.
+//
+// WT-699 / TC3705: SubscriptionQuotaInterceptor, once named here, is gone. It was never
+// registered, and it intercepted "/JoinRoom" and "/CreateRoom" — RPCs this service does not
+// have — so registering it would have gated nothing. The credit gate that actually runs is
+// TranslationRoomService.EnsureTranslationCreditsAsync on Start Translation, fed by
+// warptalk-ai's billing_worker, which is the only thing that knows when a charge is refused.
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 

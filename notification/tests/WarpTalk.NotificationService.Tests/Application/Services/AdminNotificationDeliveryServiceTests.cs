@@ -84,6 +84,23 @@ public class AdminNotificationDeliveryServiceTests
         Assert.Equal(new[] { "begin", "save", "record", "commit" }, _calls);
     }
 
+    /// <summary>
+    /// WT-699 / TC4104: a BROADCAST / SEGMENT chunk arrives with its recipients already resolved,
+    /// and used to throw "Unsupported admin notification audience mode" here.
+    /// </summary>
+    [Theory]
+    [InlineData(NotificationConstants.TargetModeBroadcast)]
+    [InlineData(NotificationConstants.TargetModeSegment)]
+    public async Task DeliverChunkAsync_DeliversResolvedBroadcastAndSegmentChunks(string mode)
+    {
+        var recipient = Guid.NewGuid();
+
+        var written = await _sut.DeliverChunkAsync(
+            new DeliveryEventPayload(_announcement.Id, mode, new[] { recipient }), Guid.NewGuid());
+
+        Assert.Single(written);
+    }
+
     [Fact]
     public async Task DeliverChunkAsync_WhenAlreadyProcessed_DoesNotCountTheChunkAgain()
     {

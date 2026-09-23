@@ -39,6 +39,70 @@ public class PaymentAppServiceTests
     }
 
 
+    // ── WT-699 / TC3906: checkout.session.expired ─────────────────────────────────────────
+
+    private void PaymentForSession(Payment? payment) =>
+        _paymentRepository
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<Payment, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<Payment, bool>> predicate, string _, CancellationToken _) =>
+                Task.FromResult(payment is not null && predicate.Compile()(payment) ? payment : null));
+
+    [Fact]
+    public async Task ExpireCheckoutSessionAsync_MarksThePendingPaymentExpired()
+    {
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            ProviderTransactionId = "cs_test_abandoned",
+            Status = PaymentConstants.PaymentStatuses.Pending,
+        };
+        PaymentForSession(payment);
+
+        var result = await CreateService().ExpireCheckoutSessionAsync("cs_test_abandoned");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PaymentConstants.PaymentStatuses.Expired, payment.Status);
+        Assert.False(string.IsNullOrWhiteSpace(payment.FailureReason));
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>Idempotent, and never downgrades a payment that completed.</summary>
+    [Theory]
+    [InlineData(PaymentConstants.PaymentStatuses.Paid)]
+    [InlineData(PaymentConstants.PaymentStatuses.Expired)]
+    [InlineData(PaymentConstants.PaymentStatuses.Failed)]
+    public async Task ExpireCheckoutSessionAsync_LeavesANonPendingPaymentAlone(string status)
+    {
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            ProviderTransactionId = "cs_test_done",
+            Status = status,
+        };
+        PaymentForSession(payment);
+
+        var result = await CreateService().ExpireCheckoutSessionAsync("cs_test_done");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(status, payment.Status);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExpireCheckoutSessionAsync_AcknowledgesASessionNothingWasRecordedFor()
+    {
+        PaymentForSession(null);
+
+        var result = await CreateService().ExpireCheckoutSessionAsync("cs_test_plan_checkout");
+
+        Assert.True(result.IsSuccess);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _paymentRepository.Verify(r => r.AddAsync(It.IsAny<Payment>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public async Task ProcessPaymentEventAsync_UnknownPaidPaymentType_PersistsPaymentAndInvoice()
     {

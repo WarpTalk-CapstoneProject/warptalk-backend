@@ -103,6 +103,90 @@ public class StripeWebhookServiceTests
         result.IsSuccess.Should().BeTrue();
     }
 
+    /// <summary>
+    /// WT-699 / TC3906. checkout.session.expired fell through every branch unhandled, so a payment
+    /// waiting on an abandoned session stayed Pending forever. It now reaches
+    /// ExpireCheckoutSessionAsync with the session id — and never ProcessPaymentEventAsync, whose
+    /// Cancelled handler would end the workspace's subscription.
+    /// </summary>
+    [Fact]
+    public async Task HandleWebhookAsync_ExpiresThePendingPayment_OnCheckoutSessionExpired()
+    {
+        var paymentAppService = new Mock<IPaymentAppService>();
+        paymentAppService
+            .Setup(s => s.ExpireCheckoutSessionAsync("cs_test_expired", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        var service = BuildService(paymentAppService);
+
+        var result = await service.HandleWebhookAsync(
+            CreateCheckoutSessionExpiredEventJson("cs_test_expired"),
+            signatureHeader: string.Empty,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        paymentAppService.Verify(
+            s => s.ExpireCheckoutSessionAsync("cs_test_expired", It.IsAny<CancellationToken>()),
+            Times.Once);
+        paymentAppService.Verify(
+            s => s.ProcessPaymentEventAsync(It.IsAny<StripePaymentEventRequest>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleWebhookAsync_ReportsFailure_WhenRecordingAnExpiryFailsForARetryableReason()
+    {
+        var paymentAppService = new Mock<IPaymentAppService>();
+        paymentAppService
+            .Setup(s => s.ExpireCheckoutSessionAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure("Database was unreachable.", ErrorCodes.InternalServerError));
+        var service = BuildService(paymentAppService);
+
+        var result = await service.HandleWebhookAsync(
+            CreateCheckoutSessionExpiredEventJson("cs_test_expired"),
+            signatureHeader: string.Empty,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    private static StripeWebhookService BuildService(Mock<IPaymentAppService> paymentAppService)
+    {
+        var environment = new Mock<IHostEnvironment>();
+        environment.SetupGet(x => x.EnvironmentName).Returns(Environments.Development);
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [PaymentConstants.StripeConfigKeys.WebhookSecret] = string.Empty
+            })
+            .Build();
+
+        return new StripeWebhookService(
+            paymentAppService.Object,
+            configuration,
+            environment.Object,
+            Mock.Of<ILogger<StripeWebhookService>>(),
+            new Stripe.SubscriptionService());
+    }
+
+    private static string CreateCheckoutSessionExpiredEventJson(string sessionId) =>
+        $$"""
+        {
+          "id": "evt_session_expired",
+          "object": "event",
+          "type": "{{PaymentConstants.StripeEvents.CheckoutSessionExpired}}",
+          "data": {
+            "object": {
+              "id": "{{sessionId}}",
+              "object": "checkout.session",
+              "status": "expired",
+              "payment_status": "unpaid",
+              "metadata": {}
+            }
+          }
+        }
+        """;
+
     private static StripeWebhookService BuildService(Result processingOutcome)
     {
         var paymentAppService = new Mock<IPaymentAppService>();
