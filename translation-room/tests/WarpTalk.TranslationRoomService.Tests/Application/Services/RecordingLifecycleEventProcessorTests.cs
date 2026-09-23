@@ -215,6 +215,58 @@ public sealed class RecordingLifecycleEventProcessorTests
         Assert.Equal(StartedAt, row.RecordingStartedAt);
     }
 
+    /// <summary>
+    /// WT-824: the reason is kept on the row. The only two recordings production ever made both
+    /// failed, LiveKit's egress runs in LiveKit Cloud where our logs cannot see it, and the reason
+    /// lived only in a meeting-service log line that the next deploy deleted. A FAILED row with no
+    /// reason is a dead end for the host and for whoever triages it.
+    /// </summary>
+    [Fact]
+    public async Task Failed_KeepsTheReasonAndLiveKitsOwnStatusAndError()
+    {
+        await _sut.ProcessAsync(Failed());
+
+        var row = Assert.Single(_store.Rows);
+        Assert.NotNull(row.FailureReason);
+        Assert.Contains("The recording stopped unexpectedly.", row.FailureReason);
+        Assert.Contains("EGRESS_FAILED", row.FailureReason);
+        Assert.Contains("upload to", row.FailureReason);
+        // A storage endpoint is operator detail, and this row is readable by participants when
+        // the host shares the meeting's outputs.
+        Assert.DoesNotContain("https://bucket.example", row.FailureReason);
+    }
+
+    [Fact]
+    public async Task Failed_OnAProcessingRow_KeepsTheReason()
+    {
+        await _sut.ProcessAsync(Started(occurredAt: StartedAt));
+        await _sut.ProcessAsync(Failed(occurredAt: StartedAt.AddMinutes(4)));
+
+        var row = Assert.Single(_store.Rows);
+        Assert.Equal("FAILED", row.Status);
+        Assert.Contains("EGRESS_FAILED", row.FailureReason);
+    }
+
+    [Fact]
+    public async Task Completed_AfterFailed_ClearsTheReason()
+    {
+        await _sut.ProcessAsync(Failed());
+        await _sut.ProcessAsync(Completed());
+
+        var row = Assert.Single(_store.Rows);
+        Assert.Equal("COMPLETED", row.Status);
+        Assert.Null(row.FailureReason);
+    }
+
+    [Fact]
+    public void FailureReason_IsBounded()
+    {
+        var reason = RecordingLifecycleEventProcessor.DescribeFailure(
+            "The recording failed.", "EGRESS_FAILED", new string('x', 5000));
+
+        Assert.True(reason.Length <= RecordingLifecycleEventProcessor.FailureReasonMaxLength);
+    }
+
     [Fact]
     public async Task Failed_AfterCompleted_NeverDowngrades()
     {

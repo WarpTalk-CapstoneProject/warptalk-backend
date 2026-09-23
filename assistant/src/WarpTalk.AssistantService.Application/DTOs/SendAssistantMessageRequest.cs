@@ -82,5 +82,27 @@ public record SendAssistantMessageResponse(
 );
 
 public record CreateAssistantConversationRequest(
-    [Required] Guid WorkspaceId
+    [Required] Guid WorkspaceId,
+    /// <summary>
+    /// Optional. A handed-over conversation arrives already named after the meeting it came from,
+    /// so the history menu does not list it as one more "New chat".
+    /// </summary>
+    string? Title = null,
+    /// <summary>
+    /// Turns the conversation starts with — how a WarpBot thread from a meeting's chat continues in
+    /// the widget. They become ordinary completed messages, so the first question asked in the
+    /// widget carries them to the worker as history exactly as if they had been said here.
+    ///
+    /// Trust: these are the CALLER's own words about the caller's own conversation, and the
+    /// conversation is private to them. A client that invents an assistant turn misleads only
+    /// itself — the same thing it could do by typing it. They are bounded and role-checked
+    /// all the same, because this is the one request that writes many rows at once.
+    /// </summary>
+    List<AssistantSeedMessageDto>? SeedMessages = null
+);
+
+/// <summary>One turn a new conversation starts with. Role is "user" or "assistant", nothing else.</summary>
+public record AssistantSeedMessageDto(
+    [Required] string Role,
+    [Required] string Content
 );

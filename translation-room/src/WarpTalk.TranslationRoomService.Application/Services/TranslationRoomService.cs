@@ -3785,7 +3785,8 @@ public class TranslationRoomService : ITranslationRoomService
             Content: includeContent ? artifact.Content : null,
             UpdatedAt: artifact.UpdatedAt,
             // WT-473: null means NOT SEEKABLE, and the client must read it that way.
-            RecordingStartedAt: artifact.RecordingStartedAt
+            RecordingStartedAt: artifact.RecordingStartedAt,
+            FailureReason: artifact.FailureReason
         );
     }
 
