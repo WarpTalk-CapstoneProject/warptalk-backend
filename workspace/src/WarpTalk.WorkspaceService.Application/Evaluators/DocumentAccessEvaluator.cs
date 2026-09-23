@@ -103,8 +103,20 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             .Select(p => p.Permission.ToLowerInvariant())
             .ToHashSet();
 
+        // A PRIVATE DOCUMENT HAS A NAMED AUDIENCE, NOT A CLASS ONE.
+        //
+        // Making a document private is taking it back from "everyone in the workspace", and the
+        // two broad grants — a Role ALLOW (every Member) and a MembershipType ALLOW (every
+        // External member, the "External users" switch) — are exactly how "everyone" is spelled
+        // as a policy. Honouring them here would leave a private document readable by the same
+        // crowd it was just withdrawn from, so while a document is private only a User ALLOW
+        // grants. The broad rows are kept, not deleted: they apply again the moment the document
+        // is public, which is what the panel tells the person who set them. DENYs of every kind
+        // still apply — narrowing access is never what private is protecting against.
+        var isPrivate = document.IsPrivate();
         var allowedPermissions = subjectPolicies
             .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase))
+            .Where(p => !isPrivate || IsUserSubject(p))
             .Select(p => p.Permission.ToLowerInvariant())
             .ToHashSet();
 
@@ -153,7 +165,11 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
 
         if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
         {
-            if (!isPublishedDocument)
+            // A private document's named people download it the way an internal member downloads
+            // a public one — the preview on the detail page IS the download route, so refusing
+            // here would show them a document they are allowed to read as a broken frame. The
+            // private gate further down still decides who counts as named.
+            if (!isPublishedDocument && !isPrivate)
             {
                 if (!isOwnerOrAdmin && !isDocOwner)
                 {
@@ -261,6 +277,28 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             if (!isOwnerOrAdmin)
             {
                 return Result.Failure(WorkspaceConstants.Errors.AccessDeniedSensitive);
+            }
+        }
+
+        // The private gate. Everything above has already let through an explicit ALLOW for the
+        // permission asked for and the uploader; what reaches here is the DEFAULT, and for a
+        // private document the default is no — unless the caller is an Owner/Admin (who can
+        // manage the document anyway, so hiding it from them protects nothing), or somebody the
+        // document names. A named person then falls through to the same defaults an internal
+        // member gets on a public document, so "allowed to view" includes the preview's download.
+        if (isPrivate)
+        {
+            if (isOwnerOrAdmin)
+            {
+                return Result.Success();
+            }
+
+            var isNamed = subjectPolicies.Any(p =>
+                IsUserSubject(p)
+                && string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase));
+            if (!isNamed)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedPrivate);
             }
         }
 
@@ -378,6 +416,11 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
 
         // Strictly Workspace Owner or Admin only (excluding regular uploaders)
         return roleName.IsOwnerOrAdmin();
+    }
+
+    private static bool IsUserSubject(WorkspaceDocumentAccessPolicy policy)
+    {
+        return string.Equals(policy.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsPublishedDocumentStatus(string? status)
