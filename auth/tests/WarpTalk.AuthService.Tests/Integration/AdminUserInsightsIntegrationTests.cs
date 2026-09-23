@@ -192,6 +192,34 @@ public sealed class AdminUserInsightsIntegrationTests : BaseIntegrationTest
         Assert.Equal(1, body.NewUsersByDay.Single(d => d.Date == "2026-09-14").Count);
     }
 
+    /// <summary>
+    /// WT-692: the investor view on /admin/billing reads user growth month by month — the six
+    /// local months ending with the month of <c>to</c>, like billing's revenueByMonth.
+    /// </summary>
+    [Fact]
+    public async Task Insights_ReportsSixMonthsOfUserGrowth()
+    {
+        await SeedAsync();
+
+        var body = await ClientWithRole("admin").GetFromJsonAsync<AdminUserInsightsDto>(Url + Window, Json);
+
+        var months = body!.UsersByMonth!;
+        Assert.Equal(new[] { "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09" }, months.Select(m => m.Month));
+
+        var june = months.Single(m => m.Month == "2026-06");
+        Assert.Equal((1, 1, 0), (june.NewUsers, june.TotalUsers, june.ActiveUsers));
+        var august = months.Single(m => m.Month == "2026-08");
+        Assert.Equal((0, 1, 0), (august.NewUsers, august.TotalUsers, august.ActiveUsers));
+
+        // September: five sign-ups (the one deleted on 16 Sep still signed up), but only four of
+        // them plus June's account still exist at the month's end; five distinct accounts signed in.
+        var september = months.Single(m => m.Month == "2026-09");
+        Assert.Equal(5, september.NewUsers);
+        Assert.Equal(5, september.TotalUsers);
+        Assert.Equal(5, september.ActiveUsers);
+        Assert.Contains("month-to-date", body.UsersByMonthNote);
+    }
+
     [Fact]
     public async Task Insights_ComparesWithTheSameDaysLastMonth()
     {

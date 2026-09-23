@@ -218,6 +218,12 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
         return rows.Select(r => new WorkspaceCredits(r.WorkspaceId, r.Credits)).ToList();
     }
 
+    public Task<int> CountConsumingWorkspacesAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default)
+        => ConsumeIn(from, to)
+            .Select(t => t.WorkspaceId)
+            .Distinct()
+            .CountAsync(cancellationToken);
+
     private IQueryable<CreditTransaction> ConsumeIn(DateTime from, DateTime to)
         => _dbSet.IgnoreQueryFilters().AsNoTracking().Where(t =>
             t.Type == TransactionConstants.TransactionTypes.Consume

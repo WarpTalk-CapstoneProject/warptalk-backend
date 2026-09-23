@@ -294,4 +294,26 @@ public sealed class AdminComparisonRangeTests
         Assert.Equal(Utc(2026, 9, 17, 17), today.Start);
         Assert.Equal(Utc(2026, 9, 18, 17), today.End);
     }
+
+    [Fact]
+    public void MonthsEnding_IsSixVietnamMonthsEndingWithTheMonthOfTo()
+    {
+        // 23 Sep 2026 10:00 in Vietnam.
+        var months = AdminComparisonRange.MonthsEnding(Utc(2026, 9, 23, 3), Vietnam);
+
+        Assert.Equal(["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"], months.Select(m => m.Key));
+        // A Vietnam month starts at 17:00Z the day before.
+        Assert.Equal(Utc(2026, 3, 31, 17), months[0].Start);
+        Assert.Equal(Utc(2026, 9, 30, 17), months[^1].End);
+        Assert.All(months.Zip(months.Skip(1)), pair => Assert.Equal(pair.First.End, pair.Second.Start));
+    }
+
+    [Fact]
+    public void MonthsEnding_AnExclusiveToOnAMonthBoundaryEndsWithThePreviousMonth()
+    {
+        // `to` is exclusive: 1 Oct 00:00 Vietnam is the end of September, not a day of October.
+        var months = AdminComparisonRange.MonthsEnding(Utc(2026, 9, 30, 17), Vietnam, count: 2);
+
+        Assert.Equal(["2026-08", "2026-09"], months.Select(m => m.Key));
+    }
 }

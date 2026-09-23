@@ -133,7 +133,28 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
     {
         (await SeptemberAsync()).Metrics.Select(m => m.Id).Should().Equal(
             "revenue", "payments", "failedPayments", "newSubscriptions", "cancelledSubscriptions",
-            "creditsConsumed", "overageCredits", "aiProviderCost", "grossMargin", "revenuePerPayment");
+            "creditsConsumed", "overageCredits", "aiProviderCost", "grossMargin", "revenuePerPayment",
+            "activeWorkspaces");
+    }
+
+    /// <summary>
+    /// WT-692: a workspace is active in a period when it consumed credits in it. W1 and W2 did in
+    /// September; the top-up is not use, and nothing was consumed in August.
+    /// </summary>
+    [DockerFact]
+    public async Task ActiveWorkspacesAreTheWorkspacesThatConsumed()
+    {
+        var dto = await SeptemberAsync();
+
+        var active = M(dto, "activeWorkspaces");
+        active.Value.Should().Be(2);
+        active.Previous.Should().Be(0);
+        active.Unit.Should().Be("count");
+        active.HigherIsBetter.Should().BeTrue();
+
+        dto.ActiveWorkspacesByMonth!.Select(m => m.Month).Should().Equal(
+            "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09");
+        dto.ActiveWorkspacesByMonth!.Select(m => m.ActiveWorkspaces).Should().Equal(0, 0, 0, 0, 0, 2);
     }
 
     [DockerFact]

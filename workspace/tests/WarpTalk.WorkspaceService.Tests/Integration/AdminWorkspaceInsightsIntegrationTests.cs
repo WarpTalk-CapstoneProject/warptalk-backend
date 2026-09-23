@@ -167,4 +167,26 @@ public class AdminWorkspaceInsightsIntegrationTests : BaseIntegrationTest
         Assert.Equal("newWorkspaces", root.GetProperty("metrics")[0].GetProperty("id").GetString());
         Assert.True(root.GetProperty("metrics")[0].GetProperty("higherIsBetter").GetBoolean());
     }
+
+    /// <summary>
+    /// WT-692: six local (Vietnam, the default tz) months of workspace growth for /admin/billing.
+    /// </summary>
+    [Fact]
+    public async Task Insights_ReportsSixMonthsOfWorkspaceGrowth()
+    {
+        await SeedAsync();
+
+        var response = await ClientWithRole("admin").GetAsync(Url + Window);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<AdminWorkspaceInsightsDto>(Json);
+
+        var months = body!.WorkspacesByMonth!;
+        Assert.Equal(new[] { "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09" }, months.Select(m => m.Month));
+        Assert.Equal((0, 0), (months[0].NewWorkspaces, months[0].TotalWorkspaces));
+        Assert.Equal((1, 1), (months[1].NewWorkspaces, months[1].TotalWorkspaces));
+        Assert.Equal((0, 1), (months[4].NewWorkspaces, months[4].TotalWorkspaces));
+        // Five created in September (the one deleted on 16 Sep included); four of them survive the
+        // month, plus May's — a suspended workspace still exists.
+        Assert.Equal((5, 5), (months[5].NewWorkspaces, months[5].TotalWorkspaces));
+    }
 }
