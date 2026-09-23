@@ -186,6 +186,7 @@ public static class WorkspaceConstants
         public const string AccessDeniedByPolicy = "Access denied by policy (DENY).";
         public const string AccessDeniedSensitive = "Access denied. Sensitive document.";
         public const string AccessDeniedDefault = "Access denied. Default action blocks access.";
+        public const string AccessDeniedPrivate = "Access denied. This document is private.";
     }
 
     // Configuration Keys

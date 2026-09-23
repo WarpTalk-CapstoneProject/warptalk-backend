@@ -50,7 +50,10 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                 if (payload.Command == "CancelRoom" && !string.IsNullOrEmpty(payload.RoomId))
                 {
                     var groupName = $"translationRoom:{payload.RoomId}";
+                    // WT-699 / TC1806: knocking connections sit in the lobby group, and a cancelled
+                    // room is news to them too.
                     await _hubContext.Clients.Group(groupName).SendAsync("ForceDisconnected", "This room has been cancelled.", stoppingToken);
+                    await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("ForceDisconnected", "This room has been cancelled.", stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted ForceDisconnected to room {RoomId}", payload.RoomId);
                 }
                 // WT-191: TranslationRoomService publishes this from EndTranslationRoomAsync.
@@ -62,6 +65,7 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                 {
                     var groupName = $"translationRoom:{payload.RoomId}";
                     await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomEnded", payload.RoomId, stoppingToken);
+                    await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("TranslationRoomEnded", payload.RoomId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomEnded to room {RoomId}", payload.RoomId);
                 }
                 // WT-322: the mirror image of RoomEnded above. TranslationRoomService publishes
@@ -135,8 +139,13 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     && !string.IsNullOrEmpty(payload.RoomId)
                     && !string.IsNullOrEmpty(payload.UserId))
                 {
+                    // WT-699 / TC1806: the person being admitted is in the LOBBY group now, not the
+                    // room group — the hub no longer hands a knocking connection the meeting. Both
+                    // groups, so any client still relying on the room group keeps working. A
+                    // connection is only ever in one of the two, so nobody hears it twice.
                     var groupName = $"translationRoom:{payload.RoomId}";
                     await _hubContext.Clients.Group(groupName).SendAsync("ParticipantAdmitted", payload.UserId, stoppingToken);
+                    await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("ParticipantAdmitted", payload.UserId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantAdmitted to room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
                 }
                 // WT-428: the knock — somebody just landed in the waiting room. Broadcast to the
@@ -160,7 +169,35 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     // Here we broadcast to the room, and the client with matching UserId will disconnect.
                     var groupName = $"translationRoom:{payload.RoomId}";
                     await _hubContext.Clients.Group(groupName).SendAsync("ParticipantKicked", payload.UserId, stoppingToken);
+                    await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("ParticipantKicked", payload.UserId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantKicked to room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
+                }
+                // WT-699 / TC3705: warptalk-ai's billing_worker publishes these. A refused charge
+                // means the workspace can no longer pay for translation, and translation_worker
+                // stops translating the room; without this relay the meeting simply went quiet —
+                // or, before the gate existed, kept translating for free — and the UI said nothing.
+                // Room-wide, because everybody listening loses their dub, not just the speaker.
+                else if (payload.Command == "TranslationCreditsExhausted" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranslationCreditsExhausted", payload.RoomId, payload.Reason ?? string.Empty, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranslationCreditsExhausted({Reason}) to room {RoomId}", payload.Reason, payload.RoomId);
+                }
+                else if (payload.Command == "TranslationCreditsRestored" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranslationCreditsRestored", payload.RoomId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranslationCreditsRestored to room {RoomId}", payload.RoomId);
+                }
+                // WT-699 / TC2402: the lobby's "no". TranslationRoomDirectoryService publishes this
+                // once the knock is REJECTED; only the lobby group needs it, and only the client
+                // whose userId matches acts on it.
+                else if (payload.Command == "ParticipantRejected"
+                    && !string.IsNullOrEmpty(payload.RoomId)
+                    && !string.IsNullOrEmpty(payload.UserId))
+                {
+                    await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("ParticipantRejected", payload.UserId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantRejected to the lobby of room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
                 }
                 // WT-04/WT-06/WT-08: MeetingService (a separate microservice/process from this
                 // Gateway) publishes these on the same channel — it cannot inject
@@ -288,6 +325,9 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
             }
         }
     }
+
+    /// <summary>WT-699 / TC1806: must match TranslationRoomHub.TranslationRoomLobbyGroupName.</summary>
+    private static string LobbyGroupName(string? roomId) => $"translationRoom:{roomId}:lobby";
 }
 
 public class TranslationRoomCommandMessage
@@ -295,6 +335,12 @@ public class TranslationRoomCommandMessage
     public string Command { get; set; } = string.Empty;
     public string RoomId { get; set; } = string.Empty;
     public string UserId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// WT-699 / TC3705: why the room's translation was suspended (the subscription's
+    /// suspended_reason — overage_cap, invoice_overdue, trial_ended), on TranslationCreditsExhausted.
+    /// </summary>
+    public string? Reason { get; set; }
 
     // WT-428: carried by ParticipantWaiting so the host's knock toast can say WHO is at the door
     // without a roster round-trip.

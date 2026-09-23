@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace WarpTalk.Shared.Contracts.Admin;
 
@@ -57,6 +58,16 @@ public readonly record struct AdminLocalDay(DateOnly Date, DateTime Start, DateT
     public string Key => Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 }
 
+/// <summary>
+/// One calendar month of the requested time zone. <see cref="Start"/> and <see cref="End"/> are the
+/// UTC instants of its first local midnight and the next month's.
+/// </summary>
+public readonly record struct AdminLocalMonth(DateOnly Month, DateTime Start, DateTime End)
+{
+    /// <summary>The local month as <c>yyyy-MM</c> — what every per-month row carries on the wire.</summary>
+    public string Key => Month.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+}
+
 /// <summary>The current window, the one it is compared with, and the calendar both are read in.</summary>
 public readonly record struct AdminComparisonWindow(
     DateTime From,
@@ -90,6 +101,12 @@ public static class AdminComparisonRange
 
     /// <summary>The calendar used when a request names none: where the platform's admins are.</summary>
     public const string DefaultTimeZoneId = "Asia/Ho_Chi_Minh";
+
+    /// <summary>
+    /// Months in every per-month growth series (WT-692): the same six-month shape as billing's
+    /// <c>revenueByMonth</c>, so revenue, users and workspaces line up month for month.
+    /// </summary>
+    public const int GrowthMonths = 6;
 
     /// <summary>The longest window an insights endpoint accepts.</summary>
     public const int MaxSpanDays = 366;
@@ -267,6 +284,27 @@ public static class AdminComparisonRange
         }
 
         return days;
+    }
+
+    /// <summary>
+    /// The <paramref name="count"/> local calendar months of <paramref name="timeZone"/> ending with
+    /// the month that the last instant before <paramref name="to"/> falls in, oldest first — the
+    /// same window billing's <c>revenueByMonth</c> uses. The last month is usually month-to-date.
+    /// </summary>
+    public static IReadOnlyList<AdminLocalMonth> MonthsEnding(DateTime to, TimeZoneInfo timeZone, int count = GrowthMonths)
+    {
+        ArgumentNullException.ThrowIfNull(timeZone);
+        ArgumentOutOfRangeException.ThrowIfLessThan(count, 1);
+
+        var lastDay = LocalDateOf(to.AddTicks(-1), timeZone);
+        var last = new DateOnly(lastDay.Year, lastDay.Month, 1);
+        return Enumerable.Range(0, count)
+            .Select(i => last.AddMonths(i - (count - 1)))
+            .Select(month => new AdminLocalMonth(
+                month,
+                StartOfLocalMonth(month.Year, month.Month, timeZone),
+                StartOfLocalMonth(month.AddMonths(1).Year, month.AddMonths(1).Month, timeZone)))
+            .ToList();
     }
 
     /// <summary>

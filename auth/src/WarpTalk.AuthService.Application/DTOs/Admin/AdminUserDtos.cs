@@ -97,5 +97,17 @@ public record AdminUserInsightsDto(
     AdminInsightRange Range,
     AdminInsightRange PreviousRange,
     IReadOnlyList<AdminInsightMetric> Metrics,
-    IReadOnlyList<AdminDailyCountDto> NewUsersByDay);
+    IReadOnlyList<AdminDailyCountDto> NewUsersByDay,
+    IReadOnlyList<AdminUserMonthDto>? UsersByMonth = null,
+    string? UsersByMonthNote = null);
+
+/// <summary>
+/// WT-692: one local calendar month (of the request's <c>tz</c>, <c>yyyy-MM</c>) of user growth,
+/// over the six months ending with the month of <c>to</c> — the same months as billing's
+/// <c>revenueByMonth</c>.
+/// </summary>
+/// <param name="NewUsers">Accounts created in the month, soft-deleted ones included.</param>
+/// <param name="TotalUsers">Accounts that existed at the END of the month: created before it and not deleted by then.</param>
+/// <param name="ActiveUsers">Distinct accounts issued a refresh token in the month (same definition as <c>activeUsers</c>).</param>
+public record AdminUserMonthDto(string Month, int NewUsers, int TotalUsers, int ActiveUsers);
 

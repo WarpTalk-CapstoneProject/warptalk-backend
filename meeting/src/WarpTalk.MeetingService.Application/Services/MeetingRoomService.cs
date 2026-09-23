@@ -592,22 +592,50 @@ public class MeetingRoomService : IMeetingRoomService
             roomDetails = grpcResult.Value;
         }
 
-        // 2. Get Meeting Room (needed for ActiveHostId check)
+        // 2. The meeting room is OPTIONAL here. WT-699 / TC2402: this used to answer "Meeting room
+        // not started." (404) whenever nobody had opened the call yet — which is exactly when a
+        // lobby is most likely to have someone knocking. The lobby row lives on the room service
+        // and exists either way; only the session grant below needs a meeting room.
         var meetingRoom = await _unitOfWork.MeetingRoomRepository
             .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
 
-        if (meetingRoom == null)
-            return Result.Failure<bool>("Meeting room not started.", ErrorCodes.NotFound);
-
-        bool isOriginalHost = roomDetails.HostId == hostIdString;
-        bool isActiveHost = meetingRoom.ActiveHostId == hostUserId;
+        bool isOriginalHost = roomDetails.HostId == hostIdString
+            || (!string.IsNullOrEmpty(roomDetails.EffectiveHostId) && roomDetails.EffectiveHostId == hostIdString);
+        bool isActiveHost = meetingRoom?.ActiveHostId == hostUserId;
 
         if (!isOriginalHost && !isActiveHost)
         {
             return Result.Failure<bool>("Only the host can reject participants.", ErrorCodes.Forbidden);
         }
 
-        // 3. Revoke Invitation
+        // 3. THE LOBBY ROW FIRST. WT-699 / TC2402: reject used to revoke only this service's session
+        // grant, so the knock stayed WAITING on the room service — still in the host's lobby list and
+        // still admittable by the next click on Approve. Called first, like the kick, so a refusal
+        // there leaves nothing half-applied here; the room service re-checks host authority itself.
+        var rosterReject = await _grpcService.RejectRoomParticipantAsync(
+            translationRoomId, hostUserId, participantUserId);
+
+        if (!rosterReject.IsSuccess)
+        {
+            return Result.Failure<bool>(
+                rosterReject.Error ?? "Could not decline the request to join.",
+                rosterReject.ErrorCode switch
+                {
+                    "ROOM_NOT_FOUND" => ErrorCodes.NotFound,
+                    "REJECT_FORBIDDEN" => ErrorCodes.Forbidden,
+                    "REJECT_REFUSED" => ErrorCodes.ValidationError,
+                    _ => ErrorCodes.InternalServerError
+                });
+        }
+
+        if (meetingRoom == null)
+        {
+            // No call yet, so no session grant to revoke. The REJECTED row is what refuses their
+            // next join, on the service that decides admission.
+            return Result.Success(true);
+        }
+
+        // 4. Revoke the session grant so the LiveKit token path refuses them too.
         var invitationRepo = _unitOfWork.RtcSessionRevocationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
@@ -629,7 +657,7 @@ public class MeetingRoomService : IMeetingRoomService
             await invitationRepo.AddAsync(invitation);
         }
 
-        // 4. Update Participant state
+        // 5. Update Participant state
         var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);
 
@@ -641,9 +669,6 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         await _unitOfWork.SaveChangesAsync();
-
-        // Optional: Send event to disconnect them if they are connected (via LiveKit API)
-        // For Lobby presence, this DB update is enough to reject them from the waiting list.
 
         return Result.Success(true);
     }
@@ -741,6 +766,9 @@ public class MeetingRoomService : IMeetingRoomService
         return Result.Success(true);
     }
 
+    /// <summary>WT-699 / TC2103: the distinct answer to a second Kick, shown to the host verbatim.</summary>
+    public const string ParticipantAlreadyKickedMessage = "This participant has already been removed from the meeting.";
+
     public async Task<Result<bool>> KickParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId)
     {
         var meetingRoom = await _unitOfWork.MeetingRoomRepository
@@ -787,6 +815,11 @@ public class MeetingRoomService : IMeetingRoomService
         if (!rosterKick.IsSuccess)
             return Result.Failure<bool>(rosterKick.Error ?? "Could not remove the participant from the room.", ErrorCodes.InternalServerError);
 
+        // WT-699 / TC2103: the roster already said KICKED before this press. Everything below is
+        // still run — it is idempotent, and it is what finishes a first kick whose LiveKit
+        // eviction failed — but the answer must not claim this press removed anybody.
+        var alreadyKicked = rosterKick.Value == RoomRosterRemoval.AlreadyRemoved;
+
         // Update Participant status
         var participant = await _unitOfWork.RtcStreamParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == participantUserId);
@@ -823,6 +856,12 @@ public class MeetingRoomService : IMeetingRoomService
         var removeResult = await _roomAdminService.RemoveParticipantAsync(
             meetingRoom.ProviderRoomName,
             participantUserId.ToString());
+
+        // A repeat press answers "already removed" whatever LiveKit said: the person has usually
+        // left the SFU long ago, and "not found" there is the expected outcome, not a failure.
+        if (alreadyKicked)
+            return Result.Failure<bool>(ParticipantAlreadyKickedMessage, ErrorCodes.Conflict);
+
         if (!removeResult.IsSuccess)
             return Result.Failure<bool>(
                 removeResult.Error ?? "Failed to remove participant from LiveKit.",

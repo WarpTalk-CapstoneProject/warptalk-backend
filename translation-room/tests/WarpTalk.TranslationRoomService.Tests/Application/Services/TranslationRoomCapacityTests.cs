@@ -242,6 +242,27 @@ public class TranslationRoomCapacityTests
         result.ErrorCode.Should().Be(ErrorCodes.Conflict);
     }
 
+    /// <summary>
+    /// WT-699 / TC2402. A declined knock is as final as a kick: joining again must be refused, not
+    /// "succeed" with a row that still says REJECTED and a lobby screen waiting for an answer that
+    /// was already given.
+    /// </summary>
+    [Theory]
+    [InlineData("REJECTED")]
+    [InlineData("KICKED")]
+    public async Task TerminalStatuses_AreRefusedOnJoin(string status)
+    {
+        var room = ArrangeRoom(Guid.NewGuid(), maxParticipants: 0);
+        var returning = Guid.NewGuid();
+        ArrangeExistingParticipant(room, returning, status);
+
+        var result = await JoinAs(returning);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public void OnlyConnectedHoldsASeat()
     {

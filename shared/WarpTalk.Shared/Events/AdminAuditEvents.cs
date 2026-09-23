@@ -23,6 +23,8 @@ public static class AdminAuditEntityTypes
     public const string Notification = "notification";
     /// <summary>A platform account, as acted on from the admin user directory.</summary>
     public const string User = "user";
+    /// <summary>A row of the language catalog room validation reads (WT-691). Entity id = the code.</summary>
+    public const string SupportedLanguage = "supported_language";
 }
 
 /// <summary>Service identifiers used as the audit entry's source.</summary>
@@ -33,6 +35,16 @@ public static class AdminAuditSources
     public const string TranscriptService = "transcript-service";
     public const string NotificationService = "notification-service";
     public const string AuthService = "auth-service";
+    public const string TranslationRoomService = "translation-room-service";
+}
+
+/// <summary>Action verbs recorded against a language catalog row (WT-691).</summary>
+public static class AdminAuditLanguageActions
+{
+    public const string Created = "language.created";
+    public const string Updated = "language.updated";
+    public const string Enabled = "language.enabled";
+    public const string Disabled = "language.disabled";
 }
 
 /// <summary>

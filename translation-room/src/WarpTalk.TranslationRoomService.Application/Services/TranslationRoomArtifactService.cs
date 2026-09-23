@@ -784,17 +784,28 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     ErrorCodes.InvalidState);
             }
 
-            if (artifact.ConsentRequired)
-            {
-                return Result.Failure<ArtifactDownloadDto>("Consent is required before downloading this artifact.", ErrorCodes.Unauthorized);
-            }
-
+            // WT-824: "not there yet" before "not yours yet". A recording row exists from the moment
+            // recording starts (rec-loss), so a PROCESSING row with no file used to answer "consent
+            // is required" — a permission problem, sending the reader to the host for a file that
+            // does not exist. That is how a stuck recording got reported as a consent bug.
             if (string.IsNullOrWhiteSpace(artifact.FileUrl) &&
                 string.IsNullOrWhiteSpace(artifact.Content))
             {
                 return Result.Failure<ArtifactDownloadDto>(
                     "Artifact content is not available yet.",
                     ErrorCodes.InvalidState);
+            }
+
+            // WT-824: the consent hold keeps the raw recording from the OTHER people in the meeting
+            // until the host releases it. It never applied to the host, and must not: the host's own
+            // recording was otherwise reachable only through a consent grant to themselves, and after
+            // a Transfer Host the booker (whom the access check above always admits) was refused
+            // that grant — so nobody could both release the recording and read it.
+            if (artifact.ConsentRequired && !CanReleaseArtifact(artifact.TranslationRoom, userId))
+            {
+                return Result.Failure<ArtifactDownloadDto>(
+                    "Consent is required before downloading this recording. The host has not released it to the people who took part yet.",
+                    ErrorCodes.Unauthorized);
             }
 
             // The transcript and the summary go out as plain text, whatever they are stored as.
@@ -871,7 +882,8 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     /// consent gate self-serve: a participant refused a recording download could POST here, get a
     /// 204, and then download it. Consent granted by the person who benefits from it is not
     /// consent. The approver must be someone other than the requester, and the host is the only
-    /// authority this row knows about.
+    /// authority this row knows about — the booker or the current host, see
+    /// <see cref="CanReleaseArtifact"/> (WT-824).
     /// </para>
     /// <para>
     /// KNOWN AND DELIBERATELY UNCHANGED: consent is still recorded GLOBALLY. There is one boolean
@@ -897,7 +909,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure(TranslationRoomConstants.ErrorArtifactNotFound, ErrorCodes.NotFound);
 
-            if (!artifact.TranslationRoom.IsHostedBy(userId))
+            if (!CanReleaseArtifact(artifact.TranslationRoom, userId))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedConsentArtifact, ErrorCodes.Unauthorized);
 
             artifact.ConsentRequired = false;
@@ -912,4 +924,17 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
+
+    /// <summary>
+    /// WT-824: who holds the consent lever on a room's artifacts — the booker (<c>HostId</c>, whom
+    /// <see cref="ArtifactAccessHelper"/> always admits to read them) and whoever runs the room now
+    /// (<see cref="TranslationRoom.IsHostedBy"/>, the transferee after a Transfer Host).
+    ///
+    /// It used to be <c>IsHostedBy</c> alone, which after a transfer refused the booker — the one
+    /// person guaranteed to be able to read the recording — while admitting a transferee who, under
+    /// the default HOST_ONLY policy, cannot read it at all. Both are "the host" to the people in the
+    /// meeting; neither is a participant granting consent to themselves.
+    /// </summary>
+    private static bool CanReleaseArtifact(TranslationRoom room, Guid userId) =>
+        room.HostId == userId || room.IsHostedBy(userId);
 }

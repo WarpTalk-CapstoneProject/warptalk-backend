@@ -208,6 +208,32 @@ public class TranslationRoomHub : Hub
         var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
         var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
 
+        // WT-699 / TC1806: being logged in is not being in this meeting. This method used to add
+        // ANY authenticated connection to the room group — a stranger with the room id, a guest
+        // still waiting for approval, a participant the host had kicked — and every transcript
+        // line, translation, chat message and roster change reached them from then on.
+        var admission = await _hostAuthority.GetRoomAdmissionAsync(
+            translationRoomId, userId, Context.ConnectionAborted);
+
+        if (admission == RoomAdmission.Refused)
+        {
+            _logger.LogWarning(
+                "TranslationRoomHub: refused JoinTranslationRoom on room {RoomId} for user {UserId} — "
+                + "not an admitted participant or the host.",
+                translationRoomId, userId);
+            throw new HubException("You are not a participant of this meeting.");
+        }
+
+        if (admission == RoomAdmission.Lobby)
+        {
+            await JoinLobbyAsync(translationRoomId, userId, roomIdStr, roomUserKey);
+            return;
+        }
+
+        // Admitted. A connection that waited in the lobby re-invokes this after ParticipantAdmitted,
+        // on the same connection id; it leaves the lobby group as it enters the room group.
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, TranslationRoomLobbyGroupName(translationRoomId));
+
         // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
         if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
         {
@@ -322,6 +348,26 @@ public class TranslationRoomHub : Hub
 
     private static string NormalizeLanguageCode(string language) =>
         string.IsNullOrWhiteSpace(language) ? language : language.Split('-')[0].ToLowerInvariant();
+
+    /// <summary>
+    /// WT-699 / TC1806: somebody knocking gets the LOBBY group only — the answer to their knock
+    /// (ParticipantAdmitted / ParticipantRejected) and the room ending, and nothing said inside the
+    /// meeting. They are not announced to the room and not registered with the AI pipeline.
+    ///
+    /// The connection is still recorded against the room so that closing the lobby tab publishes
+    /// participant-offline exactly as before — that is what clears the knock from the host's queue
+    /// (MarkParticipantDisconnectedAsync moves WAITING back to INVITED).
+    /// </summary>
+    private async Task JoinLobbyAsync(Guid translationRoomId, string userId, string roomIdStr, string roomUserKey)
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, TranslationRoomLobbyGroupName(translationRoomId));
+        _connectionToRoom[Context.ConnectionId] = roomIdStr;
+        _roomUserToConnection[roomUserKey] = Context.ConnectionId;
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} is waiting in the lobby of room {RoomId}",
+            userId, translationRoomId);
+    }
 
     /// <summary>
     /// Leave a translationRoom room. Removes connection from the translationRoom group
@@ -838,4 +884,10 @@ public class TranslationRoomHub : Hub
         ?? "Unknown";
 
     private static string TranslationRoomGroupName(Guid translationRoomId) => $"translationRoom:{translationRoomId}";
+
+    /// <summary>
+    /// WT-699 / TC1806: the group a knocking connection sits in. Kept in step with
+    /// TranslationRoomRedisSubscriberService, which relays lobby-relevant commands to it.
+    /// </summary>
+    internal static string TranslationRoomLobbyGroupName(Guid translationRoomId) => $"translationRoom:{translationRoomId}:lobby";
 }

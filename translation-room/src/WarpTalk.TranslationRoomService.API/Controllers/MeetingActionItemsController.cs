@@ -9,6 +9,7 @@ using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Models;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
@@ -36,6 +37,32 @@ public class MeetingActionItemsController : ControllerBase
 
         var result = await _actionItems.GetForRoomAsync(roomId, userId.Value, User.GetEmail(), ct);
         return result.IsSuccess ? Ok(result.Value) : Fail(result.Error, result.ErrorCode);
+    }
+
+    /// <summary>
+    /// Add a task to a meeting on the caller's behalf — what WarpBot calls when somebody says
+    /// "action: …, owner: me". 201 with the row, so the caller can link to it instead of claiming
+    /// it was saved.
+    /// </summary>
+    [HttpPost("rooms/{roomId}/action-items")]
+    public async Task<IActionResult> Create(
+        Guid roomId,
+        [FromBody] CreateActionItemRequest request,
+        CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        if (request == null)
+        {
+            return BadRequest(new ApiErrorResponse(
+                MeetingActionItemConstants.ErrorTaskRequired, ErrorCodes.ValidationError));
+        }
+
+        var result = await _actionItems.CreateAsync(roomId, userId.Value, User.GetEmail(), request, ct);
+        return result.IsSuccess
+            ? StatusCode(201, result.Value)
+            : Fail(result.Error, result.ErrorCode);
     }
 
     /// <summary>Everything assigned to the caller in one workspace.</summary>

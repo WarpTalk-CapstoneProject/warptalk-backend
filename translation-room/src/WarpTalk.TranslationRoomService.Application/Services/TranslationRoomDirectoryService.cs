@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -21,14 +22,29 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     /// <summary>WT-359: this interface acquired its first write, and a write needs a commit.</summary>
     private readonly IUnitOfWork _unitOfWork;
 
+    /// <summary>
+    /// WT-699 / TC2402: the relay a reject is announced on. Optional so a caller that only reads
+    /// (and the tests of the older writes) need not supply one; a missing relay only costs the
+    /// rejected tab its notice, never the reject itself.
+    /// </summary>
+    private readonly IRedisStateRepository? _redisStateRepository;
+    private readonly ILogger<TranslationRoomDirectoryService>? _logger;
+
+    private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
+    private const string ParticipantRejectedCommand = "ParticipantRejected";
+
     public TranslationRoomDirectoryService(
         ITranslationRoomRepository translationRoomRepository,
         ITranslationRoomParticipantRepository participantRepository,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        IRedisStateRepository? redisStateRepository = null,
+        ILogger<TranslationRoomDirectoryService>? logger = null)
     {
         _translationRoomRepository = translationRoomRepository;
         _participantRepository = participantRepository;
         _unitOfWork = unitOfWork;
+        _redisStateRepository = redisStateRepository;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -78,7 +94,7 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     }
 
     /// <inheritdoc />
-    public async Task<Result<bool>> KickParticipantByUserAsync(
+    public async Task<Result<RosterRemovalOutcome>> KickParticipantByUserAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
         Guid participantUserId,
@@ -86,17 +102,17 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     {
         var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
         if (room == null)
-            return Result.Failure<bool>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
         // Re-checked here rather than trusted from MeetingService, for the same reason
         // TransferHostAsync re-checks it: host authority is READ out of this service's tables on
         // every join and every host-gated operation, so this service is the one that has to agree
         // a kick was legitimate.
         if (!room.IsHostedBy(requestedByUserId))
-            return Result.Failure<bool>(TranslationRoomConstants.ErrorOnlyHostCanKick, ErrorCodes.Forbidden);
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorOnlyHostCanKick, ErrorCodes.Forbidden);
 
         if (room.IsHostedBy(participantUserId))
-            return Result.Failure<bool>(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
 
         var participant = await _participantRepository.GetByRoomAndUserAsync(
             translationRoomId, participantUserId, ct);
@@ -104,18 +120,97 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         // Nothing to terminate. Not an error: MeetingService evicted somebody this service never
         // recorded, and reporting a failure would make the host retry a kick that already worked.
         if (participant == null)
-            return Result.Success(false);
+            return Result.Success(RosterRemovalOutcome.NotOnRoster);
 
-        // Idempotent — the host can press kick twice, and MeetingService retries.
+        // Idempotent — the host can press kick twice, and MeetingService retries. WT-699 / TC2103:
+        // idempotent is not the same as "it happened again", so the answer says which.
         if (participant.Status == TranslationRoomParticipantStatuses.Kicked)
-            return Result.Success(true);
+            return Result.Success(RosterRemovalOutcome.AlreadyRemoved);
 
         participant.Status = TranslationRoomParticipantStatuses.Kicked;
         participant.UpdatedAt = DateTime.UtcNow;
         _participantRepository.Update(participant);
         await _unitOfWork.SaveChangesAsync(ct);
 
-        return Result.Success(true);
+        return Result.Success(RosterRemovalOutcome.Removed);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<RosterRemovalOutcome>> RejectParticipantByUserAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId,
+        CancellationToken ct = default)
+    {
+        var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (room == null)
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        // The same re-check the kick makes: MeetingService's own host check is the fast path, and
+        // this service — which owns the lobby row — is the one that has to agree.
+        if (!room.IsHostedBy(requestedByUserId))
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorOnlyHostCanReject, ErrorCodes.Forbidden);
+
+        var participant = await _participantRepository.GetByRoomAndUserAsync(
+            translationRoomId, participantUserId, ct);
+
+        if (participant == null)
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorParticipantNotWaiting, ErrorCodes.ValidationError);
+
+        if (participant.Status == TranslationRoomParticipantStatuses.Rejected)
+            return Result.Success(RosterRemovalOutcome.AlreadyRemoved);
+
+        // WAITING is the knock. INVITED is a knock whose tab dropped before the host answered —
+        // MarkParticipantDisconnectedAsync moves WAITING there — and refusing it is the same act.
+        // Anything else has already been let in (or thrown out), and "reject" is the wrong verb.
+        if (participant.Status is not (TranslationRoomParticipantStatuses.Waiting
+            or TranslationRoomParticipantStatuses.Invited))
+        {
+            return Result.Failure<RosterRemovalOutcome>(TranslationRoomConstants.ErrorParticipantNotWaiting, ErrorCodes.ValidationError);
+        }
+
+        participant.Status = TranslationRoomParticipantStatuses.Rejected;
+        participant.UpdatedAt = DateTime.UtcNow;
+        _participantRepository.Update(participant);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        await PublishParticipantRejectedAsync(translationRoomId, participantUserId);
+
+        return Result.Success(RosterRemovalOutcome.Removed);
+    }
+
+    /// <summary>
+    /// Tell the person's lobby tab. Published after the save, and never throws: the row is already
+    /// REJECTED, which is what refuses their next join, so a lost notice costs them only the
+    /// sentence explaining why — failing the host's action here would be strictly worse.
+    /// </summary>
+    private async Task PublishParticipantRejectedAsync(Guid translationRoomId, Guid rejectedUserId)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                Command = ParticipantRejectedCommand,
+                RoomId = translationRoomId.ToString(),
+                UserId = rejectedUserId.ToString()
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(
+                ex,
+                "Failed to publish ParticipantRejected for RoomId: {RoomId}, UserId: {UserId}. The participant is REJECTED "
+                + "and cannot join, but their lobby tab will not be told until it retries.",
+                translationRoomId,
+                rejectedUserId);
+        }
     }
 
     /// <inheritdoc />

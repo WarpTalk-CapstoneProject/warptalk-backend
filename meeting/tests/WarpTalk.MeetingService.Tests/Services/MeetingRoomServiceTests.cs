@@ -1136,7 +1136,7 @@ public class MeetingRoomServiceTests
         // where the kick stops.
         _grpcServiceMock
             .Setup(g => g.KickRoomParticipantAsync(translationRoomId, hostId, participantUserId))
-            .ReturnsAsync(Result.Success(true));
+            .ReturnsAsync(Result.Success(RoomRosterRemoval.Removed));
 
         var result = await _sut.KickParticipantAsync(translationRoomId, hostId, participantUserId);
 

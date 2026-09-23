@@ -158,6 +158,12 @@ public static class WorkspaceDocumentConstants
         public const string DeleteDocument = "DeleteDocument";
         public const string ArchiveDocument = "ArchiveDocument";
         public const string RestoreDocument = "RestoreDocument";
+
+        /// <summary>A published document was taken back: public → private.</summary>
+        public const string UnpublishDocument = "UnpublishDocument";
+
+        /// <summary>A private document was published again (or resubmitted for approval).</summary>
+        public const string PublishDocument = "PublishDocument";
         public const string SecurityScanCompleted = "SecurityScanCompleted";
         public const string EmbeddingIndexed = "EmbeddingIndexed";
         public const string EmbeddingFailed = "EmbeddingFailed";
@@ -176,6 +182,8 @@ public static class WorkspaceDocumentConstants
         public const string Failed = "DocumentFailed";
         public const string Archived = "DocumentArchived";
         public const string Restored = "DocumentRestored";
+        public const string Unpublished = "DocumentUnpublished";
+        public const string Published = "DocumentPublished";
         public const string Deleted = "DocumentDeleted";
     }
 }
