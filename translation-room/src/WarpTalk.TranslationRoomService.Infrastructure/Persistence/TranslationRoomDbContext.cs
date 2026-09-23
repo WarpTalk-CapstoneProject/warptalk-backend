@@ -400,6 +400,13 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasComment("External AuthService workspace id. No physical FK.")
                 .HasColumnName("workspace_id");
             entity.Property(e => e.SourceMinutesId).HasColumnName("source_minutes_id");
+            entity.Property(e => e.Source)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'MINUTES'::character varying")
+                .HasColumnName("source");
+            entity.Property(e => e.CreatedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("created_by");
             entity.Property(e => e.SeriesId).HasColumnName("series_id");
             entity.Property(e => e.Task).HasColumnName("task");
             entity.Property(e => e.OwnerName)
