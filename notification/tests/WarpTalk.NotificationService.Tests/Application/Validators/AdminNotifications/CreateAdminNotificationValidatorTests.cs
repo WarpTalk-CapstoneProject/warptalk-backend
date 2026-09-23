@@ -86,10 +86,14 @@ public class CreateAdminNotificationValidatorTests
         result.ShouldHaveValidationErrorFor(x => x.SegmentId);
     }
 
+    /// <summary>
+    /// WT-699 / TC4104: BROADCAST and SEGMENT were refused outright ("Only SPECIFIC_USERS is
+    /// supported until a production user/segment resolver is configured"). The resolver exists now.
+    /// </summary>
     [Theory]
     [InlineData(NotificationConstants.TargetModeBroadcast)]
     [InlineData(NotificationConstants.TargetModeSegment)]
-    public void Should_Reject_Audience_Modes_Without_A_Production_Resolver(string mode)
+    public void Should_Accept_Broadcast_And_Segment_Audiences(string mode)
     {
         var model = CreateValidBaseDto() with
         {
@@ -100,7 +104,29 @@ public class CreateAdminNotificationValidatorTests
 
         var result = _validator.TestValidate(model);
 
+        result.ShouldNotHaveAnyValidationErrors();
+    }
+
+    [Fact]
+    public void Should_Reject_An_Unknown_Audience_Mode()
+    {
+        var result = _validator.TestValidate(CreateValidBaseDto() with { TargetAudienceMode = "EVERYONE_PLEASE" });
+
         result.ShouldHaveValidationErrorFor(x => x.TargetAudienceMode);
+    }
+
+    /// <summary>A broadcast names nobody; a list alongside it would silently be ignored.</summary>
+    [Fact]
+    public void Should_Reject_A_Broadcast_That_Also_Names_Users()
+    {
+        var model = CreateValidBaseDto() with
+        {
+            TargetAudienceMode = NotificationConstants.TargetModeBroadcast,
+            SpecificUserIds = new List<Guid> { Guid.NewGuid() },
+            SegmentId = null
+        };
+
+        _validator.TestValidate(model).ShouldHaveValidationErrorFor(x => x.SpecificUserIds);
     }
 
     [Fact]

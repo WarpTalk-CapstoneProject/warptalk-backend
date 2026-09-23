@@ -217,13 +217,16 @@ public class TranslationRoomRedisSubscriberServiceTests
             new RedisValue(JsonSerializer.Serialize(new { Command = "RoomEnded", RoomId = roomId.ToString() })));
 
         await WaitForGroupAsync($"translationRoom:{roomId}");
+        // WT-699 / TC1806: and to anybody still knocking, who is in the lobby group.
+        await WaitForGroupAsync($"translationRoom:{roomId}:lobby");
+        await WaitForSendsAsync("TranslationRoomEnded", 2);
 
         _proxy.Verify(
             p => p.SendCoreAsync(
                 "TranslationRoomEnded",
                 It.IsAny<object[]>(),
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.Exactly(2));
     }
 
     /// <summary>
@@ -250,16 +253,110 @@ public class TranslationRoomRedisSubscriberServiceTests
             })));
 
         await WaitForGroupAsync($"translationRoom:{roomId}");
+        // WT-699 / TC1806: the knocking connection is in the LOBBY group now, so that is where the
+        // admission has to arrive.
+        await WaitForGroupAsync($"translationRoom:{roomId}:lobby");
+        await WaitForSendsAsync("ParticipantAdmitted", 2);
 
-        var sent = _proxy.Invocations
+        var sends = _proxy.Invocations
             .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
                         && (string)i.Arguments[0] == "ParticipantAdmitted")
             .Select(i => (object[])i.Arguments[1])
-            .Single();
+            .ToList();
 
         // The client compares this against its own user id to decide whether to re-join, so a
         // broadcast that dropped or reshaped it would either release nobody or release everybody.
-        Assert.Equal(admittedUserId.ToString(), Assert.Single(sent));
+        Assert.All(sends, sent => Assert.Equal(admittedUserId.ToString(), Assert.Single(sent)));
+    }
+
+    /// <summary>
+    /// WT-699 / TC2402: the lobby's "no". Reaches only the lobby group — nobody inside the meeting
+    /// needs to hear who was turned away at the door.
+    /// </summary>
+    [Fact]
+    public async Task ParticipantRejected_BroadcastsToTheLobbyGroupOnly()
+    {
+        var roomId = Guid.NewGuid();
+        var rejectedUserId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "ParticipantRejected",
+                RoomId = roomId.ToString(),
+                UserId = rejectedUserId.ToString()
+            })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}:lobby");
+        await WaitForSendsAsync("ParticipantRejected", 1);
+
+        _clients.Verify(c => c.Group($"translationRoom:{roomId}"), Times.Never);
+        var sent = _proxy.Invocations
+            .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                        && (string)i.Arguments[0] == "ParticipantRejected")
+            .Select(i => (object[])i.Arguments[1])
+            .Single();
+        Assert.Equal(rejectedUserId.ToString(), Assert.Single(sent));
+    }
+
+    /// <summary>
+    /// WT-699 / TC3705. billing_worker publishes this when a charge is refused; every client in the
+    /// room must learn that translation stopped and why, rather than watching it go quiet.
+    /// </summary>
+    [Fact]
+    public async Task TranslationCreditsExhausted_BroadcastsTheReasonToTheRoomGroup()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "TranslationCreditsExhausted",
+                RoomId = roomId.ToString(),
+                Reason = "overage_cap"
+            })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+        await WaitForSendsAsync("TranslationCreditsExhausted", 1);
+
+        var sent = _proxy.Invocations
+            .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                        && (string)i.Arguments[0] == "TranslationCreditsExhausted")
+            .Select(i => (object[])i.Arguments[1])
+            .Single();
+        Assert.Equal(new object[] { roomId.ToString(), "overage_cap" }, sent);
+    }
+
+    [Fact]
+    public async Task TranslationCreditsRestored_BroadcastsToTheRoomGroup()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new { Command = "TranslationCreditsRestored", RoomId = roomId.ToString() })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+        await WaitForSendsAsync("TranslationCreditsRestored", 1);
+    }
+
+    private async Task WaitForSendsAsync(string eventName, int count)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            if (_proxy.Invocations.Count(i =>
+                    i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                    && (string)i.Arguments[0] == eventName) >= count)
+                return;
+            await Task.Delay(10);
+        }
+
+        throw new Xunit.Sdk.XunitException($"Expected {count} {eventName} sends.");
     }
 
     [Fact]

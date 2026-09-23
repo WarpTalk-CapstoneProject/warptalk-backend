@@ -62,6 +62,31 @@ public class BillingEndpointSecurityContractTests
             roles);
     }
 
+    /// <summary>
+    /// WT-699 / TC3405: the overage switch decides whether a workspace keeps spending past zero
+    /// credits, and both actions were reachable by any logged-in account. They take the same
+    /// membership-resolved Owner/Admin gate as the rest of the workspace's money actions.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(SubscriptionsController.GetOverage))]
+    [InlineData(nameof(SubscriptionsController.SetOverage))]
+    public void WorkspaceOverageActions_RequireWorkspaceBillingRole_NotJustLogin(string actionName)
+    {
+        AssertWorkspaceBillingRole(typeof(SubscriptionsController), actionName);
+
+        var action = GetAction(typeof(SubscriptionsController), actionName);
+        Assert.Null(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+
+        var roleFilter = action.GetCustomAttribute<RequireWorkspaceRoleAttribute>();
+        var roles = Assert.IsType<string[]>(Assert.Single(roleFilter!.Arguments!));
+        Assert.DoesNotContain("Member", roles);
+
+        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.True(
+            authorize is null || string.IsNullOrEmpty(authorize.Roles),
+            $"{actionName} must not authorize off JWT role claims.");
+    }
+
     [Theory]
     [InlineData(nameof(UsagesController.GetGlobalMetrics))]
     [InlineData(nameof(UsagesController.GetGlobalUsageChart))]

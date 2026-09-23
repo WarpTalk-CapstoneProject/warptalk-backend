@@ -35,6 +35,40 @@ public class WorkspaceDirectoryServiceTests
         _service = new WorkspaceDirectoryService(_unitOfWork, _authIdentity, _translationRoomClient);
     }
 
+    // ── WT-699 / TC4104: the SEGMENT audience ────────────────────────────────────────
+
+    [Fact]
+    public async Task ListActiveMemberUserIdsAsync_ReturnsTheActiveMembersOfTheWorkspace()
+    {
+        var workspaceId = Guid.NewGuid();
+        var alice = Guid.NewGuid();
+        var bob = Guid.NewGuid();
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId });
+        _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new() { WorkspaceId = workspaceId, UserId = alice },
+                new() { WorkspaceId = workspaceId, UserId = bob },
+            });
+
+        var result = await _service.ListActiveMemberUserIdsAsync(workspaceId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { alice, bob }, result.Value);
+    }
+
+    [Fact]
+    public async Task ListActiveMemberUserIdsAsync_AnswersNull_ForADeletedOrUnknownWorkspace()
+    {
+        var deleted = Guid.NewGuid();
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(deleted, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = deleted, DeletedAt = DateTime.UtcNow });
+
+        Assert.Null((await _service.ListActiveMemberUserIdsAsync(deleted)).Value);
+        Assert.Null((await _service.ListActiveMemberUserIdsAsync(Guid.NewGuid())).Value);
+    }
+
     private void StubMember(WorkspaceMember? member) =>
         _unitOfWork.WorkspaceMemberRepository
             .FirstOrDefaultAsync(

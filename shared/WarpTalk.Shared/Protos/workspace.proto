@@ -11,6 +11,19 @@ service WorkspaceService {
   rpc GetWorkspacePreflightDetails (GetWorkspacePreflightRequest) returns (GetWorkspacePreflightResponse);
   rpc GetWorkspaceNames (GetWorkspaceNamesRequest) returns (GetWorkspaceNamesResponse);
   rpc GetSharedWorkspaceMembers (GetSharedWorkspaceMembersRequest) returns (GetSharedWorkspaceMembersResponse);
+  // WT-699 / TC4104: the audience of a SEGMENT admin announcement, where the segment is one
+  // workspace. Active members only.
+  rpc ListWorkspaceMemberUserIds (ListWorkspaceMemberUserIdsRequest) returns (ListWorkspaceMemberUserIdsResponse);
+}
+
+message ListWorkspaceMemberUserIdsRequest {
+  string workspace_id = 1;
+}
+
+message ListWorkspaceMemberUserIdsResponse {
+  // False when no such workspace exists, so "nobody" and "no such segment" stay distinct.
+  bool workspace_found = 1;
+  repeated string user_ids = 2;
 }
 
 // WT-335: "which of these users share an active workspace with this caller?"
