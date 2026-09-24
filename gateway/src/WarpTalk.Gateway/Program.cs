@@ -8,11 +8,13 @@ using StackExchange.Redis;
 using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Configuration;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Monitoring;
 using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
@@ -63,6 +65,15 @@ builder.Services.AddWarpTalkJwtAuthentication(
                     context.Token = accessToken;
                 }
 
+                // The embedded Grafana's ForwardAuth call, and nothing else: an iframe cannot
+                // send an Authorization header, so the admin's access-token cookie stands in for
+                // it on that one path. See GrafanaForwardAuth.
+                if (string.IsNullOrEmpty(context.Token)
+                    && WarpTalk.Gateway.Monitoring.GrafanaForwardAuth.TryReadCookieToken(context.Request, out var cookieToken))
+                {
+                    context.Token = cookieToken;
+                }
+
                 return Task.CompletedTask;
             }
         };
@@ -72,6 +83,9 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
+// The system-admin gate for the embedded Grafana's ForwardAuth endpoint — the same policy every
+// ~/api/v1/admin/* endpoint is behind in the services.
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
@@ -298,6 +312,7 @@ app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
     .RequireAuthorization("RequireAuth");
 
 app.MapPresenceEndpoints();
+app.MapGrafanaForwardAuth();
 
 
 
