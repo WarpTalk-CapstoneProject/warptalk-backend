@@ -340,6 +340,76 @@ public class PaymentAppService : IPaymentAppService
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Deliberately NOT routed through <see cref="ProcessPaymentEventAsync"/>. That path persists a
+    /// payment row for whatever it is handed, raises invoices for paid ones, and dispatches on
+    /// status to handlers — Cancelled in particular ends the workspace's subscription. An expired
+    /// checkout is none of those things: nothing was paid, nothing is owed, and the subscription
+    /// is untouched. The only fact to record is that the payment waiting on this session will
+    /// never arrive.
+    ///
+    /// Only a PENDING payment moves. A payment that is already Paid (the buyer completed a second
+    /// session, or the completion and the expiry raced) must not be downgraded, and Failed or
+    /// Expired already say something at least as final. Plan and top-up checkouts record no row
+    /// until they complete, so for them there is nothing to mark and this acknowledges.
+    /// </remarks>
+    public async Task<Result> ExpireCheckoutSessionAsync(string stripeSessionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(stripeSessionId))
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed,
+                ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var payment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(
+                p => p.ProviderTransactionId == stripeSessionId);
+
+            if (payment is null)
+            {
+                _logger.LogInformation(
+                    "checkout_session_expired: no payment recorded for {SessionId}; nothing to expire.",
+                    stripeSessionId);
+                return Result.Success();
+            }
+
+            if (payment.Status != PaymentConstants.PaymentStatuses.Pending)
+            {
+                _logger.LogInformation(
+                    "checkout_session_expired: payment {PaymentId} for {SessionId} is already {Status}; left unchanged.",
+                    payment.Id,
+                    stripeSessionId,
+                    payment.Status);
+                return Result.Success();
+            }
+
+            payment.Status = PaymentConstants.PaymentStatuses.Expired;
+            payment.FailureReason = CheckoutSessionExpiredReason;
+            payment.UpdatedAt = DateTime.UtcNow;
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "checkout_session_expired: payment {PaymentId} for {SessionId} marked {Status}.",
+                payment.Id,
+                stripeSessionId,
+                payment.Status);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "checkout_session_expired: could not record expiry of {SessionId}", stripeSessionId);
+            return Result.Failure(
+                $"{BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed}: {ex.GetBaseException().Message}",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
+    private const string CheckoutSessionExpiredReason =
+        "The Stripe Checkout session expired before it was paid.";
+
     private async Task<Result<PaymentEventContext>> CreatePaymentEventContextAsync(StripePaymentEventRequest request)
     {
         if (!Guid.TryParse(request.WorkspaceIdStr, out var workspaceId))

@@ -6,26 +6,38 @@ using System;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Redis;
 
+/// <summary>
+/// Folds worker telemetry into each room's smoothed latency state.
+///
+/// Multi-replica: pub/sub delivers every sample to every replica, and each one read-modify-wrote
+/// the same Redis hash — warm-up ended after threshold/N samples, every sample weighed N times in
+/// the moving averages, and the route update and AUDIO_ROUTES_UPDATED publish ran N times. Only
+/// the elected replica processes samples (<see cref="IPubSubLeadership"/>).
+/// </summary>
 public class TelemetryRedisSubscriber : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TelemetryRedisSubscriber> _logger;
-    private const string TelemetryChannel = "translationRoom:telemetry";
+    private readonly IPubSubLeadership _leadership;
+    public const string TelemetryChannel = "translationRoom:telemetry";
 
     public TelemetryRedisSubscriber(
         IConnectionMultiplexer redis,
         IServiceScopeFactory scopeFactory,
-        ILogger<TelemetryRedisSubscriber> logger)
+        ILogger<TelemetryRedisSubscriber> logger,
+        IPubSubLeadership leadership)
     {
         _redis = redis;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _leadership = leadership;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -48,6 +60,8 @@ public class TelemetryRedisSubscriber : BackgroundService
                 {
                     try
                     {
+                        if (!_leadership.ShouldHandle) return;
+
                         var payloadStr = val.ToString();
                         _logger.LogDebug("Received telemetry payload: {Payload}", payloadStr);
 
@@ -73,6 +87,7 @@ public class TelemetryRedisSubscriber : BackgroundService
                     }
                 });
 
+                _leadership.MarkSubscribed(TelemetryChannel);
                 _logger.LogInformation("TelemetryRedisSubscriber subscribed to {Channel}.", TelemetryChannel);
                 break;
             }

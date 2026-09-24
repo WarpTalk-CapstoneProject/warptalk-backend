@@ -61,9 +61,14 @@ public interface ITranslationRoomFeedbackRepository : IGenericRepository<Transla
     /// One page of comments, newest first, plus the total that matched. Ratings with no comment
     /// are excluded — they are already counted in the statistics.
     /// </summary>
+    /// <param name="lowestRatedFirst">
+    /// WT-694: order by overall rating ascending (newest first within a rating) instead of newest
+    /// first — the comments most worth reading are the unhappy ones.
+    /// </param>
     Task<(IReadOnlyList<AdminFeedbackCommentRow> Items, int Total)> GetAdminCommentsAsync(
         AdminFeedbackFilter filter,
         int page,
         int pageSize,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        bool lowestRatedFirst = false);
 }

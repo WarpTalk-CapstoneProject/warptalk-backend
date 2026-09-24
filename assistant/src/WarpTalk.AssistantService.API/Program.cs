@@ -19,6 +19,7 @@ using WarpTalk.AssistantService.Infrastructure.OAuth;
 using WarpTalk.AssistantService.Infrastructure.Plugins;
 using WarpTalk.AssistantService.Infrastructure.Security;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using WarpTalk.Shared.Protos;
@@ -176,6 +177,9 @@ try
     // conversation history still reads from Postgres while the assistant pipeline is down.
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
         _ => StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
+    // One replica reads assistant:chat_results at a time (ordered reply chunks); see
+    // AssistantChatResultConsumerService.LeaseResource.
+    builder.Services.AddWarpTalkLeaderElection(AssistantChatResultConsumerService.LeaseResource);
     builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
     builder.Services.AddWarpTalkJwtAuthentication(
@@ -237,7 +241,19 @@ try
     // shared with auth/billing/notification (role 'admin'), not the workspace 'Admin' role.
     builder.Services.AddWarpTalkSystemAdminAuthorization();
 
-    builder.Services.AddSignalR();
+    // Multi-replica: AssistantChatResultConsumerService hands each stream entry to ONE pod
+    // (consumer group) and AssistantNotifier sends from there; without the Redis backplane only
+    // the clients connected to that pod received the reply chunks.
+    var signalR = builder.Services.AddSignalR();
+    var backplaneRedis = SignalRBackplaneExtensions.ResolveBackplaneConnectionString(builder.Configuration);
+    if (backplaneRedis is not null)
+    {
+        signalR.AddStackExchangeRedis(backplaneRedis, options =>
+        {
+            options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk.Assistant");
+            options.Configuration.AbortOnConnectFail = false;
+        });
+    }
 
     var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
     builder.Services.AddCors(options =>
@@ -342,7 +358,9 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
-    app.MapHub<AssistantHub>("/api/v1/assistant/chat-hub");
+    // WebSockets only: reached through the gateway's YARP route to the Kubernetes Service, which
+    // pins nothing to a pod. See SignalRBackplaneExtensions.UseWebSocketsOnly.
+    app.MapHub<AssistantHub>("/api/v1/assistant/chat-hub", SignalRBackplaneExtensions.UseWebSocketsOnly);
 
     using (var scope = app.Services.CreateScope())
     {

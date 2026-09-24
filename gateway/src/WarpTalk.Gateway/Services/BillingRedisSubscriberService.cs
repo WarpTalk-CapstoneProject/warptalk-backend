@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using System;
 using System.Text.Json;
 using System.Threading;
@@ -16,21 +17,26 @@ namespace WarpTalk.Gateway.Services;
 /// Background service acting as a Redis Pub/Sub subscriber for billing notifications.
 /// Listens to 'warptalk:notifications:new' channel, filters for billing events,
 /// and broadcasts them to clients connected to the Gateway's BillingHub.
+/// Only the relay leader broadcasts (see <see cref="RealtimeRelay"/>), so a message is sent
+/// once cluster-wide however many gateway replicas run.
 /// </summary>
 public class BillingRedisSubscriberService : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IHubContext<BillingHub> _hubContext;
     private readonly ILogger<BillingRedisSubscriberService> _logger;
+    private readonly IPubSubLeadership _relay;
 
     public BillingRedisSubscriberService(
         IConnectionMultiplexer redis,
         IHubContext<BillingHub> hubContext,
-        ILogger<BillingRedisSubscriberService> _logger)
+        ILogger<BillingRedisSubscriberService> logger,
+        IPubSubLeadership relay)
     {
         _redis = redis;
         _hubContext = hubContext;
-        this._logger = _logger;
+        _logger = logger;
+        _relay = relay;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -51,6 +57,10 @@ public class BillingRedisSubscriberService : BackgroundService
                 {
                     try
                     {
+                        // Every gateway pod receives this message; only the relay leader forwards
+                        // it, and the SignalR backplane carries that one send to every pod's
+                        // clients. See RealtimeRelay.
+                        if (!_relay.ShouldHandle) return;
                         if (message.IsNullOrEmpty) return;
 
                         var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
@@ -101,6 +111,7 @@ public class BillingRedisSubscriberService : BackgroundService
                     }
                 });
 
+                _relay.MarkSubscribed(RealtimeRelay.Key(nameof(BillingRedisSubscriberService), RealtimeConstants.RedisChannels.NotificationsNew));
                 _logger.LogInformation(RealtimeConstants.Billing.Logs.SubscriberStartedTemplate, RealtimeConstants.RedisChannels.NotificationsNew);
                 break;
             }

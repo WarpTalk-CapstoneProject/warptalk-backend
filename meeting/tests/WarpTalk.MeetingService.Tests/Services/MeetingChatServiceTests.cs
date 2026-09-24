@@ -31,6 +31,8 @@ public class MeetingChatServiceTests
     private readonly Mock<IMeetingChatTranslationRepository> _translationRepoMock;
     private readonly Mock<IChatTranslator> _chatTranslatorMock;
     private readonly Mock<IMeetingChatFileStorage> _fileStorageMock;
+    private readonly Mock<IRtcSessionRevocationRepository> _revocationRepoMock = new();
+    private readonly List<RtcSessionRevocation> _revocations = new();
     private readonly MeetingChatService _sut;
 
     private readonly Guid _roomId = Guid.NewGuid();
@@ -57,6 +59,11 @@ public class MeetingChatServiceTests
         _unitOfWorkMock.Setup(u => u.MeetingChatAssistantRequestRepository).Returns(_assistantRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatModerationEventRepository).Returns(_moderationRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatTranslationRepository).Returns(_translationRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(_revocationRepoMock.Object);
+        _revocationRepoMock
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(), It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<RtcSessionRevocation, bool>> predicate, CancellationToken _) =>
+                Task.FromResult(_revocations.Any(predicate.Compile())));
 
         // SendMessageAsync always looks up the cached room to resolve WorkspaceId; an
         // unconfigured mock returns null (Result<T> is a class), which NREs on .Value.
@@ -734,6 +741,58 @@ public class MeetingChatServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Single(result.Value!);
+    }
+
+    /// <summary>
+    /// WT-699 / TC2504. The participant row survives a kick (it is only deactivated), so "ever
+    /// joined" let a removed person keep reading the room's chat. The kick's REVOKED grant is what
+    /// the read now refuses on.
+    /// </summary>
+    [Fact]
+    public async Task GetRoomMessagesAsync_KickedParticipant_ReturnsForbidden()
+    {
+        var room = CreateRoom(_hostId);
+        var kicked = CreateParticipant(_userId, isActive: false);
+        kicked.LeftAt = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            room,
+            new[] { kicked },
+            new[] { CreateMessage("said after the kick", DateTime.UtcNow) });
+        _revocations.Add(new RtcSessionRevocation
+        {
+            MeetingRoomId = room.Id,
+            InviteeUserId = _userId,
+            Status = "REVOKED",
+        });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+        _chatMessageRepoMock.Verify(m => m.FindAsync(
+            It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>A revocation for somebody else in the same room does not touch this reader.</summary>
+    [Fact]
+    public async Task GetRoomMessagesAsync_AnotherParticipantsRevocation_DoesNotBlockThisReader()
+    {
+        var room = CreateRoom(_hostId);
+        var translationRoomId = SetupRoomMessages(
+            room,
+            new[] { CreateParticipant(_userId) },
+            new[] { CreateMessage("hello", DateTime.UtcNow) });
+        _revocations.Add(new RtcSessionRevocation
+        {
+            MeetingRoomId = room.Id,
+            InviteeUserId = Guid.NewGuid(),
+            Status = "REVOKED",
+        });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.True(result.IsSuccess);
     }
 
     [Fact]

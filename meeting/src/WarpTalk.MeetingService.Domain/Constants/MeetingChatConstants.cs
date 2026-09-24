@@ -10,4 +10,10 @@ public static class MeetingChatConstants
     /// this layer bounds the message, and the desktop app posts to the same endpoint.
     /// </summary>
     public const int MaxMessageLength = 1000;
+
+    /// <summary>
+    /// The rtc_session_revocations status a kick or a lobby reject writes, and the one the join
+    /// path refuses on. WT-699 / TC2504: chat history is refused on it too.
+    /// </summary>
+    public const string RevokedSessionStatus = "REVOKED";
 }

@@ -23,6 +23,28 @@ public class UserServiceGrpc : UserService.UserServiceBase
     }
 
     /// <summary>
+    /// WT-699 / TC4104: the BROADCAST audience, a page at a time. A malformed token restarts from
+    /// the beginning rather than failing — the caller dedupes, and throwing would only turn a bad
+    /// token into a notification that reaches nobody.
+    /// </summary>
+    public override async Task<ListActiveUserIdsResponse> ListActiveUserIds(
+        ListActiveUserIdsRequest request,
+        ServerCallContext context)
+    {
+        Guid? after = Guid.TryParse(request.PageToken, out var parsed) ? parsed : null;
+        var result = await _userDirectory.ListActiveUserIdsAsync(after, request.PageSize, CancellationTokenOf(context));
+        if (!result.IsSuccess)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list users."));
+
+        var response = new ListActiveUserIdsResponse
+        {
+            NextPageToken = result.Value.NextAfterId?.ToString() ?? string.Empty
+        };
+        response.UserIds.AddRange(result.Value.UserIds.Select(id => id.ToString()));
+        return response;
+    }
+
+    /// <summary>
     /// The gate in front of biometric processing, answered for another service.
     ///
     /// An unparseable id returns false rather than throwing. Every other method here throws on a

@@ -25,17 +25,20 @@ public class AdminNotificationService : IAdminNotificationService
     private readonly IValidator<CreateAdminNotificationDto> _validator;
     private readonly IMessagePublisher _messagePublisher;
     private readonly ILogger<AdminNotificationService> _logger;
+    private readonly IAdminAudienceResolver? _audienceResolver;
 
     public AdminNotificationService(
         IUnitOfWork unitOfWork,
         IValidator<CreateAdminNotificationDto> validator,
         IMessagePublisher messagePublisher,
-        ILogger<AdminNotificationService> logger)
+        ILogger<AdminNotificationService> logger,
+        IAdminAudienceResolver? audienceResolver = null)
     {
         _unitOfWork = unitOfWork;
         _validator = validator;
         _messagePublisher = messagePublisher;
         _logger = logger;
+        _audienceResolver = audienceResolver;
     }
 
     public async Task<Result<AdminNotification>> CreateAdminNotificationAsync(Guid adminId, CreateAdminNotificationDto request, CancellationToken ct = default)
@@ -60,7 +63,35 @@ public class AdminNotificationService : IAdminNotificationService
             request = request with { SpecificUserIds = userIds };
         }
 
+        // The row records the audience as the admin DEFINED it (mode + segment), not the
+        // thousands of ids a broadcast resolves to — so it is mapped before resolution.
         var notification = AdminNotificationMapper.ToEntity(request, adminId);
+
+        // WT-699 / TC4104: BROADCAST / SEGMENT become explicit ids here, once, so delivery is the
+        // same chunked pipeline for every mode.
+        if (request.TargetAudienceMode is Domain.Constants.NotificationConstants.TargetModeBroadcast
+            or Domain.Constants.NotificationConstants.TargetModeSegment)
+        {
+            if (_audienceResolver is null)
+            {
+                return Result.Failure<AdminNotification>(
+                    "Sending to everyone or to a workspace is not configured on this deployment.",
+                    ErrorCodes.ServiceUnavailable);
+            }
+
+            var audience = await _audienceResolver.ResolveAsync(request.TargetAudienceMode, request.SegmentId, ct);
+            if (!audience.IsSuccess)
+                return Result.Failure<AdminNotification>(audience.Error ?? "Could not resolve the audience.", audience.ErrorCode);
+
+            var recipients = audience.Value!.Distinct().ToList();
+            if (recipients.Count == 0)
+            {
+                return Result.Failure<AdminNotification>(
+                    "Nobody is in this audience, so there is nobody to send it to.", ErrorCodes.ValidationError);
+            }
+
+            request = request with { SpecificUserIds = recipients };
+        }
 
         // Decide the delivery events before the row is written: the consumer flips the
         // announcement to Sent only when it has processed this many of them.
@@ -98,7 +129,7 @@ public class AdminNotificationService : IAdminNotificationService
 
     private static List<DeliveryEventPayload> BuildDeliveryPayloads(Guid notificationId, CreateAdminNotificationDto request)
     {
-        if (request.TargetAudienceMode == Domain.Constants.NotificationConstants.TargetModeSpecificUsers && request.SpecificUserIds != null)
+        if (request.SpecificUserIds is { Count: > 0 })
         {
             return request.SpecificUserIds
                 .Chunk(DeliveryChunkSize)

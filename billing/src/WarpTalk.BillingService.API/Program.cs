@@ -19,6 +19,7 @@ using WarpTalk.BillingService.Infrastructure.Redis;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 using WarpTalk.BillingService.Infrastructure.Clients;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 
@@ -130,7 +131,19 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     });
     builder.Services.AddGrpcReflection();
 
-    builder.Services.AddSignalR();
+    // Backplane so IHubContext<BillingHub> sends reach every replica's connections. Note the
+    // ingress routes /hubs/* to the GATEWAY, whose own BillingHub serves /hubs/billing; this hub is
+    // only reachable by calling the billing service directly.
+    var signalR = builder.Services.AddSignalR();
+    var backplaneRedis = SignalRBackplaneExtensions.ResolveBackplaneConnectionString(builder.Configuration);
+    if (backplaneRedis is not null)
+    {
+        signalR.AddStackExchangeRedis(backplaneRedis, options =>
+        {
+            options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk.Billing");
+            options.Configuration.AbortOnConnectFail = false;
+        });
+    }
 
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(options =>
@@ -174,6 +187,13 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
             tags: new[] { "db", "ready" });
 
     // --- Background Workers ---
+    // Multi-replica: the periodic workers take a Redis lease per tick (IDistributedLockProvider,
+    // see each worker's LockResource), and one replica at a time relays pub/sub into BillingHub.
+    // Registered before the workers so the elector starts first and stops (releasing) last.
+    builder.Services.AddWarpTalkDistributedLocks();
+    builder.Services.AddWarpTalkPubSubLeadership(
+        BillingRedisSubscriberService.LeaseResource,
+        [BillingRedisSubscriberService.SubscriptionKey]);
     builder.Services.AddHostedService<SubscriptionExpirationWorker>();
     builder.Services.AddHostedService<SessionMonitorWorker>();
     builder.Services.AddHostedService<BillingCycleWorker>();
@@ -186,6 +206,9 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // snapshot cannot stay silently stale after a change that did not go through billing's own
     // write paths. Disabled by setting Billing:Workers:EntitlementReconcileIntervalMinutes to 0.
     builder.Services.AddHostedService<EntitlementReconcileWorker>();
+    // Measured Cartesia credits for admin Insights' dubbing cost. Disabled (logged once) when no
+    // Cartesia:AdminApiKey (CARTESIA_ADMIN_API_KEY) is configured.
+    builder.Services.AddHostedService<CartesiaUsageSyncWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>

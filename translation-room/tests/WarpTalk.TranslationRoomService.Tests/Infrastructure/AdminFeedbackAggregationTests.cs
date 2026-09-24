@@ -290,4 +290,22 @@ public sealed class AdminFeedbackAggregationTests : IAsyncLifetime
             .Should()
             .NotContain("UserId");
     }
+
+    [Fact]
+    public async Task WT694_Lowest_rated_first_orders_by_overall_rating_then_newest()
+    {
+        // Seeded commented ratings in the window: 5 ("The dub kept up…", day 1) and 5 ("Good.",
+        // day 3). Add a 2 and a 1 so the order is decided by rating, not by time.
+        _context.TranslationRoomFeedbacks.AddRange(
+            Feedback(_roomA2, overall: 2, comment: "Audio dropped twice.", at: Anchor.AddDays(2).AddHours(3)),
+            Feedback(_roomB1, overall: 1, comment: "The dub lagged by seconds.", at: Anchor.AddDays(3).AddHours(2)));
+        await _context.SaveChangesAsync();
+
+        var (comments, total) = await _repository.GetAdminCommentsAsync(Window, 1, 20, lowestRatedFirst: true);
+
+        total.Should().Be(4);
+        comments.Select(c => c.OverallRating).Should().Equal(1, 2, 5, 5);
+        // Within one rating, newest first.
+        comments[2].Comment.Should().Be("Good.");
+    }
 }

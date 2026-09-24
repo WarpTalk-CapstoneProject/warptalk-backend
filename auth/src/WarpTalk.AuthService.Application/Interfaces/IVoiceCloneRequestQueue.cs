@@ -8,7 +8,12 @@ namespace WarpTalk.AuthService.Application.Interfaces;
 /// <param name="VoiceId">The provider voice id, when it worked.</param>
 /// <param name="Provider">"cartesia".</param>
 /// <param name="Error">Why it did not, when it did not. Never both this and VoiceId.</param>
-public sealed record VoiceCloneOutcome(string? VoiceId, string? Provider, string? Error);
+/// <param name="ErrorCode">
+/// The same failure as a stable code (warptalk-ai tts_worker._clone_failure). Absent from answers
+/// written by a worker older than the code, which is why it is optional.
+/// </param>
+public sealed record VoiceCloneOutcome(
+    string? VoiceId, string? Provider, string? Error, string? ErrorCode = null);
 
 /// <summary>
 /// Asks the AI side to turn an uploaded recording into a provider voice, and collects the answer.

@@ -1,3 +1,4 @@
+using WarpTalk.Gateway.Tests.Helpers;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -27,7 +28,8 @@ public sealed class RedisSubscriberStopHostResilienceTests
         var service = new NotificationRedisSubscriberService(
             FailingRedis(),
             HubContext<NotificationHub>(),
-            logger.Object);
+            logger.Object,
+            new TestPubSubLeadership());
 
         await StartAndStopAsync(service, logger);
     }
@@ -39,7 +41,8 @@ public sealed class RedisSubscriberStopHostResilienceTests
         var service = new BillingRedisSubscriberService(
             FailingRedis(),
             HubContext<BillingHub>(),
-            logger.Object);
+            logger.Object,
+            new TestPubSubLeadership());
 
         await StartAndStopAsync(service, logger);
     }
@@ -51,7 +54,8 @@ public sealed class RedisSubscriberStopHostResilienceTests
         var service = new TranslationRoomRedisSubscriberService(
             FailingRedis(),
             HubContext<TranslationRoomHub>(),
-            logger.Object);
+            logger.Object,
+            new TestPubSubLeadership());
 
         await StartAndStopAsync(service, logger);
     }

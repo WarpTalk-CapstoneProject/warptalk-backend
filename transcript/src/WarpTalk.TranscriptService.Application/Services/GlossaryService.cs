@@ -35,6 +35,19 @@ public class GlossaryService : IGlossaryService
         {
             var glossary = dto.ToEntity();
 
+            // WT-699 / TC2804: (workspace_id, name) is unique in the database
+            // (glossaries_workspace_id_name_idx), and a second glossary with the same name used to
+            // reach the INSERT, fail there, fall into the catch-all below and come back as a 500 —
+            // telling the caller the server broke when they had simply picked a name already in
+            // use. Asked up front so the ordinary case gets a sentence; the unique-violation catch
+            // below still covers two creates racing past this check.
+            if (await _unitOfWork.Glossaries.ExistsAsync(
+                    g => g.WorkspaceId == glossary.WorkspaceId && g.Name == glossary.Name,
+                    cancellationToken))
+            {
+                return DuplicateGlossaryName<GlossaryDto>(glossary.Name);
+            }
+
             await _unitOfWork.Glossaries.AddAsync(glossary, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
@@ -43,6 +56,11 @@ public class GlossaryService : IGlossaryService
             // just created a glossary cannot name it, which is what made "add a term while
             // creating" unbuildable.
             return Result.Success(glossary.ToDto());
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            _logger.LogWarning(ex, "Duplicate glossary name rejected for workspace {WorkspaceId}", dto.WorkspaceId);
+            return DuplicateGlossaryName<GlossaryDto>(dto.Name);
         }
         catch (Exception ex)
         {
@@ -90,6 +108,15 @@ public class GlossaryService : IGlossaryService
             if (glossary == null)
                 return Result.Failure<GlossaryDto>($"Glossary with ID {id} not found.", "NOT_FOUND");
 
+            // Same rule as create: a rename onto another glossary's name is the caller's to fix.
+            if (!string.Equals(glossary.Name, dto.Name, StringComparison.Ordinal)
+                && await _unitOfWork.Glossaries.ExistsAsync(
+                    g => g.WorkspaceId == glossary.WorkspaceId && g.Name == dto.Name && g.Id != id,
+                    cancellationToken))
+            {
+                return DuplicateGlossaryName<GlossaryDto>(dto.Name);
+            }
+
             glossary.Name = dto.Name;
             glossary.Description = dto.Description;
             glossary.IsActive = dto.IsActive;
@@ -99,6 +126,11 @@ public class GlossaryService : IGlossaryService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             return Result.Success();
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            _logger.LogWarning(ex, "Duplicate glossary name rejected on update of {GlossaryId}", id);
+            return DuplicateGlossaryName<GlossaryDto>(dto.Name);
         }
         catch (Exception ex)
         {
@@ -491,4 +523,13 @@ public class GlossaryService : IGlossaryService
             _logger.LogWarning(ex, "Failed to publish embedding delete request for term {TermId}", termId);
         }
     }
+
+    /// <summary>
+    /// WT-699 / TC2804: the one sentence for a name already taken in this workspace, returned as
+    /// CONFLICT so GlossariesController answers 409 — the same code a duplicate TERM already gets.
+    /// </summary>
+    private static Result<T> DuplicateGlossaryName<T>(string? name) =>
+        Result.Failure<T>(
+            $"A glossary named \"{name}\" already exists in this workspace. Choose a different name.",
+            "CONFLICT");
 }

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,7 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 public class ArtifactsRecoveryWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<ArtifactsRecoveryWorker> _logger;
     private readonly IConnectionMultiplexer _redis;
     private readonly TimeSpan _sweepInterval = TimeSpan.FromMinutes(5);
@@ -24,13 +26,21 @@ public class ArtifactsRecoveryWorker : BackgroundService
         IServiceProvider serviceProvider,
         ILogger<ArtifactsRecoveryWorker> logger,
         IConnectionMultiplexer redis,
-        Microsoft.Extensions.Options.IOptions<WarpTalk.TranslationRoomService.Domain.Configuration.ArtifactFinalizationSettings> options)
+        Microsoft.Extensions.Options.IOptions<WarpTalk.TranslationRoomService.Domain.Configuration.ArtifactFinalizationSettings> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _redis = redis;
         _settings = options.Value;
     }
+
+    /// <summary>
+    /// One replica per tick: the attempt counter is a GET-then-SET, so concurrent replicas lost
+    /// increments and each emitted its own route transition and AUDIO_ROUTES_UPDATED publish.
+    /// </summary>
+    public const string LockResource = "translation-room:artifacts-recovery";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -40,7 +50,12 @@ public class ArtifactsRecoveryWorker : BackgroundService
         {
             try
             {
-                await SweepFailedArtifactsAsync(stoppingToken);
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(2),
+                    SweepFailedArtifactsAsync,
+                    _logger,
+                    stoppingToken);
             }
             catch (Exception ex)
             {

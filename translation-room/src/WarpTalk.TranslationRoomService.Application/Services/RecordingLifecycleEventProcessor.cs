@@ -33,13 +33,13 @@ namespace WarpTalk.TranslationRoomService.Application.Services;
 /// Completed/Failed from the webhook or the sweep, and the stream consumer may run on several
 /// replicas. So every event must be able to CREATE the row, and no event may assume one exists.
 ///
-/// WHY THE FAILURE REASON IS NOT STORED. <c>MeetingRecordingFailedEventPayload.Reason</c> is
-/// host-safe text, but the artifact row has nowhere honest to put it. <c>Content</c> is the inline
-/// payload of the text artifacts: the download endpoint serves it as the artifact's body and the
-/// HOST_ONLY policy gates it as the summary. A reason written there would "download" as the
-/// recording itself. Adding a column is a migration this fix deliberately does not carry, so the
-/// row says FAILED and the reason — with LiveKit's raw status and error, which must never reach a
-/// user — goes to the log at Warning.
+/// WHERE THE FAILURE REASON GOES (WT-824). Not <c>Content</c> — the download endpoint serves that
+/// as the artifact's body, so a reason there would "download" as the recording itself. It has its
+/// own column, <c>failure_reason</c>, written by <see cref="DescribeFailure"/>: the host-safe
+/// sentence plus LiveKit's status and error, with URLs redacted and the length bounded. rec-loss
+/// left it in the log only, and production then made two recordings, both FAILED, whose reasons
+/// the next deploy deleted along with the logs — LiveKit's egress runs in LiveKit Cloud, so there
+/// was nowhere else to look.
 /// </summary>
 public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventProcessor
 {
@@ -158,6 +158,8 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
 
                 ApplyFile(existing, payload);
                 existing.Status = CompletedStatus;
+                // The file exists; whatever an earlier "failed" said about it is no longer true.
+                existing.FailureReason = null;
                 return true;
             },
             occurredAt,
@@ -187,6 +189,7 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
             payload.EgressId, payload.TranslationRoomId, payload.Reason, payload.LiveKitStatus, payload.LiveKitError);
 
         var occurredAt = envelope.OccurredAt.ToUniversalTime();
+        var failureReason = DescribeFailure(payload.Reason, payload.LiveKitStatus, payload.LiveKitError);
 
         return await ApplyAsync(
             payload.EgressId,
@@ -195,6 +198,7 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
                 var artifact = NewRecording(payload.TranslationRoomId, payload.EgressId, occurredAt, FailedStatus);
                 artifact.ContainsRawAudio = true;
                 artifact.ContainsRawVideo = true;
+                artifact.FailureReason = failureReason;
                 return artifact;
             },
             transition: existing =>
@@ -202,6 +206,7 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
                 if (IsStatus(existing, ProcessingStatus))
                 {
                     existing.Status = FailedStatus;
+                    existing.FailureReason = failureReason;
                     return true;
                 }
 
@@ -343,6 +348,42 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
         // already stored is kept rather than erased by a Completed that lacks one.
         if (payload.StartedAt != null)
             artifact.RecordingStartedAt = payload.StartedAt.Value.ToUniversalTime();
+    }
+
+    /// <summary>Upper bound on <c>failure_reason</c>; LiveKit's error is free text of unknown size.</summary>
+    public const int FailureReasonMaxLength = 500;
+
+    private static readonly System.Text.RegularExpressions.Regex UrlPattern = new(
+        @"[a-z][a-z0-9+.-]*://\S+",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// WT-824: the stored reason — "&lt;host-facing sentence&gt; (LiveKit &lt;status&gt;: &lt;error&gt;)".
+    ///
+    /// LiveKit's error is kept because it is the only diagnosis there is: egress runs in LiveKit
+    /// Cloud and the two production recordings failed with nothing anyone could read afterwards.
+    /// It is shown to whoever may read the meeting's outputs, so URLs in it (storage endpoints,
+    /// bucket URLs, presigned links) are replaced with "[url]"; the kind of failure — upload
+    /// refused, access denied, start signal not received — is what survives, and is what matters.
+    /// </summary>
+    public static string DescribeFailure(string? reason, string? liveKitStatus, string? liveKitError)
+    {
+        var text = string.IsNullOrWhiteSpace(reason) ? "The recording failed." : reason.Trim();
+
+        var status = string.IsNullOrWhiteSpace(liveKitStatus) ? null : liveKitStatus.Trim();
+        var error = string.IsNullOrWhiteSpace(liveKitError)
+            ? null
+            : UrlPattern.Replace(liveKitError.Trim(), "[url]");
+
+        if (status != null || error != null)
+        {
+            var detail = status != null && error != null ? $"{status}: {error}" : status ?? error;
+            text = $"{text} (LiveKit {detail})";
+        }
+
+        return text.Length <= FailureReasonMaxLength
+            ? text
+            : text[..(FailureReasonMaxLength - 1)] + "…";
     }
 
     private static bool IsStatus(TranslationRoomArtifact artifact, string status) =>

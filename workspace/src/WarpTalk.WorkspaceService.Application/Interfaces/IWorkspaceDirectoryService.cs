@@ -28,6 +28,15 @@ public interface IWorkspaceDirectoryService
         Guid userId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-699 / TC4104: every ACTIVE member of a workspace, by user id — the audience of a SEGMENT
+    /// admin announcement. Null when the workspace does not exist (or was deleted), so an unknown
+    /// segment is refused rather than read as "nobody".
+    /// </summary>
+    Task<Result<IReadOnlyList<Guid>?>> ListActiveMemberUserIdsAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
+
     Task<Result<IReadOnlyList<WorkspaceNameDto>>> GetWorkspaceNamesAsync(
         IReadOnlyCollection<Guid> workspaceIds,
         CancellationToken ct = default);

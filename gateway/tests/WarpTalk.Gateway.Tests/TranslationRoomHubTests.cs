@@ -781,6 +781,88 @@ public class TranslationRoomHubTests
             Times.Once);
     }
 
+    // ── WT-699 / TC1806: who may join the room's broadcast group ───────────────────────────
+
+    /// <summary>
+    /// Any logged-in connection used to be added to translationRoom:{id} and receive every
+    /// transcript line, translation and chat message. A caller the room refuses gets nothing.
+    /// </summary>
+    [Fact]
+    public async Task JoinTranslationRoom_Refused_ThrowsAndJoinsNoGroup()
+    {
+        var (hub, _, _, clientProxyMock, groupsMock, _) = CreateHub(Admission(RoomAdmission.Refused));
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-stranger");
+
+        await Assert.ThrowsAsync<HubException>(() => hub.JoinTranslationRoom(roomId, "Stranger", "en", "vi"));
+
+        groupsMock.Verify(
+            g => g.AddToGroupAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        clientProxyMock.Verify(
+            p => p.SendCoreAsync("ParticipantJoined", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A guest still waiting for approval gets the LOBBY group — where their admission, rejection
+    /// or the room ending arrives — and never the room group or its roster.
+    /// </summary>
+    [Fact]
+    public async Task JoinTranslationRoom_Waiting_JoinsOnlyTheLobbyGroup()
+    {
+        var (hub, _, clientsMock, clientProxyMock, groupsMock, _) = CreateHub(Admission(RoomAdmission.Lobby));
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-knock");
+
+        await hub.JoinTranslationRoom(roomId, "Guest", "en", "vi");
+
+        groupsMock.Verify(
+            g => g.AddToGroupAsync("conn-knock", $"translationRoom:{roomId}:lobby", It.IsAny<CancellationToken>()),
+            Times.Once);
+        groupsMock.Verify(
+            g => g.AddToGroupAsync(It.IsAny<string>(), $"translationRoom:{roomId}", It.IsAny<CancellationToken>()),
+            Times.Never);
+        clientProxyMock.Verify(
+            p => p.SendCoreAsync("ParticipantJoined", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        clientsMock.Verify(c => c.Caller, Times.Never);
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoom_Admitted_JoinsTheRoomGroupAndLeavesTheLobby()
+    {
+        var (hub, _, _, _, groupsMock, _) = CreateHub(Admission(RoomAdmission.Admitted));
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-admitted");
+
+        await hub.JoinTranslationRoom(roomId, "Guest", "en", "vi");
+
+        groupsMock.Verify(
+            g => g.AddToGroupAsync("conn-admitted", $"translationRoom:{roomId}", It.IsAny<CancellationToken>()),
+            Times.Once);
+        groupsMock.Verify(
+            g => g.RemoveFromGroupAsync("conn-admitted", $"translationRoom:{roomId}:lobby", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoom_AsksAboutTheCallersOwnIdentity()
+    {
+        var callerId = Guid.NewGuid().ToString();
+        var roomId = Guid.NewGuid();
+        var authority = new Mock<IRoomHostAuthority>();
+        authority
+            .Setup(a => a.GetRoomAdmissionAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomAdmission.Admitted);
+        var (hub, _, _, _, _, _) = CreateHub(authority.Object);
+        hub.Context = CreateContext(callerId, "conn-self");
+
+        await hub.JoinTranslationRoom(roomId, "Me", "en", "vi");
+
+        authority.Verify(a => a.GetRoomAdmissionAsync(roomId, callerId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // The caller's own id is what gets checked — not the room id, and not anything in the payload.
     [Fact]
     public async Task HostOnlyMethods_ShouldAuthorizeTheCallersOwnIdentity()
@@ -815,6 +897,18 @@ public class TranslationRoomHubTests
         var mock = new Mock<IRoomHostAuthority>();
         mock.Setup(a => a.HasHostAuthorityAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        // WT-699 / TC1806: join now asks whether the caller is admitted. The pre-existing join
+        // tests are about what happens once they are, so the permissive default keeps them intact.
+        mock.Setup(a => a.GetRoomAdmissionAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomAdmission.Admitted);
+        return mock.Object;
+    }
+
+    private static IRoomHostAuthority Admission(RoomAdmission admission)
+    {
+        var mock = new Mock<IRoomHostAuthority>();
+        mock.Setup(a => a.GetRoomAdmissionAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(admission);
         return mock.Object;
     }
 
@@ -845,6 +939,8 @@ public class TranslationRoomHubTests
         var mock = new Mock<IRoomHostAuthority>();
         mock.Setup(a => a.HasHostAuthorityAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
+        mock.Setup(a => a.GetRoomAdmissionAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomAdmission.Admitted);
         return mock.Object;
     }
 

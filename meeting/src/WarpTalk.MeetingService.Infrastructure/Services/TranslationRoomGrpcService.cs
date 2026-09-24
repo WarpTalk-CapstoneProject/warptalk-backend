@@ -36,7 +36,7 @@ public class TranslationRoomGrpcService : ITranslationRoomGrpcService
         }
     }
 
-    public async Task<Result<bool>> KickRoomParticipantAsync(
+    public async Task<Result<RoomRosterRemoval>> KickRoomParticipantAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
         Guid participantUserId)
@@ -50,26 +50,65 @@ public class TranslationRoomGrpcService : ITranslationRoomGrpcService
                 RequestedByUserId = requestedByUserId.ToString()
             });
 
-            return Result.Success(response.Kicked);
+            return Result.Success(
+                response.AlreadyKicked ? RoomRosterRemoval.AlreadyRemoved
+                : response.Kicked ? RoomRosterRemoval.Removed
+                : RoomRosterRemoval.NotOnRoster);
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {
-            return Result.Failure<bool>("Room not found", "ROOM_NOT_FOUND");
+            return Result.Failure<RoomRosterRemoval>("Room not found", "ROOM_NOT_FOUND");
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.PermissionDenied)
         {
-            return Result.Failure<bool>(ex.Status.Detail, "KICK_FORBIDDEN");
+            return Result.Failure<RoomRosterRemoval>(ex.Status.Detail, "KICK_FORBIDDEN");
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.FailedPrecondition)
         {
-            return Result.Failure<bool>(ex.Status.Detail, "KICK_REFUSED");
+            return Result.Failure<RoomRosterRemoval>(ex.Status.Detail, "KICK_REFUSED");
         }
         catch (RpcException ex)
         {
             // Deliberately NOT swallowed into a success. The caller aborts the kick when this
             // fails, because a kick that does not reach the roster is one the person can undo by
             // rejoining — and a host who saw "kicked" would never know.
-            return Result.Failure<bool>(ex.Status.Detail, "KICK_UNAVAILABLE");
+            return Result.Failure<RoomRosterRemoval>(ex.Status.Detail, "KICK_UNAVAILABLE");
+        }
+    }
+
+    public async Task<Result<RoomRosterRemoval>> RejectRoomParticipantAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId)
+    {
+        try
+        {
+            var response = await _client.RejectRoomParticipantAsync(new RejectRoomParticipantRequest
+            {
+                RoomId = translationRoomId.ToString(),
+                ParticipantUserId = participantUserId.ToString(),
+                RequestedByUserId = requestedByUserId.ToString()
+            });
+
+            return Result.Success(
+                response.AlreadyRejected ? RoomRosterRemoval.AlreadyRemoved : RoomRosterRemoval.Removed);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return Result.Failure<RoomRosterRemoval>("Room not found", "ROOM_NOT_FOUND");
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.PermissionDenied)
+        {
+            return Result.Failure<RoomRosterRemoval>(ex.Status.Detail, "REJECT_FORBIDDEN");
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.FailedPrecondition)
+        {
+            return Result.Failure<RoomRosterRemoval>(ex.Status.Detail, "REJECT_REFUSED");
+        }
+        catch (RpcException ex)
+        {
+            // Same reasoning as the kick: a reject that did not reach the lobby row is not a reject.
+            return Result.Failure<RoomRosterRemoval>(ex.Status.Detail, "REJECT_UNAVAILABLE");
         }
     }
 

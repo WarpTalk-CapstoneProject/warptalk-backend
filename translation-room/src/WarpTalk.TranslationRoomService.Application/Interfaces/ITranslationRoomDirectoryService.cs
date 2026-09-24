@@ -37,6 +37,22 @@ public interface ITranslationRoomDirectoryService
         Guid translationRoomId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-704: the same mesh read, optionally carrying
+    /// <see cref="TranslationRoomDto.ArtifactLanguages"/> — the languages new content may be
+    /// generated in for this room (L2 ∩ L1 ∩ active catalog).
+    ///
+    /// Opt-in because the answer costs a workspace RPC plus a catalog read, and the plain read is on
+    /// hot paths across the mesh that never need it. Unlike the user-facing room detail it is
+    /// computed for ANY status: the caller asked, so it is deciding something about this room now.
+    /// A failure to compute it leaves <see cref="TranslationRoomDto.ArtifactLanguages"/> <c>null</c>
+    /// rather than failing the read; the caller falls back to the room's own set.
+    /// </summary>
+    Task<Result<TranslationRoomDto>> GetRoomAsync(
+        Guid translationRoomId,
+        bool includeArtifactLanguages,
+        CancellationToken ct = default);
+
     Task<Result<IReadOnlyList<TranslationRoomParticipantSummaryDto>>> GetParticipantsAsync(
         Guid translationRoomId,
         CancellationToken ct = default);
@@ -70,10 +86,24 @@ public interface ITranslationRoomDirectoryService
     /// JoinTranslationRoomAsync refuses on (BR-010). Host authority is re-checked against THIS
     /// service's tables rather than trusted from the caller, the same way TransferHostAsync does.
     ///
-    /// Returns false when the person had no roster row, which is not a failure: there was nothing
-    /// to terminate and the kick still stands.
+    /// Returns <see cref="RosterRemovalOutcome.NotOnRoster"/> when the person had no roster row,
+    /// which is not a failure: there was nothing to terminate and the kick still stands. WT-699 /
+    /// TC2103: a row that was already KICKED answers <see cref="RosterRemovalOutcome.AlreadyRemoved"/>
+    /// rather than pretending this call did it.
     /// </summary>
-    Task<Result<bool>> KickParticipantByUserAsync(
+    Task<Result<RosterRemovalOutcome>> KickParticipantByUserAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-699 / TC2402: refuse a knock. Moves a WAITING (or INVITED — a knock whose tab dropped)
+    /// row to the TERMINAL status REJECTED, which the join path refuses on, and tells the person's
+    /// open lobby tab. Host authority is re-checked here exactly as for the kick. A participant
+    /// already admitted cannot be "rejected" — that is a kick — and is refused as a precondition.
+    /// </summary>
+    Task<Result<RosterRemovalOutcome>> RejectParticipantByUserAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
         Guid participantUserId,

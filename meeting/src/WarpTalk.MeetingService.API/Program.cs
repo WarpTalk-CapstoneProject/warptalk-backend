@@ -8,6 +8,7 @@ using WarpTalk.MeetingService.Infrastructure.Data;
 using WarpTalk.MeetingService.Infrastructure.Extensions;
 using WarpTalk.MeetingService.Infrastructure.Repositories;
 using WarpTalk.MeetingService.Infrastructure.Services;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using WarpTalk.Shared.Protos;
@@ -109,7 +110,19 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-builder.Services.AddSignalR();
+// Multi-replica: REST handlers (MeetingChatNotifier) and MeetingChatAssistantResultConsumerService
+// send through IHubContext on whichever pod handled the request / read the stream entry, so without
+// the Redis backplane only clients connected to that same pod ever saw the message.
+var signalR = builder.Services.AddSignalR();
+var backplaneRedis = SignalRBackplaneExtensions.ResolveBackplaneConnectionString(builder.Configuration);
+if (backplaneRedis is not null)
+{
+    signalR.AddStackExchangeRedis(backplaneRedis, options =>
+    {
+        options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk.Meeting");
+        options.Configuration.AbortOnConnectFail = false;
+    });
+}
 
 
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
@@ -119,9 +132,14 @@ builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcServi
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
 
+// Multi-replica: periodic workers take a Redis lease per tick (in-process only when Redis is not
+// configured, i.e. single-instance development).
+builder.Services.AddWarpTalkDistributedLocks();
+
 // WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
-// authoritative election path).
+// authoritative election path). Runs on EVERY replica on purpose: the handler is a single
+// conditional UPDATE, so handling the same pub/sub message N times is harmless.
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallbackConsumerWorker>();
 
 // Applies WarpBot's answer to an @mention: reads assistant:chat_results, writes the assistant
@@ -132,6 +150,9 @@ builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallba
 // mention was published to the AI worker, answered by it, and then dropped on the floor. On
 // production the meeting-chat-consumers group sat 41 entries behind with zero pending: not
 // stuck, simply never read.
+// One replica reads the stream at a time (ordered reply chunks); see its LeaseResource.
+builder.Services.AddWarpTalkLeaderElection(
+    WarpTalk.MeetingService.API.HostedServices.MeetingChatAssistantResultConsumerService.LeaseResource);
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.MeetingChatAssistantResultConsumerService>();
 
 // WT-371 #8: recording's ONLY completion path was LiveKit's egress_ended webhook, and on
@@ -194,7 +215,10 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHub<WarpTalk.MeetingService.API.Hubs.MeetingChatHub>("/api/v1/meetings/chat-hub");
+// WebSockets only: this hub is reached through the gateway's YARP route to the Kubernetes Service,
+// which pins nothing to a pod, so negotiate and connect can land on different replicas. See
+// SignalRBackplaneExtensions.UseWebSocketsOnly — clients must connect with skipNegotiation.
+app.MapHub<WarpTalk.MeetingService.API.Hubs.MeetingChatHub>("/api/v1/meetings/chat-hub", SignalRBackplaneExtensions.UseWebSocketsOnly);
 app.MapWarpTalkServiceHealthChecks();
 
 app.Run();

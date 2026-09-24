@@ -126,6 +126,10 @@ public class NotificationsController : ControllerBase
 
         if (!result.IsSuccess)
         {
+            // WT-699 / TC4104: an audience lookup that could not run is ours, not the admin's.
+            if (result.ErrorCode == ErrorCodes.ServiceUnavailable)
+                return StatusCode(503, new ApiErrorResponse(result.Error, result.ErrorCode));
+
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

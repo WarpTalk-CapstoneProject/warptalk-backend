@@ -115,6 +115,11 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
         return (items, totalCount);
     }
 
+    public Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default)
+        => _context.Workspaces
+            .AsNoTracking()
+            .CountAsync(w => w.CreatedAt < instant && (w.DeletedAt == null || w.DeletedAt >= instant), ct);
+
     public Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default)
         => _context.Workspaces
             .AsNoTracking()
