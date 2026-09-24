@@ -1,3 +1,4 @@
+using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 
 namespace WarpTalk.Gateway.Services;
@@ -28,6 +29,20 @@ public interface IRoomHostAuthority
     /// is the same gRPC dependency answering the same kind of question about the same room.
     /// </summary>
     Task<RoomAdmission> GetRoomAdmissionAsync(Guid translationRoomId, string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// May this caller say what the far side of this room's external call speaks — that is, move
+    /// the "External Meeting" stand-in's language? Asked by
+    /// TranslationRoomHub.SetExternalMeetingLanguage.
+    ///
+    /// Deliberately NARROWER than <see cref="HasHostAuthorityAsync"/>: the same two gates as the
+    /// bridge-token endpoint (MeetingRoomService.GenerateBridgeTokenAsync), because it acts on the
+    /// same identity. Only an EXTERNAL_BRIDGE room has a stand-in, and only its host — the one
+    /// person whose device publishes the far side's audio — speaks for it. A workspace Owner/Admin
+    /// who is not in the call has no way to know what the far side is speaking. An ended room is
+    /// refused: there is no mesh left to re-route.
+    /// </summary>
+    Task<bool> CanSetExternalMeetingLanguageAsync(Guid translationRoomId, string userId, CancellationToken ct = default);
 }
 
 /// <summary>WT-699 / TC1806: where a connection may sit relative to a room's broadcasts.</summary>
@@ -154,6 +169,57 @@ public sealed class RoomHostAuthority : IRoomHostAuthority
                 userId);
             return false;
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Fails closed on the room lookup, as the host check does.</remarks>
+    public async Task<bool> CanSetExternalMeetingLanguageAsync(Guid translationRoomId, string userId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return false;
+        }
+
+        GetTranslationRoomResponse room;
+        try
+        {
+            room = await _roomClient.GetTranslationRoomByIdAsync(
+                new GetTranslationRoomRequest { Id = translationRoomId.ToString() },
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "RoomHostAuthority: could not resolve room {RoomId} to authorize {UserId} to set the external meeting's language; refusing.",
+                translationRoomId,
+                userId);
+            return false;
+        }
+
+        return IsExternalBridgeHost(room, userId);
+    }
+
+    /// <summary>
+    /// The pure half of <see cref="CanSetExternalMeetingLanguageAsync"/>. An empty room type (a
+    /// response from a server older than the field) is "not a bridge", never a permissive default —
+    /// the same reading the proto comment on translation_room_type requires.
+    /// </summary>
+    public static bool IsExternalBridgeHost(GetTranslationRoomResponse room, string userId)
+    {
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(room.HostId)
+            || !string.Equals(room.HostId, userId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var status = room.Status?.Trim().ToUpperInvariant();
+        return status is not ("ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED");
     }
 
     /// <inheritdoc />

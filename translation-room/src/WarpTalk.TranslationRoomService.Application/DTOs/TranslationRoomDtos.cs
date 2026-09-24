@@ -140,7 +140,12 @@ public record CreateTranslationRoomRequest(
     string? ExternalProvider = null,
     string? ExternalMeetingUrl = null,
     string? ExternalCalendarEventId = null,
-    string? ExternalCalendarEventUrl = null
+    string? ExternalCalendarEventUrl = null,
+    // EXTERNAL_BRIDGE only: what the far side of the external call speaks, i.e. the language of
+    // the "External Meeting" stand-in. Omitted, the server takes the first target that is not the
+    // source (TranslationRoomMapper.ResolveExternalMeetingLanguage). Sent, it is added to the
+    // targets if missing, so the workspace policy vets it like every other room language.
+    string? ExternalMeetingLanguage = null
 );
 
 /// <summary>WT-327: what creating a recurring booking returns.</summary>

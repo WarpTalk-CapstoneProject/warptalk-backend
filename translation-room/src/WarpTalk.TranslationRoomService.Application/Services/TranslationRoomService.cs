@@ -411,6 +411,21 @@ public class TranslationRoomService : ITranslationRoomService
             if (targetLangs == null || !targetLangs.Any())
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ValidationTargetLanguagesRequired, ErrorCodes.ValidationError);
 
+            // The far side of a bridge room is a language of the room like any other: it joins the
+            // targets BEFORE they are checked, so an unsupported one is refused here and the
+            // workspace policy below vets it with the rest instead of it slipping in through the
+            // stand-in's row.
+            string? externalMeetingLanguage = null;
+            if (TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType))
+                && !string.IsNullOrWhiteSpace(request.ExternalMeetingLanguage))
+            {
+                externalMeetingLanguage = LanguageHelper.NormalizeLanguageCode(request.ExternalMeetingLanguage);
+                if (!targetLangs.Contains(externalMeetingLanguage))
+                {
+                    targetLangs.Add(externalMeetingLanguage);
+                }
+            }
+
             foreach (var lang in targetLangs)
             {
                 if (!await _languagePolicy.IsSupportedAsync(lang))
@@ -515,7 +530,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
             {
                 await _participantRepository.AddAsync(
-                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs),
+                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs, externalMeetingLanguage),
                     ct);
             }
 
