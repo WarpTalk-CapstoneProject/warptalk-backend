@@ -71,6 +71,23 @@ public class AdminUserService : IAdminUserService
                 ErrorCodes.ValidationError);
         }
 
+        var rangeError =
+            AdminDateFilter.ValidateRange(query.CreatedFrom, query.CreatedTo, "createdFrom", "createdTo")
+            ?? AdminDateFilter.ValidateRange(query.LastLoginFrom, query.LastLoginTo, "lastLoginFrom", "lastLoginTo");
+        if (rangeError is not null)
+        {
+            return Result.Failure<AdminPagedResult<AdminUserSummaryDto>>(rangeError, ErrorCodes.ValidationError);
+        }
+
+        // Rejected rather than answered with an empty page: "never signed in, but last signed in
+        // this week" is a contradiction, and an empty result reads as "nobody matches".
+        if (query.NeverSignedIn == true && (query.LastLoginFrom is not null || query.LastLoginTo is not null))
+        {
+            return Result.Failure<AdminPagedResult<AdminUserSummaryDto>>(
+                "neverSignedIn=true cannot be combined with lastLoginFrom or lastLoginTo.",
+                ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize) = query.Normalize();
 
         try
@@ -79,7 +96,12 @@ public class AdminUserService : IAdminUserService
                 Search: Normalize(query.Search),
                 Status: status,
                 Role: Normalize(query.Role),
-                Sort: sort);
+                Sort: sort,
+                CreatedFrom: AdminDateFilter.ToUtc(query.CreatedFrom),
+                CreatedTo: AdminDateFilter.ToUtc(query.CreatedTo),
+                LastLoginFrom: AdminDateFilter.ToUtc(query.LastLoginFrom),
+                LastLoginTo: AdminDateFilter.ToUtc(query.LastLoginTo),
+                NeverSignedIn: query.NeverSignedIn);
 
             var (rows, total) = await _unitOfWork.UserRepository.GetDirectoryAsync(
                 filter, page, pageSize, ct);
