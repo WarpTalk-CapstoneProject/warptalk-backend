@@ -35,12 +35,15 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
         var participant = Guid.NewGuid();
         const string inviteeEmail = "invitee@example.com";
 
-        var roomId = await CreateRoomAsync(host, invitedEmails: new List<string> { inviteeEmail });
+        // WT-826: HOST_ONLY is no longer what a room is born with, so it is asked for — through
+        // the same toggle a host turns off in the create dialog.
+        var roomId = await CreateRoomAsync(
+            host,
+            invitedEmails: new List<string> { inviteeEmail },
+            settings: new RoomSettingsRequest(AutoShareRecord: false));
         await JoinAsync(roomId, participant);
         await SeedSummaryArtifactAsync(roomId);
 
-        // The room is HOST_ONLY — nothing set it, which is the point: that is the default every
-        // room is created with, and the state the demo script describes.
         (await GetSettingsAsync(roomId, host)).ArtifactAccess
             .Should().Be(ArtifactAccessLevels.HostOnly);
 
@@ -63,6 +66,36 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
         var asInvitee = await GetArtifactsAsync(roomId, Guid.NewGuid(), inviteeEmail);
         asInvitee.Should().ContainSingle();
         asInvitee[0].Content.Should().BeNull();
+    }
+
+    /// <summary>
+    /// WT-826: a room nobody configured shares its record with the people who took part. It used
+    /// to be born HOST_ONLY, so a participant who sat through the meeting opened its Recap and was
+    /// told the host had not shared it — with no host ever deciding that.
+    /// </summary>
+    [Fact]
+    public async Task ANewRoom_SharesItsRecordWithParticipants_UnlessTheHostTurnsThatOff()
+    {
+        var host = Guid.NewGuid();
+        var participant = Guid.NewGuid();
+
+        var shared = await CreateRoomAsync(host);
+        await JoinAsync(shared, participant);
+        await SeedSummaryArtifactAsync(shared);
+
+        var sharedSettings = await GetSettingsAsync(shared, host);
+        sharedSettings.ArtifactAccess.Should().Be(ArtifactAccessLevels.AllParticipants);
+        sharedSettings.AutoShareRecord.Should().BeTrue();
+        (await GetArtifactsAsync(shared, participant))[0].Content.Should().Be(SummaryJson);
+
+        var kept = await CreateRoomAsync(host, settings: new RoomSettingsRequest(AutoShareRecord: false));
+        await JoinAsync(kept, participant);
+        await SeedSummaryArtifactAsync(kept);
+
+        var keptSettings = await GetSettingsAsync(kept, host);
+        keptSettings.ArtifactAccess.Should().Be(ArtifactAccessLevels.HostOnly);
+        keptSettings.AutoShareRecord.Should().BeFalse();
+        (await GetArtifactsAsync(kept, participant))[0].Content.Should().BeNull();
     }
 
     [Fact]
@@ -98,7 +131,7 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
         var host = Guid.NewGuid();
         var participant = Guid.NewGuid();
 
-        var roomId = await CreateRoomAsync(host);
+        var roomId = await CreateRoomAsync(host, settings: new RoomSettingsRequest(AutoShareRecord: false));
         await JoinAsync(roomId, participant);
         var artifactId = await SeedSummaryArtifactAsync(roomId);
 
@@ -126,7 +159,7 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
     public async Task SettingsUpdate_RejectsAnArtifactAccessLevelTheGuardCannotEnforce(string level)
     {
         var host = Guid.NewGuid();
-        var roomId = await CreateRoomAsync(host);
+        var roomId = await CreateRoomAsync(host, settings: new RoomSettingsRequest(AutoShareRecord: false));
 
         var response = await SetArtifactAccessAsync(roomId, host, level);
 
@@ -215,9 +248,12 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
             ScheduledAt: null,
             InvitedEmails: null);
 
-    private async Task<Guid> CreateRoomAsync(Guid hostId, List<string>? invitedEmails = null)
+    private async Task<Guid> CreateRoomAsync(
+        Guid hostId,
+        List<string>? invitedEmails = null,
+        RoomSettingsRequest? settings = null)
     {
-        var request = NewRoomRequest() with { InvitedEmails = invitedEmails };
+        var request = NewRoomRequest(settings) with { InvitedEmails = invitedEmails };
         var response = await Client.SendAsync(
             BuildRequest(HttpMethod.Post, "/api/v1/translation-rooms", hostId, body: request));
 

@@ -22,7 +22,10 @@ public record RoomSettingsRequest(
     // WT-587: false makes this an ephemeral meeting — captions and translation still run, nothing
     // is written to transcript_segments. Null (the default) leaves it alone, which for a new room
     // means TranslationRoomSettings' own TRUE.
-    bool? SaveTranscript = null
+    bool? SaveTranscript = null,
+    // WT-826: false keeps the record host-only when the meeting ends. Null (the default) leaves
+    // it alone, which for a new room means ON.
+    bool? AutoShareRecord = null
 );
 
 public record RoomSettingsResponse(
@@ -35,7 +38,10 @@ public record RoomSettingsResponse(
     // WT-587. Trailing with a default so every existing positional construction site — and every
     // client reading this record — is unaffected, and so an older caller cannot accidentally
     // report a room as ephemeral by omission.
-    bool SaveTranscript = true
+    bool SaveTranscript = true,
+    // WT-826: whether the record is published to participants when the meeting ends. Effective
+    // value — a room that never stated it reads TRUE, because that is what will happen to it.
+    bool AutoShareRecord = true
 );
 
 public record UpdateRoomSettingsRequest(
