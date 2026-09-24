@@ -251,6 +251,9 @@ builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomLanguagePolicy, WarpTa
 // WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
 // singleton would also be the wrong lifetime for something that must never cache its answer.
 builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
+// The one presence snapshot both NotificationHub.QueryPresence and POST /api/v1/presence/query
+// answer from. Scoped because it composes the scoped visibility check above.
+builder.Services.AddScoped<IPresenceQueryService, PresenceQueryService>();
 
 var app = builder.Build();
 
