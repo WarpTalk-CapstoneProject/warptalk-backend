@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
@@ -110,5 +112,19 @@ public class TranslationRoomParticipantRepository : GenericRepository<Translatio
             .Select(p => p.UserId)
             .Distinct()
             .CountAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<MediaUsageParticipantSpan>> GetMediaUsageParticipantsAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        CancellationToken ct = default)
+    {
+        if (roomIds.Count == 0) return Array.Empty<MediaUsageParticipantSpan>();
+        var ids = roomIds.Distinct().ToList();
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(p => ids.Contains(p.TranslationRoomId) && p.JoinedAt != null)
+            .Select(p => new { p.TranslationRoomId, JoinedAt = p.JoinedAt!.Value, p.LeftAt })
+            .ToListAsync(ct);
+        return rows.Select(p => new MediaUsageParticipantSpan(p.TranslationRoomId, p.JoinedAt, p.LeftAt)).ToList();
     }
 }

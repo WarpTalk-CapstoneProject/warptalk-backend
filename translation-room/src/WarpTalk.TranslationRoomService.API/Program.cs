@@ -94,6 +94,7 @@ builder.Services.AddScoped<IMeetingActionItemRepository, MeetingActionItemReposi
 builder.Services.AddScoped<IMeetingMinutesShareRepository, MeetingMinutesShareRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
+builder.Services.AddScoped<IMediaUsageService, MediaUsageService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
 // WT-691: language catalog writes, each recorded in the platform audit log before it is saved.

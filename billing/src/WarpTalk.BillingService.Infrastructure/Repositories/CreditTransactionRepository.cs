@@ -403,6 +403,65 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
             });
     }
 
+    public async Task<IReadOnlyList<ProviderWorkspaceConsumption>> GetProviderWorkspaceConsumptionAsync(
+        DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var grouped = await ProviderWorkspaceQuery(from, to).ToListAsync(cancellationToken);
+        return grouped
+            .Select(x => new ProviderWorkspaceConsumption(
+                x.WorkspaceId, AiProviderCatalog.Resolve(x.Provider, x.Type), x.Type, x.Credits, x.CoveredCredits, x.CostUsd ?? 0m))
+            // Two card providers can resolve to one name ("OpenAI" / "openai"): merge them.
+            .GroupBy(x => (x.WorkspaceId, x.Provider, x.ChargeType))
+            .Select(g => new ProviderWorkspaceConsumption(
+                g.Key.WorkspaceId, g.Key.Provider, g.Key.ChargeType,
+                g.Sum(x => x.Credits), g.Sum(x => x.CoveredCredits), g.Sum(x => x.CostUsd)))
+            .ToList();
+    }
+
+    /// <summary>Consume rows per workspace, card provider and charge type — the admin Providers page's workspace split.</summary>
+    public IQueryable<ProviderWorkspaceGroup> ProviderWorkspaceQuery(DateTime from, DateTime to)
+    {
+        var rows =
+            from t in ConsumeIn(@from, to)
+            join u in _context.UsageRecords.IgnoreQueryFilters() on t.UsageRecordId equals (Guid?)u.Id into usage
+            from u in usage.DefaultIfEmpty()
+            join r in _context.UsageRateCards on t.PricingRateCardId equals (Guid?)r.Id into cards
+            from r in cards.DefaultIfEmpty()
+            select new
+            {
+                // Same type key and coverage rule as ConsumptionSlotsQuery.
+                Type = t.ChargeType != null && t.ChargeType != "" ? t.ChargeType : (u != null ? u.UsageType : "UNKNOWN"),
+                Provider = r != null ? r.Provider : null,
+                t.WorkspaceId,
+                Credits = -t.Amount,
+                Covered = u != null && r != null && r.ProviderUnitCost != null && (r.Unit == null || r.Unit == u.Unit),
+                CostUsd = (decimal?)u!.Quantity * r!.ProviderUnitCost,
+            };
+
+        return rows
+            .GroupBy(x => new { x.WorkspaceId, x.Type, x.Provider })
+            .Select(g => new ProviderWorkspaceGroup
+            {
+                WorkspaceId = g.Key.WorkspaceId,
+                Type = g.Key.Type,
+                Provider = g.Key.Provider,
+                Credits = g.Sum(x => (long)x.Credits),
+                CoveredCredits = g.Sum(x => x.Covered ? (long)x.Credits : 0L),
+                CostUsd = g.Sum(x => x.Covered ? x.CostUsd : 0m),
+            });
+    }
+
+    /// <summary>Settable-property shape (not a positional record), so EF can project into it.</summary>
+    public sealed class ProviderWorkspaceGroup
+    {
+        public Guid WorkspaceId { get; init; }
+        public string Type { get; init; } = string.Empty;
+        public string? Provider { get; init; }
+        public long Credits { get; init; }
+        public long CoveredCredits { get; init; }
+        public decimal? CostUsd { get; init; }
+    }
+
     private static DateTime SlotStart(DateTime day, int hour, int half)
         => DateTime.SpecifyKind(day.Date, DateTimeKind.Utc).AddHours(hour).AddMinutes(half * 30);
 

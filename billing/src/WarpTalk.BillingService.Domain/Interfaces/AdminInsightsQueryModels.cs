@@ -143,3 +143,18 @@ public sealed record WorkspaceSlotRow(DateTime SlotStart, Guid WorkspaceId, Guid
 
 /// <summary>A plan's display identity.</summary>
 public sealed record PlanLabel(Guid PlanId, string Slug, string Name);
+
+/// <summary>Consumed credits of one workspace on one AI provider and charge type, and their provider cost (USD) where covered.</summary>
+public sealed record ProviderWorkspaceConsumption(
+    Guid WorkspaceId,
+    string Provider,
+    string ChargeType,
+    long Credits,
+    long CoveredCredits,
+    decimal CostUsd);
+
+/// <summary>
+/// One payment attempt through a payment provider: when (paid_at, else updated_at), its status,
+/// currency, total and workspace. Admin Providers page (Stripe).
+/// </summary>
+public sealed record ProviderPaymentRow(DateTime At, string Status, string Currency, decimal Total, Guid? WorkspaceId);

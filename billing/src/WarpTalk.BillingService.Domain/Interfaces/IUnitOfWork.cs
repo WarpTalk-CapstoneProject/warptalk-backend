@@ -28,6 +28,12 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Recorded USD→VND (and other) exchange rates per UTC day and source.</summary>
     IFxRateRepository FxRates { get; }
 
+    /// <summary>Our calls to each external provider per UTC hour (admin Providers page).</summary>
+    IProviderCallStatRepository ProviderCallStats { get; }
+
+    /// <summary>Incidents from each provider's public status page (admin Providers page).</summary>
+    IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
+
     // This interface deliberately exposes no way to reach the raw database
     // connection. Doing so pulled a data-provider dependency into the Domain layer
     // and let any caller bypass the repositories with hand-written SQL. The two
