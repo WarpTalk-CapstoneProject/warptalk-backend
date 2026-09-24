@@ -50,7 +50,7 @@ public class TranslationRoomDirectoryServiceArtifactLanguagesTests
     }
 
     private TranslationRoomDirectoryService CreateSut(IRoomArtifactLanguagePolicy? policy) =>
-        new(_roomRepository.Object, _participantRepository.Object, _unitOfWork.Object, policy);
+        new(_roomRepository.Object, _participantRepository.Object, _unitOfWork.Object, artifactLanguagePolicy: policy);
 
     [Fact]
     public async Task FlagOff_DoesNotConsultThePolicy()
