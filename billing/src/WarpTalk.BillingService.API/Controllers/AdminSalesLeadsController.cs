@@ -31,7 +31,6 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/sales-leads")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminSalesLeadsController : ControllerBase
 {
     private readonly ISalesInquiryService _salesInquiryService;
@@ -60,6 +59,7 @@ public class AdminSalesLeadsController : ControllerBase
     /// <param name="sort">created_desc (default) | created_asc | company_asc | company_desc; anything else is a 400.</param>
     /// <param name="ct">Request cancellation.</param>
     [HttpGet]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetLeads(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
@@ -91,6 +91,7 @@ public class AdminSalesLeadsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetLead(Guid id, CancellationToken ct)
     {
         var result = await _salesInquiryService.GetSalesInquiryByIdAsync(id, ct);
@@ -100,6 +101,7 @@ public class AdminSalesLeadsController : ControllerBase
     /// <summary>Move a lead through new → reviewing → quoted → converted / closed.</summary>
     [HttpPatch("{id:guid}/status")]
     [AdminAudited(AdminAuditBillingActions.SalesLeadStatusChanged, AdminAuditEntityTypes.SalesLead, typeof(SalesInquiry), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.BillingLeadsManage)]
     public async Task<IActionResult> UpdateStatus(
         Guid id,
         [FromBody] UpdateSalesInquiryStatusRequest request,

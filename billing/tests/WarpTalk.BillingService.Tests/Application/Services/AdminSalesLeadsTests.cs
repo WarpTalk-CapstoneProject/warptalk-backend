@@ -86,15 +86,13 @@ public class AdminSalesLeadsTests
     // ── Authorization ────────────────────────────────────────
 
     [Fact]
-    public void Controller_is_gated_on_the_shared_system_admin_policy()
+    public void Reads_need_billing_read_and_the_status_change_needs_leads_manage()
     {
-        var authorize = typeof(AdminSalesLeadsController)
-            .GetCustomAttributes<AuthorizeAttribute>(inherit: true)
-            .SingleOrDefault();
-
-        authorize.Should().NotBeNull();
-        authorize!.Policy.Should().Be(SystemAdminAuthorization.PolicyName);
-        authorize.Roles.Should().BeNull();
+        typeof(AdminSalesLeadsController).GetCustomAttributes<AuthorizeAttribute>(inherit: true).Should().BeEmpty();
+        typeof(AdminSalesLeadsController).GetMethod(nameof(AdminSalesLeadsController.GetLeads))!
+            .GetCustomAttribute<RequirePermissionAttribute>()!.Permission.Should().Be(AdminPermissions.BillingRead);
+        typeof(AdminSalesLeadsController).GetMethod(nameof(AdminSalesLeadsController.UpdateStatus))!
+            .GetCustomAttribute<RequirePermissionAttribute>()!.Permission.Should().Be(AdminPermissions.BillingLeadsManage);
 
         typeof(AdminSalesLeadsController)
             .GetMethods()

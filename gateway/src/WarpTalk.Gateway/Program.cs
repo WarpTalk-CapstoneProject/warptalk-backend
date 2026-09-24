@@ -83,9 +83,9 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
-// The system-admin gate for the embedded Grafana's ForwardAuth endpoint — the same policy every
-// ~/api/v1/admin/* endpoint is behind in the services.
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+// Staff authorization for the embedded Grafana's ForwardAuth endpoint (health.read) — the same
+// permission check every admin endpoint in the services makes, answered by the auth service.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()

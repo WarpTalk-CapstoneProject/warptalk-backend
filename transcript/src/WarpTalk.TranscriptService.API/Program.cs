@@ -96,7 +96,7 @@ builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redi
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>

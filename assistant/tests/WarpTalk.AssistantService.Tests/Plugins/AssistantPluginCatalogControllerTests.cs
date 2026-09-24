@@ -38,12 +38,15 @@ public class AssistantPluginCatalogControllerTests
     }
 
     /// <summary>
-    /// The effective authorization attribute for an action: its own if it has one, otherwise the
-    /// controller's. This is the same resolution ASP.NET performs.
+    /// The permission an action requires: its own attribute if it has one, otherwise the
+    /// controller's — the same resolution ASP.NET performs.
     /// </summary>
-    private static AuthorizeAttribute? EffectiveAuthorize(MethodInfo action) =>
-        action.GetCustomAttribute<AuthorizeAttribute>()
-        ?? action.DeclaringType!.GetCustomAttribute<AuthorizeAttribute>();
+    private static RequirePermissionAttribute? EffectivePermission(MethodInfo action) =>
+        action.GetCustomAttribute<RequirePermissionAttribute>()
+        ?? action.DeclaringType!.GetCustomAttribute<RequirePermissionAttribute>();
+
+    private static bool IsRead(MethodInfo action) =>
+        action.GetCustomAttributes<HttpMethodAttribute>().All(verb => verb.HttpMethods.All(m => m == "GET"));
 
     [Fact]
     public void TheControllerExposesTheExpectedActions()
@@ -57,59 +60,55 @@ public class AssistantPluginCatalogControllerTests
 
     [Theory]
     [MemberData(nameof(ActionNames))]
-    public void EveryActionIsGatedOnTheSystemAdminPolicy(string actionName)
+    public void EveryActionRequiresThePluginsPermissionForWhatItDoes(string actionName)
     {
         var action = Assert.Single(Actions, method => method.Name == actionName);
 
-        var authorize = EffectiveAuthorize(action);
+        var permission = EffectivePermission(action);
 
-        Assert.NotNull(authorize);
-        Assert.Equal(SystemAdminAuthorization.PolicyName, authorize!.Policy);
-        // No action may opt out: this controller writes the catalog every user reads.
+        Assert.NotNull(permission);
+        // Reads need plugins.read; anything that writes the catalog every user reads, plugins.manage.
+        Assert.Equal(IsRead(action) ? AdminPermissions.PluginsRead : AdminPermissions.PluginsManage, permission!.Permission);
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 
     [Theory]
     [MemberData(nameof(ActionNames))]
-    public async Task ANonAdminIsRefusedByTheGateEveryActionSitsBehind(string actionName)
+    public async Task SomeoneTheAuthServiceSaysIsNotStaffIsRefused_WhateverTheirToken(string actionName)
     {
         var action = Assert.Single(Actions, method => method.Name == actionName);
-        var policyName = EffectiveAuthorize(action)!.Policy!;
 
-        // A workspace 'Admin' rather than the platform 'admin' - the seeded role most likely to be
-        // mistaken for one that should pass here. ASP.NET turns a failed policy on an authenticated
-        // caller into a 403.
-        var workspaceAdmin = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim(ClaimTypes.Role, "Admin")],
-            "TestAuth",
-            ClaimTypes.NameIdentifier,
-            ClaimTypes.Role));
+        // The workspace 'Admin', and even the platform 'admin' hint: neither is the answer.
+        var caller = Principal(new Claim(ClaimTypes.Role, "Admin"), new Claim(ClaimTypes.Role, SystemAdminAuthorization.RoleName));
 
-        var authorized = await AuthorizationService().AuthorizeAsync(workspaceAdmin, resource: null, policyName);
+        var authorized = await AuthorizationService(_ => StaffAccess.None)
+            .AuthorizeAsync(caller, resource: null, EffectivePermission(action)!.GetRequirements());
 
         Assert.False(authorized.Succeeded);
     }
 
     [Theory]
     [MemberData(nameof(ActionNames))]
-    public async Task APlatformAdminIsAllowedThrough(string actionName)
+    public async Task StaffHoldingThePermissionAreAllowed_AndOnlyReadersAreRefusedWrites(string actionName)
     {
         var action = Assert.Single(Actions, method => method.Name == actionName);
-        var policyName = EffectiveAuthorize(action)!.Policy!;
+        var requirements = EffectivePermission(action)!.GetRequirements();
 
-        var systemAdmin = new ClaimsPrincipal(new ClaimsIdentity(
-            [
-                new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-                new Claim(ClaimTypes.Role, SystemAdminAuthorization.RoleName),
-            ],
+        var manager = await AuthorizationService(_ => DelegateStaffAccessSource.Staff(AdminPermissions.PluginsRead, AdminPermissions.PluginsManage))
+            .AuthorizeAsync(Principal(), resource: null, requirements);
+        var reader = await AuthorizationService(_ => DelegateStaffAccessSource.Staff(AdminPermissions.PluginsRead))
+            .AuthorizeAsync(Principal(), resource: null, requirements);
+
+        Assert.True(manager.Succeeded);
+        Assert.Equal(IsRead(action), reader.Succeeded);
+    }
+
+    private static ClaimsPrincipal Principal(params Claim[] extra) =>
+        new(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), .. extra],
             "TestAuth",
             ClaimTypes.NameIdentifier,
             ClaimTypes.Role));
-
-        var authorized = await AuthorizationService().AuthorizeAsync(systemAdmin, resource: null, policyName);
-
-        Assert.True(authorized.Succeeded);
-    }
 
     [Fact]
     public void EveryRouteSitsUnderTheCatalogPrefix()
@@ -160,10 +159,11 @@ public class AssistantPluginCatalogControllerTests
         Assert.Contains("mcp", PluginConstants.ReservedPluginKeys);
     }
 
-    private static IAuthorizationService AuthorizationService() =>
+    private static IAuthorizationService AuthorizationService(Func<Guid, StaffAccess> access) =>
         new ServiceCollection()
             .AddLogging()
-            .AddWarpTalkSystemAdminAuthorization()
+            .AddWarpTalkStaffAuthorizationCore()
+            .AddSingleton<IStaffAccessSource>(new DelegateStaffAccessSource(access))
             .BuildServiceProvider()
             .GetRequiredService<IAuthorizationService>();
 }

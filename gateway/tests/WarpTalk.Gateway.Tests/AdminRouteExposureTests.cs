@@ -45,6 +45,11 @@ public sealed class AdminRouteExposureTests
         // Voice-clone consent, served by auth. COUNTS ONLY — a per-person list of who agreed to
         // being cloned is a register of biometric permissions, and nothing here acts on a person.
         "/api/v1/admin/voice-consent/{**catch-all}",
+        // G10 staff and roles, served by auth. Every endpoint behind it needs staff.read or
+        // staff.manage, and every write is audited before it commits. Bare + catch-all for the
+        // same reason as meetings: GET /api/v1/admin/staff is the list the screen calls.
+        "/api/v1/admin/staff",
+        "/api/v1/admin/staff/{**catch-all}",
     ];
 
     private static JsonElement Routes()

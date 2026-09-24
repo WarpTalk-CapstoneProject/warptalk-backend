@@ -22,7 +22,7 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/workspaces/{workspaceId:guid}")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.BillingRead)]
 public class AdminWorkspaceAnalyticsController : ControllerBase
 {
     private readonly IAdminWorkspaceAnalyticsService _analyticsService;

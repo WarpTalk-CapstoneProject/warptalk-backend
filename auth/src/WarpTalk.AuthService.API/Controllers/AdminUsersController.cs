@@ -24,7 +24,6 @@ namespace WarpTalk.AuthService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/users")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminUsersController : ControllerBase
 {
     private readonly IAdminUserService _adminUserService;
@@ -35,6 +34,7 @@ public class AdminUsersController : ControllerBase
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.AccountsRead)]
     public async Task<IActionResult> GetDirectory(
         [FromQuery] AdminUserDirectoryQuery query,
         CancellationToken ct)
@@ -45,6 +45,7 @@ public class AdminUsersController : ControllerBase
 
     /// <summary>New and active accounts over <c>[from, to)</c>, compared per <c>compare</c>.</summary>
     [HttpGet("insights")]
+    [RequirePermission(AdminPermissions.AccountsRead)]
     public async Task<IActionResult> GetInsights(
         [FromQuery] AdminInsightsQuery query,
         CancellationToken ct)
@@ -54,6 +55,7 @@ public class AdminUsersController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [RequirePermission(AdminPermissions.AccountsRead)]
     public async Task<IActionResult> GetDetail(Guid id, CancellationToken ct)
     {
         var result = await _adminUserService.GetDetailAsync(id, ct);
@@ -68,6 +70,7 @@ public class AdminUsersController : ControllerBase
     /// signed in and when that stopped.
     /// </summary>
     [HttpPost("{id:guid}/revoke-sessions")]
+    [RequirePermission(AdminPermissions.AccountsManage)]
     public async Task<IActionResult> RevokeSessions(
         Guid id,
         [FromBody] AdminUserActionRequest request,
@@ -82,6 +85,7 @@ public class AdminUsersController : ControllerBase
     /// through the same audited revoke as the route above, filed under the workspace in the route.
     /// </summary>
     [HttpPost("workspaces/{workspaceId:guid}/revoke-sessions")]
+    [RequirePermission(AdminPermissions.AccountsManage)]
     public async Task<IActionResult> RevokeSessionsForWorkspace(
         Guid workspaceId,
         [FromBody] AdminWorkspaceSignOutRequest request,
@@ -92,6 +96,7 @@ public class AdminUsersController : ControllerBase
     }
 
     [HttpPost("{id:guid}/deactivate")]
+    [RequirePermission(AdminPermissions.AccountsManage)]
     public async Task<IActionResult> Deactivate(
         Guid id,
         [FromBody] AdminUserActionRequest request,
@@ -103,6 +108,7 @@ public class AdminUsersController : ControllerBase
     }
 
     [HttpPost("{id:guid}/reactivate")]
+    [RequirePermission(AdminPermissions.AccountsManage)]
     public async Task<IActionResult> Reactivate(
         Guid id,
         [FromBody] AdminUserActionRequest request,
@@ -115,6 +121,7 @@ public class AdminUsersController : ControllerBase
 
     /// <summary>Clears a failed-login lockout. Separate from reactivate: they are different states.</summary>
     [HttpPost("{id:guid}/unlock")]
+    [RequirePermission(AdminPermissions.AccountsManage)]
     public async Task<IActionResult> Unlock(
         Guid id,
         [FromBody] AdminUserActionRequest request,

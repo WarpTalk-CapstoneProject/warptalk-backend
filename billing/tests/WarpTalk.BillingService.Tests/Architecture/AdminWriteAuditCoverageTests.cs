@@ -60,14 +60,17 @@ public class AdminWriteAuditCoverageTests
     {
         var authorizations = action.GetCustomAttributes<AuthorizeAttribute>()
             .Concat(controller.GetCustomAttributes<AuthorizeAttribute>());
-        return authorizations.Any(authorize =>
-            authorize.Policy == SystemAdminAuthorization.PolicyName
-            || (authorize.Roles?.Split(',').Select(role => role.Trim()).Contains(WorkspaceRoleConstants.SystemAdmin) ?? false));
+        // G10: an admin-only endpoint is one behind a staff permission.
+        return authorizations.Any(authorize => authorize is RequirePermissionAttribute);
     }
 
     [Fact]
     public void Every_admin_only_write_is_audited()
     {
+        // Guards against a vacuous pass: if IsAdminOnly stopped recognising the gate, nothing would
+        // count as admin-only and every write would "be audited".
+        Assert.Contains(Writes(), write => IsAdminOnly(write.Controller, write.Action));
+
         var unaudited = Writes()
             .Where(write => IsAdminOnly(write.Controller, write.Action))
             .Where(write => !HandAuditedControllers.Contains(write.Controller))

@@ -24,7 +24,7 @@ namespace WarpTalk.AssistantService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/assistant/platform/conversations")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.WarpBotUse)]
 public class PlatformAssistantConversationsController : ControllerBase
 {
     private readonly IPlatformAssistantConversationService _conversationService;

@@ -11,6 +11,7 @@ using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.API.Controllers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.Tests.API.Controllers;
 
@@ -103,17 +104,40 @@ public class WorkspaceCreditBalanceAuthorizationTests
         Assert.Equal(StatusCodes.Status500InternalServerError, result.StatusCode);
     }
 
-    [Theory]
-    [InlineData(WorkspaceRoleConstants.SystemAdmin)]
-    [InlineData(WorkspaceRoleConstants.Admin)]
-    public async Task PlatformAdmin_ReachesTheBalance_WithoutAWorkspaceLookup(string platformRole)
+    [Fact]
+    public async Task StaffWithBillingRead_ReachTheBalance_WithoutAWorkspaceLookup()
     {
         var workspaceClient = new Mock<IWorkspaceClient>(MockBehavior.Strict);
 
-        var (reached, context) = await RunFilterAsync(workspaceClient.Object, PlatformPrincipal(platformRole));
+        var (reached, context) = await RunFilterAsync(
+            workspaceClient.Object,
+            PlatformPrincipal(WorkspaceRoleConstants.SystemAdmin),
+            DelegateStaffAccessSource.Staff(AdminPermissions.BillingRead));
 
-        Assert.True(reached, "Platform admins keep access to any workspace's balance.");
+        Assert.True(reached, "Staff who may read billing keep access to any workspace's balance.");
         Assert.Null(context.Result);
+    }
+
+    /// <summary>
+    /// G10: the token's "admin" hint is not the answer. A staff member without billing.read — or
+    /// one removed a minute ago whose token still says "admin" — goes through the ordinary
+    /// membership check like anyone else. And the WORKSPACE role "Admin" never bypassed anything
+    /// by rights; before G10 it did here.
+    /// </summary>
+    [Theory]
+    [InlineData(WorkspaceRoleConstants.SystemAdmin)]
+    [InlineData(WorkspaceRoleConstants.Admin)]
+    public async Task ARoleClaimWithoutTheStaffPermission_GetsNoBypass(string platformRole)
+    {
+        var workspaceClient = ClientReturning(isMember: false, roleName: "", isActive: false, membershipType: "");
+
+        var (reached, context) = await RunFilterAsync(
+            workspaceClient.Object,
+            PlatformPrincipal(platformRole),
+            DelegateStaffAccessSource.Staff(AdminPermissions.AuditRead));
+
+        Assert.False(reached);
+        AssertForbidden(context);
     }
 
     [Fact]
@@ -161,7 +185,8 @@ public class WorkspaceCreditBalanceAuthorizationTests
 
     private static async Task<(bool Reached, ActionExecutingContext Context)> RunFilterAsync(
         IWorkspaceClient workspaceClient,
-        ClaimsPrincipal principal)
+        ClaimsPrincipal principal,
+        StaffAccess? staff = null)
     {
         var attribute = typeof(CreditsController)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -172,6 +197,9 @@ public class WorkspaceCreditBalanceAuthorizationTests
 
         var services = new ServiceCollection();
         services.AddSingleton(workspaceClient);
+        services.AddLogging();
+        services.AddWarpTalkStaffAuthorizationCore();
+        services.AddSingleton<IStaffAccessSource>(new DelegateStaffAccessSource(_ => staff ?? StaffAccess.None));
         using var provider = services.BuildServiceProvider();
 
         var filter = Assert.IsAssignableFrom<IAsyncActionFilter>(attribute!.CreateInstance(provider));
@@ -180,8 +208,12 @@ public class WorkspaceCreditBalanceAuthorizationTests
         var routeData = new RouteData();
         routeData.Values["workspaceId"] = WorkspaceId.ToString();
 
+        // GET, as on the real route: a staff override on a read needs billing.read, not a write permission.
+        var httpContext = new DefaultHttpContext { User = principal };
+        httpContext.Request.Method = HttpMethods.Get;
+
         var context = new ActionExecutingContext(
-            new ActionContext(new DefaultHttpContext { User = principal }, routeData, new ActionDescriptor()),
+            new ActionContext(httpContext, routeData, new ActionDescriptor()),
             [],
             new Dictionary<string, object?>(),
             controller: null!);

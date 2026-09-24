@@ -64,9 +64,9 @@ public class AssistantPluginsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("catalog")]
-    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> CreateMcpPlugin(
         [FromBody] CreateMcpPluginRequest request,
         CancellationToken ct)

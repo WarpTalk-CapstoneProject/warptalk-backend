@@ -18,7 +18,7 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/insights")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.BillingRead)]
 public class AdminBillingInsightsController : ControllerBase
 {
     private readonly IAdminBillingInsightsService _insights;

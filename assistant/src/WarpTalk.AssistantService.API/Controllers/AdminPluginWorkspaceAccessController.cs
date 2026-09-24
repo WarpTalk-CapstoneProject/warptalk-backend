@@ -24,7 +24,6 @@ namespace WarpTalk.AssistantService.API.Controllers;
 /// </para>
 /// </remarks>
 [ApiController]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminPluginWorkspaceAccessController : ControllerBase
 {
     private readonly IPluginWorkspaceAccessAdminService _service;
@@ -41,6 +40,7 @@ public class AdminPluginWorkspaceAccessController : ControllerBase
     [ProducesResponseType(typeof(PluginWorkspacesDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> ListWorkspaces(string pluginKey, CancellationToken ct) =>
         ToResponse(await _service.GetForPluginAsync(pluginKey, ct));
 
@@ -49,6 +49,7 @@ public class AdminPluginWorkspaceAccessController : ControllerBase
     [ProducesResponseType(typeof(PluginAvailabilityDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> SetAvailability(
         string pluginKey,
         [FromBody] SetPluginAvailabilityRequest request,
@@ -60,6 +61,7 @@ public class AdminPluginWorkspaceAccessController : ControllerBase
     [ProducesResponseType(typeof(ApplyPluginOverrideResultDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> ApplyOverride(
         string pluginKey,
         [FromBody] ApplyPluginOverrideRequest request,
@@ -70,6 +72,7 @@ public class AdminPluginWorkspaceAccessController : ControllerBase
     [HttpGet("api/v1/assistant/admin/workspaces/{workspaceId:guid}/plugins")]
     [ProducesResponseType(typeof(WorkspacePluginsAdminDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> ListWorkspacePlugins(Guid workspaceId, CancellationToken ct) =>
         ToResponse(await _service.GetForWorkspaceAsync(workspaceId, ct));
 
@@ -78,6 +81,7 @@ public class AdminPluginWorkspaceAccessController : ControllerBase
     [ProducesResponseType(typeof(PluginWorkspaceRowDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> SetWorkspaceOverride(
         Guid workspaceId,
         string pluginKey,
