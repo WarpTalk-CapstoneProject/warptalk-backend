@@ -73,6 +73,13 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
             .Must((request, _) => !HasExternalMeetingMetadata(request) || TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType)))
             .WithMessage(TranslationRoomConstants.ValidationExternalMeetingRequiresBridgeType);
 
+        // The far side's language names a seat only a bridge room has. Kept out of
+        // HasExternalMeetingMetadata on purpose: the create dialog makes bridge rooms with no
+        // provider or link, and must still be able to say what the other side speaks.
+        RuleFor(x => x.ExternalMeetingLanguage)
+            .Must((request, language) => string.IsNullOrWhiteSpace(language) || TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType)))
+            .WithMessage(TranslationRoomConstants.ValidationExternalMeetingLanguageRequiresBridgeType);
+
         // The provider is what every other rule below hangs off, so it cannot be optional. Left
         // optional, omitting it was a way to skip the host allow-list entirely: the URL then met
         // only the generic HTTPS rule, and any https://... became the room's Join button.
