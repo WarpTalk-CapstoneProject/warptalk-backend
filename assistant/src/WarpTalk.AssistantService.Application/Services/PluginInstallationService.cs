@@ -7,6 +7,7 @@ using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AssistantService.Application.Services;
 
@@ -18,14 +19,18 @@ public class PluginInstallationService : IPluginInstallationService
 
     private readonly IWorkspacePluginGuard _workspacePluginGuard;
 
+    private readonly IAdminAuditRecorder _auditRecorder;
+
     public PluginInstallationService(
         IUnitOfWork unitOfWork,
         IPluginCredentialProtector credentialProtector,
-        IWorkspacePluginGuard workspacePluginGuard)
+        IWorkspacePluginGuard workspacePluginGuard,
+        IAdminAuditRecorder auditRecorder)
     {
         _unitOfWork = unitOfWork;
         _credentialProtector = credentialProtector;
         _workspacePluginGuard = workspacePluginGuard;
+        _auditRecorder = auditRecorder;
     }
 
     public async Task<Result<IReadOnlyList<PluginCatalogItemDto>>> ListCatalogAsync(
@@ -310,6 +315,12 @@ public class PluginInstallationService : IPluginInstallationService
             if (!string.IsNullOrWhiteSpace(oauth.ClientSecret))
                 plugin.OAuthClientSecretEncrypted = _credentialProtector.Protect(oauth.ClientSecret);
         }
+
+        // Recorded in the platform audit log before it is committed, and not created if it cannot
+        // be: a marketplace row reaches every workspace Owner the moment it exists.
+        var recorded = await _auditRecorder.RecordPluginActionAsync(
+            AdminAuditPluginActions.Created, plugin.Id, userId, beforeSummary: null, PluginAuditSummary.Of(plugin), ct);
+        if (!recorded.IsSuccess) return Result.Failure<PluginCatalogItemDto>(recorded.Error!, recorded.ErrorCode);
 
         await _unitOfWork.PluginRepository.AddAsync(plugin, ct);
         await _unitOfWork.SaveChangesAsync(ct);

@@ -88,6 +88,7 @@ try
     // members asking the Owner for more. Notifies through the notification service's gRPC.
     builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();
     builder.Services.AddScoped<IWorkspaceDirectoryClient, WorkspaceDirectoryGrpcClient>();
+    builder.Services.AddScoped<IWorkspacePluginMemberService, WorkspacePluginMemberService>();
     builder.Services.AddScoped<IUserNotificationClient, UserNotificationGrpcClient>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
@@ -152,6 +153,20 @@ try
             "http://localhost:50056");
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // The platform audit log lives in the workspace service, and this service has no bus - the same
+    // situation, and the same synchronous transport, as auth's and translation-room's admin actions.
+    // Same address as the workspace client above: one workspace service, two contracts on it. Every
+    // marketplace change an admin makes is recorded through it before it is committed.
+    builder.Services.AddGrpcClient<AdminAuditService.AdminAuditServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:WorkspaceServiceUrl",
+            "http://localhost:50056");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
 
     // Plugin request notifications (member asks the Owner; the Owner decides). Required outside
     // Development like every other gRPC address: GetRequiredServiceUri throws when it is missing, and
