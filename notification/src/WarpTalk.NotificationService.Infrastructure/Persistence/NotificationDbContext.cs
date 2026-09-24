@@ -27,6 +27,9 @@ public partial class NotificationDbContext : DbContext
 
     public virtual DbSet<AdminNotification> AdminNotifications { get; set; }
     public virtual DbSet<NotificationInboxMessage> InboxMessages { get; set; }
+    public virtual DbSet<NotificationTemplateVersion> NotificationTemplateVersions { get; set; }
+    public virtual DbSet<Announcement> Announcements { get; set; }
+    public virtual DbSet<AnnouncementDismissal> AnnouncementDismissals { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -194,6 +197,104 @@ public partial class NotificationDbContext : DbContext
                 .HasDefaultValueSql("'[]'::jsonb")
                 .HasColumnType("jsonb")
                 .HasColumnName("variables");
+            // Email template CMS (20260924100000_email_template_cms_and_announcements.sql).
+            entity.Property(e => e.Heading)
+                .HasMaxLength(255)
+                .HasColumnName("heading");
+            entity.Property(e => e.Version).HasColumnName("version");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<NotificationTemplateVersion>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("notification_template_versions_pkey");
+
+            entity.ToTable("notification_template_versions", "notification");
+
+            entity.HasIndex(e => new { e.TemplateType, e.Channel, e.Version }, "uq_notification_template_versions_type_channel_version").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.TemplateType)
+                .HasMaxLength(50)
+                .HasColumnName("template_type");
+            entity.Property(e => e.Channel)
+                .HasMaxLength(20)
+                .HasColumnName("channel");
+            entity.Property(e => e.Version).HasColumnName("version");
+            entity.Property(e => e.Action)
+                .HasMaxLength(20)
+                .HasColumnName("action");
+            entity.Property(e => e.RestoredFromVersion).HasColumnName("restored_from_version");
+            entity.Property(e => e.Subject)
+                .HasMaxLength(255)
+                .HasColumnName("subject");
+            entity.Property(e => e.Heading)
+                .HasMaxLength(255)
+                .HasColumnName("heading");
+            entity.Property(e => e.BodyTemplate).HasColumnName("body_template");
+            entity.Property(e => e.Note)
+                .HasMaxLength(500)
+                .HasColumnName("note");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+        });
+
+        modelBuilder.Entity<Announcement>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("announcements_pkey");
+
+            entity.ToTable("announcements", "notification");
+
+            entity.HasIndex(e => new { e.Status, e.StartsAt, e.EndsAt }, "idx_announcements_status_window");
+            entity.HasIndex(e => e.CreatedAt, "idx_announcements_created_at").IsDescending();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.Title)
+                .HasMaxLength(200)
+                .HasColumnName("title");
+            entity.Property(e => e.BodyMarkdown).HasColumnName("body_markdown");
+            entity.Property(e => e.Type)
+                .HasMaxLength(30)
+                .HasColumnName("type");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasColumnName("status");
+            entity.Property(e => e.AudienceMode)
+                .HasMaxLength(20)
+                .HasColumnName("audience_mode");
+            entity.Property(e => e.AudiencePlanSlugs)
+                .HasColumnType("text[]")
+                .HasColumnName("audience_plan_slugs");
+            entity.Property(e => e.AudienceWorkspaceIds)
+                .HasColumnType("uuid[]")
+                .HasColumnName("audience_workspace_ids");
+            entity.Property(e => e.CtaLabel)
+                .HasMaxLength(60)
+                .HasColumnName("cta_label");
+            entity.Property(e => e.CtaUrl)
+                .HasMaxLength(2048)
+                .HasColumnName("cta_url");
+            entity.Property(e => e.StartsAt).HasColumnName("starts_at");
+            entity.Property(e => e.EndsAt).HasColumnName("ends_at");
+            entity.Property(e => e.PublishedAt).HasColumnName("published_at");
+            entity.Property(e => e.PublishedBy).HasColumnName("published_by");
+            entity.Property(e => e.ArchivedAt).HasColumnName("archived_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<AnnouncementDismissal>(entity =>
+        {
+            entity.HasKey(e => new { e.AnnouncementId, e.UserId }).HasName("announcement_dismissals_pkey");
+
+            entity.ToTable("announcement_dismissals", "notification");
+
+            entity.Property(e => e.AnnouncementId).HasColumnName("announcement_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.DismissedAt).HasColumnName("dismissed_at");
         });
 
         modelBuilder.Entity<PushSubscription>(entity =>

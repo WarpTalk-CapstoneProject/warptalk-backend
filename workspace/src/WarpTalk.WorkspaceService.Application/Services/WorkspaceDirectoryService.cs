@@ -65,6 +65,19 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         return Result.Success<IReadOnlyList<Guid>?>(userIds);
     }
 
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<UserWorkspaceAudienceDto>>> ListUserWorkspaceAudienceAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var workspaceIds = await _unitOfWork.WorkspaceMemberRepository.GetActiveWorkspaceIdsForUserAsync(userId, ct);
+        var plans = await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetPlanSlugsAsync(workspaceIds, ct);
+        IReadOnlyList<UserWorkspaceAudienceDto> items = workspaceIds
+            .Select(id => new UserWorkspaceAudienceDto(id, plans.GetValueOrDefault(id)))
+            .ToList();
+        return Result.Success(items);
+    }
+
     public async Task<Result<WorkspaceMemberDetailsDto?>> GetMemberDetailsAsync(
         Guid workspaceId,
         Guid userId,

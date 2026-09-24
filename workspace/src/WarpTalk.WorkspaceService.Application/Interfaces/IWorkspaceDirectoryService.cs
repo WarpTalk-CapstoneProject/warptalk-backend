@@ -37,6 +37,14 @@ public interface IWorkspaceDirectoryService
         Guid workspaceId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// The workspaces one person is an active member of, each with its replicated plan slug —
+    /// who a plan- or workspace-targeted announcement is shown to.
+    /// </summary>
+    Task<Result<IReadOnlyList<UserWorkspaceAudienceDto>>> ListUserWorkspaceAudienceAsync(
+        Guid userId,
+        CancellationToken ct = default);
+
     Task<Result<IReadOnlyList<WorkspaceNameDto>>> GetWorkspaceNamesAsync(
         IReadOnlyCollection<Guid> workspaceIds,
         CancellationToken ct = default);

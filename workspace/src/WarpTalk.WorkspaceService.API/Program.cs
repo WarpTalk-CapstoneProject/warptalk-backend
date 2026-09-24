@@ -80,6 +80,8 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         "http://localhost:50054");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The invitation and join-approved emails read their admin-edited template through this client.
+WarpTalk.Shared.Email.EmailTemplateServiceCollectionExtensions.AddWarpTalkEmailTemplates(builder.Services);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 

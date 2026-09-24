@@ -57,3 +57,6 @@ public record WorkspacePreflightDto(
     bool AllowExternalCollaboration,
     Guid? OwnerUserId = null
 );
+
+/// <summary>One workspace a person is an active member of, and its plan (null with no plan).</summary>
+public record UserWorkspaceAudienceDto(Guid WorkspaceId, string? PlanSlug);
