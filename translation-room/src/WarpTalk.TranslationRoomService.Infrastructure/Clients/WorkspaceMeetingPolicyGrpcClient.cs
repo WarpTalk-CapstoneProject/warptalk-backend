@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Clients;
@@ -69,22 +70,10 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
         Guid workspaceId,
         CancellationToken ct = default)
     {
-        try
-        {
-            var settings = await _client.GetWorkspaceSettingsAsync(
-                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
-                cancellationToken: ct);
-
-            return Result.Success<IReadOnlyList<string>>(settings.AllowedTargetLanguages.ToArray());
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Workspace language-policy lookup failed. WorkspaceId: {WorkspaceId}",
-                workspaceId);
-            return Result.Failure<IReadOnlyList<string>>(UnavailableMessage, ErrorCodes.ServiceUnavailable);
-        }
+        var settings = await FetchSettingsAsync(workspaceId, ct);
+        return settings.IsSuccess
+            ? Result.Success<IReadOnlyList<string>>(settings.Value!.AllowedTargetLanguages.ToArray())
+            : Result.Failure<IReadOnlyList<string>>(settings.Error ?? UnavailableMessage, settings.ErrorCode);
     }
 
     /// <inheritdoc />
@@ -94,38 +83,66 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
         IEnumerable<string> targetLanguages,
         CancellationToken ct = default)
     {
-        var policy = await GetAllowedLanguagesAsync(workspaceId, ct);
-        if (!policy.IsSuccess)
+        var fetched = await FetchSettingsAsync(workspaceId, ct);
+        if (!fetched.IsSuccess)
         {
             // The lookup failing is not the same as the languages being refused, but this path
             // fails CLOSED for the reason given on the interface: it is the enforcement of a rule
             // an owner set deliberately.
-            return Result.Failure(policy.Error ?? UnavailableMessage, policy.ErrorCode);
+            return Result.Failure(fetched.Error ?? UnavailableMessage, fetched.ErrorCode);
         }
+
+        var settings = fetched.Value!;
+        var targets = (targetLanguages ?? Enumerable.Empty<string>()).ToList();
 
         // EMPTY MEANS UNRESTRICTED. A workspace that never set a policy allows everything the
         // platform supports, and reading empty the other way would refuse every edit in every such
-        // workspace — which is most of them.
-        if (policy.Value!.Count == 0)
+        // workspace — which is most of them. The plan quota below still applies either way.
+        if (settings.AllowedTargetLanguages.Count > 0)
         {
-            return Result.Success();
-        }
+            // Both sides normalized: rooms store primary subtags ("vi") while a workspace may have
+            // stored a regional code ("vi-VN"); a raw comparison refused languages the owner allowed.
+            var allowed = new HashSet<string>(
+                settings.AllowedTargetLanguages
+                    .Select(LanguageHelper.NormalizeLanguageCode)
+                    .Where(code => code.Length > 0),
+                StringComparer.Ordinal);
 
-        var allowed = new HashSet<string>(policy.Value!, StringComparer.OrdinalIgnoreCase);
-
-        if (!string.IsNullOrWhiteSpace(sourceLanguage) && !allowed.Contains(sourceLanguage))
-        {
-            return Result.Failure(
-                $"Source language '{sourceLanguage}' is not allowed by the workspace policy.",
-                ErrorCodes.ValidationError);
-        }
-
-        foreach (var language in targetLanguages ?? Enumerable.Empty<string>())
-        {
-            if (!string.IsNullOrWhiteSpace(language) && !allowed.Contains(language))
+            if (!string.IsNullOrWhiteSpace(sourceLanguage)
+                && !allowed.Contains(LanguageHelper.NormalizeLanguageCode(sourceLanguage)))
             {
                 return Result.Failure(
-                    $"Target language '{language}' is not allowed by the workspace policy.",
+                    $"Source language '{sourceLanguage}' is not allowed by the workspace policy.",
+                    ErrorCodes.ValidationError);
+            }
+
+            foreach (var language in targets)
+            {
+                if (!string.IsNullOrWhiteSpace(language)
+                    && !allowed.Contains(LanguageHelper.NormalizeLanguageCode(language)))
+                {
+                    return Result.Failure(
+                        $"Target language '{language}' is not allowed by the workspace policy.",
+                        ErrorCodes.ValidationError);
+                }
+            }
+        }
+
+        // Plan quota (WT-707): counted on DISTINCT normalized codes, so "en" and "en-US" are one
+        // language. 0 means the plan sets no limit.
+        var max = settings.MaxLanguages;
+        if (max > 0)
+        {
+            var distinct = targets
+                .Select(LanguageHelper.NormalizeLanguageCode)
+                .Where(code => code.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .Count();
+
+            if (distinct > max)
+            {
+                return Result.Failure(
+                    $"Your plan allows {max} target language(s) per meeting; {distinct} were requested.",
                     ErrorCodes.ValidationError);
             }
         }
@@ -163,5 +180,27 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
         return response.IsActive
             ? Result.Success()
             : Result.Failure(SuspendedMessage, ErrorCodes.Forbidden);
+    }
+
+    private async Task<Result<GetWorkspaceSettingsResponse>> FetchSettingsAsync(
+        Guid workspaceId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var settings = await _client.GetWorkspaceSettingsAsync(
+                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            return Result.Success(settings);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Workspace language-policy lookup failed. WorkspaceId: {WorkspaceId}",
+                workspaceId);
+            return Result.Failure<GetWorkspaceSettingsResponse>(UnavailableMessage, ErrorCodes.ServiceUnavailable);
+        }
     }
 }
