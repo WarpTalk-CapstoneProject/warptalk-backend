@@ -14,6 +14,16 @@ namespace WarpTalk.AssistantService.Application.DTOs;
 /// not workspace-scoped, so "members connected" is not something this service can count honestly;
 /// the tool audit trail is.
 /// </param>
+/// <param name="AuthMode">
+/// <c>oauth</c> or <c>api_key</c> (<c>PluginConstants.AuthMode</c>): how members connect it - by
+/// signing in, or by each pasting their own key.
+/// </param>
+/// <param name="AddedByName">
+/// Who <paramref name="AddedBy"/> is, when this service can say: on the overview, the caller's own
+/// email for rows the caller added (only the Owner adds, so that is most rows the Owner sees).
+/// Null otherwise - this service has no user directory - and the page resolves
+/// <paramref name="AddedBy"/> from the workspace's member list instead.
+/// </param>
 public record WorkspacePluginItemDto(
     string Key,
     string Provider,
@@ -25,7 +35,9 @@ public record WorkspacePluginItemDto(
     string? McpServerUrl,
     Guid? AddedBy,
     DateTime? AddedAt,
-    int MembersUsedCount);
+    int MembersUsedCount,
+    string AuthMode,
+    string? AddedByName = null);
 
 public record WorkspacePluginRequestDto(
     Guid Id,
@@ -62,8 +74,29 @@ public record CreatePluginRequestRequest(string PluginKey, string? Reason = null
 /// <remarks>
 /// No key: the service derives one. A key is also the plugin's OAuth provider identity, so letting
 /// an Owner choose it would let them collide with - and be handed - someone else's grant.
+/// <para>
+/// No OAuth client either, unlike the system admin's create: a private row always walks the
+/// registration ladder (CIMD, then DCR) on first connect, so there is nothing to pre-register and
+/// no way to pair <c>api_key</c> with a client.
+/// </para>
 /// </remarks>
-public record CreatePrivatePluginRequest(string Label, string McpServerUrl, string? Description = null);
+/// <param name="AuthMode">
+/// <c>oauth</c> (the default, also when omitted) or <c>api_key</c>: each member pastes their own
+/// key, sent as <c>Authorization: Bearer</c>.
+/// </param>
+public record CreatePrivatePluginRequest(
+    string Label,
+    string McpServerUrl,
+    string? Description = null,
+    string? AuthMode = null);
 
 /// <summary>Only the fields present are changed.</summary>
-public record UpdatePrivatePluginRequest(string? Label = null, string? Description = null, string? McpServerUrl = null);
+/// <param name="AuthMode">
+/// <c>oauth</c> or <c>api_key</c>. Changing it ends every member's connection: each was made with
+/// the other kind of credential.
+/// </param>
+public record UpdatePrivatePluginRequest(
+    string? Label = null,
+    string? Description = null,
+    string? McpServerUrl = null,
+    string? AuthMode = null);
