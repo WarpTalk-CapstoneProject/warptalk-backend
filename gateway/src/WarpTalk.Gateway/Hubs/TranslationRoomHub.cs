@@ -657,6 +657,75 @@ public class TranslationRoomHub : Hub
     }
 
     /// <summary>
+    /// Say what the far side of an EXTERNAL_BRIDGE room speaks: move the "External Meeting"
+    /// stand-in (<see cref="WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId"/>) to
+    /// <paramref name="language"/>, for both speaking and hearing.
+    ///
+    /// WHY THE HOST SETS SOMEBODY ELSE'S LANGUAGE
+    ///   The stand-in never connects to this hub — it is a LiveKit identity the host's desktop
+    ///   publishes the Meet call's audio under — so nobody else can ever call SetSpeakLanguage for
+    ///   it. Until this method existed its language was fixed at creation, and it was fixed WRONG
+    ///   (the host's own language, see TranslationRoomMapper.ResolveExternalMeetingLanguage): both
+    ///   seats on one language, no route in either direction, nothing translated or dubbed.
+    ///
+    /// THE SAME THREE WRITES AS SetSpeakLanguage / SetListenLanguage, NOT A PARALLEL PATH
+    ///   1. The Redis hashes, keyed by the stand-in's id: STT pins the far side's speech to it and
+    ///      counts it as a language of the room (speak_languages); the listen hash matches.
+    ///   2. The existing broadcasts, about the stand-in's id — the main meeting window already
+    ///      handles both, and reads the stand-in's speak language to pick which dub it sends into
+    ///      Meet. To the whole GROUP rather than OthersInGroup: the caller is not the participant
+    ///      that changed, and when the host's main window is the caller it needs the event too.
+    ///   3. participant_language_changed for the stand-in, carrying BOTH languages. That is the
+    ///      WT-419 edge: TranslationRoomService persists the row and rebuilds the mesh from the
+    ///      persisted value (ParticipantLanguageProcessor), so the routes follow the pick rather
+    ///      than a Redis-only change the mesh never reads.
+    ///
+    /// Refused unless the caller is the host of a live EXTERNAL_BRIDGE room
+    /// (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>), and the language must
+    /// pass the workspace policy like any other pick. Both are checked before anything is written.
+    /// </summary>
+    public async Task SetExternalMeetingLanguage(Guid translationRoomId, string language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+            throw new HubException("language is required.");
+
+        var userId = GetUserId();
+        if (!await _hostAuthority.CanSetExternalMeetingLanguageAsync(translationRoomId, userId, Context.ConnectionAborted))
+        {
+            _logger.LogWarning(
+                "TranslationRoomHub: refused SetExternalMeetingLanguage on room {RoomId} for user {UserId} — "
+                + "not the host of a live external-bridge room.",
+                translationRoomId, userId);
+            throw new HubException("Only the host of an external meeting can change what the other side speaks.");
+        }
+
+        await EnsureLanguageAllowedAsync(translationRoomId, language);
+
+        var normalized = NormalizeLanguageCode(language.Trim());
+        // "auto" is STT's free-run hint, not a language a route can target: the mesh would ignore
+        // it (ParticipantLanguageProcessor) while STT stopped pinning the far side.
+        if (string.Equals(normalized, "auto", StringComparison.OrdinalIgnoreCase))
+            throw new HubException("Choose the language the other side speaks.");
+
+        var standInId = WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId.ToString();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync($"translationRoom:{translationRoomId}:speak_languages", standInId, normalized);
+        await db.HashSetAsync($"translationRoom:{translationRoomId}:languages", standInId, normalized);
+
+        await Clients.Group(groupName).SendAsync("ParticipantSpeakLanguageChanged", standInId, normalized);
+        await Clients.Group(groupName).SendAsync("ParticipantLanguageChanged", standInId, normalized);
+
+        await PublishLanguageChangeAsync(
+            translationRoomId, standInId, speakLanguage: normalized, listenLanguage: normalized);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: host {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
+            userId, normalized, translationRoomId);
+    }
+
+    /// <summary>
     /// Tell TranslationRoomService that this participant's languages moved, so it can persist them
     /// and rebuild the audio mesh. WT-419.
     ///

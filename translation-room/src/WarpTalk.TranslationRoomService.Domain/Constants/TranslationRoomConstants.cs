@@ -219,6 +219,7 @@ public static class TranslationRoomConstants
     public const string ValidationInvalidParticipantRole = "Role must be a valid TranslationRoomParticipantRole.";
     public const string ValidationInvalidSortBy = "SortBy must be one of: displayname, status, role, joinedat.";
     public const string ValidationExternalMeetingRequiresBridgeType = "External meeting metadata is only allowed for external bridge rooms.";
+    public const string ValidationExternalMeetingLanguageRequiresBridgeType = "The external meeting's language is only allowed for external bridge rooms.";
     public const string ValidationExternalProviderUnsupported = "Unsupported external meeting provider.";
     public const string ValidationExternalMeetingUrlInvalid = "External meeting URL must be an absolute HTTPS URL.";
     public const string ValidationGoogleMeetUrlInvalid = "Google Meet URL must use meet.google.com.";

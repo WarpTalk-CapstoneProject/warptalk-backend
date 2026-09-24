@@ -260,15 +260,23 @@ public static class TranslationRoomMapper
     /// anything with WarpTalk, so their voices are not cloned; they are dubbed in a stock voice.
     /// VoiceCloneConsentGate already fails closed for a participant with no consent record, so
     /// this is belt and braces rather than the only guard.
+    ///
+    /// The far side's language comes from <see cref="ResolveExternalMeetingLanguage"/>: the
+    /// explicit value the client sent, or else the first target that is NOT the host's language.
+    /// It used to be <c>targetLanguages[0]</c>, and every client puts the host's own language
+    /// first in that list, so every bridge room was born with both seats on one language and no
+    /// route in either direction.
     /// </summary>
     public static TranslationRoomParticipant BuildExternalBridgeParticipant(
         Guid roomId,
         string sourceLanguage,
-        IReadOnlyList<string> targetLanguages)
+        IReadOnlyList<string> targetLanguages,
+        string? externalMeetingLanguage = null)
     {
         if (targetLanguages is null || targetLanguages.Count == 0)
             throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
 
+        var farSide = ResolveExternalMeetingLanguage(sourceLanguage, targetLanguages, externalMeetingLanguage);
         var now = DateTime.UtcNow;
 
         return new TranslationRoomParticipant
@@ -278,8 +286,8 @@ public static class TranslationRoomMapper
             UserId = TranslationRoomConstants.ExternalBridgeParticipantUserId,
             DisplayName = TranslationRoomConstants.ExternalBridgeDisplayName,
             // Mirror of the host: speaks what the far side speaks, hears what the far side hears.
-            SpeakLanguage = targetLanguages[0],
-            ListenLanguage = targetLanguages[0],
+            SpeakLanguage = farSide,
+            ListenLanguage = farSide,
             Role = "PARTICIPANT",
             Status = TranslationRoomParticipantStatuses.Connected,
             ConnectionType = ExternalBridgeConnectionType,
@@ -289,6 +297,41 @@ public static class TranslationRoomMapper
             CreatedAt = now,
             UpdatedAt = now
         };
+    }
+
+    /// <summary>
+    /// What the far side of an EXTERNAL_BRIDGE room speaks.
+    ///
+    /// EXPLICIT FIRST. The create request carries it as <c>ExternalMeetingLanguage</c>, because the
+    /// position of a language in <c>targetLanguages</c> means nothing to any client: the create
+    /// dialog and the desktop's automatic room both put the host's own language first ("the source
+    /// is one of the targets"), and reading <c>targetLanguages[0]</c> gave the far side the host's
+    /// language — one language on both seats, no route either way, nothing translated or dubbed.
+    ///
+    /// THEN THE FIRST TARGET THAT DIFFERS FROM THE SOURCE, so a client that predates the field still
+    /// gets a working room whenever it offered a second language at all. Compared on the bare code:
+    /// "vi-VN" and "vi" are the same language to the mesh.
+    ///
+    /// ONLY THEN <c>targetLanguages[0]</c>. A room whose only language is the host's has no second
+    /// language to give the far side; the room is still created (the workspace may allow only one
+    /// language) and the client is the one that says translation needs a second language.
+    /// </summary>
+    public static string ResolveExternalMeetingLanguage(
+        string sourceLanguage,
+        IReadOnlyList<string> targetLanguages,
+        string? externalMeetingLanguage = null)
+    {
+        if (!string.IsNullOrWhiteSpace(externalMeetingLanguage))
+            return externalMeetingLanguage.Trim();
+
+        if (targetLanguages is null || targetLanguages.Count == 0)
+            throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
+
+        var source = LanguageHelper.NormalizeLanguageCode(sourceLanguage);
+        return targetLanguages.FirstOrDefault(language =>
+                   !string.IsNullOrWhiteSpace(language) &&
+                   !string.Equals(LanguageHelper.NormalizeLanguageCode(language), source, StringComparison.Ordinal))
+               ?? targetLanguages[0];
     }
 
     /// <summary>
