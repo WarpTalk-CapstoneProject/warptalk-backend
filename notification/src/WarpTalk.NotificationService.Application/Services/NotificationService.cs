@@ -14,6 +14,7 @@ public class NotificationService : INotificationService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IEmailSender? _emailSender;
     private readonly IEmailTemplateComposer _emailTemplates;
+    private readonly IEmailDeliveryRecorder? _deliveries;
     private readonly ILogger<NotificationService> _logger;
 
     /// <summary>Where an email copy's button points when the notification's own link is unsafe.</summary>
@@ -23,14 +24,16 @@ public class NotificationService : INotificationService
         IUnitOfWork unitOfWork,
         ILogger<NotificationService> logger,
         IEmailSender? emailSender = null,
-        IEmailTemplateComposer? emailTemplates = null)
+        IEmailTemplateComposer? emailTemplates = null,
+        IEmailDeliveryRecorder? deliveries = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _emailSender = emailSender;
         // The email copy is the admin-editable "notification.email-copy" template, read from this
         // service's own store.
-        _emailTemplates = emailTemplates ?? new EmailTemplateComposer(new DbEmailTemplateSource(unitOfWork));
+        _emailTemplates = emailTemplates ?? new EmailTemplateComposer(new EmailCms.EmailPublishedResolver(unitOfWork));
+        _deliveries = deliveries;
     }
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
@@ -135,10 +138,12 @@ public class NotificationService : INotificationService
                                 ["Content"] = dto.Content,
                                 ["ActionUrl"] = SafeActionUrl(dto.ActionUrl),
                             },
+                            null,
                             ct);
                         var delivered = await _emailSender.SendEmailAsync(
                             new EmailMessage(userEmail, email.Subject, email.HtmlBody, TextBody: email.TextBody),
                             ct);
+                        if (_deliveries is not null) await _deliveries.RecordAsync(email, delivered, ct);
                         if (!delivered)
                         {
                             _logger.LogWarning(

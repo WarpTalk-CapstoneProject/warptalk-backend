@@ -191,7 +191,10 @@ public class UserServiceGrpc : UserService.UserServiceBase
         Email = user.Email,
         FullName = user.FullName,
         AvatarUrl = user.AvatarUrl ?? "",
-        PreferredLanguage = user.PreferredLanguage ?? "en"
+        PreferredLanguage = user.PreferredLanguage ?? "en",
+        CreatedAt = user.CreatedAt is { } created
+            ? DateTime.SpecifyKind(created, DateTimeKind.Utc).ToString("O")
+            : string.Empty,
     };
 
     private static GetRoleResponse ToRoleResponse(RoleDto role) => new()

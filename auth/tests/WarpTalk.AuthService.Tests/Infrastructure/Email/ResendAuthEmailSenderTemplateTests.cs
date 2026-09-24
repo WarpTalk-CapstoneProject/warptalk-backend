@@ -26,7 +26,7 @@ public class ResendAuthEmailSenderTemplateTests
             .Returns(new SendEmailResponse(true, "id", null));
 
         var source = Substitute.For<IEmailTemplateSource>();
-        source.FindActiveAsync(key, Arg.Any<CancellationToken>()).Returns(stored);
+        source.FindActiveAsync(key, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(stored);
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["AppBaseUrl"] = "https://app.warptalk.vn/" })
@@ -81,7 +81,7 @@ public class ResendAuthEmailSenderTemplateTests
         resend.SendEmailAsync(Arg.Do<SendEmailRequest>(request => captured = request), Arg.Any<CancellationToken>())
             .Returns(new SendEmailResponse(true, "id", null));
         var source = Substitute.For<IEmailTemplateSource>();
-        source.FindActiveAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        source.FindActiveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns<Task<StoredEmailTemplate?>>(_ => throw new InvalidOperationException("store down"));
 
         var sender = new ResendAuthEmailSender(
@@ -93,5 +93,33 @@ public class ResendAuthEmailSenderTemplateTests
         await sender.SendPasswordResetEmailAsync(Linh, "abc");
 
         Assert.Equal("Reset your WarpTalk password", captured!.Subject);
+    }
+
+    [Fact]
+    public async Task Verification_AsksForTheRecipientsLanguage_AndCountsTheSend()
+    {
+        var resend = Substitute.For<IResendEmailClient>();
+        resend.SendEmailAsync(Arg.Any<SendEmailRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new SendEmailResponse(true, "id", null));
+        var source = Substitute.For<IEmailTemplateSource>();
+        source.FindActiveAsync(EmailTemplateCatalog.AuthVerifyEmail, "vi", Arg.Any<CancellationToken>())
+            .Returns(new StoredEmailTemplate("Xác nhận email", "", "<a href=\"{{VerifyUrl}}\">Xác nhận</a>", 3) { Locale = "vi" });
+        var deliveries = Substitute.For<IEmailDeliveryRecorder>();
+
+        var sender = new ResendAuthEmailSender(
+            resend,
+            new EmailTemplateComposer(source),
+            Options.Create(new ResendSettings { FromEmail = "no-reply@warptalk.vn", FromName = "WarpTalk" }),
+            new ConfigurationBuilder().Build(),
+            deliveries);
+
+        await sender.SendVerificationEmailAsync(
+            new User { Id = Guid.NewGuid(), Email = "linh@example.com", FullName = "Linh", PreferredLanguage = "vi-VN" }, "tok");
+
+        await resend.Received(1).SendEmailAsync(Arg.Is<SendEmailRequest>(r => r.Subject == "Xác nhận email"), Arg.Any<CancellationToken>());
+        await deliveries.Received(1).RecordAsync(
+            Arg.Is<RenderedEmail>(e => e.TemplateKey == EmailTemplateCatalog.AuthVerifyEmail && e.Locale == "vi" && e.Version == 3),
+            true,
+            Arg.Any<CancellationToken>());
     }
 }

@@ -23,30 +23,35 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
     private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
     private readonly ILogger<NotificationGrpcServiceImpl> _logger;
     private readonly WarpTalk.Shared.Email.IEmailTemplateSource _emailTemplates;
+    private readonly WarpTalk.Shared.Email.IEmailDeliveryRecorder? _deliveries;
 
     public NotificationGrpcServiceImpl(
         INotificationService notificationService,
         StackExchange.Redis.IConnectionMultiplexer redis,
         ILogger<NotificationGrpcServiceImpl> logger,
-        WarpTalk.Shared.Email.IEmailTemplateSource emailTemplates)
+        WarpTalk.Shared.Email.IEmailTemplateSource emailTemplates,
+        WarpTalk.Shared.Email.IEmailDeliveryRecorder? deliveries = null)
     {
         _notificationService = notificationService;
         _redis = redis;
         _logger = logger;
         _emailTemplates = emailTemplates;
+        _deliveries = deliveries;
     }
 
     /// <summary>
-    /// The admin-edited version of a transactional email, for the service that sends it. An
-    /// unknown key is answered "not found" rather than refused: the sender then uses its built-in
-    /// wording, which is exactly what it would have done before the CMS existed.
+    /// The PUBLISHED version of a transactional email for the service that sends it, in the
+    /// recipient's locale (falling back to English), with its layout and every block expanded.
+    /// Drafts are never returned. An unknown key is answered "not found" rather than refused: the
+    /// sender then uses its built-in wording, which is what it did before the CMS existed.
     /// </summary>
     public override async Task<GetEmailTemplateResponse> GetEmailTemplate(GetEmailTemplateRequest request, ServerCallContext context)
     {
         if (WarpTalk.Shared.Email.EmailTemplateCatalog.Find(request.TemplateKey) is null)
             return new GetEmailTemplateResponse { Found = false };
 
-        var stored = await _emailTemplates.FindActiveAsync(request.TemplateKey, context.CancellationToken);
+        var locale = string.IsNullOrWhiteSpace(request.Locale) ? null : request.Locale;
+        var stored = await _emailTemplates.FindActiveAsync(request.TemplateKey, locale, context.CancellationToken);
         if (stored is null)
             return new GetEmailTemplateResponse { Found = false };
 
@@ -57,7 +62,29 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             Heading = stored.Heading,
             BodyHtml = stored.BodyHtml,
             Version = stored.Version,
+            Preheader = stored.Preheader,
+            TextBody = stored.TextBody ?? string.Empty,
+            LayoutHtml = stored.LayoutHtml ?? string.Empty,
+            LayoutText = stored.LayoutText ?? string.Empty,
+            LayoutDarkCss = stored.LayoutDarkCss ?? string.Empty,
+            Locale = stored.Locale,
         };
+    }
+
+    /// <summary>One send reported by a sender, for the CMS's per-template delivery stats.</summary>
+    public override async Task<RecordEmailDeliveryResponse> RecordEmailDelivery(RecordEmailDeliveryRequest request, ServerCallContext context)
+    {
+        if (_deliveries is null || WarpTalk.Shared.Email.EmailTemplateCatalog.Find(request.TemplateKey) is null)
+            return new RecordEmailDeliveryResponse { Recorded = false };
+
+        var email = new WarpTalk.Shared.Email.RenderedEmail(string.Empty, string.Empty, string.Empty)
+        {
+            TemplateKey = request.TemplateKey,
+            Locale = WarpTalk.Shared.Email.EmailLocales.Normalize(request.Locale) ?? WarpTalk.Shared.Email.EmailLocales.Default,
+            Version = request.Version,
+        };
+        await _deliveries.RecordAsync(email, request.Succeeded, context.CancellationToken);
+        return new RecordEmailDeliveryResponse { Recorded = true };
     }
 
     public override async Task<SendNotificationResponse> SendNotification(SendNotificationRequest request, ServerCallContext context)

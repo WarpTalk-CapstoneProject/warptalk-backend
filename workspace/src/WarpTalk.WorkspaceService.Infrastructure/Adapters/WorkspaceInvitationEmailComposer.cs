@@ -22,6 +22,7 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
 {
     private readonly IResendEmailClient _resendClient;
     private readonly IEmailTemplateComposer _templates;
+    private readonly IEmailDeliveryRecorder _deliveries;
     private readonly IConfiguration _configuration;
     private readonly ILogger<WorkspaceInvitationEmailComposer> _logger;
 
@@ -29,10 +30,12 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
         IResendEmailClient resendClient,
         IEmailTemplateComposer templates,
         IConfiguration configuration,
-        ILogger<WorkspaceInvitationEmailComposer> logger)
+        ILogger<WorkspaceInvitationEmailComposer> logger,
+        IEmailDeliveryRecorder? deliveries = null)
     {
         _resendClient = resendClient;
         _templates = templates;
+        _deliveries = deliveries ?? NullEmailDeliveryRecorder.Instance;
         _configuration = configuration;
         _logger = logger;
     }
@@ -58,12 +61,11 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
                 ["JoinUrl"] = joinUrl,
                 ["AppBaseUrl"] = appBaseUrl,
             },
+            null,
             ct);
 
         _logger.LogInformation("Dispatching invitation email to {Email} for workspace {WorkspaceName} via Resend", invitation.Email, workspace.Name);
-        return await _resendClient.SendEmailAsync(
-            new SendEmailRequest(From(), invitation.Email, email.Subject, email.HtmlBody, email.TextBody),
-            ct);
+        return await SendAsync(invitation.Email, email, ct);
     }
 
     public async Task<SendEmailResponse> SendJoinRequestApprovedEmailAsync(
@@ -83,12 +85,20 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
                 ["JoinUrl"] = joinUrl,
                 ["AppBaseUrl"] = appBaseUrl,
             },
+            null,
             ct);
 
         _logger.LogInformation("Dispatching join request approval email to {Email} for workspace {WorkspaceName} via Resend", invitation.Email, workspace.Name);
-        return await _resendClient.SendEmailAsync(
-            new SendEmailRequest(From(), invitation.Email, email.Subject, email.HtmlBody, email.TextBody),
+        return await SendAsync(invitation.Email, email, ct);
+    }
+
+    private async Task<SendEmailResponse> SendAsync(string to, RenderedEmail email, CancellationToken ct)
+    {
+        var response = await _resendClient.SendEmailAsync(
+            new SendEmailRequest(From(), to, email.Subject, email.HtmlBody, email.TextBody),
             ct);
+        await _deliveries.RecordAsync(email, response.IsSuccess, ct);
+        return response;
     }
 
     private string AppBaseUrl() => _configuration["AppBaseUrl"]?.TrimEnd('/') ?? "http://localhost:3000";

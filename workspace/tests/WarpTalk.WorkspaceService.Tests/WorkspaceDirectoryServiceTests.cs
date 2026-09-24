@@ -61,23 +61,31 @@ public class WorkspaceDirectoryServiceTests
     // ── Announcement targeting: who the viewer is ────────────────────────────────────
 
     [Fact]
-    public async Task ListUserWorkspaceAudienceAsync_PairsEachActiveWorkspaceWithItsPlan()
+    public async Task ListUserWorkspaceAudienceAsync_PairsEachActiveWorkspaceWithItsPlanAndRole()
     {
         var userId = Guid.NewGuid();
         var onPro = Guid.NewGuid();
         var noPlan = Guid.NewGuid();
-        _unitOfWork.WorkspaceMemberRepository.GetActiveWorkspaceIdsForUserAsync(userId, Arg.Any<CancellationToken>())
-            .Returns(new List<Guid> { onPro, noPlan });
+        var ownerRole = Guid.NewGuid();
+        var memberRole = Guid.NewGuid();
+        _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUserAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new() { WorkspaceId = onPro, UserId = userId, RoleId = ownerRole },
+                new() { WorkspaceId = noPlan, UserId = userId, RoleId = memberRole },
+            });
         _unitOfWork.WorkspaceEntitlementSnapshotRepository
             .GetPlanSlugsAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(new Dictionary<Guid, string> { [onPro] = "pro" });
+        _authIdentity.GetRoleByIdAsync(ownerRole, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRole, Name = "Owner" });
+        _authIdentity.GetRoleByIdAsync(memberRole, Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRole, Name = "Member" });
 
         var result = await _service.ListUserWorkspaceAudienceAsync(userId);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(
-            new[] { (onPro, (string?)"pro"), (noPlan, (string?)null) },
-            result.Value!.Select(item => (item.WorkspaceId, item.PlanSlug)));
+            new[] { (onPro, (string?)"pro", (string?)"Owner"), (noPlan, (string?)null, (string?)"Member") },
+            result.Value!.Select(item => (item.WorkspaceId, item.PlanSlug, item.RoleName)));
     }
 
     [Fact]

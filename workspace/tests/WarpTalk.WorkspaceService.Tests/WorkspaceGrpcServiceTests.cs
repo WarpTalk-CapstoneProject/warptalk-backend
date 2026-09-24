@@ -49,8 +49,8 @@ public class WorkspaceGrpcServiceTests
             .ListUserWorkspaceAudienceAsync(userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success<IReadOnlyList<UserWorkspaceAudienceDto>>(new List<UserWorkspaceAudienceDto>
             {
-                new(onPro, "pro"),
-                new(noPlan, null),
+                new(onPro, "pro", "Owner"),
+                new(noPlan, null, null),
             }));
 
         var response = await _service.ListUserWorkspaceAudience(
@@ -59,8 +59,8 @@ public class WorkspaceGrpcServiceTests
             new ListUserWorkspaceAudienceRequest { UserId = "not-a-guid" }, _context);
 
         Assert.Equal(
-            new[] { (onPro.ToString(), "pro"), (noPlan.ToString(), string.Empty) },
-            response.Workspaces.Select(item => (item.WorkspaceId, item.PlanSlug)));
+            new[] { (onPro.ToString(), "pro", "Owner"), (noPlan.ToString(), string.Empty, string.Empty) },
+            response.Workspaces.Select(item => (item.WorkspaceId, item.PlanSlug, item.RoleName)));
         Assert.Empty(bad.Workspaces);
     }
 
