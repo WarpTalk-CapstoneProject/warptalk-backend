@@ -39,20 +39,21 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
             return new WorkspacePluginAvailability(
                 workspaceId,
                 isCurated: true,
-                legacyAllowsEveryPlugin: false,
                 rows.Select(row => row.PluginId).ToHashSet(),
                 callerIsOwner);
         }
 
-        // Not curated yet: still the pre-marketplace switch. The policy client answers false when
-        // the workspace service cannot be reached, so an outage reads as "no plugins", never as
-        // "every plugin".
-        var allowsAll = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+        // Not curated yet: what the workspace carries over - the plugins its members already use
+        // here, while the pre-marketplace switch is on. The policy client answers false when the
+        // workspace service cannot be reached, so an outage reads as "no plugins", never as "some".
+        var allowsPlugins = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+        var used = allowsPlugins
+            ? await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedInWorkspaceAsync(workspaceId, ct)
+            : new HashSet<Guid>();
         return new WorkspacePluginAvailability(
             workspaceId,
             isCurated: false,
-            legacyAllowsEveryPlugin: allowsAll,
-            new HashSet<Guid>(),
+            WorkspacePluginAvailability.CarriedOver(allowsPlugins, used),
             callerIsOwner);
     }
 

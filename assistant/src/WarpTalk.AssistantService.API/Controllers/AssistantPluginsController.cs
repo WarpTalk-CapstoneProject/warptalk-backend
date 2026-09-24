@@ -73,7 +73,13 @@ public class AssistantPluginsController : ControllerBase
     {
         var result = await _installationService.CreateMcpPluginAsync(request, CurrentUserId, ct);
         if (!result.IsSuccess)
-            return BadRequest(new { error = result.Error, errorCode = result.ErrorCode });
+        {
+            var body = new { error = result.Error, errorCode = result.ErrorCode };
+            // The platform audit log could not take the record, so the row was not created.
+            return result.ErrorCode == ErrorCodes.ServiceUnavailable
+                ? StatusCode(StatusCodes.Status503ServiceUnavailable, body)
+                : BadRequest(body);
+        }
 
         return CreatedAtAction(nameof(ListCatalog), new { }, result.Value);
     }
