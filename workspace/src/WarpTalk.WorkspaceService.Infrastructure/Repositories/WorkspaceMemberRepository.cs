@@ -46,6 +46,39 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
             .ToListAsync(ct);
     }
 
+    public async Task<Dictionary<Guid, int>> CountActiveMembersPerWorkspaceAsync(CancellationToken ct = default)
+    {
+        // Anonymous projection, materialised, then mapped: EF cannot translate a tuple projection.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(m => m.Status.ToLower() == ActiveStatus && m.RemovedAt == null)
+            .GroupBy(m => m.WorkspaceId)
+            .Select(group => new { WorkspaceId = group.Key, Count = group.Count() })
+            .ToListAsync(ct);
+        return rows.ToDictionary(row => row.WorkspaceId, row => row.Count);
+    }
+
+    public async Task<List<(Guid UserId, Guid WorkspaceId)>> GetActiveMembershipsForUsersAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken ct = default)
+    {
+        if (userIds.Count == 0) return [];
+
+        // A List, so EF translates Contains into an IN.
+        var ids = userIds.Distinct().ToList();
+        var rows = await (
+                from member in _dbSet.AsNoTracking()
+                join workspace in _context.Workspaces.AsNoTracking() on member.WorkspaceId equals workspace.Id
+                where ids.Contains(member.UserId)
+                      && member.Status.ToLower() == ActiveStatus
+                      && member.RemovedAt == null
+                      && workspace.DeletedAt == null
+                select new { member.UserId, member.WorkspaceId })
+            .Distinct()
+            .ToListAsync(ct);
+        return rows.Select(row => (row.UserId, row.WorkspaceId)).ToList();
+    }
+
     public async Task<int> CountActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
     {
         return await _dbSet.CountAsync(

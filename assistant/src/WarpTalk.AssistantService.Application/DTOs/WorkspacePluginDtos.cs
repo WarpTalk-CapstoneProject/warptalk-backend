@@ -65,7 +65,15 @@ public record WorkspacePluginsOverviewDto(
     bool CanManage,
     IReadOnlyList<WorkspacePluginItemDto> InWorkspace,
     IReadOnlyList<WorkspacePluginItemDto> Marketplace,
-    IReadOnlyList<WorkspacePluginRequestDto> PendingRequests);
+    IReadOnlyList<WorkspacePluginRequestDto> PendingRequests)
+{
+    /// <summary>
+    /// Plugins this workspace had - on its list, or used by its members - that the PLATFORM has
+    /// since turned off here. Shown so the Owner knows where a plugin went and that members'
+    /// connections are kept; availability is always <c>platform_disabled</c>. Never addable.
+    /// </summary>
+    public IReadOnlyList<WorkspacePluginItemDto> DisabledByPlatform { get; init; } = [];
+}
 
 /// <param name="Reason">Optional, at most 500 characters.</param>
 public record CreatePluginRequestRequest(string PluginKey, string? Reason = null);

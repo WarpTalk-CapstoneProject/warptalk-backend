@@ -28,6 +28,23 @@ public static class PluginAuditSummary
         ["has_client_secret"] = string.IsNullOrEmpty(plugin.OAuthClientSecretEncrypted) ? "false" : "true",
         ["mcp_server_url"] = plugin.McpServerUrl,
         ["avatar_url"] = plugin.AvatarUrl,
+        ["workspace_default"] = plugin.WorkspaceDefault,
+        ["allowed_plan_slugs"] = plugin.AllowedPlanSlugsJson,
+    };
+
+    /// <summary>
+    /// One workspace's platform state for one plugin, before or after an admin's override change.
+    /// <c>override</c> is <c>none</c> when the workspace follows the default.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string?> OfWorkspace(
+        Plugin plugin,
+        Guid workspaceId,
+        WorkspacePluginOverride? workspaceOverride) => new Dictionary<string, string?>
+    {
+        ["plugin_key"] = plugin.PluginKey,
+        ["workspace_id"] = workspaceId.ToString(),
+        ["override"] = workspaceOverride?.State ?? "none",
+        ["reason"] = workspaceOverride?.Reason,
     };
 
     /// <summary>

@@ -8,6 +8,7 @@ using WarpTalk.WorkspaceService.Application.DTOs;
 using WarpTalk.WorkspaceService.Application.Entitlements;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.ValueObjects;
 
@@ -76,6 +77,40 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             .Select(id => new UserWorkspaceAudienceDto(id, plans.GetValueOrDefault(id)))
             .ToList();
         return Result.Success(items);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<PlatformWorkspaceDto>>> ListPlatformWorkspacesAsync(CancellationToken ct = default)
+    {
+        var workspaces = await _unitOfWork.WorkspaceRepository.GetNotDeletedAsync(ct);
+        var ids = workspaces.Select(workspace => workspace.Id).ToList();
+        var plans = await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetPlanSlugsAsync(ids, ct);
+        var memberCounts = await _unitOfWork.WorkspaceMemberRepository.CountActiveMembersPerWorkspaceAsync(ct);
+
+        IReadOnlyList<PlatformWorkspaceDto> items = workspaces
+            .Select(workspace => new PlatformWorkspaceDto(
+                workspace.Id,
+                workspace.Name,
+                workspace.Slug,
+                workspace.IsActive ? WorkspaceLifecycleStatus.Active : WorkspaceLifecycleStatus.Suspended,
+                workspace.OwnerId,
+                plans.GetValueOrDefault(workspace.Id),
+                memberCounts.GetValueOrDefault(workspace.Id),
+                // The same reading GetSettingsAsync gives it, so the admin page and the guard
+                // cannot disagree about a workspace's legacy switch.
+                WorkspaceHelper.GetWorkspaceConfig(workspace).AllowAnyPlugins))
+            .ToList();
+        return Result.Success(items);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<(Guid UserId, Guid WorkspaceId)>>> ListActiveMembershipsForUsersAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken ct = default)
+    {
+        IReadOnlyList<(Guid UserId, Guid WorkspaceId)> pairs =
+            await _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUsersAsync(userIds, ct);
+        return Result.Success(pairs);
     }
 
     public async Task<Result<WorkspaceMemberDetailsDto?>> GetMemberDetailsAsync(
@@ -426,7 +461,8 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             config.AllowAnyPlugins,
             maxLanguages is > 0
                 ? (int)Math.Clamp(maxLanguages.Value, int.MinValue, int.MaxValue)
-                : null));
+                : null,
+            snapshot?.PlanSlug));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(
