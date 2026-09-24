@@ -4,7 +4,9 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Events;
@@ -25,15 +27,18 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
     private readonly AdminAuditService.AdminAuditServiceClient _client;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AdminAuditGrpcClient> _logger;
+    private readonly IHttpContextAccessor? _httpContextAccessor;
 
     public AdminAuditGrpcClient(
         AdminAuditService.AdminAuditServiceClient client,
         ILogger<AdminAuditGrpcClient> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IHttpContextAccessor? httpContextAccessor = null)
     {
         _client = client;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     public async Task<Result> RecordAsync(
@@ -67,6 +72,10 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
 
         Fill(request.BeforeSummary, beforeSummary);
         Fill(request.AfterSummary, afterSummary);
+
+        // Who asked and from where, read from the admin's own request here — the store only ever
+        // sees this service's gRPC call.
+        AdminAuditRequestMetadata.FromHttpContext(_httpContextAccessor?.HttpContext).ApplyTo(request);
 
         try
         {

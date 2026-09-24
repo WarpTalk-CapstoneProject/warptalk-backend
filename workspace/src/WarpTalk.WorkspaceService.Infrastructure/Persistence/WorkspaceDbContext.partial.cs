@@ -96,6 +96,13 @@ public partial class WorkspaceDbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("performed_at");
             entity.Property(e => e.CorrelationId).HasMaxLength(100).HasColumnName("correlation_id");
+            entity.Property(e => e.ActorEmail).HasMaxLength(320).HasColumnName("actor_email");
+            entity.Property(e => e.ActorName).HasMaxLength(200).HasColumnName("actor_name");
+            entity.Property(e => e.EntityKey).HasMaxLength(100).HasColumnName("entity_key");
+            entity.Property(e => e.EntityLabel).HasMaxLength(200).HasColumnName("entity_label");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.IpAddress).HasMaxLength(64).HasColumnName("ip_address");
+            entity.Property(e => e.UserAgent).HasMaxLength(512).HasColumnName("user_agent");
         });
     }
 }

@@ -21,6 +21,7 @@ using WarpTalk.BillingService.Infrastructure.Clients;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Grpc;
 
 Log.Logger = new LoggerConfiguration()
@@ -137,6 +138,12 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
         o.Address = new Uri(url);
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // Platform writes that predate the admin workspace page — plans, rate cards, pricing, VAT,
+    // contracts, the /admin/subscriptions buttons, the legacy mark-paid, sales leads — are audited
+    // by [AdminAudited] on their routes: each save is recorded before it commits, over the client
+    // above, and refused if it cannot be.
+    builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.BillingService);
 
     builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
     builder.Services.Configure<Grpc.AspNetCore.Server.GrpcServiceOptions>(options =>

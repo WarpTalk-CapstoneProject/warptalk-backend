@@ -13,6 +13,7 @@ using FluentValidation;
 using WarpTalk.NotificationService.API.Validators;
 using WarpTalk.NotificationService.API.Consumers;
 using WarpTalk.NotificationService.API.HostedServices;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -47,8 +48,23 @@ builder.Services.AddControllers()
     });
 
 
-builder.Services.AddDbContext<NotificationDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddDbContext<NotificationDbContext>((provider, options) =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+        // [AdminAudited] announcement sends record their row before it commits.
+        .AddAdminAuditInterceptor(provider));
+
+// Announcements go into the platform audit log, hosted by the workspace service. Its own key
+// rather than GrpcUrls:WorkspaceServiceUrl: that one also switches on the BROADCAST/SEGMENT
+// audience resolver below, and auditing must not change who an announcement reaches. Without an
+// address the attribute stays inert and announcements are recorded only in admin_notifications,
+// as before — a missing address must not take every other endpoint down with it.
+var adminAuditUrl = builder.Configuration["GrpcUrls:AdminAuditServiceUrl"];
+if (!string.IsNullOrWhiteSpace(adminAuditUrl))
+{
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o => o.Address = new Uri(adminAuditUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.NotificationService);
+}
 builder.Services.AddWarpTalkServiceHealthChecks<NotificationDbContext>(
     "notification-database");
 

@@ -167,6 +167,8 @@ try
             "http://localhost:50056");
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    // The recorder reads the admin's e-mail, address and user agent from the request it serves.
+    builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
 
     // Plugin request notifications (member asks the Owner; the Owner decides). Required outside

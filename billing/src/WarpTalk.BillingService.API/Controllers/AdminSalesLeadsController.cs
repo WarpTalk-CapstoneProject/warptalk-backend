@@ -9,6 +9,9 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -67,6 +70,7 @@ public class AdminSalesLeadsController : ControllerBase
 
     /// <summary>Move a lead through new → reviewing → quoted → converted / closed.</summary>
     [HttpPatch("{id:guid}/status")]
+    [AdminAudited(AdminAuditBillingActions.SalesLeadStatusChanged, AdminAuditEntityTypes.SalesLead, typeof(SalesInquiry), EntityRouteKey = "id")]
     public async Task<IActionResult> UpdateStatus(
         Guid id,
         [FromBody] UpdateSalesInquiryStatusRequest request,

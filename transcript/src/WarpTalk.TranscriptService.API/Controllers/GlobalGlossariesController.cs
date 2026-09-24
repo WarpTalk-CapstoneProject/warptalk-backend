@@ -4,9 +4,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Events;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
+using WarpTalk.TranscriptService.Domain.Entities;
 
 namespace WarpTalk.TranscriptService.API.Controllers;
 
@@ -50,6 +53,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpPost]
+    [AdminAudited(AdminAuditGlossaryActions.TermCreated, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm))]
     public async Task<ActionResult<GlobalGlossaryTermDto>> CreateTerm(
         [FromBody] CreateGlobalGlossaryTermDto request, CancellationToken cancellationToken)
     {
@@ -62,6 +66,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpPut("{id}")]
+    [AdminAudited(AdminAuditGlossaryActions.TermUpdated, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
     public async Task<ActionResult> UpdateTerm(Guid id, [FromBody] UpdateGlobalGlossaryTermDto request, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -73,6 +78,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpDelete("{id}")]
+    [AdminAudited(AdminAuditGlossaryActions.TermDeleted, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
     public async Task<ActionResult> DeleteTerm(Guid id, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -84,6 +90,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpPost("{id}/publish")]
+    [AdminAudited(AdminAuditGlossaryActions.TermPublished, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
     public async Task<ActionResult> PublishTerm(Guid id, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -95,6 +102,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpPost("{id}/archive")]
+    [AdminAudited(AdminAuditGlossaryActions.TermArchived, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
     public async Task<ActionResult> ArchiveTerm(Guid id, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -106,6 +114,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpPost("bulk-import")]
+    [AdminAudited(AdminAuditGlossaryActions.BulkImported, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), Aggregate = true)]
     public async Task<ActionResult<BulkImportResultDto>> BulkImport(
         [FromBody] BulkImportGlobalGlossaryTermsDto request, CancellationToken cancellationToken)
     {

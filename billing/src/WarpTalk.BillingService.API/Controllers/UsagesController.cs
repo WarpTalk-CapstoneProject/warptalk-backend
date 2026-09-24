@@ -8,6 +8,9 @@ using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 
 
@@ -111,6 +114,7 @@ public class UsagesController : ControllerBase
 
     [HttpPut("rate-card")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.RateCardUpserted, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard))]
     public async Task<ActionResult<UsageRateCardDto>> UpsertUsageRateCard([FromBody] UpsertUsageRateCardRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.UpsertRateCardAsync(request, cancellationToken);
@@ -119,6 +123,7 @@ public class UsagesController : ControllerBase
 
     [HttpPost("rate-card/{id:guid}/deactivate")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.RateCardDeactivated, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard), EntityRouteKey = "id")]
     public async Task<ActionResult<UsageRateCardDto>> DeactivateUsageRateCard(Guid id, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.DeactivateRateCardAsync(id, cancellationToken);
@@ -132,6 +137,7 @@ public class UsagesController : ControllerBase
 
     [HttpPut("rate-card/{id:guid}/provider-cost")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.RateCardCostSet, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard), EntityRouteKey = "id")]
     public async Task<ActionResult<UsageRateCardDto>> SetUsageRateCardProviderCost(
         Guid id, [FromBody] SetRateCardProviderCostRequest request, CancellationToken cancellationToken)
     {
@@ -171,6 +177,7 @@ public class UsagesController : ControllerBase
 
     [HttpPut("pricing-config")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.PricingConfigUpdated, AdminAuditEntityTypes.PricingConfig, typeof(BillingPricingConfig))]
     public async Task<ActionResult<PricingConfigDto>> UpdatePricingConfig([FromBody] UpdatePricingConfigRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.UpdatePricingConfigAsync(request, cancellationToken);

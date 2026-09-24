@@ -148,6 +148,8 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAud
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The recorder reads the admin's e-mail, address and user agent from the request it serves.
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
 
 // Clean & Secure JWT Authentication
