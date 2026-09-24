@@ -42,7 +42,14 @@ public class AdminSalesLeadsController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>Every lead on the platform, newest first. Optional status and text filters.</summary>
+    /// <summary>
+    /// Every lead on the platform, newest first unless <paramref name="sort"/> says otherwise.
+    /// </summary>
+    /// <param name="requestType">Exact request_type, case-insensitive.</param>
+    /// <param name="source">Exact source (e.g. landing_pricing), case-insensitive.</param>
+    /// <param name="createdFrom">Inclusive lower bound on created_at (UTC).</param>
+    /// <param name="createdTo">Exclusive upper bound on created_at (UTC); earlier than createdFrom is a 400.</param>
+    /// <param name="sort">created_desc (default) | created_asc | company_asc | company_desc; anything else is a 400.</param>
     [HttpGet]
     public async Task<IActionResult> GetLeads(
         [FromQuery] int page = 1,
@@ -50,10 +57,26 @@ public class AdminSalesLeadsController : ControllerBase
         [FromQuery] string? status = null,
         [FromQuery] string? search = null,
         [FromQuery] Guid? workspaceId = null,
+        [FromQuery] string? requestType = null,
+        [FromQuery] string? source = null,
+        [FromQuery] DateTime? createdFrom = null,
+        [FromQuery] DateTime? createdTo = null,
+        [FromQuery] string? sort = null,
         CancellationToken ct = default)
     {
         var result = await _salesInquiryService.GetSalesInquiriesAsync(
-            new SalesInquiryQuery(page, pageSize, status, search, workspaceId, NewestFirst: true),
+            new SalesInquiryQuery(
+                page,
+                pageSize,
+                status,
+                search,
+                workspaceId,
+                NewestFirst: true,
+                RequestType: requestType,
+                Source: source,
+                CreatedFrom: createdFrom,
+                CreatedTo: createdTo,
+                Sort: sort),
             ct);
         return ToActionResult(result);
     }
