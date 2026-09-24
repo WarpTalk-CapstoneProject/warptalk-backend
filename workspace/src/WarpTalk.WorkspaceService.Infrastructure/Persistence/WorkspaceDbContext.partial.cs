@@ -11,8 +11,24 @@ public partial class WorkspaceDbContext
     /// <summary>WT-263: the replicated entitlement snapshot (migration 050).</summary>
     public virtual DbSet<WorkspaceEntitlementSnapshot> WorkspaceEntitlementSnapshots { get; set; } = null!;
 
+    /// <summary>Internal admin notes on a workspace (migration 20260924090000).</summary>
+    public virtual DbSet<WorkspaceAdminNote> WorkspaceAdminNotes { get; set; } = null!;
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<WorkspaceAdminNote>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workspace_admin_notes_pkey");
+            entity.ToTable("workspace_admin_notes", "workspace");
+            entity.HasIndex(e => new { e.WorkspaceId, e.CreatedAt }, "idx_workspace_admin_notes_workspace");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.Body).HasColumnName("body");
+            entity.Property(e => e.AuthorId).HasColumnName("author_id");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+        });
+
         modelBuilder.Entity<WorkspaceEntitlementSnapshot>(entity =>
         {
             entity.HasKey(e => e.WorkspaceId).HasName("workspace_entitlement_snapshots_pkey");

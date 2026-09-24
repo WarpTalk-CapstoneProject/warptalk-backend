@@ -10,4 +10,8 @@ public interface IInvoiceRepository : IGenericRepository<Invoice>
 
     /// <summary>Admin Insights: every issued invoice (open or issued) whose payment is not paid.</summary>
     Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default);
+
+    /// <summary><see cref="GetOutstandingAsync"/> for one workspace.</summary>
+    Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingForWorkspaceAsync(
+        Guid workspaceId, CancellationToken cancellationToken = default);
 }

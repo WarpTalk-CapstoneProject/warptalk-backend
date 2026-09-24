@@ -53,9 +53,10 @@ public class AdminMeetingsController : ControllerBase
     [HttpGet("insights")]
     public async Task<IActionResult> GetInsights(
         [FromQuery] AdminInsightsQuery query,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] Guid? workspaceId = null)
     {
-        var result = await _adminMeetingService.GetInsightsAsync(query, ct);
+        var result = await _adminMeetingService.GetInsightsAsync(query, ct, workspaceId);
         return ToActionResult(result);
     }
 

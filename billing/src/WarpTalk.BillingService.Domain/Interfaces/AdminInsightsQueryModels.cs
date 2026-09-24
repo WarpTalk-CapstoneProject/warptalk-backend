@@ -106,6 +106,9 @@ public sealed record EndingSoonSubscriptionRow(
     string Status);
 
 /// <summary>An invoice that is issued and not yet paid.</summary>
+/// <summary>One ledger row of a workspace, for the burn chart: signed amount and the balance after it.</summary>
+public sealed record LedgerPoint(DateTime At, string Type, int Amount, int BalanceAfter);
+
 public sealed record OutstandingInvoiceRow(
     Guid InvoiceId,
     Guid WorkspaceId,

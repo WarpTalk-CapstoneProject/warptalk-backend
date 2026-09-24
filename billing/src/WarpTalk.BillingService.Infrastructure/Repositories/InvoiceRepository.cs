@@ -64,10 +64,19 @@ public class InvoiceRepository : GenericRepository<Invoice>, IInvoiceRepository
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default)
+        => ReadOutstandingAsync(_dbSet.AsNoTracking(), cancellationToken);
+
+    public Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingForWorkspaceAsync(
+        Guid workspaceId, CancellationToken cancellationToken = default)
+        => ReadOutstandingAsync(
+            _dbSet.AsNoTracking().Where(i => i.Payment.Subscription.WorkspaceId == workspaceId),
+            cancellationToken);
+
+    private static async Task<IReadOnlyList<OutstandingInvoiceRow>> ReadOutstandingAsync(
+        IQueryable<Invoice> source, CancellationToken cancellationToken)
     {
-        var rows = await _dbSet
-            .AsNoTracking()
+        var rows = await source
             .Where(i =>
                 i.Status != InvoiceConstants.InvoiceStatuses.Paid
                 && i.Status != InvoiceConstants.InvoiceStatuses.Void

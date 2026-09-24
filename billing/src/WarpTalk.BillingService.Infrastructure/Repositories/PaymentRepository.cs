@@ -92,6 +92,39 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
             .ToList();
     }
 
+    public async Task<IReadOnlyList<PaymentCurrencyTotal>> GetWorkspaceCountedPaidTotalsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var rows = await WithoutStripeInvoiceDuplicates(OfWorkspace(PaidIn(from, to), workspaceId))
+            .GroupBy(p => p.Currency.ToUpper())
+            .Select(g => new { Currency = g.Key, Payments = g.Count(), Total = g.Sum(p => p.TotalAmount) })
+            .ToListAsync(cancellationToken);
+
+        return rows.Select(r => new PaymentCurrencyTotal(r.Currency, r.Payments, r.Total)).ToList();
+    }
+
+    public async Task<int> CountWorkspaceStripeInvoiceDuplicatesAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var paid = OfWorkspace(PaidIn(from, to), workspaceId);
+        var all = await paid.CountAsync(cancellationToken);
+        var counted = await WithoutStripeInvoiceDuplicates(paid).CountAsync(cancellationToken);
+        return all - counted;
+    }
+
+    /// <summary>
+    /// Scoped through the payment's subscription. The twin rule itself stays platform-wide on
+    /// purpose: a checkout session and its invoice belong to the same subscription, so filtering
+    /// first and de-duplicating after cannot orphan a twin.
+    /// </summary>
+    private IQueryable<Payment> OfWorkspace(IQueryable<Payment> source, Guid workspaceId)
+    {
+        var subscriptionIds = _context.Set<Subscription>().IgnoreQueryFilters()
+            .Where(s => s.WorkspaceId == workspaceId)
+            .Select(s => s.Id);
+        return source.Where(p => subscriptionIds.Contains(p.SubscriptionId));
+    }
+
     public async Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default)
     {
         var rows = await WithoutStripeInvoiceDuplicates(

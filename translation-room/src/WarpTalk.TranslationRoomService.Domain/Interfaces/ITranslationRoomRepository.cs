@@ -93,7 +93,8 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
         DateTime from,
         DateTime to,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        Guid? workspaceId = null);
 
     /// <summary>
     /// Languages of every non-deleted room that is live (IN_PROGRESS, PAUSED), about to be

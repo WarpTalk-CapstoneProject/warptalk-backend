@@ -117,7 +117,7 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
         _audit
             .RecordAsync(
                 Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(),
-                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
+                Arg.Any<string>(), Arg.Any<Guid?>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
                 Arg.Any<IReadOnlyDictionary<string, string?>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(Result.Success()));
 
@@ -126,7 +126,7 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
         _audit
             .RecordAsync(
                 Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(),
-                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
+                Arg.Any<string>(), Arg.Any<Guid?>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
                 Arg.Any<IReadOnlyDictionary<string, string?>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(
                 Result.Failure("audit log unreachable", ErrorCodes.InternalServerError)));
@@ -228,6 +228,60 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
         Assert.Contains("audit", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ── force sign-out from the admin workspace page ─────────────────────────
+
+    [Fact]
+    public async Task Workspace_sign_out_ends_the_sessions_and_files_the_entry_under_that_workspace()
+    {
+        var workspaceId = Guid.NewGuid();
+
+        var result = await _service.RevokeSessionsForWorkspaceAsync(
+            workspaceId,
+            new AdminWorkspaceSignOutRequest(new[] { _userId }, "Owner reported a shared laptop"),
+            Actor);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { _userId }, result.Value!.SignedOut);
+        Assert.Empty(result.Value.Failed);
+        Assert.Equal(0, await LiveSessionCountAsync());
+        // The workspace id is what puts the sign-out on that workspace's timeline.
+        await _audit.Received(1).RecordAsync(
+            AdminAuditUserActions.SessionsRevoked,
+            _userId,
+            _actorId,
+            "Owner reported a shared laptop",
+            "test-correlation",
+            workspaceId,
+            Arg.Any<IReadOnlyDictionary<string, string?>>(),
+            Arg.Any<IReadOnlyDictionary<string, string?>>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Workspace_sign_out_without_a_reason_signs_nobody_out()
+    {
+        var result = await _service.RevokeSessionsForWorkspaceAsync(
+            Guid.NewGuid(), new AdminWorkspaceSignOutRequest(new[] { _userId }, "  "), Actor);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(2, await LiveSessionCountAsync());
+    }
+
+    [Fact]
+    public async Task Workspace_sign_out_reports_an_account_it_could_not_record_and_keeps_its_sessions()
+    {
+        AuditFails();
+
+        var result = await _service.RevokeSessionsForWorkspaceAsync(
+            Guid.NewGuid(), new AdminWorkspaceSignOutRequest(new[] { _userId }, "Offboarding"), Actor);
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(result.Value!.SignedOut);
+        Assert.Equal(_userId, Assert.Single(result.Value.Failed).UserId);
+        Assert.Equal(2, await LiveSessionCountAsync());
+    }
+
     // ── the actions themselves ──────────────────────────────────────────────
 
     [Fact]
@@ -311,6 +365,7 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
             _actorId,
             "Laptop stolen at the airport",
             "test-correlation",
+            Arg.Any<Guid?>(),
             Arg.Any<IReadOnlyDictionary<string, string?>>(),
             Arg.Any<IReadOnlyDictionary<string, string?>>(),
             Arg.Any<CancellationToken>());
@@ -322,7 +377,7 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
         await _service.RevokeSessionsAsync(_userId, Actor, Request());
 
         await _audit.Received(1).RecordAsync(
-            Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid?>(),
             // Read BEFORE the revoke. Reading it after would record zero ended on every entry.
             Arg.Is<IReadOnlyDictionary<string, string?>>(before => before["active_sessions"] == "2"),
             Arg.Is<IReadOnlyDictionary<string, string?>>(after => after["active_sessions"] == "0"),
@@ -337,11 +392,11 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
 
         await _audit.Received(1).RecordAsync(
             AdminAuditUserActions.Deactivated, Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(),
-            Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
+            Arg.Any<string>(), Arg.Any<Guid?>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
             Arg.Any<IReadOnlyDictionary<string, string?>>(), Arg.Any<CancellationToken>());
         await _audit.Received(1).RecordAsync(
             AdminAuditUserActions.Reactivated, Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(),
-            Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
+            Arg.Any<string>(), Arg.Any<Guid?>(), Arg.Any<IReadOnlyDictionary<string, string?>>(),
             Arg.Any<IReadOnlyDictionary<string, string?>>(), Arg.Any<CancellationToken>());
     }
 
@@ -357,7 +412,7 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
         Assert.Equal(2, await LiveSessionCountAsync());
         // Nothing was attempted, so nothing was recorded either.
         await _audit.DidNotReceiveWithAnyArgs().RecordAsync(
-            default!, default, default, default!, default!, default, default, default);
+            default!, default, default, default!, default!, default, default, default, default);
     }
 
     [Fact]

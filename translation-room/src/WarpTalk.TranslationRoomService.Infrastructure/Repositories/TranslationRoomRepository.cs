@@ -82,11 +82,13 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
     public async Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
         DateTime from,
         DateTime to,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? workspaceId = null)
     {
         // Anonymous projection, mapped to the record in memory, never ordered in SQL as a record.
         var rows = await _dbSet
             .AsNoTracking()
+            .Where(r => workspaceId == null || r.WorkspaceId == workspaceId)
             .Where(r => r.DeletedAt == null
                 && r.StartedAt != null
                 && r.StartedAt < to
