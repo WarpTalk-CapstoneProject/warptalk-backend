@@ -205,6 +205,24 @@ public sealed class AdminSubscriptionDirectoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Billing_cycle_period_end_and_auto_renew_filter_in_sql()
+    {
+        var (yearly, yearlyTotal) = await _repository.GetAdminDirectoryAsync(
+            new AdminSubscriptionFilter(BillingCycle: "yearly"), 1, 20);
+        yearlyTotal.Should().Be(1);
+        yearly.Single().Id.Should().Be(_trialId);
+
+        // Period ends: cancelled +5d, trial +10d, active +40d. [+5d, +40d) keeps the first two.
+        var (window, _) = await _repository.GetAdminDirectoryAsync(
+            new AdminSubscriptionFilter(PeriodEndFrom: Anchor.AddDays(5), PeriodEndTo: Anchor.AddDays(40)), 1, 20);
+        window.Select(s => s.Id).Should().BeEquivalentTo(new[] { _cancelledId, _trialId });
+
+        var (_, notRenewing) = await _repository.GetAdminDirectoryAsync(
+            new AdminSubscriptionFilter(AutoRenew: false, ServiceState: "healthy", Sort: "credits_desc"), 1, 20);
+        notRenewing.Should().Be(0);
+    }
+
+    [Fact]
     public async Task The_revenue_query_returns_only_active_undeleted_rows()
     {
         var rows = await _repository.GetActiveForRevenueAsync();
