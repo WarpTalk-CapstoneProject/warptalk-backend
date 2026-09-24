@@ -33,6 +33,7 @@ public static class WorkspaceDirectorySort
     public const string MembersDesc = "members_desc";
     public const string MembersAsc = "members_asc";
     public const string UpdatedDesc = "updated_desc";
+    public const string UpdatedAsc = "updated_asc";
 }
 
 public static class WorkspaceAdminErrors
