@@ -40,7 +40,13 @@ public record WorkspaceSettingsSnapshotDto(
     /// reading <c>ValidateMeetingCreationAsync</c> gives it — never "no language permitted".
     /// </summary>
     IReadOnlyList<string> AllowedTargetLanguages,
-    bool AllowAnyPlugins = true
+    bool AllowAnyPlugins = true,
+    /// <summary>
+    /// WT-707: the plan's limit on DISTINCT normalized target languages per room, read from the
+    /// local entitlement snapshot. Null means no quota is in force (no snapshot yet, no live
+    /// subscription, or unlimited) — never "zero languages permitted".
+    /// </summary>
+    int? MaxLanguages = null
 );
 
 public record WorkspacePreflightDto(

@@ -28,10 +28,14 @@ namespace WarpTalk.AssistantService.API.Controllers;
 public class WorkspacePluginsController : ControllerBase
 {
     private readonly IWorkspacePluginMarketplaceService _service;
+    private readonly IWorkspacePluginMemberService _memberService;
 
-    public WorkspacePluginsController(IWorkspacePluginMarketplaceService service)
+    public WorkspacePluginsController(
+        IWorkspacePluginMarketplaceService service,
+        IWorkspacePluginMemberService memberService)
     {
         _service = service;
+        _memberService = memberService;
     }
 
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
@@ -41,7 +45,19 @@ public class WorkspacePluginsController : ControllerBase
     [ProducesResponseType(typeof(WorkspacePluginsOverviewDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetOverview(Guid workspaceId, CancellationToken ct) =>
-        ToResponse(await _service.GetOverviewAsync(workspaceId, CurrentUserId, ct));
+        ToResponse(await _service.GetOverviewAsync(workspaceId, CurrentUserId, User.GetEmail(), ct));
+
+    /// <summary>
+    /// The workspace's members who have connected this plugin: when, their connection's state, and
+    /// their last use here. Owner or Admin. Connection metadata only - never a token or an account.
+    /// </summary>
+    [HttpGet("{pluginKey}/members")]
+    [ProducesResponseType(typeof(IReadOnlyList<WorkspacePluginMemberDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> ListConnectedMembers(Guid workspaceId, string pluginKey, CancellationToken ct) =>
+        ToResponse(await _memberService.ListConnectedMembersAsync(workspaceId, CurrentUserId, pluginKey, ct));
 
     /// <summary>Adds a marketplace plugin. Owner.</summary>
     [HttpPost("marketplace/{pluginKey}")]
@@ -122,7 +138,13 @@ public class WorkspacePluginsController : ControllerBase
         WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending
             or WorkspacePluginConstants.ErrorCodes.RequestNotPending
             or WorkspacePluginConstants.ErrorCodes.PluginAlreadyAvailable
-            or WorkspacePluginConstants.ErrorCodes.PluginRetired => StatusCodes.Status409Conflict,
+            or WorkspacePluginConstants.ErrorCodes.PluginRetired
+            or WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently
+            or WorkspacePluginConstants.ErrorCodes.RequestByOwner => StatusCodes.Status409Conflict,
+        // The workspace service did not answer, so nothing was written: the page should say "try
+        // again", not "you did something wrong".
+        WorkspacePluginConstants.ErrorCodes.PolicyUnavailable
+            or WorkspacePluginConstants.ErrorCodes.MembersUnavailable => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status400BadRequest,
     };
 

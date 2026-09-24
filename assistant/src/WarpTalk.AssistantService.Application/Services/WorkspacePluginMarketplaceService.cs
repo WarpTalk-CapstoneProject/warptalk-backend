@@ -45,11 +45,18 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
     public async Task<Result<WorkspacePluginsOverviewDto>> GetOverviewAsync(
         Guid workspaceId,
         Guid callerId,
+        string? callerEmail = null,
         CancellationToken ct = default)
     {
         var membership = await _membershipClient.GetMembershipAsync(workspaceId, callerId, ct);
         if (!membership.IsOwnerOrAdmin)
             return Denied<WorkspacePluginsOverviewDto>(WorkspacePluginConstants.Messages.OwnerOrAdminOnly);
+
+        // Only the Owner adds, so nearly every added row was added by the person most often looking
+        // at this page - and for them the token already names them. Anyone else's name would take a
+        // user directory this service does not have; those rows keep addedBy for the page to resolve.
+        var callerName = string.IsNullOrWhiteSpace(callerEmail) ? null : callerEmail.Trim();
+        string? NameOf(Guid? addedBy) => addedBy == callerId ? callerName : null;
 
         var availability = await _guard.GetAvailabilityAsync(workspaceId, ct);
         var plugins = await _unitOfWork.PluginRepository.FindAsync(
@@ -62,11 +69,12 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         WorkspacePluginItemDto ToItem(Plugin plugin)
         {
             rowsByPlugin.TryGetValue(plugin.Id, out var row);
-            return ToItemDto(
+            var item = ToItemDto(
                 plugin,
                 availability.Of(plugin),
                 row,
                 usedCounts.TryGetValue(plugin.Id, out var used) ? used : 0);
+            return item with { AddedByName = NameOf(item.AddedBy) };
         }
 
         var ordered = plugins
@@ -85,7 +93,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         return Result.Success(new WorkspacePluginsOverviewDto(
             workspaceId,
             availability.IsCurated,
-            IsOwner(membership),
+            membership.IsOwner,
             inWorkspace,
             marketplace,
             pending));
@@ -142,7 +150,8 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         var settled = await SettlePendingRequestsAsync(
             workspaceId, plugin.Id, callerId, WorkspacePluginConstants.RequestStatus.Approved, ct);
 
-        await _unitOfWork.SaveChangesAsync(ct);
+        var saved = await SaveListChangeAsync(workspaceId, ct);
+        if (!saved.IsSuccess) return Result.Failure<WorkspacePluginItemDto>(saved.Error!, saved.ErrorCode);
         await NotifyDecidedAsync(workspaceId, settled, plugin, ct);
 
         return Result.Success(ToItemDto(plugin, WorkspacePluginConstants.Availability.Added, added.Value, 0));
@@ -165,21 +174,29 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
 
         if (plugin.OwnerWorkspaceId == workspaceId)
         {
-            // Retired, never deleted. Members may have connected it, so it holds OAuth grants and
-            // audit history that a hard delete would take with it; is_active=false removes it from
-            // every catalog and stops every tool call, which is what "remove" means to the Owner.
+            // Retired, never deleted. Members may have connected it, so it holds audit history a
+            // hard delete would take with it; is_active=false removes it from every catalog and
+            // stops every tool call, which is what "remove" means to the Owner.
             plugin.IsActive = false;
             plugin.UpdatedBy = callerId;
             plugin.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.PluginRepository.Update(plugin);
+
+            // Gap 5. The catalog lists active rows only, so a retired plugin vanishes from every
+            // member's page - and with it the only Disconnect that could have ended their grant.
+            // Retirement is therefore where it ends, in the same commit.
+            await RevokeMemberConnectionsAsync(plugin, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
 
         // Materialised first, so removing one plugin from a workspace still on "every plugin" leaves
         // it with every OTHER plugin rather than with none.
-        var seeded = await EnsureCuratedAsync(workspaceId, callerId, ct);
-        var row = seeded.FirstOrDefault(r => r.PluginId == plugin.Id)
+        var curated = await EnsureCuratedAsync(workspaceId, callerId, ct);
+        if (!curated.IsSuccess) return Result.Failure(curated.Error!, curated.ErrorCode);
+
+        var row = curated.Value!.FirstOrDefault(r => r.PluginId == plugin.Id)
             ?? await _unitOfWork.WorkspacePluginRepository.FirstOrDefaultAsync(
                 r => r.WorkspaceId == workspaceId && r.PluginId == plugin.Id,
                 ct: ct);
@@ -188,8 +205,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         // outcome: the plugin is not on the list that gets written.
         if (row is not null) _unitOfWork.WorkspacePluginRepository.Remove(row);
 
-        await _unitOfWork.SaveChangesAsync(ct);
-        return Result.Success();
+        return await SaveListChangeAsync(workspaceId, ct);
     }
 
     // ---- private plugins ------------------------------------------------------------------------
@@ -212,6 +228,13 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
 
         var urlCheck = McpPluginRows.ValidatePublicServerUrl(url, WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin);
         if (!urlCheck.IsSuccess) return Result.Failure<WorkspacePluginItemDto>(urlCheck.Error!, urlCheck.ErrorCode);
+
+        // Omitted means OAuth, as on the admin create. There is no OAuth client on this request to
+        // conflict with api_key: a private row always finds its client on the ladder.
+        var authMode = string.IsNullOrWhiteSpace(request.AuthMode)
+            ? PluginConstants.AuthMode.OAuth
+            : request.AuthMode.Trim();
+        if (!PluginConstants.AuthMode.IsKnown(authMode)) return UnknownAuthMode<WorkspacePluginItemDto>(authMode);
 
         // The key is derived, and derived with a random suffix, so a collision is astronomically
         // unlikely - but the check that refuses one is the check that keeps a new row from being
@@ -240,6 +263,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             ownerWorkspaceId: workspaceId,
             createdBy: callerId,
             DateTime.UtcNow);
+
+        // Each member pastes their own key; the row holds no client and never walks the ladder.
+        if (authMode == PluginConstants.AuthMode.ApiKey)
+            plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
 
         await _unitOfWork.PluginRepository.AddAsync(plugin, ct);
         await _unitOfWork.SaveChangesAsync(ct);
@@ -272,6 +299,15 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         var fields = ValidatePrivateFields(label, description);
         if (!fields.IsSuccess) return Result.Failure<WorkspacePluginItemDto>(fields.Error!, fields.ErrorCode);
 
+        // Validated before anything below mutates the row, so a refusal leaves it as it was.
+        var currentAuthMode = PluginConstants.AuthMode.Of(plugin.OAuthClientSource);
+        var authMode = currentAuthMode;
+        if (request.AuthMode is not null)
+        {
+            authMode = request.AuthMode.Trim();
+            if (!PluginConstants.AuthMode.IsKnown(authMode)) return UnknownAuthMode<WorkspacePluginItemDto>(authMode);
+        }
+
         if (request.McpServerUrl is not null)
         {
             var url = request.McpServerUrl.Trim();
@@ -300,11 +336,38 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
                 plugin.OAuthRegistrationEndpoint = null;
                 plugin.OAuthClientId = null;
                 plugin.OAuthClientSecretEncrypted = null;
-                plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+                // Back to the ladder - unless members connect with their own key, which has no
+                // ladder. Resetting that to Unresolved turned an api_key plugin into an OAuth one
+                // the moment its URL was corrected.
+                plugin.OAuthClientSource = authMode == PluginConstants.AuthMode.ApiKey
+                    ? PluginConstants.OAuthClientSource.ApiKey
+                    : PluginConstants.OAuthClientSource.Unresolved;
                 plugin.OAuthCimdSupported = null;
                 plugin.OAuthIssParameterSupported = null;
                 plugin.OAuthTokenEndpointAuthMethod = null;
             }
+        }
+
+        if (authMode != currentAuthMode)
+        {
+            if (authMode == PluginConstants.AuthMode.ApiKey)
+            {
+                plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+                // plugins_api_key_forbids_oauth_client: the row cannot keep the client the ladder
+                // registered for it.
+                plugin.OAuthClientId = null;
+                plugin.OAuthClientSecretEncrypted = null;
+            }
+            else
+            {
+                // Back to the ladder, which picks CIMD or DCR on the next connect.
+                plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+            }
+
+            // Every connection was made with the other kind of credential - a token where a key is
+            // now expected, or the reverse - so none may be used past this edit. Members reconnect
+            // the new way; the admin catalog treats its own auth-mode switch the same.
+            await RevokeMemberConnectionsAsync(plugin, ct);
         }
 
         plugin.Label = label;
@@ -317,6 +380,63 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         return Result.Success(ToItemDto(plugin, WorkspacePluginConstants.Availability.Private, row: null, 0));
     }
 
+    /// <summary>
+    /// Ends every member's connection to one PRIVATE plugin: each stored credential is cleared and
+    /// no installation is left marked connected - what Disconnect does for one member, for all of
+    /// them. Staged, not saved.
+    /// </summary>
+    /// <remarks>
+    /// Private rows only, and that is what makes "by provider" exact: a private row's provider is
+    /// its own generated key, so the connections under it are this row's and nobody else's. The
+    /// same query on a marketplace row keyed <c>google</c> would end every Google grant in the
+    /// product.
+    /// <para>
+    /// No call to the server's revocation endpoint, the same choice the admin catalog makes when it
+    /// repoints a host: one best-effort network call per member inside an Owner's click turns a
+    /// remove into a timeout, and an <c>api_key</c> row has nothing to revoke upstream anyway. The
+    /// grant at the member's MCP server outlives this, as one they can withdraw there and one this
+    /// product can no longer reach or use.
+    /// </para>
+    /// </remarks>
+    private async Task RevokeMemberConnectionsAsync(Plugin plugin, CancellationToken ct)
+    {
+        if (plugin.OwnerWorkspaceId is null)
+            throw new InvalidOperationException(
+                $"Refusing to revoke every '{plugin.Provider}' connection for marketplace plugin '{plugin.PluginKey}'.");
+
+        var now = DateTime.UtcNow;
+        var connections = await _unitOfWork.PluginConnectionRepository.FindAsync(
+            connection => connection.Provider == plugin.Provider,
+            ct: ct);
+        foreach (var connection in connections)
+        {
+            connection.Status = PluginConstants.ConnectionStatus.Revoked;
+            connection.EncryptedAccessToken = null;
+            connection.EncryptedRefreshToken = null;
+            connection.AccessTokenExpiresAt = null;
+            connection.TokenRotatedAt = null;
+            connection.UpdatedAt = now;
+            _unitOfWork.PluginConnectionRepository.Update(connection);
+        }
+
+        var connectedInstallations = await _unitOfWork.PluginInstallationRepository.FindAsync(
+            installation => installation.PluginId == plugin.Id && installation.ConnectedAt != null,
+            ct: ct);
+        foreach (var installation in connectedInstallations)
+        {
+            installation.ConnectedAt = null;
+            _unitOfWork.PluginInstallationRepository.Update(installation);
+        }
+
+        if (connections.Count > 0)
+        {
+            _logger.LogInformation(
+                "Revoked {Count} member connection(s) to private plugin {PluginKey}.",
+                connections.Count,
+                plugin.PluginKey);
+        }
+    }
+
     // ---- requests -------------------------------------------------------------------------------
 
     public async Task<Result<WorkspacePluginRequestDto>> CreateRequestAsync(
@@ -326,8 +446,18 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         CreatePluginRequestRequest request,
         CancellationToken ct = default)
     {
-        if (!await IsActiveMemberAsync(workspaceId, callerId, ct))
+        var membership = await _membershipClient.GetMembershipAsync(workspaceId, callerId, ct);
+        if (!membership.IsMember || !membership.IsActive)
             return Denied<WorkspacePluginRequestDto>(PluginConstants.WorkspacePolicyMessages.NotAWorkspaceMember);
+
+        // Gap 9. The Owner is who a request goes TO. One from them was saved, notified nobody (the
+        // notification skips the requester) and then sat on their own Requests list asking them a
+        // question they could have answered with Add. The member catalog marks those rows canAdd so
+        // the page offers Add instead; this is the backstop for a client that still sends it.
+        if (membership.IsOwner)
+            return Result.Failure<WorkspacePluginRequestDto>(
+                WorkspacePluginConstants.Messages.OwnerAddsDirectly,
+                WorkspacePluginConstants.ErrorCodes.RequestByOwner);
 
         var reason = string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim();
         if (reason is { Length: > WorkspacePluginConstants.MaxRequestReasonLength })
@@ -372,7 +502,20 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             CreatedAt = DateTime.UtcNow,
         };
         await _unitOfWork.PluginRequestRepository.AddAsync(entity, ct);
-        await _unitOfWork.SaveChangesAsync(ct);
+
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            // The check above and this insert are not atomic: a double-clicked Send lands two
+            // requests between them, and plugin_requests_one_pending refuses the second. That is
+            // the same answer the check gives, so it gets the same code rather than a 500.
+            return Result.Failure<WorkspacePluginRequestDto>(
+                $"You have already asked for {plugin.Label}. Your workspace owner has not decided yet.",
+                WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending);
+        }
 
         // After the commit, and best-effort: a lost notification leaves the request on the Owner's
         // Plugins page and on the sidebar's count, which is where it would be found anyway.
@@ -437,7 +580,17 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         if (plugin is null) return UnknownPlugin<WorkspacePluginRequestDto>();
 
         IReadOnlyList<PluginRequest> settled;
-        if (decision == WorkspacePluginConstants.RequestStatus.Approved)
+        if (decision == WorkspacePluginConstants.RequestStatus.Approved && !plugin.IsActive)
+        {
+            // Retired since it was asked for. Refusing the approval left the request pending for
+            // good - the Owner could not add it, and nothing else would ever answer it. Retirement
+            // IS the answer, for every member waiting on this plugin, so they are all declined and
+            // told; the caller sees status=declined on a 200 rather than an error, because the
+            // decision was made and saved.
+            settled = await SettlePendingRequestsAsync(
+                workspaceId, plugin.Id, callerId, WorkspacePluginConstants.RequestStatus.Declined, ct);
+        }
+        else if (decision == WorkspacePluginConstants.RequestStatus.Approved)
         {
             var added = await AddToListAsync(workspaceId, callerId, plugin, ct);
             if (!added.IsSuccess) return Result.Failure<WorkspacePluginRequestDto>(added.Error!, added.ErrorCode);
@@ -451,7 +604,8 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             settled = [request];
         }
 
-        await _unitOfWork.SaveChangesAsync(ct);
+        var saved = await SaveListChangeAsync(workspaceId, ct);
+        if (!saved.IsSuccess) return Result.Failure<WorkspacePluginRequestDto>(saved.Error!, saved.ErrorCode);
         await NotifyDecidedAsync(workspaceId, settled, plugin, ct);
 
         return Result.Success(ToRequestDto(request, plugin));
@@ -479,8 +633,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
                 $"{plugin.Label} has been retired from the marketplace and can no longer be added.",
                 WorkspacePluginConstants.ErrorCodes.PluginRetired);
 
-        var seeded = await EnsureCuratedAsync(workspaceId, callerId, ct);
-        var existing = seeded.FirstOrDefault(row => row.PluginId == plugin.Id)
+        var curated = await EnsureCuratedAsync(workspaceId, callerId, ct);
+        if (!curated.IsSuccess) return Result.Failure<WorkspacePlugin>(curated.Error!, curated.ErrorCode);
+
+        var existing = curated.Value!.FirstOrDefault(row => row.PluginId == plugin.Id)
             ?? await _unitOfWork.WorkspacePluginRepository.FirstOrDefaultAsync(
                 row => row.WorkspaceId == workspaceId && row.PluginId == plugin.Id,
                 ct: ct);
@@ -508,16 +664,37 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
     /// first write to its list records the curation and, if the switch was on, seeds the list with
     /// every active marketplace plugin - so the change the Owner is making is the ONLY change.
     /// </summary>
-    /// <returns>The rows seeded by this call (staged, unsaved); empty if nothing was seeded.</returns>
-    private async Task<IReadOnlyList<WorkspacePlugin>> EnsureCuratedAsync(
+    /// <remarks>
+    /// Refuses, rather than guesses, when the workspace service cannot say what the switch was.
+    /// This is the one read of AllowAnyPlugins that is written down: once the curation row exists
+    /// the switch is never consulted again, so an outage read as "off" here would not be a
+    /// momentary refusal but a permanent, empty list - every member losing every plugin because
+    /// the Owner happened to click during a blip. Nothing is staged before the answer is known.
+    /// </remarks>
+    /// <returns>
+    /// The rows seeded by this call (staged, unsaved), empty if nothing was seeded; or
+    /// <see cref="WorkspacePluginConstants.ErrorCodes.PolicyUnavailable"/>.
+    /// </returns>
+    private async Task<Result<IReadOnlyList<WorkspacePlugin>>> EnsureCuratedAsync(
         Guid workspaceId,
         Guid callerId,
         CancellationToken ct)
     {
         if (await _unitOfWork.WorkspacePluginCurationRepository.GetByIdAsync(workspaceId, ct) is not null)
-            return [];
+            return Result.Success<IReadOnlyList<WorkspacePlugin>>([]);
 
-        var allowedEverything = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+        var answer = await _policyClient.ReadAllowAnyPluginsAsync(workspaceId, ct);
+        if (answer == WorkspacePluginPolicyAnswer.Unknown)
+        {
+            _logger.LogWarning(
+                "Refused the first edit of workspace {WorkspaceId}'s plugin list: AllowAnyPlugins could not be read, and seeding from a guess would be permanent.",
+                workspaceId);
+            return Result.Failure<IReadOnlyList<WorkspacePlugin>>(
+                WorkspacePluginConstants.Messages.PolicyUnavailable,
+                WorkspacePluginConstants.ErrorCodes.PolicyUnavailable);
+        }
+
+        var allowedEverything = answer == WorkspacePluginPolicyAnswer.Allowed;
         var now = DateTime.UtcNow;
 
         await _unitOfWork.WorkspacePluginCurationRepository.AddAsync(new WorkspacePluginCuration
@@ -528,11 +705,21 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             SeededFromAllowAnyPlugins = allowedEverything,
         }, ct);
 
-        if (!allowedEverything) return [];
+        if (!allowedEverything) return Result.Success<IReadOnlyList<WorkspacePlugin>>([]);
 
-        var marketplace = await _unitOfWork.PluginRepository.FindAsync(
-            p => p.IsActive && p.OwnerWorkspaceId == null,
-            ct: ct);
+        // Seeds exactly what the guard was already allowing (WorkspacePluginAvailability.CarriedOver):
+        // the marketplace plugins members have used here. Seeding the whole marketplace wrote a list
+        // the Owner never chose, and handed members plugins they had never had.
+        var used = WorkspacePluginAvailability.CarriedOver(
+            allowedEverything,
+            await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedInWorkspaceAsync(workspaceId, ct));
+        // A List, not the set: EF translates List.Contains into an IN, not IReadOnlySet.Contains.
+        var usedIds = used.ToList();
+        var marketplace = usedIds.Count == 0
+            ? Array.Empty<Plugin>()
+            : await _unitOfWork.PluginRepository.FindAsync(
+                p => p.IsActive && p.OwnerWorkspaceId == null && usedIds.Contains(p.Id),
+                ct: ct);
         var seeded = new List<WorkspacePlugin>(marketplace.Count);
         foreach (var plugin in marketplace)
         {
@@ -550,11 +737,42 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         }
 
         _logger.LogInformation(
-            "Workspace {WorkspaceId} curated its plugin list for the first time; seeded {Count} marketplace plugin(s) from AllowAnyPlugins=true.",
+            "Workspace {WorkspaceId} curated its plugin list for the first time; seeded the {Count} marketplace plugin(s) its members already used under AllowAnyPlugins=true.",
             workspaceId,
             marketplace.Count);
 
-        return seeded;
+        return Result.Success<IReadOnlyList<WorkspacePlugin>>(seeded);
+    }
+
+    /// <summary>
+    /// Commits a change to the workspace's list, turning a lost race into
+    /// <see cref="WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently"/>.
+    /// </summary>
+    /// <remarks>
+    /// Every list write reads, decides and then inserts, and nothing locks between the read and the
+    /// insert. Two first edits both find no curation row and both insert one; two adds of one
+    /// plugin both find no row for it. The database's keys (workspace_plugin_curations_pkey,
+    /// workspace_plugins_workspace_plugin_key) keep the data right; this keeps the answer right -
+    /// 409 "refetch", not 500 "something broke". Unique violations only, recognised by SQLSTATE:
+    /// any other failure is a real fault and still throws.
+    /// </remarks>
+    private async Task<Result> SaveListChangeAsync(Guid workspaceId, CancellationToken ct)
+    {
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex) when (PersistenceConflict.IsUniqueViolation(ex))
+        {
+            _logger.LogInformation(
+                ex,
+                "A concurrent change to workspace {WorkspaceId}'s plugin list won; this one was refused by a unique key.",
+                workspaceId);
+            return Result.Failure(
+                WorkspacePluginConstants.Messages.ListChangedConcurrently,
+                WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently);
+        }
     }
 
     private async Task<IReadOnlyList<PluginRequest>> SettlePendingRequestsAsync(
@@ -671,7 +889,13 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             plugin.OwnerWorkspaceId is null ? null : plugin.McpServerUrl,
             plugin.OwnerWorkspaceId is null ? row?.AddedBy : plugin.CreatedBy,
             plugin.OwnerWorkspaceId is null ? row?.AddedAt : plugin.CreatedAt,
-            membersUsed);
+            membersUsed,
+            PluginConstants.AuthMode.Of(plugin.OAuthClientSource));
+
+    private static Result<T> UnknownAuthMode<T>(string authMode) =>
+        Result.Failure<T>(
+            $"'{authMode}' is not a way to connect. Use {PluginConstants.AuthMode.OAuth} or {PluginConstants.AuthMode.ApiKey}.",
+            WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin);
 
     private static Result ValidatePrivateFields(string label, string description)
     {
@@ -695,12 +919,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
     }
 
     private async Task<bool> IsOwnerAsync(Guid workspaceId, Guid userId, CancellationToken ct) =>
-        IsOwner(await _membershipClient.GetMembershipAsync(workspaceId, userId, ct));
-
-    private static bool IsOwner(WorkspaceMembership membership) =>
-        membership.IsMember
-        && membership.IsActive
-        && string.Equals(membership.RoleName, WorkspaceRoleConstants.Owner, StringComparison.OrdinalIgnoreCase);
+        (await _membershipClient.GetMembershipAsync(workspaceId, userId, ct)).IsOwner;
 
     private static Result<T> Denied<T>(string message) =>
         Result.Failure<T>(message, PluginConstants.ErrorCodes.PermissionDenied);

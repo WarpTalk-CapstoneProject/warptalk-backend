@@ -42,9 +42,9 @@ public class LiveKitEgressService : ILiveKitEgressService
         var configuredUrl = configuration["LiveKit:Url"] ?? configuration["LiveKit:Host"]
             ?? throw new InvalidOperationException("LiveKit:Url is required.");
         _host = ToHttpApiUrl(configuredUrl);
-        _s3Output = BuildS3Output(configuration);
-        _templateBaseUrl = configuration["LiveKit:Egress:TemplateBaseUrl"]?.TrimEnd('/');
         _logger = logger;
+        _s3Output = BuildS3Output(configuration, logger);
+        _templateBaseUrl = configuration["LiveKit:Egress:TemplateBaseUrl"]?.TrimEnd('/');
     }
 
     public async Task<Result<string>> StartRoomCompositeEgressAsync(string roomName, CancellationToken ct = default)
@@ -269,7 +269,7 @@ public class LiveKitEgressService : ILiveKitEgressService
         return body.Contains("\"code\":\"not_found\"", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static object? BuildS3Output(IConfiguration configuration)
+    private static object? BuildS3Output(IConfiguration configuration, ILogger logger)
     {
         var bucket = configuration["LiveKit:Egress:S3:Bucket"];
         if (string.IsNullOrWhiteSpace(bucket))
@@ -286,15 +286,50 @@ public class LiveKitEgressService : ILiveKitEgressService
             throw new InvalidOperationException("LiveKit Cloud Egress S3 endpoint must use HTTPS.");
         }
 
+        var region = configuration["LiveKit:Egress:S3:Region"];
+        WarnIfRegionCannotWork(endpoint, region, bucket, logger);
+
         return new
         {
             access_key = accessKey,
             secret,
             bucket,
-            region = configuration["LiveKit:Egress:S3:Region"],
+            region,
             endpoint,
             force_path_style = !string.IsNullOrWhiteSpace(endpoint)
         };
+    }
+
+    /// <summary>
+    /// WT-824: say so at startup when the configured region cannot work with the configured store.
+    ///
+    /// Cloudflare R2 accepts <c>auto</c>, an empty value or <c>us-east-1</c> as its region and
+    /// rejects everything else with <c>InvalidRegionName</c>. LiveKit signs the upload with the
+    /// region we hand it verbatim, so a wrong one fails EVERY upload — after the meeting, inside
+    /// LiveKit Cloud, where the only trace is an egress error we see minutes later. The prod env
+    /// template shipped <c>ap-southeast-1</c> against an R2 endpoint for weeks.
+    ///
+    /// A warning rather than a throw: this runs while the service is coming up, and refusing to
+    /// start the whole meeting service over a recording setting would take down meetings that do
+    /// not record. The value is also only wrong for R2 — the same string is correct for AWS.
+    /// </summary>
+    private static void WarnIfRegionCannotWork(string? endpoint, string? region, string bucket, ILogger logger)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(region)) return;
+        if (!endpoint.Contains("r2.cloudflarestorage.com", StringComparison.OrdinalIgnoreCase)) return;
+        if (region.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+            region.Equals("us-east-1", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "LiveKit:Egress:S3:Region is {Region}, but the endpoint is Cloudflare R2, which accepts "
+            + "only \"auto\", an empty value or \"us-east-1\". Every recording upload to bucket "
+            + "{Bucket} is expected to fail with InvalidRegionName, and the file is lost when it "
+            + "does. Set LIVEKIT_EGRESS_S3_REGION=auto.",
+            region,
+            bucket);
     }
 
     /// <summary>

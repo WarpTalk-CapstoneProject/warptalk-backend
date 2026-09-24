@@ -111,7 +111,19 @@ public record PluginCatalogItemDto(
     /// <c>oauth</c>: Connect sends the user to the provider. <c>api_key</c>: Connect asks the user
     /// for their own API key and posts it to <c>{key}/api-key</c>.
     /// </summary>
-    string AuthMode = "oauth");
+    string AuthMode = "oauth",
+    /// <summary>
+    /// True when the caller is the Owner of the workspace the catalog was listed for and this is a
+    /// marketplace plugin that workspace has not added: the page offers Add (the workspace's
+    /// <c>POST marketplace/{key}</c>) instead of Request. False everywhere else, including every
+    /// row of a listing made without a workspace.
+    /// </summary>
+    /// <remarks>
+    /// Per row rather than one "caller is Owner" flag because the listing is a bare array with no
+    /// envelope to put one on, and because the row is where the decision is: an Owner still gets
+    /// Connect on an added row and nothing extra on a private one.
+    /// </remarks>
+    bool CanAdd = false);
 
 /// <summary>A user's own API key for an <c>api_key</c> row. Never echoed back by any endpoint.</summary>
 public record ConnectPluginApiKeyRequest(string? ApiKey);

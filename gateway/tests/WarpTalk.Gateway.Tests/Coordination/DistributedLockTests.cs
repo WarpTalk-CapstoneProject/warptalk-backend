@@ -189,25 +189,31 @@ public sealed class DistributedLockTests
         Assert.NotNull(await _locks.TryAcquireAsync("tick", Lease));
     }
 
+    /// <summary>
+    /// The renewal loop is paced by <see cref="_time"/> as well, so "a renewal was refused" is an
+    /// event the test causes rather than one it waits for. A store that refuses every renewal
+    /// stands in for "the lease expired and another replica took it".
+    /// </summary>
     [Fact]
     public async Task Exclusive_LosingTheLeaseMidTick_CancelsTheWork()
     {
-        // Real clock: the renewal loop runs on Task.Delay. A store that refuses the first renewal
-        // stands in for "the lease expired and another replica took it".
         var store = new Mock<ILeaseStore>();
         store.Setup(s => s.TryAcquireAsync("tick", It.IsAny<string>(), It.IsAny<TimeSpan>())).ReturnsAsync(1L);
         store.Setup(s => s.TryRenewAsync("tick", It.IsAny<string>(), It.IsAny<TimeSpan>())).ReturnsAsync(false);
-        var locks = new DistributedLockProvider(store.Object, TimeProvider.System);
+        var locks = new DistributedLockProvider(store.Object, _time);
+        var working = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = false;
 
-        var outcome = await locks.TryRunExclusiveAsync(
+        var tick = locks.TryRunExclusiveAsync(
             "tick",
-            TimeSpan.FromMilliseconds(90),
+            Lease,
             async ct =>
             {
+                working.SetResult();
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(10), ct);
+                    // Never completes on its own: the tick ends only because the lease was lost.
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
                 }
                 catch (OperationCanceledException)
                 {
@@ -216,34 +222,117 @@ public sealed class DistributedLockTests
                 }
             },
             NullLogger.Instance,
-            CancellationToken.None);
+            CancellationToken.None,
+            time: _time);
 
-        Assert.Equal(ExclusiveTickOutcome.LeaseUnavailable, outcome);
+        await working.Task.WaitAsync(TestTimeout);
+        await AdvanceToNextRenewalAsync();
+
+        // WaitAsync, not a bare await: an implementation that stopped cancelling the work would
+        // otherwise hang this test for the whole run instead of failing it.
+        Assert.Equal(ExclusiveTickOutcome.LeaseUnavailable, await tick.WaitAsync(TestTimeout));
         Assert.True(cancelled);
     }
 
+    /// <summary>
+    /// A tick that runs for longer than its own lease keeps it, because the renewal loop extends
+    /// it underneath — and no competitor gets in at any point along the way.
+    ///
+    /// Every clock this touches is <see cref="_time"/>: lease expiry in the store, the holder's
+    /// local deadline, and the renewal loop's delay. The test moves time itself, and each step
+    /// waits for the renewal it just caused to come back from the store before asking whether a
+    /// competitor can acquire — so there is no window in which the answer depends on how quickly
+    /// the machine got round to running the renewal.
+    ///
+    /// It used to run on the real clock: a 150ms lease, six 100ms sleeps, and an assertion that a
+    /// competitor was still locked out. On a loaded CI runner one late wake-up let the lease lapse
+    /// between renewals and the test failed — on PRs that had nothing to do with the gateway.
+    /// </summary>
     [Fact]
     public async Task Exclusive_LongTick_IsKeptAliveByRenewal()
     {
-        var store = new InProcessLeaseStore(TimeProvider.System);
-        var locks = new DistributedLockProvider(store, TimeProvider.System);
-        var lease = TimeSpan.FromMilliseconds(150);
+        var renewals = new RenewalSignal(_store);
+        var locks = new DistributedLockProvider(renewals, _time);
+        var working = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishWork = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var outcome = await locks.TryRunExclusiveAsync(
+        var tick = locks.TryRunExclusiveAsync(
             "long",
-            lease,
-            async ct =>
+            Lease,
+            async _ =>
             {
-                // Four lease durations: without renewal a competitor would get in half way.
-                for (var i = 0; i < 6; i++)
-                {
-                    await Task.Delay(100, ct);
-                    Assert.Null(await locks.TryAcquireAsync("long", lease, ct));
-                }
+                working.SetResult();
+                await finishWork.Task;
             },
             NullLogger.Instance,
-            CancellationToken.None);
+            CancellationToken.None,
+            time: _time);
 
-        Assert.Equal(ExclusiveTickOutcome.Ran, outcome);
+        await working.Task.WaitAsync(TestTimeout);
+
+        // Six renewal intervals — four lease durations in total. Without renewal the lease would
+        // have lapsed a third of the way in and a competitor would be waiting on the second pass.
+        for (var i = 0; i < 6; i++)
+        {
+            var renewed = renewals.Next();
+            await AdvanceToNextRenewalAsync();
+            Assert.True(await renewed.WaitAsync(TestTimeout), $"renewal {i + 1} was refused");
+            Assert.Null(await _locks.TryAcquireAsync("long", Lease));
+        }
+
+        finishWork.SetResult();
+        Assert.Equal(ExclusiveTickOutcome.Ran, await tick.WaitAsync(TestTimeout));
+    }
+
+    /// <summary>
+    /// Waits until the renewal loop has armed its next delay, then moves the clock one renewal
+    /// interval — the interval <see cref="ExclusiveTickExtensions"/> derives from the lease — plus
+    /// a tick, so the delay is strictly due rather than exactly due.
+    ///
+    /// The wait is what keeps this honest: advancing before the delay exists would move the clock
+    /// past a deadline nothing was waiting on yet.
+    /// </summary>
+    private async Task AdvanceToNextRenewalAsync()
+    {
+        using var timeout = new CancellationTokenSource(TestTimeout);
+        await _time.WaitForArmedTimerAsync(timeout.Token);
+        _time.Advance(TimeSpan.FromTicks(Lease.Ticks / 3) + TimeSpan.FromTicks(1));
+    }
+
+    /// <summary>
+    /// How long a step may take before the test gives up — a deadlock guard, not a timing
+    /// assumption. Nothing here is supposed to take any wall-clock time at all.
+    /// </summary>
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// A store that hands the test a task completing when the NEXT renewal has been answered.
+    ///
+    /// The sync point the whole thing rests on: advancing the clock only makes the renewal due,
+    /// and the loop that performs it runs on another thread. Asserting straight after the advance
+    /// would be asking the question before the renewal had happened — the same race, moved.
+    /// </summary>
+    private sealed class RenewalSignal(ILeaseStore inner) : ILeaseStore
+    {
+        private TaskCompletionSource<bool>? _next;
+
+        public Task<bool> Next()
+        {
+            var signal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _next, signal);
+            return signal.Task;
+        }
+
+        public Task<long?> TryAcquireAsync(string resource, string token, TimeSpan leaseDuration)
+            => inner.TryAcquireAsync(resource, token, leaseDuration);
+
+        public async Task<bool> TryRenewAsync(string resource, string token, TimeSpan leaseDuration)
+        {
+            var renewed = await inner.TryRenewAsync(resource, token, leaseDuration);
+            Interlocked.Exchange(ref _next, null)?.SetResult(renewed);
+            return renewed;
+        }
+
+        public Task<bool> ReleaseAsync(string resource, string token) => inner.ReleaseAsync(resource, token);
     }
 }

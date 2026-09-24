@@ -38,6 +38,11 @@ namespace WarpTalk.AssistantService.API.Controllers;
 /// a migration to catch up.
 /// </para>
 /// <para>
+/// MARKETPLACE ROWS ONLY. A workspace's private plugin shares the <c>plugins</c> table but is not
+/// this surface's to manage: it is not listed, and every <c>{pluginKey}</c> endpoint answers 404
+/// for one exactly as for a key nobody holds. Its Owner edits and removes it from the workspace.
+/// </para>
+/// <para>
 /// SECRETS. No response from this controller carries an OAuth client secret, in any form. A secret
 /// enters through <c>PUT .../oauth</c>, is encrypted by <c>IPluginCredentialProtector</c> before it
 /// is stored, and is never read back - <c>hasClientSecret</c> is the whole of what can be learned
@@ -243,6 +248,8 @@ public class AssistantPluginCatalogController : ControllerBase
         {
             PluginConstants.ErrorCodes.UnknownPlugin => NotFound(body),
             PluginConstants.ErrorCodes.PluginInUse => Conflict(body),
+            // The platform audit log could not take the record, so the change was not made.
+            WarpTalk.Shared.ErrorCodes.ServiceUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable, body),
             _ => BadRequest(body),
         };
     }

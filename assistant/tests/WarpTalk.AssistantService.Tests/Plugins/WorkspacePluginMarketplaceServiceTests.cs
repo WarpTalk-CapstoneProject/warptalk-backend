@@ -1,4 +1,6 @@
+using System.Data.Common;
 using System.Linq.Expressions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using WarpTalk.AssistantService.API.Controllers;
@@ -32,6 +34,10 @@ public class WorkspacePluginMarketplaceServiceTests
     private readonly List<WorkspacePluginCuration> _curations = [];
     private readonly List<PluginRequest> _requests = [];
     private readonly List<UserNotification> _sent = [];
+    private readonly List<PluginConnection> _connections = [];
+    private readonly List<PluginInstallation> _installations = [];
+    /// <summary>Marketplace plugins members have successfully used in <see cref="WorkspaceId"/>.</summary>
+    private readonly HashSet<Guid> _usedHere = [];
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IWorkspacePluginPolicyClient _policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
@@ -54,16 +60,22 @@ public class WorkspacePluginMarketplaceServiceTests
                 .Where(r => r.WorkspaceId == call.ArgAt<Guid>(0) && r.Status == call.ArgAt<string>(1))
                 .OrderBy(r => r.CreatedAt)
                 .ToList());
-        var connectionRepository = Substitute.For<IPluginConnectionRepository>();
+        var connectionRepository = InMemory<IPluginConnectionRepository, PluginConnection>(_connections, c => c.Id);
+        connectionRepository.CountForPluginAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => _connections.Count(c => c.PluginId == call.Arg<Guid>()));
+        var installationRepository = InMemory<IPluginInstallationRepository, PluginInstallation>(_installations, i => i.Id);
         var auditRepository = Substitute.For<IPluginToolAuditRepository>();
         auditRepository.CountDistinctUsersByPluginForWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(new Dictionary<Guid, int>());
+        auditRepository.GetPluginIdsUsedInWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlySet<Guid>)(call.ArgAt<Guid>(0) == WorkspaceId ? _usedHere.ToHashSet() : []));
 
         _unitOfWork.PluginRepository.Returns(pluginRepository);
         _unitOfWork.WorkspacePluginRepository.Returns(workspacePluginRepository);
         _unitOfWork.WorkspacePluginCurationRepository.Returns(curationRepository);
         _unitOfWork.PluginRequestRepository.Returns(requestRepository);
         _unitOfWork.PluginConnectionRepository.Returns(connectionRepository);
+        _unitOfWork.PluginInstallationRepository.Returns(installationRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(auditRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
 
@@ -157,6 +169,48 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task AnAdmin_SeesRequestsReadOnly_TheOwnerCanManage()
+    {
+        // Gap 12: the page learns from canManage that an Admin may look but not decide.
+        AllowAnyPlugins(false);
+        var sut = Sut();
+        var request = (await sut.CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+
+        var asAdmin = (await sut.GetOverviewAsync(WorkspaceId, AdminId)).Value!;
+        var asOwner = (await sut.GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
+
+        Assert.False(asAdmin.CanManage);
+        Assert.Single(asAdmin.PendingRequests);
+        Assert.True(asOwner.CanManage);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, (await sut.ApproveRequestAsync(WorkspaceId, AdminId, request.Id)).ErrorCode);
+        Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, (await sut.DeclineRequestAsync(WorkspaceId, AdminId, request.Id)).ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.RequestStatus.Pending, Assert.Single(_requests).Status);
+    }
+
+    [Fact]
+    public async Task TheOverview_NamesTheCallersOwnAdditions_AndCarriesAuthMode()
+    {
+        AlreadyCurated();
+        _workspacePlugins.Add(new WorkspacePlugin { Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, PluginId = _linear.Id, AddedBy = OwnerId });
+        _workspacePlugins.Add(new WorkspacePlugin { Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, PluginId = _notion.Id, AddedBy = null });
+        _notion.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+
+        var asOwner = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId, "owner@warptalk.io.vn")).Value!;
+        var asAdmin = (await Sut().GetOverviewAsync(WorkspaceId, AdminId, "admin@warptalk.io.vn")).Value!;
+
+        var linear = asOwner.InWorkspace.Single(p => p.Key == "linear");
+        Assert.Equal("owner@warptalk.io.vn", linear.AddedByName);
+        Assert.Equal(PluginConstants.AuthMode.OAuth, linear.AuthMode);
+        var notion = asOwner.InWorkspace.Single(p => p.Key == "notion");
+        Assert.Null(notion.AddedByName);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, notion.AuthMode);
+        // Someone else's addition: the id stays, the name is the page's to resolve.
+        var seenByAdmin = asAdmin.InWorkspace.Single(p => p.Key == "linear");
+        Assert.Equal(OwnerId, seenByAdmin.AddedBy);
+        Assert.Null(seenByAdmin.AddedByName);
+    }
+
+    [Fact]
     public async Task TheOwner_CanAdd_AndTheWorkspaceBecomesCurated()
     {
         AllowAnyPlugins(false);
@@ -184,11 +238,13 @@ public class WorkspacePluginMarketplaceServiceTests
     // ---- the transition ------------------------------------------------------------------------
 
     [Fact]
-    public async Task Transition_AnUncuratedWorkspaceOnAllowAnyPlugins_KeepsEveryOtherPlugin_WhenTheOwnerRemovesOne()
+    public async Task Transition_AnUncuratedWorkspaceOnAllowAnyPlugins_KeepsEveryOtherPluginItsMembersUse_WhenTheOwnerRemovesOne()
     {
         // The migration-safety guarantee: the Owner's first change is the ONLY change. Removing
-        // Linear from a workspace that had every plugin leaves it with every other active one.
+        // Linear from a workspace whose members used Linear and Notion leaves it with Notion - and
+        // a retired plugin they once used is not brought back.
         AllowAnyPlugins(true);
+        _usedHere.UnionWith([_linear.Id, _notion.Id, _slackRetired.Id]);
 
         var result = await Sut().RemovePluginAsync(WorkspaceId, OwnerId, "linear");
 
@@ -201,17 +257,56 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
-    public async Task Transition_AnUncuratedWorkspace_ReadsAsHavingEveryMarketplacePlugin()
+    public async Task Transition_AnUncuratedWorkspace_HasOnlyThePluginsItsMembersUse()
+    {
+        // The owner report: a workspace that had chosen nothing listed the whole marketplace under
+        // "In this workspace". What it really has is what its members were already using.
+        AllowAnyPlugins(true);
+        _usedHere.Add(_notion.Id);
+
+        var overview = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
+
+        Assert.False(overview.IsCurated);
+        Assert.Equal(["notion"], overview.InWorkspace.Select(p => p.Key));
+        Assert.Equal(["linear"], overview.Marketplace.Select(p => p.Key));
+        // Reading never curates: only a write does.
+        Assert.Empty(_curations);
+    }
+
+    [Fact]
+    public async Task Transition_AnUncuratedWorkspaceNobodyUsedAPluginIn_HasNone_EvenWithAllowAnyPluginsOn()
     {
         AllowAnyPlugins(true);
 
         var overview = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
 
-        Assert.False(overview.IsCurated);
-        Assert.Equal(["linear", "notion"], overview.InWorkspace.Select(p => p.Key).Order());
-        Assert.Empty(overview.Marketplace);
-        // Reading never curates: only a write does.
-        Assert.Empty(_curations);
+        Assert.Empty(overview.InWorkspace);
+        Assert.Equal(["linear", "notion"], overview.Marketplace.Select(p => p.Key).Order());
+    }
+
+    [Fact]
+    public async Task Transition_WithAllowAnyPluginsOff_UsedPluginsAreNotCarriedOver()
+    {
+        AllowAnyPlugins(false);
+        _usedHere.Add(_notion.Id);
+
+        var overview = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
+
+        Assert.Empty(overview.InWorkspace);
+    }
+
+    [Fact]
+    public async Task Transition_TheFirstEdit_SeedsOnlyThePluginsMembersUse()
+    {
+        AllowAnyPlugins(true);
+        _usedHere.Add(_notion.Id);
+
+        await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+
+        Assert.True(Assert.Single(_curations).SeededFromAllowAnyPlugins);
+        Assert.Equal(new[] { _linear.Id, _notion.Id }.Order(), _workspacePlugins.Select(r => r.PluginId).Order());
+        Assert.Null(_workspacePlugins.Single(r => r.PluginId == _notion.Id).AddedBy);
+        Assert.Equal(OwnerId, _workspacePlugins.Single(r => r.PluginId == _linear.Id).AddedBy);
     }
 
     [Fact]
@@ -226,9 +321,60 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task Transition_WhenAllowAnyPluginsCannotBeRead_TheFirstEditChangesNothing()
+    {
+        // Gap 1 of the marketplace audit. The policy client used to answer an outage with "off",
+        // and the first edit wrote that down: a curation row with nothing seeded, i.e. every member
+        // of a workspace that had every plugin permanently left with the one the Owner clicked.
+        PolicyUnreadable();
+        var sut = Sut();
+
+        var add = await sut.AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+        var remove = await sut.RemovePluginAsync(WorkspaceId, OwnerId, "notion");
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, add.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, remove.ErrorCode);
+        Assert.Empty(_curations);
+        Assert.Empty(_workspacePlugins);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Transition_ApprovingDuringAnOutage_LeavesTheRequestPending()
+    {
+        AllowAnyPlugins(false);
+        var sut = Sut();
+        var request = (await sut.CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+        _sent.Clear();
+        PolicyUnreadable();
+
+        var result = await sut.ApproveRequestAsync(WorkspaceId, OwnerId, request.Id);
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, result.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.RequestStatus.Pending, Assert.Single(_requests).Status);
+        Assert.Empty(_curations);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task ACuratedWorkspace_DoesNotNeedThePolicy_ToChangeItsList()
+    {
+        // Only the transition reads the switch; once the list is the list, an outage is irrelevant.
+        AlreadyCurated();
+        PolicyUnreadable();
+
+        var result = await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal([_linear.Id], _workspacePlugins.Select(r => r.PluginId));
+        await _policyClient.DidNotReceive().ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task Transition_RetiredPluginsAreNotSeeded()
     {
         AllowAnyPlugins(true);
+        _usedHere.UnionWith([_linear.Id, _notion.Id, _slackRetired.Id]);
 
         await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
 
@@ -261,6 +407,31 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
+    public async Task TheOwner_CannotRequestAPluginFromThemselves()
+    {
+        // Gap 9. It used to be saved, notify nobody, and wait on the Owner's own Requests list.
+        AllowAnyPlugins(false);
+
+        var result = await Sut().CreateRequestAsync(WorkspaceId, OwnerId, null, new CreatePluginRequestRequest("linear"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.RequestByOwner, result.ErrorCode);
+        Assert.Equal(409, WorkspacePluginsController.StatusFor(result.ErrorCode));
+        Assert.Empty(_requests);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task AnAdmin_StillRequests_BecauseOnlyTheOwnerDecides()
+    {
+        AllowAnyPlugins(false);
+
+        var result = await Sut().CreateRequestAsync(WorkspaceId, AdminId, null, new CreatePluginRequestRequest("linear"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(OwnerId, Assert.Single(_sent).UserId);
+    }
+
+    [Fact]
     public async Task ADuplicatePendingRequest_IsAConflict()
     {
         AllowAnyPlugins(false);
@@ -277,6 +448,7 @@ public class WorkspacePluginMarketplaceServiceTests
     public async Task RequestingAPluginTheWorkspaceAlreadyHas_IsAConflict()
     {
         AllowAnyPlugins(true);
+        _usedHere.Add(_linear.Id);
 
         var result = await Sut().CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"));
 
@@ -326,7 +498,11 @@ public class WorkspacePluginMarketplaceServiceTests
             Assert.NotNull(r.DecidedAt);
         });
         Assert.Equal([AdminId, MemberId], _sent.Select(n => n.UserId).Order());
-        Assert.All(_sent, n => Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestApproved, n.Type));
+        Assert.All(_sent, n =>
+        {
+            Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestApproved, n.Type);
+            Assert.Equal($"/settings/plugins?workspace={WorkspaceId}", n.ActionUrl);
+        });
     }
 
     [Fact]
@@ -344,9 +520,43 @@ public class WorkspacePluginMarketplaceServiceTests
         var notification = Assert.Single(_sent);
         Assert.Equal(MemberId, notification.UserId);
         Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestDeclined, notification.Type);
+        // Gap 13: opens the member's plugins page on THIS workspace, not whichever was last active.
+        Assert.Equal($"/settings/plugins?workspace={WorkspaceId}", notification.ActionUrl);
 
         var again = await sut.DeclineRequestAsync(WorkspaceId, OwnerId, request.Id);
         Assert.Equal(WorkspacePluginConstants.ErrorCodes.RequestNotPending, again.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ApprovingARequestForAPluginRetiredSinceItWasAskedFor_DeclinesIt_AndTellsEveryoneWaiting()
+    {
+        // Gap 7. The approval used to fail with plugin_retired and leave the request pending with
+        // nothing that could ever answer it.
+        AllowAnyPlugins(false);
+        var sut = Sut();
+        var first = (await sut.CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+        await sut.CreateRequestAsync(WorkspaceId, AdminId, null, new CreatePluginRequestRequest("linear"));
+        _sent.Clear();
+        _linear.IsActive = false;
+
+        var result = await sut.ApproveRequestAsync(WorkspaceId, OwnerId, first.Id);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspacePluginConstants.RequestStatus.Declined, result.Value!.Status);
+        Assert.All(_requests, r =>
+        {
+            Assert.Equal(WorkspacePluginConstants.RequestStatus.Declined, r.Status);
+            Assert.Equal(OwnerId, r.DecidedBy);
+        });
+        Assert.Empty(_workspacePlugins);
+        // Nothing was added, so this was not the workspace's first edit either.
+        Assert.Empty(_curations);
+        Assert.Equal([AdminId, MemberId], _sent.Select(n => n.UserId).Order());
+        Assert.All(_sent, n =>
+        {
+            Assert.Equal(WorkspacePluginConstants.NotificationTypes.RequestDeclined, n.Type);
+            Assert.Contains("no longer offered", n.Body);
+        });
     }
 
     [Fact]
@@ -366,6 +576,54 @@ public class WorkspacePluginMarketplaceServiceTests
 
         Assert.Equal(WorkspacePluginConstants.ErrorCodes.UnknownRequest, result.ErrorCode);
         Assert.Empty(_workspacePlugins);
+    }
+
+    // ---- races ---------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task TwoFirstEditsAtOnce_TheLoserGetsA409_NotA500()
+    {
+        // Gap 6. Both edits found no curation row and both inserted one; the primary key refused the
+        // second. The data is already right - the answer has to be "refetch".
+        AllowAnyPlugins(false);
+        var request = (await Sut().CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"))).Value!;
+        _sent.Clear();
+        SavesLoseARace();
+
+        // Approve first: the in-memory store applies a staged change before the save is refused,
+        // which a real rolled-back transaction would not.
+        var approve = await Sut().ApproveRequestAsync(WorkspaceId, OwnerId, request.Id);
+        var add = await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+        var remove = await Sut().RemovePluginAsync(WorkspaceId, OwnerId, "notion");
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, add.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, remove.ErrorCode);
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, approve.ErrorCode);
+        // Nothing committed, so nobody is told it was added.
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task ADoubleClickedRequest_TheLoserIsAlreadyPending_NotA500()
+    {
+        AllowAnyPlugins(false);
+        SavesLoseARace();
+
+        var result = await Sut().CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending, result.ErrorCode);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task AFailureThatIsNotAUniqueViolation_StillThrows()
+    {
+        // Narrow on purpose: a foreign-key or connection failure is a fault, not a race to explain.
+        AllowAnyPlugins(false);
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>())
+            .Returns<int>(_ => throw new DbUpdateException("fk", new FakeDbException("23503")));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear"));
     }
 
     // ---- private plugins -----------------------------------------------------------------------
@@ -388,6 +646,135 @@ public class WorkspacePluginMarketplaceServiceTests
         var elsewhere = await new WorkspacePluginGuard(_unitOfWork, _policyClient, _membershipClient).GetAvailabilityAsync(OtherWorkspaceId);
         Assert.True(here.IsUsable(plugin));
         Assert.False(elsewhere.IsUsable(plugin));
+    }
+
+    [Fact]
+    public async Task APrivatePlugin_CanConnectWithEachMembersApiKey()
+    {
+        var result = await Sut().CreatePrivatePluginAsync(
+            WorkspaceId, OwnerId, new CreatePrivatePluginRequest("Linear (team)", "https://mcp.linear.app/mcp", AuthMode: "api_key"));
+
+        Assert.True(result.IsSuccess);
+        var plugin = _plugins.Single(p => p.OwnerWorkspaceId == WorkspaceId);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, plugin.OAuthClientSource);
+        Assert.Null(plugin.OAuthClientId);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("oauth")]
+    public async Task APrivatePlugin_ConnectsWithOAuth_UnlessToldOtherwise(string? authMode)
+    {
+        var result = await Sut().CreatePrivatePluginAsync(
+            WorkspaceId, OwnerId, new CreatePrivatePluginRequest("CRM", "https://crm.example.com/mcp", AuthMode: authMode));
+
+        Assert.Equal(PluginConstants.AuthMode.OAuth, result.Value!.AuthMode);
+        Assert.Equal(
+            PluginConstants.OAuthClientSource.Unresolved,
+            _plugins.Single(p => p.OwnerWorkspaceId == WorkspaceId).OAuthClientSource);
+    }
+
+    [Fact]
+    public async Task APrivatePlugin_WithAnUnknownAuthMode_IsRefused()
+    {
+        var result = await Sut().CreatePrivatePluginAsync(
+            WorkspaceId, OwnerId, new CreatePrivatePluginRequest("CRM", "https://crm.example.com/mcp", AuthMode: "basic"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, result.ErrorCode);
+        Assert.DoesNotContain(_plugins, p => p.OwnerWorkspaceId is not null);
+    }
+
+    [Fact]
+    public async Task SwitchingAPrivatePluginToApiKeys_DropsTheLaddersClient_AndEndsEveryConnection()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.Dcr;
+        own.OAuthClientId = "dcr-client";
+        own.OAuthClientSecretEncrypted = "protected-secret";
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+        _installations.Add(ConnectedInstallation(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(AuthMode: "api_key"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, own.OAuthClientSource);
+        // plugins_api_key_forbids_oauth_client.
+        Assert.Null(own.OAuthClientId);
+        Assert.Null(own.OAuthClientSecretEncrypted);
+        // An OAuth token is not a key; the member reconnects by pasting theirs.
+        var connection = Assert.Single(_connections);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+        Assert.Null(Assert.Single(_installations).ConnectedAt);
+    }
+
+    [Fact]
+    public async Task SwitchingAPrivatePluginBackToOAuth_ReturnsItToTheLadder()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(AuthMode: "oauth"));
+
+        Assert.Equal(PluginConstants.AuthMode.OAuth, result.Value!.AuthMode);
+        Assert.Equal(PluginConstants.OAuthClientSource.Unresolved, own.OAuthClientSource);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, Assert.Single(_connections).Status);
+    }
+
+    [Fact]
+    public async Task EditingAPrivatePlugin_WithoutChangingItsAuthMode_LeavesConnectionsAlone()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(Label: "CRM", AuthMode: "api_key"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, Assert.Single(_connections).Status);
+    }
+
+    [Fact]
+    public async Task CorrectingAnApiKeyPluginsUrl_KeepsItOnApiKeys()
+    {
+        // The URL reset sent every learnt OAuth fact back to "unresolved" - including the auth mode
+        // of a row that never had any.
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        own.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _plugins.Add(own);
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(McpServerUrl: "https://crm2.example.com/mcp"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("https://crm2.example.com/mcp", own.McpServerUrl);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, own.OAuthClientSource);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+    }
+
+    [Fact]
+    public async Task AnUnknownAuthModeOnEdit_ChangesNothing()
+    {
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        _plugins.Add(own);
+        _connections.Add(Connection(MemberId, own));
+
+        var result = await Sut().UpdatePrivatePluginAsync(
+            WorkspaceId, OwnerId, own.PluginKey, new UpdatePrivatePluginRequest(Label: "Renamed", AuthMode: "basic"));
+
+        Assert.Equal(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, result.ErrorCode);
+        Assert.Equal("ws_crm_00000000", own.Label);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, Assert.Single(_connections).Status);
     }
 
     [Theory]
@@ -434,6 +821,59 @@ public class WorkspacePluginMarketplaceServiceTests
         Assert.Contains(own, _plugins);
     }
 
+    [Fact]
+    public async Task RemovingAPrivatePlugin_EndsEveryMembersConnection_AndNoOneElses()
+    {
+        // Gap 5. A retired row leaves every catalog, and with it every member's Disconnect button;
+        // whatever it did not revoke at retirement was never revoked.
+        var own = WorkspacePluginGuardTests.Private("ws_crm_00000000", WorkspaceId);
+        _plugins.Add(own);
+        _connections.AddRange([
+            Connection(MemberId, own),
+            Connection(AdminId, own),
+            Connection(MemberId, _linear),
+        ]);
+        _installations.AddRange([
+            ConnectedInstallation(MemberId, own),
+            ConnectedInstallation(AdminId, own),
+            ConnectedInstallation(MemberId, _linear),
+        ]);
+
+        var result = await Sut().RemovePluginAsync(WorkspaceId, OwnerId, own.PluginKey);
+
+        Assert.True(result.IsSuccess);
+        Assert.All(_connections.Where(c => c.Provider == own.Provider), c =>
+        {
+            Assert.Equal(PluginConstants.ConnectionStatus.Revoked, c.Status);
+            Assert.Null(c.EncryptedAccessToken);
+            Assert.Null(c.EncryptedRefreshToken);
+            Assert.Null(c.AccessTokenExpiresAt);
+        });
+        Assert.All(_installations.Where(i => i.PluginId == own.Id), i => Assert.Null(i.ConnectedAt));
+
+        // Linear shares nothing with the private row, so it is untouched.
+        var linear = _connections.Single(c => c.Provider == _linear.Provider);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, linear.Status);
+        Assert.NotNull(linear.EncryptedAccessToken);
+        Assert.NotNull(_installations.Single(i => i.PluginId == _linear.Id).ConnectedAt);
+    }
+
+    [Fact]
+    public async Task RemovingAMarketplacePlugin_LeavesMembersConnectionsAlone()
+    {
+        // Removing it from ONE workspace's list is not a reason to end a personal grant that the
+        // same member may be using in another workspace.
+        AlreadyCurated();
+        _workspacePlugins.Add(new WorkspacePlugin { Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, PluginId = _linear.Id });
+        _connections.Add(Connection(MemberId, _linear));
+        _installations.Add(ConnectedInstallation(MemberId, _linear));
+
+        await Sut().RemovePluginAsync(WorkspaceId, OwnerId, "linear");
+
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, Assert.Single(_connections).Status);
+        Assert.NotNull(Assert.Single(_installations).ConnectedAt);
+    }
+
     // ---- helpers the rest of the marketplace relies on -----------------------------------------
 
     [Theory]
@@ -456,6 +896,9 @@ public class WorkspacePluginMarketplaceServiceTests
     [InlineData(WorkspacePluginConstants.ErrorCodes.RequestAlreadyPending, 409)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.PluginRetired, 409)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, 400)]
+    [InlineData(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, 503)]
+    [InlineData(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, 409)]
+    [InlineData(WorkspacePluginConstants.ErrorCodes.MembersUnavailable, 503)]
     public void TheControllerMapsRefusalsToStatuses(string errorCode, int status)
     {
         Assert.Equal(status, WorkspacePluginsController.StatusFor(errorCode));
@@ -473,8 +916,57 @@ public class WorkspacePluginMarketplaceServiceTests
 
     // ---- plumbing ------------------------------------------------------------------------------
 
-    private void AllowAnyPlugins(bool allow) =>
+    private void AllowAnyPlugins(bool allow)
+    {
         _policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(allow);
+        _policyClient.ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(allow ? WorkspacePluginPolicyAnswer.Allowed : WorkspacePluginPolicyAnswer.NotAllowed);
+    }
+
+    /// <summary>The workspace service is down: the guard hears "no", the transition hears "unknown".</summary>
+    private void PolicyUnreadable()
+    {
+        _policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(false);
+        _policyClient.ReadAllowAnyPluginsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(WorkspacePluginPolicyAnswer.Unknown);
+    }
+
+    /// <summary>Every save is refused by a unique key, as a concurrent writer's commit would cause.</summary>
+    private void SavesLoseARace() =>
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>())
+            .Returns<int>(_ => throw new DbUpdateException("duplicate key", new FakeDbException("23505")));
+
+    private sealed class FakeDbException(string sqlState) : DbException("test")
+    {
+        public override string? SqlState { get; } = sqlState;
+    }
+
+    private static PluginConnection Connection(Guid userId, Plugin plugin) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = userId,
+        PluginId = plugin.Id,
+        Provider = plugin.Provider,
+        Status = PluginConstants.ConnectionStatus.Connected,
+        EncryptedAccessToken = "protected-access",
+        EncryptedRefreshToken = "protected-refresh",
+        AccessTokenExpiresAt = DateTime.UtcNow.AddHours(1),
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow,
+    };
+
+    private static PluginInstallation ConnectedInstallation(Guid userId, Plugin plugin) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = userId,
+        PluginId = plugin.Id,
+        Status = PluginConstants.InstallationStatus.Installed,
+        InstalledAt = DateTime.UtcNow,
+        ConnectedAt = DateTime.UtcNow,
+    };
+
+    private void AlreadyCurated() =>
+        _curations.Add(new WorkspacePluginCuration { WorkspaceId = WorkspaceId, CuratedAt = DateTime.UtcNow, CuratedBy = OwnerId });
 
     private static TRepository InMemory<TRepository, T>(List<T> store, Func<T, Guid> id)
         where TRepository : class, IGenericRepository<T>

@@ -7,6 +7,7 @@ using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AssistantService.Application.Services;
 
@@ -16,11 +17,19 @@ namespace WarpTalk.AssistantService.Application.Services;
 /// is written here and read nowhere. It never reaches a DTO, never reaches a log line, and is not
 /// decrypted on any path in this file - <see cref="IPluginCredentialProtector.Unprotect"/> is not
 /// called once. The only thing an operator can learn about a secret is whether the column is null.
+/// <para>
+/// AUDITED. Every write here - and the create in <c>PluginInstallationService</c> - is recorded in
+/// the platform audit log through <see cref="IAdminAuditRecorder"/> BEFORE it is committed, and is
+/// abandoned when the record fails. The endpoints are gated on the platform-admin policy; this is the
+/// other half of "admin actions are server-side gated and audited".
+/// </para>
 /// </remarks>
 public class PluginCatalogAdminService : IPluginCatalogAdminService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IPluginCredentialProtector _credentialProtector;
+    private readonly IWorkspacePluginPolicyClient _policyClient;
+    private readonly IAdminAuditRecorder _auditRecorder;
 
     private const int MaxLabelLength = 150;
     private const int MaxDescriptionLength = 500;
@@ -30,10 +39,16 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     private const int DefaultAuditPageSize = 50;
     private const int MaxAuditPageSize = 200;
 
-    public PluginCatalogAdminService(IUnitOfWork unitOfWork, IPluginCredentialProtector credentialProtector)
+    public PluginCatalogAdminService(
+        IUnitOfWork unitOfWork,
+        IPluginCredentialProtector credentialProtector,
+        IWorkspacePluginPolicyClient policyClient,
+        IAdminAuditRecorder auditRecorder)
     {
         _unitOfWork = unitOfWork;
         _credentialProtector = credentialProtector;
+        _policyClient = policyClient;
+        _auditRecorder = auditRecorder;
     }
 
     public async Task<Result<IReadOnlyList<PluginCatalogAdminListItemDto>>> ListAsync(CancellationToken ct = default)
@@ -43,10 +58,11 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         //
         // Marketplace rows only. A workspace Owner's private plugin is that workspace's, not the
         // marketplace's: listing it here would present it as something the admin curates and every
-        // Owner could add. It stays reachable by key for support, but is not a marketplace row.
+        // Owner could add. FindAsync applies the same rule to every by-key action, so a private
+        // row is neither listed here nor reachable by typing its key.
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.OwnerWorkspaceId == null, ct: ct);
         var installationCounts = await _unitOfWork.PluginInstallationRepository.CountByPluginAsync(ct);
-        var workspaceCounts = await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct);
+        var workspaceCounts = await CountWorkspacesByPluginAsync(ct);
 
         var items = plugins
             // sort_order is the curated order the catalog page renders; label breaks the tie for
@@ -57,6 +73,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 plugin.PluginKey,
                 plugin.Label,
                 plugin.Description,
+                plugin.AvatarUrl,
                 plugin.Kind,
                 plugin.Provider,
                 plugin.IsActive,
@@ -72,6 +89,34 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
             .ToList();
 
         return Result.Success<IReadOnlyList<PluginCatalogAdminListItemDto>>(items);
+    }
+
+    /// <summary>
+    /// How many workspaces have each marketplace plugin available, by the same rule the guard applies
+    /// on every tool call - so the number is "who retiring this would affect", not an estimate.
+    /// </summary>
+    /// <remarks>
+    /// Two kinds of workspace. A curated one is counted from its own list, in one grouped query. One
+    /// that never edited its list carries over the plugins its members have used there, while the
+    /// legacy AllowAnyPlugins switch is on (<see cref="WorkspacePluginAvailability.CarriedOver"/>):
+    /// those are the workspaces with tool audits and no curation row, so the switch is asked once
+    /// per such workspace - a handful, never every workspace in the product. A workspace that has
+    /// neither a list nor any usage has no plugins and needs no call.
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<Guid, int>> CountWorkspacesByPluginAsync(CancellationToken ct)
+    {
+        var counts = new Dictionary<Guid, int>(
+            await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct));
+
+        var usage = await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedByUncuratedWorkspaceAsync(ct);
+        foreach (var (workspaceId, used) in usage)
+        {
+            var allowsPlugins = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+            foreach (var pluginId in WorkspacePluginAvailability.CarriedOver(allowsPlugins, used))
+                counts[pluginId] = counts.TryGetValue(pluginId, out var current) ? current + 1 : 1;
+        }
+
+        return counts;
     }
 
     public async Task<Result<PluginCatalogAdminDetailDto>> GetAsync(string pluginKey, CancellationToken ct = default)
@@ -91,6 +136,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         var plugin = await FindAsync(pluginKey, ct);
         if (plugin is null) return UnknownPlugin<PluginCatalogAdminDetailDto>(pluginKey);
 
+        var before = PluginAuditSummary.Of(plugin);
+        var wasActive = plugin.IsActive;
         var errors = new List<string>();
 
         // Validation runs to completion before a single field is written. The entity is tracked, so
@@ -232,7 +279,9 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
 
         if (serverUrlChanged || authModeChanged) await InvalidateProviderConnectionsAsync(plugin, ct);
 
-        await StampAndSaveAsync(plugin, adminUserId, ct);
+        var saved = await StampAndSaveAsync(
+            plugin, adminUserId, PluginAuditSummary.UpdateAction(wasActive, plugin.IsActive), before, ct);
+        if (!saved.IsSuccess) return Result.Failure<PluginCatalogAdminDetailDto>(saved.Error!, saved.ErrorCode);
         return Result.Success(await ToDetailAsync(plugin, ct));
     }
 
@@ -244,6 +293,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     {
         var plugin = await FindAsync(pluginKey, ct);
         if (plugin is null) return UnknownPlugin<PluginCatalogAdminDetailDto>(pluginKey);
+        var before = PluginAuditSummary.Of(plugin);
 
         // A native row's OAuth client comes from configuration, not from this column - see
         // GoogleWorkspaceApiOptions. Writing one here would be inert, and an operator who did it
@@ -312,7 +362,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         if (!string.IsNullOrWhiteSpace(request.TokenEndpoint)) plugin.OAuthTokenEndpoint = request.TokenEndpoint.Trim();
         if (!string.IsNullOrWhiteSpace(request.RevokeEndpoint)) plugin.OAuthRevokeEndpoint = request.RevokeEndpoint.Trim();
 
-        await StampAndSaveAsync(plugin, adminUserId, ct);
+        var saved = await StampAndSaveAsync(plugin, adminUserId, AdminAuditPluginActions.OAuthClientSet, before, ct);
+        if (!saved.IsSuccess) return Result.Failure<PluginCatalogAdminDetailDto>(saved.Error!, saved.ErrorCode);
         return Result.Success(await ToDetailAsync(plugin, ct));
     }
 
@@ -324,6 +375,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     {
         var plugin = await FindAsync(pluginKey, ct);
         if (plugin is null) return UnknownPlugin<PluginCatalogAdminDetailDto>(pluginKey);
+        var before = PluginAuditSummary.Of(plugin);
 
         var (errors, tools) = PluginToolManifestValidator.Validate(plugin.PluginKey, request.Tools);
         if (errors.Count > 0)
@@ -337,7 +389,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         plugin.ToolsSyncedAt = null;
         plugin.ToolsManifestHash = null;
 
-        await StampAndSaveAsync(plugin, adminUserId, ct);
+        var saved = await StampAndSaveAsync(plugin, adminUserId, AdminAuditPluginActions.ToolsReplaced, before, ct);
+        if (!saved.IsSuccess) return Result.Failure<PluginCatalogAdminDetailDto>(saved.Error!, saved.ErrorCode);
         return Result.Success(await ToDetailAsync(plugin, ct));
     }
 
@@ -348,6 +401,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     {
         var plugin = await FindAsync(pluginKey, ct);
         if (plugin is null) return UnknownPlugin<PluginCatalogAdminDetailDto>(pluginKey);
+        var before = PluginAuditSummary.Of(plugin);
 
         if (!string.Equals(plugin.Kind, PluginConstants.PluginKind.Mcp, StringComparison.Ordinal))
         {
@@ -395,7 +449,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
             plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
         }
 
-        await StampAndSaveAsync(plugin, adminUserId, ct);
+        var saved = await StampAndSaveAsync(plugin, adminUserId, AdminAuditPluginActions.Rediscovered, before, ct);
+        if (!saved.IsSuccess) return Result.Failure<PluginCatalogAdminDetailDto>(saved.Error!, saved.ErrorCode);
         return Result.Success(await ToDetailAsync(plugin, ct));
     }
 
@@ -407,6 +462,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     {
         var plugin = await FindAsync(pluginKey, ct);
         if (plugin is null) return UnknownPlugin<PluginCatalogDeleteResultDto>(pluginKey);
+        var before = PluginAuditSummary.Of(plugin);
 
         var installationCount = await _unitOfWork.PluginInstallationRepository.CountForPluginAsync(plugin.Id, ct);
         var connectionCount = await _unitOfWork.PluginConnectionRepository.CountForPluginAsync(plugin.Id, ct);
@@ -421,7 +477,9 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         if (!hard)
         {
             plugin.IsActive = false;
-            await StampAndSaveAsync(plugin, adminUserId, ct);
+            var retired = await StampAndSaveAsync(plugin, adminUserId, AdminAuditPluginActions.Retired, before, ct);
+            if (!retired.IsSuccess)
+                return Result.Failure<PluginCatalogDeleteResultDto>(retired.Error!, retired.ErrorCode);
             return Result.Success(new PluginCatalogDeleteResultDto(
                 plugin.PluginKey, false, installationCount, connectionCount, auditCount, confirmationTokenCount));
         }
@@ -465,6 +523,13 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 + "Retire it instead - a soft delete hides it from every catalog and keeps its history readable.",
                 PluginConstants.ErrorCodes.PluginInUse);
         }
+
+        // Recorded before the row goes, and the delete abandoned if it cannot be: a hard delete is
+        // the one change here with nothing left behind to reconstruct it from.
+        var recorded = await _auditRecorder.RecordPluginActionAsync(
+            AdminAuditPluginActions.Deleted, plugin.Id, adminUserId, before, afterSummary: null, ct);
+        if (!recorded.IsSuccess)
+            return Result.Failure<PluginCatalogDeleteResultDto>(recorded.Error!, recorded.ErrorCode);
 
         _unitOfWork.PluginRepository.Remove(plugin);
         await _unitOfWork.SaveChangesAsync(ct);
@@ -511,12 +576,35 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         return Result.Success(new PluginToolAuditPageDto(items, page, pageSize, totalCount));
     }
 
+    /// <summary>
+    /// The one lookup every by-key action on this surface goes through: a marketplace row, active
+    /// or retired, or nothing.
+    /// </summary>
+    /// <remarks>
+    /// No IsActive filter: a retired row is precisely what an operator comes here to inspect or
+    /// reinstate.
+    /// <para>
+    /// <c>OwnerWorkspaceId == null</c> is the filter that matters. A private plugin belongs to the
+    /// workspace whose Owner created it and is edited and removed from that workspace's page. Keyed
+    /// by plugin_key alone, this surface let a platform admin who typed the key flip it active,
+    /// repoint its server - which revokes every member's connection - switch its auth mode, or
+    /// hard-delete it, all under a workspace that never asked and whose Owner's page would then
+    /// disagree with what the row says. The listing already left it out, so the only way in was a
+    /// URL; closing it here, once, closes it for get, update, set-oauth, replace-tools,
+    /// rediscover, delete and audits alike rather than per endpoint.
+    /// </para>
+    /// <para>
+    /// A private row answers exactly as a key nobody holds does - <c>unknown_plugin</c>, a 404. To
+    /// this surface it is not a marketplace row, and there is no second error code a caller would
+    /// act on differently.
+    /// </para>
+    /// </remarks>
     private Task<Plugin?> FindAsync(string pluginKey, CancellationToken ct)
     {
         var key = pluginKey?.Trim() ?? string.Empty;
-        // No IsActive filter: a retired row is precisely what an operator comes here to inspect or
-        // reinstate.
-        return _unitOfWork.PluginRepository.FirstOrDefaultAsync(plugin => plugin.PluginKey == key, ct: ct);
+        return _unitOfWork.PluginRepository.FirstOrDefaultAsync(
+            plugin => plugin.PluginKey == key && plugin.OwnerWorkspaceId == null,
+            ct: ct);
     }
 
     /// <summary>
@@ -560,15 +648,34 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         }
     }
 
-    private async Task StampAndSaveAsync(Plugin plugin, Guid adminUserId, CancellationToken ct)
+    /// <summary>
+    /// Stamps the row, records the change in the platform audit log, and only then commits it.
+    /// </summary>
+    /// <remarks>
+    /// A failed record is a failed change: nothing is saved and the caller answers 503. The tracked
+    /// entity already carries the edit, which is harmless because the request scope ends here - the
+    /// same reasoning <see cref="UpdateAsync"/> gives for validating before it writes.
+    /// </remarks>
+    private async Task<Result> StampAndSaveAsync(
+        Plugin plugin,
+        Guid adminUserId,
+        string auditAction,
+        IReadOnlyDictionary<string, string?> before,
+        CancellationToken ct)
     {
         // Guid.Empty means the token carried no usable subject. Recording it would assert an
         // attribution that is not true, so the column stays null - which already means "not a
         // person" for every row a migration wrote.
         plugin.UpdatedBy = adminUserId == Guid.Empty ? null : adminUserId;
         plugin.UpdatedAt = DateTime.UtcNow;
+
+        var recorded = await _auditRecorder.RecordPluginActionAsync(
+            auditAction, plugin.Id, adminUserId, before, PluginAuditSummary.Of(plugin), ct);
+        if (!recorded.IsSuccess) return recorded;
+
         _unitOfWork.PluginRepository.Update(plugin);
         await _unitOfWork.SaveChangesAsync(ct);
+        return Result.Success();
     }
 
     private async Task<PluginCatalogAdminDetailDto> ToDetailAsync(Plugin plugin, CancellationToken ct)
@@ -638,7 +745,9 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
     private static Result<T> UnknownPlugin<T>(string pluginKey) =>
-        Result.Failure<T>($"No plugin is keyed '{pluginKey}'.", PluginConstants.ErrorCodes.UnknownPlugin);
+        // "Marketplace" because FindAsync looks nowhere else: a workspace's private plugin may hold
+        // this key, and "no plugin is keyed" would then be untrue.
+        Result.Failure<T>($"No marketplace plugin is keyed '{pluginKey}'.", PluginConstants.ErrorCodes.UnknownPlugin);
 
     private static Result<T> Invalid<T>(IReadOnlyList<string> errors, string errorCode) =>
         Result.Failure<T>(string.Join(" ", errors), errorCode);

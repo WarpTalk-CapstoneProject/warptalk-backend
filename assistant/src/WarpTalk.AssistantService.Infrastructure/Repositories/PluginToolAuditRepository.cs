@@ -91,4 +91,53 @@ public class PluginToolAuditRepository : GenericRepository<PluginToolAudit>, IPl
 
         return counts.ToDictionary(entry => entry.PluginId, entry => entry.Count);
     }
+
+    public async Task<IReadOnlySet<Guid>> GetPluginIdsUsedInWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        var ids = await _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId == workspaceId && audit.ResultStatus == SuccessStatus)
+            .Select(audit => audit.PluginId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        return ids.ToHashSet();
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, IReadOnlySet<Guid>>> GetPluginIdsUsedByUncuratedWorkspaceAsync(
+        CancellationToken ct = default)
+    {
+        var pairs = await _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId != null
+                && audit.ResultStatus == SuccessStatus
+                && !_db.WorkspacePluginCurations.Any(curation => curation.WorkspaceId == audit.WorkspaceId))
+            .Select(audit => new { WorkspaceId = audit.WorkspaceId!.Value, audit.PluginId })
+            .Distinct()
+            .ToListAsync(ct);
+
+        return pairs
+            .GroupBy(pair => pair.WorkspaceId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlySet<Guid>)group.Select(pair => pair.PluginId).ToHashSet());
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, PluginUsageByUser>> GetUsageByUserAsync(
+        Guid workspaceId,
+        Guid pluginId,
+        CancellationToken ct = default)
+    {
+        // Anonymous projection, materialised, then mapped: EF cannot translate a positional record.
+        var rows = await _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId == workspaceId
+                && audit.PluginId == pluginId
+                && audit.ResultStatus == SuccessStatus)
+            .GroupBy(audit => audit.UserId)
+            .Select(group => new { UserId = group.Key, LastUsedAt = group.Max(audit => audit.CreatedAt), Count = group.Count() })
+            .ToListAsync(ct);
+
+        return rows.ToDictionary(row => row.UserId, row => new PluginUsageByUser(row.LastUsedAt, row.Count));
+    }
+
+    /// <summary>What McpToolOrchestrator writes for a call that worked - "success", never "ok".</summary>
+    private const string SuccessStatus = "success";
 }

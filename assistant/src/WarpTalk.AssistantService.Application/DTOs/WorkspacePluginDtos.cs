@@ -14,6 +14,16 @@ namespace WarpTalk.AssistantService.Application.DTOs;
 /// not workspace-scoped, so "members connected" is not something this service can count honestly;
 /// the tool audit trail is.
 /// </param>
+/// <param name="AuthMode">
+/// <c>oauth</c> or <c>api_key</c> (<c>PluginConstants.AuthMode</c>): how members connect it - by
+/// signing in, or by each pasting their own key.
+/// </param>
+/// <param name="AddedByName">
+/// Who <paramref name="AddedBy"/> is, when this service can say: on the overview, the caller's own
+/// email for rows the caller added (only the Owner adds, so that is most rows the Owner sees).
+/// Null otherwise - this service has no user directory - and the page resolves
+/// <paramref name="AddedBy"/> from the workspace's member list instead.
+/// </param>
 public record WorkspacePluginItemDto(
     string Key,
     string Provider,
@@ -25,7 +35,9 @@ public record WorkspacePluginItemDto(
     string? McpServerUrl,
     Guid? AddedBy,
     DateTime? AddedAt,
-    int MembersUsedCount);
+    int MembersUsedCount,
+    string AuthMode,
+    string? AddedByName = null);
 
 public record WorkspacePluginRequestDto(
     Guid Id,
@@ -62,8 +74,53 @@ public record CreatePluginRequestRequest(string PluginKey, string? Reason = null
 /// <remarks>
 /// No key: the service derives one. A key is also the plugin's OAuth provider identity, so letting
 /// an Owner choose it would let them collide with - and be handed - someone else's grant.
+/// <para>
+/// No OAuth client either, unlike the system admin's create: a private row always walks the
+/// registration ladder (CIMD, then DCR) on first connect, so there is nothing to pre-register and
+/// no way to pair <c>api_key</c> with a client.
+/// </para>
 /// </remarks>
-public record CreatePrivatePluginRequest(string Label, string McpServerUrl, string? Description = null);
+/// <param name="AuthMode">
+/// <c>oauth</c> (the default, also when omitted) or <c>api_key</c>: each member pastes their own
+/// key, sent as <c>Authorization: Bearer</c>.
+/// </param>
+public record CreatePrivatePluginRequest(
+    string Label,
+    string McpServerUrl,
+    string? Description = null,
+    string? AuthMode = null);
 
 /// <summary>Only the fields present are changed.</summary>
-public record UpdatePrivatePluginRequest(string? Label = null, string? Description = null, string? McpServerUrl = null);
+/// <param name="AuthMode">
+/// <c>oauth</c> or <c>api_key</c>. Changing it ends every member's connection: each was made with
+/// the other kind of credential.
+/// </param>
+public record UpdatePrivatePluginRequest(
+    string? Label = null,
+    string? Description = null,
+    string? McpServerUrl = null,
+    string? AuthMode = null);
+
+/// <summary>
+/// One member who has connected a plugin, as the Owner's and Admin's Manage dialog lists them.
+/// </summary>
+/// <remarks>
+/// CONNECTION METADATA ONLY. No token, no scope list, and not the provider account's email - that
+/// is the member's own account at a third party, which the Owner has no business reading (web#541
+/// took it off the member's own plugin page for the same reason). Name and avatar are resolved by
+/// the page from the workspace's member list, as for requests: this service has no user directory.
+/// </remarks>
+/// <param name="ConnectionStatus">
+/// <c>connected</c>, <c>expired</c> or <c>revoked</c> (<c>PluginConstants.ConnectionStatus</c>).
+/// </param>
+/// <param name="ConnectedAt">When this member connected the plugin.</param>
+/// <param name="LastUsedAt">
+/// Their last successful tool call through it in THIS workspace; null when they never made one here.
+/// </param>
+/// <param name="ToolCallCount">Successful tool calls through it in this workspace.</param>
+public record WorkspacePluginMemberDto(
+    Guid UserId,
+    string ConnectionStatus,
+    DateTime ConnectedAt,
+    DateTime? LastUsedAt,
+    int ToolCallCount);

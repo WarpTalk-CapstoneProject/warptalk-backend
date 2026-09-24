@@ -19,7 +19,15 @@ namespace WarpTalk.AssistantService.Application.Interfaces;
 /// </remarks>
 public interface IWorkspacePluginMarketplaceService
 {
-    Task<Result<WorkspacePluginsOverviewDto>> GetOverviewAsync(Guid workspaceId, Guid callerId, CancellationToken ct = default);
+    /// <param name="callerEmail">
+    /// The caller's email from their token - the only name this service holds for anyone. It labels
+    /// the rows the caller added themselves (<c>addedByName</c>); see <c>WorkspacePluginItemDto</c>.
+    /// </param>
+    Task<Result<WorkspacePluginsOverviewDto>> GetOverviewAsync(
+        Guid workspaceId,
+        Guid callerId,
+        string? callerEmail = null,
+        CancellationToken ct = default);
 
     Task<Result<WorkspacePluginItemDto>> AddMarketplacePluginAsync(Guid workspaceId, Guid callerId, string pluginKey, CancellationToken ct = default);
 
