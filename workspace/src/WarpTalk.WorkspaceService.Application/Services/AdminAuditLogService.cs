@@ -44,7 +44,7 @@ public class AdminAuditLogService : IAdminAuditLogService
     /// <summary>Summary keys that name the subject, in the order a person would look for one.</summary>
     private static readonly string[] LabelKeys =
     [
-        "name", "display_name", "plugin_name", "plan_name", "title", "term", "source_term",
+        "name", "label", "display_name", "plugin_name", "plan_name", "title", "term", "source_term",
         "invoice_number", "company_name", "email", "code", "plugin_key", "key", "slug",
     ];
 

@@ -91,10 +91,15 @@ builder.Services.AddWarpTalkSystemAdminAuthorization();
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
     ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
 
+// A cross-origin download can only name its file, or say it was cut short, through response
+// headers the browser is told it may read. The admin audit log's CSV export uses all three.
+string[] exposedHeaders = ["Content-Disposition", "X-Audit-Export-Rows", "X-Audit-Export-Truncated"];
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
+        policy.WithExposedHeaders(exposedHeaders);
         if (builder.Environment.IsDevelopment())
         {
             policy.SetIsOriginAllowed(origin => true) // Allow ngrok dynamic URLs
