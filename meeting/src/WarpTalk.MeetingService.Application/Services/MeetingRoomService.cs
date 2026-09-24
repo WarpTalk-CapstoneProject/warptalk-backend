@@ -72,7 +72,10 @@ public class MeetingRoomService : IMeetingRoomService
             await _redisService.SetCacheAsync(roomCacheKey, roomDetails, TimeSpan.FromHours(24));
         }
 
-        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED")
+        // EXPIRED belongs with these (WT-714): a booking nobody attended is now moved there by the
+        // booking sweep instead of sitting in SCHEDULED, and a terminal status that still let
+        // people in would be a room the translation service considers over accepting joins.
+        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED" || roomDetails.Status == "EXPIRED")
         {
             return Result.Failure<JoinMeetingResponse>("This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
@@ -426,7 +429,7 @@ public class MeetingRoomService : IMeetingRoomService
                 "Only the host may connect this meeting to an external call.", ErrorCodes.Forbidden);
         }
 
-        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED")
+        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED")
         {
             return Result.Failure<BridgeTokenResponse>(
                 "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);

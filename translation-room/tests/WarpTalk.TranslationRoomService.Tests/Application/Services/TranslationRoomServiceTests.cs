@@ -799,7 +799,8 @@ public class TranslationRoomServiceTests
     /// (isOriginalHost || isActiveHost) while this accepted only the ORIGINAL one — so after a host
     /// transfer the first call tore down LiveKit and marked the meeting FINISHED, the second was
     /// refused, and the translation room stayed IN_PROGRESS forever. Nothing repairs that:
-    /// ExpireTranslationRoomAsync has no production callers.
+    /// ExpireTranslationRoomAsync's only caller (WT-714's booking sweep) is about meetings that
+    /// never happened, and it cannot touch an IN_PROGRESS room.
     ///
     /// The rule here is now RoomHostAccess — host OR workspace Owner/Admin — which is what WT-188
     /// established and WT-313 reconciled, so an orphaned room is always recoverable by an

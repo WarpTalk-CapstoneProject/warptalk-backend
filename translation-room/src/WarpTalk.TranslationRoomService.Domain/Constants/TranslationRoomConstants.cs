@@ -136,7 +136,10 @@ public static class TranslationRoomConstants
     // Lifecycle Transition Errors
     public const string ErrorInvalidTransitionToWaiting = "Room must be SCHEDULED to open waiting room.";
     public const string ErrorInvalidTransitionToInProgress = "Room must be WAITING or PAUSED to start or resume.";
-    public const string ErrorInvalidTransitionToStart = "Only scheduled or waiting rooms can be started.";
+    public const string ErrorInvalidTransitionToStart = "Only scheduled, open or waiting rooms can be started.";
+
+    /// <summary>WT-612: the clock only opens a booking that is still SCHEDULED.</summary>
+    public const string ErrorInvalidTransitionToOpen = "Room must be SCHEDULED to open at its scheduled time.";
     public const string ErrorInvalidTransitionToPaused = "Room must be IN_PROGRESS to pause.";
     public const string ErrorInvalidTransitionToEnded = "Room must be IN_PROGRESS or PAUSED to end.";
     public const string ErrorInvalidTransitionToCancelled = "Room must be SCHEDULED or WAITING to cancel.";

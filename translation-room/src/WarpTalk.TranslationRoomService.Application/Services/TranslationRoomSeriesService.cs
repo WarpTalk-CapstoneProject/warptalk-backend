@@ -234,8 +234,12 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     /// </summary>
     private Guid? ResolveCurrentOccurrenceId(List<TranslationRoomListItemDto> occurrences)
     {
+        // OPEN counts as live (WT-612), the same way TranslationRoomRepository.GetByCodeAsync
+        // counts it: the clock has unlocked today's occurrence and nobody has walked in yet, which
+        // is precisely the moment someone clicks "join this booking". Without it this resolver
+        // skipped straight past the room that was standing open and offered next week's instead.
         var live = occurrences.FirstOrDefault(o =>
-            o.Status is RoomStatus.IN_PROGRESS or RoomStatus.PAUSED or RoomStatus.WAITING);
+            o.Status is RoomStatus.IN_PROGRESS or RoomStatus.PAUSED or RoomStatus.WAITING or RoomStatus.OPEN);
         if (live is not null) return live.Id;
 
         // _utcNow, not DateTime.UtcNow. This class takes an injectable clock precisely so a
