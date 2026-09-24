@@ -105,10 +105,15 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
             Result = AdminAuditResults.Succeeded,
             PerformedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
             CorrelationId = Guid.NewGuid().ToString(),
+            // The plugin's key, so the audit screen names the plugin rather than a bare row id.
+            EntityKey = (beforeSummary ?? afterSummary)?.GetValueOrDefault("plugin_key") ?? string.Empty,
         };
 
         Fill(request.BeforeSummary, beforeSummary);
         Fill(request.AfterSummary, afterSummary);
+
+        // Who asked and from where, read from the admin's own request (#450).
+        AdminAuditRequestMetadata.FromHttpContext(_httpContextAccessor?.HttpContext).ApplyTo(request);
 
         try
         {
