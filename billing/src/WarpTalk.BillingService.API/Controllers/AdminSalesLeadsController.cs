@@ -45,11 +45,17 @@ public class AdminSalesLeadsController : ControllerBase
     /// <summary>
     /// Every lead on the platform, newest first unless <paramref name="sort"/> says otherwise.
     /// </summary>
+    /// <param name="page">1-based page number.</param>
+    /// <param name="pageSize">Rows per page, clamped by the service.</param>
+    /// <param name="status">new | reviewing | quoted | converted | closed; null lists every status.</param>
+    /// <param name="search">Matched against work email, company, first and last name.</param>
+    /// <param name="workspaceId">Only leads linked to this workspace.</param>
     /// <param name="requestType">Exact request_type, case-insensitive.</param>
     /// <param name="source">Exact source (e.g. landing_pricing), case-insensitive.</param>
     /// <param name="createdFrom">Inclusive lower bound on created_at (UTC).</param>
     /// <param name="createdTo">Exclusive upper bound on created_at (UTC); earlier than createdFrom is a 400.</param>
     /// <param name="sort">created_desc (default) | created_asc | company_asc | company_desc; anything else is a 400.</param>
+    /// <param name="ct">Request cancellation.</param>
     [HttpGet]
     public async Task<IActionResult> GetLeads(
         [FromQuery] int page = 1,
