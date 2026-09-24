@@ -559,11 +559,13 @@ public sealed class EmailContentService : IEmailContentService
             string? firstError = null;
             foreach (var variant in targets)
             {
+                // Each arm is widened to the non-generic Result: the three results differ in their
+                // value's nullability (a discard can delete the row), and only success matters here.
                 Result outcome = action switch
                 {
-                    "publish" => await PublishAsync(actor, key, variant.Locale, new PublishEmailRequest(), ct),
-                    "discard" => await DiscardDraftAsync(actor, key, variant.Locale, ct),
-                    _ => await ArchiveAsync(actor, key, variant.Locale, ct),
+                    "publish" => (Result)await PublishAsync(actor, key, variant.Locale, new PublishEmailRequest(), ct),
+                    "discard" => (Result)await DiscardDraftAsync(actor, key, variant.Locale, ct),
+                    _ => (Result)await ArchiveAsync(actor, key, variant.Locale, ct),
                 };
                 if (!outcome.IsSuccess) firstError ??= $"{variant.Locale}: {outcome.Error}";
             }

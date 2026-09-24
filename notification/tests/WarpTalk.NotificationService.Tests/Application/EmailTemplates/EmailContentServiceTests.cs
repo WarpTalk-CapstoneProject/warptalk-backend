@@ -250,10 +250,10 @@ public sealed class EmailContentServiceTests
     }
 
     [Fact]
-    public void SendsNeverUseDraftsOrArchivedRows_InTheRepositoryContract()
+    public async Task SendsNeverUseDraftsOrArchivedRows_InTheRepositoryContract()
     {
         // The in-memory store mirrors EmailContentVariantRepository.GetPublishedAsync; this pins the rule.
         _store.Variants.Add(new() { TemplateKey = Key, Locale = "en", Status = EmailCmsConstants.StatusActive, DraftSubject = "d", DraftPreheader = "", DraftHeading = "", DraftBodyHtml = "b" });
-        Assert.Null(_store.UnitOfWork.Object.EmailContentVariantRepository.GetPublishedAsync(Key, "en").Result);
+        Assert.Null(await _store.UnitOfWork.Object.EmailContentVariantRepository.GetPublishedAsync(Key, "en"));
     }
 }
