@@ -292,6 +292,10 @@ public sealed class AdminAuditSaveChangesInterceptor : SaveChangesInterceptor
                 .ToString("O", CultureInfo.InvariantCulture),
             DateTimeOffset dto => dto.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
             bool b => b ? "true" : "false",
+            // A decimal read back from a numeric(18,2) column carries its scale ("499000.00") while
+            // the value the admin just typed does not ("599000"). Normalised, the two compare and
+            // read alike, and a column that merely re-scaled is not reported as a change.
+            decimal d => d.ToString("0.############################", CultureInfo.InvariantCulture),
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
             _ => value.ToString(),
         };

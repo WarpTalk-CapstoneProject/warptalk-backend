@@ -98,6 +98,25 @@ public class AdminAuditInterceptorTests
     }
 
     [Fact]
+    public async Task A_decimal_that_only_changed_scale_is_not_a_change()
+    {
+        using var context = Context();
+        var plan = NewPlan();
+        plan.Price = 499000.00m;
+        context.Attach(plan);
+        plan.Price = 499000m;
+        plan.MaxParticipants = 11;
+        var sink = new RecordingAuditSink();
+
+        await AdminAuditSaveChangesInterceptor.RecordPendingAsync(
+            context, Invocation(AdminAuditBillingActions.PlanUpdated, AdminAuditEntityTypes.Plan, typeof(Plan)), sink, CancellationToken.None);
+
+        var record = Assert.Single(sink.Records);
+        Assert.False(record.AfterSummary!.ContainsKey("price"));
+        Assert.Equal("0.012", AdminAuditSaveChangesInterceptor.Format(0.01200m));
+    }
+
+    [Fact]
     public async Task A_new_row_is_named_by_the_id_it_will_be_inserted_with()
     {
         using var context = Context();
