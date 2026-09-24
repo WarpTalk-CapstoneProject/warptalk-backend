@@ -138,8 +138,8 @@ public class WorkspaceAuditLogService : IWorkspaceAuditLogService
         return new WorkspaceAuditLogEntryDto(
             admin.Id,
             admin.Action,
-            admin.EntityType,
-            admin.EntityId,
+            admin.Entity.Type,
+            admin.Entity.Id,
             StaffActorType,
             StaffActorDisplayName,
             admin.PerformedAt,

@@ -28,8 +28,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IPluginCredentialProtector _credentialProtector;
-    private readonly IWorkspacePluginPolicyClient _policyClient;
     private readonly IAdminAuditRecorder _auditRecorder;
+    private readonly IWorkspaceDirectoryClient _directoryClient;
 
     private const int MaxLabelLength = 150;
     private const int MaxDescriptionLength = 500;
@@ -42,13 +42,13 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     public PluginCatalogAdminService(
         IUnitOfWork unitOfWork,
         IPluginCredentialProtector credentialProtector,
-        IWorkspacePluginPolicyClient policyClient,
-        IAdminAuditRecorder auditRecorder)
+        IAdminAuditRecorder auditRecorder,
+        IWorkspaceDirectoryClient directoryClient)
     {
         _unitOfWork = unitOfWork;
         _credentialProtector = credentialProtector;
-        _policyClient = policyClient;
         _auditRecorder = auditRecorder;
+        _directoryClient = directoryClient;
     }
 
     public async Task<Result<IReadOnlyList<PluginCatalogAdminListItemDto>>> ListAsync(CancellationToken ct = default)
@@ -62,7 +62,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
         // row is neither listed here nor reachable by typing its key.
         var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.OwnerWorkspaceId == null, ct: ct);
         var installationCounts = await _unitOfWork.PluginInstallationRepository.CountByPluginAsync(ct);
-        var workspaceCounts = await CountWorkspacesByPluginAsync(ct);
+        var workspaceCounts = await CountWorkspacesUsingAsync(plugins, ct);
 
         var items = plugins
             // sort_order is the curated order the catalog page renders; label breaks the tie for
@@ -85,38 +85,36 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 !string.IsNullOrWhiteSpace(plugin.OAuthClientSecretEncrypted),
                 ReadTools(plugin).Count,
                 installationCounts.TryGetValue(plugin.Id, out var count) ? count : 0,
-                workspaceCounts.TryGetValue(plugin.Id, out var workspaces) ? workspaces : 0))
+                workspaceCounts is null ? null : workspaceCounts.TryGetValue(plugin.Id, out var workspaces) ? workspaces : 0,
+                PluginWorkspaceAccess.DefaultOf(plugin),
+                PluginWorkspaceAccess.AllowedPlans(plugin)))
             .ToList();
 
         return Result.Success<IReadOnlyList<PluginCatalogAdminListItemDto>>(items);
     }
 
     /// <summary>
-    /// How many workspaces have each marketplace plugin available, by the same rule the guard applies
-    /// on every tool call - so the number is "who retiring this would affect", not an estimate.
+    /// "Workspaces using it", per plugin: <see cref="PluginWorkspaceCell.InUse"/> over every
+    /// workspace. Null when the workspace list cannot be read.
     /// </summary>
     /// <remarks>
-    /// Two kinds of workspace. A curated one is counted from its own list, in one grouped query. One
-    /// that never edited its list carries over the plugins its members have used there, while the
-    /// legacy AllowAnyPlugins switch is on (<see cref="WorkspacePluginAvailability.CarriedOver"/>):
-    /// those are the workspaces with tool audits and no curation row, so the switch is asked once
-    /// per such workspace - a handful, never every workspace in the product. A workspace that has
-    /// neither a list nor any usage has no plugins and needs no call.
+    /// WHY IT COUNTS CONNECTIONS. The count before this was the Owner's list
+    /// alone (curated rows, or what an uncurated workspace carries over from successful tool calls).
+    /// Almost no workspace has ever edited its list, and a connection - the thing members actually
+    /// do - carries a user, never a workspace, so it was never counted: every row read "no
+    /// workspaces" while members had plugins connected. Connections are now placed in workspaces
+    /// through their users' memberships, and a workspace the platform turned the plugin off for is
+    /// not counted at all.
     /// </remarks>
-    private async Task<IReadOnlyDictionary<Guid, int>> CountWorkspacesByPluginAsync(CancellationToken ct)
+    private async Task<IReadOnlyDictionary<Guid, int>?> CountWorkspacesUsingAsync(
+        IReadOnlyList<Plugin> plugins,
+        CancellationToken ct)
     {
-        var counts = new Dictionary<Guid, int>(
-            await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct));
-
-        var usage = await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedByUncuratedWorkspaceAsync(ct);
-        foreach (var (workspaceId, used) in usage)
-        {
-            var allowsPlugins = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
-            foreach (var pluginId in WorkspacePluginAvailability.CarriedOver(allowsPlugins, used))
-                counts[pluginId] = counts.TryGetValue(pluginId, out var current) ? current + 1 : 1;
-        }
-
-        return counts;
+        var cells = await PluginWorkspaceMatrix.BuildAsync(_unitOfWork, _directoryClient, plugins, null, ct);
+        return cells?
+            .Where(cell => cell.InUse)
+            .GroupBy(cell => cell.Plugin.Id)
+            .ToDictionary(group => group.Key, group => group.Count());
     }
 
     public async Task<Result<PluginCatalogAdminDetailDto>> GetAsync(string pluginKey, CancellationToken ct = default)
@@ -715,7 +713,9 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
             connectionCount,
             plugin.UpdatedBy,
             plugin.CreatedAt,
-            plugin.UpdatedAt);
+            plugin.UpdatedAt,
+            PluginWorkspaceAccess.DefaultOf(plugin),
+            PluginWorkspaceAccess.AllowedPlans(plugin));
     }
 
     /// <summary>

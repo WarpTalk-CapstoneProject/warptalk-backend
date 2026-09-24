@@ -8,6 +8,9 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -62,6 +65,7 @@ public class AdminSubscriptionsController : ControllerBase
     /// exactly the step an administrative move must not require.
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/change-plan")]
+    [AdminAudited(AdminAuditWorkspaceActions.PlanChanged, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     public async Task<IActionResult> ChangePlan(
         Guid workspaceId,
         [FromBody] AdminChangeSubscriptionPlanRequest request,

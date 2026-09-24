@@ -26,4 +26,20 @@ public interface IAdminAuditRecorder
         IReadOnlyDictionary<string, string?>? beforeSummary,
         IReadOnlyDictionary<string, string?>? afterSummary,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// A platform admin's change to one plugin IN ONE WORKSPACE - turning it on or off there, or
+    /// resetting it to the default. Recorded with the workspace's id and the admin's reason, so the
+    /// workspace's own audit trail shows it. Same contract: record before commit, abandon on failure.
+    /// </summary>
+    /// <param name="action">An <c>AdminAuditPluginActions.Workspace*</c> value.</param>
+    Task<Result> RecordPluginWorkspaceActionAsync(
+        string action,
+        Guid pluginId,
+        Guid workspaceId,
+        Guid actorId,
+        string? reason,
+        IReadOnlyDictionary<string, string?>? beforeSummary,
+        IReadOnlyDictionary<string, string?>? afterSummary,
+        CancellationToken ct = default);
 }

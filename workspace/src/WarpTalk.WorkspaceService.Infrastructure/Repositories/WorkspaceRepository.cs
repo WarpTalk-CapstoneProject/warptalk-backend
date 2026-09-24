@@ -24,6 +24,13 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
     {
     }
 
+    public async Task<List<Workspace>> GetNotDeletedAsync(CancellationToken ct = default) =>
+        await _context.Workspaces
+            .AsNoTracking()
+            .Where(w => w.DeletedAt == null)
+            .OrderBy(w => w.Name)
+            .ToListAsync(ct);
+
     public async Task<(List<Workspace> Items, int TotalCount)> GetWorkspacesForUserAsync(Guid userId, int page, int pageSize, string? search = null, CancellationToken ct = default)
     {
         var activeMemberStatus = WorkspaceMemberStatus.Active.ToStorageValue();

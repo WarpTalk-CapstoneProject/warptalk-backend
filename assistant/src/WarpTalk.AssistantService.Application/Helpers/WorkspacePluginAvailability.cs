@@ -28,18 +28,41 @@ namespace WarpTalk.AssistantService.Application.Helpers;
 public sealed class WorkspacePluginAvailability
 {
     private readonly IReadOnlySet<Guid> _addedPluginIds;
+    private readonly IReadOnlyDictionary<Guid, WorkspacePluginOverride> _overrides;
 
+    /// <param name="overrides">The platform admin's overrides for this workspace, by plugin id.</param>
+    /// <param name="planSlug">
+    /// The workspace's plan, when a plan rule needs it; null when it has none or it could not be read,
+    /// which no plan rule matches.
+    /// </param>
     public WorkspacePluginAvailability(
         Guid workspaceId,
         bool isCurated,
         IReadOnlySet<Guid> addedPluginIds,
-        bool callerIsOwner = false)
+        bool callerIsOwner = false,
+        IReadOnlyDictionary<Guid, WorkspacePluginOverride>? overrides = null,
+        string? planSlug = null)
     {
         WorkspaceId = workspaceId;
         IsCurated = isCurated;
         _addedPluginIds = addedPluginIds;
         CallerIsOwner = callerIsOwner;
+        _overrides = overrides ?? new Dictionary<Guid, WorkspacePluginOverride>();
+        PlanSlug = planSlug;
     }
+
+    /// <summary>The workspace's plan as the plan rule read it; null when none or unknown.</summary>
+    public string? PlanSlug { get; }
+
+    /// <summary>
+    /// The platform layer alone: may this workspace have <paramref name="plugin"/> at all? Applied
+    /// before the workspace's own list in <see cref="Of"/>.
+    /// </summary>
+    public PluginWorkspaceVerdict PlatformVerdict(Plugin plugin) =>
+        PluginWorkspaceAccess.Resolve(plugin, PlanSlug, _overrides.GetValueOrDefault(plugin.Id));
+
+    /// <summary>Whether the workspace's own list holds this marketplace plugin, whatever the platform says.</summary>
+    public bool IsOnList(Plugin plugin) => _addedPluginIds.Contains(plugin.Id);
 
     /// <summary>
     /// What a workspace that never edited its plugin list has: the plugins its members have used
@@ -71,8 +94,10 @@ public sealed class WorkspacePluginAvailability
 
     /// <returns>
     /// <see cref="WorkspacePluginConstants.Availability.Private"/>,
-    /// <see cref="WorkspacePluginConstants.Availability.Added"/> or
-    /// <see cref="WorkspacePluginConstants.Availability.NotAdded"/>.
+    /// <see cref="WorkspacePluginConstants.Availability.Added"/>,
+    /// <see cref="WorkspacePluginConstants.Availability.NotAdded"/> or
+    /// <see cref="WorkspacePluginConstants.Availability.DisabledByPlatform"/> - the platform layer
+    /// first, so a plugin the platform turned off here is never Added, whatever the list holds.
     /// </returns>
     public string Of(Plugin plugin)
     {
@@ -84,6 +109,9 @@ public sealed class WorkspacePluginAvailability
                 ? WorkspacePluginConstants.Availability.Private
                 : WorkspacePluginConstants.Availability.NotAdded;
         }
+
+        if (!PlatformVerdict(plugin).Allowed)
+            return WorkspacePluginConstants.Availability.DisabledByPlatform;
 
         return _addedPluginIds.Contains(plugin.Id)
             ? WorkspacePluginConstants.Availability.Added

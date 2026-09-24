@@ -57,4 +57,12 @@ public interface IWorkspacePluginPolicyClient
     /// asks again. See <see cref="WorkspacePluginPolicyAnswer"/>.
     /// </remarks>
     Task<WorkspacePluginPolicyAnswer> ReadAllowAnyPluginsAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The workspace's plan slug from the replicated entitlement snapshot, for a plugin's plan rule.
+    /// Null when the workspace has no plan OR the workspace service could not be reached - both read
+    /// as "matches no plan rule", so an outage closes plan-restricted plugins rather than opening
+    /// them. Never throws.
+    /// </summary>
+    Task<string?> ReadPlanSlugAsync(Guid workspaceId, CancellationToken ct = default);
 }

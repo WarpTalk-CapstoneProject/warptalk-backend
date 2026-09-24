@@ -140,7 +140,8 @@ public class WorkspacePluginsController : ControllerBase
             or WorkspacePluginConstants.ErrorCodes.PluginAlreadyAvailable
             or WorkspacePluginConstants.ErrorCodes.PluginRetired
             or WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently
-            or WorkspacePluginConstants.ErrorCodes.RequestByOwner => StatusCodes.Status409Conflict,
+            or WorkspacePluginConstants.ErrorCodes.RequestByOwner
+            or PluginWorkspaceAccessConstants.ErrorCodes.DisabledByPlatform => StatusCodes.Status409Conflict,
         // The workspace service did not answer, so nothing was written: the page should say "try
         // again", not "you did something wrong".
         WorkspacePluginConstants.ErrorCodes.PolicyUnavailable

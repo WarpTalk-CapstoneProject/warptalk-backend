@@ -45,6 +45,17 @@ public interface IWorkspaceDirectoryService
         Guid userId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Every workspace that is not deleted, with its plan, Owner, active member count and the legacy
+    /// AllowAnyPlugins switch - for the platform admin's per-workspace plugin controls.
+    /// </summary>
+    Task<Result<IReadOnlyList<PlatformWorkspaceDto>>> ListPlatformWorkspacesAsync(CancellationToken ct = default);
+
+    /// <summary>The active, non-deleted workspaces each given user belongs to.</summary>
+    Task<Result<IReadOnlyList<(Guid UserId, Guid WorkspaceId)>>> ListActiveMembershipsForUsersAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken ct = default);
+
     Task<Result<IReadOnlyList<WorkspaceNameDto>>> GetWorkspaceNamesAsync(
         IReadOnlyCollection<Guid> workspaceIds,
         CancellationToken ct = default);

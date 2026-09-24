@@ -10,6 +10,9 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -92,6 +95,7 @@ public class InvoicesController : ControllerBase
 
     [HttpPost("{invoiceId}/mark-paid")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditWorkspaceActions.InvoiceMarkedPaid, AdminAuditEntityTypes.Invoice, typeof(Invoice), EntityRouteKey = "invoiceId")]
     public async Task<ActionResult<InvoiceDto>> MarkInvoicePaid(
         Guid invoiceId,
         CancellationToken cancellationToken)

@@ -5,7 +5,10 @@ using WarpTalk.NotificationService.Application.DTOs;
 using WarpTalk.NotificationService.Application.DTOs.AdminNotifications;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.NotificationService.Domain.Entities;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.NotificationService.API.Controllers;
 
@@ -116,6 +119,7 @@ public class NotificationsController : ControllerBase
     }
     [HttpPost("~/api/v1/admin/notifications")]
     [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+    [AdminAudited(AdminAuditAnnouncementActions.Sent, AdminAuditEntityTypes.Notification, typeof(AdminNotification))]
     public async Task<IActionResult> CreateAdminNotification([FromBody] CreateAdminNotificationDto request, CancellationToken ct)
     {
         var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);

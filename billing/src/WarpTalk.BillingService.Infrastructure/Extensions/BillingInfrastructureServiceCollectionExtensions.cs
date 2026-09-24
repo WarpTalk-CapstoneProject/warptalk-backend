@@ -1,5 +1,6 @@
 using System;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.Shared.AdminAudit;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
@@ -43,14 +44,16 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 "Billing worker options are missing or invalid.")
             .ValidateOnStart();
 
-        services.AddDbContext<BillingDbContext>(options =>
+        services.AddDbContext<BillingDbContext>((provider, options) =>
             options.UseNpgsql(
                 configuration.GetConnectionString("BillingDb"),
                 npgsqlOptions =>
                 {
                     npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
                     npgsqlOptions.CommandTimeout(30);
-                }));
+                })
+            // [AdminAudited] routes record each save before it commits (see AddWarpTalkAdminAuditing).
+            .AddAdminAuditInterceptor(provider));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped(sp => sp.GetRequiredService<IUnitOfWork>().SubscriptionRepository);
