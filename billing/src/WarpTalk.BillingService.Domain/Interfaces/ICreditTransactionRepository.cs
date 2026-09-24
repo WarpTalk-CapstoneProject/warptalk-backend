@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.BillingService.Domain.Entities;
@@ -28,4 +29,12 @@ public interface ICreditTransactionRepository : IGenericRepository<CreditTransac
     /// <summary>Workspaces consuming at least <paramref name="minCredits"/> in [from, to), largest first.</summary>
     Task<IReadOnlyList<WorkspaceCredits>> GetTopConsumingWorkspacesAsync(
         DateTime from, DateTime to, int take, long minCredits = 1, CancellationToken cancellationToken = default);
+
+    // ── Profit and loss (2026-09-24) ──
+
+    /// <summary>Consume rows in [from, to) per UTC half-hour, charge type, provider and plan, with provider cost.</summary>
+    Task<IReadOnlyList<ConsumptionSlotRow>> GetConsumptionSlotsAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary>Consumed credits in [from, to) per UTC half-hour, workspace and plan.</summary>
+    Task<IReadOnlyList<WorkspaceSlotRow>> GetWorkspaceSlotsAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
 }

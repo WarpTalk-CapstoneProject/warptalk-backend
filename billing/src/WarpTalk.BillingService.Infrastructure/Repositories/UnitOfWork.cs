@@ -28,6 +28,7 @@ public class UnitOfWork : IUnitOfWork
         InboxMessages = new InboxMessageRepository(db);
         WorkspaceEntitlementOverrides = new WorkspaceEntitlementOverrideRepository(db);
         ProviderUsageDaily = new ProviderUsageDailyRepository(db);
+        FxRates = new FxRateRepository(db);
     }
 
     public IPlanRepository Plans { get; }
@@ -44,6 +45,7 @@ public class UnitOfWork : IUnitOfWork
     public IInboxMessageRepository InboxMessages { get; }
     public IWorkspaceEntitlementOverrideRepository WorkspaceEntitlementOverrides { get; }
     public IProviderUsageDailyRepository ProviderUsageDaily { get; }
+    public IFxRateRepository FxRates { get; }
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 
