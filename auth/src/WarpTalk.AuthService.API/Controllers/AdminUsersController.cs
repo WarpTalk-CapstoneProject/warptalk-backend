@@ -77,6 +77,20 @@ public class AdminUsersController : ControllerBase
         return ToActionResult(await _adminUserService.RevokeSessionsAsync(id, actor, request, ct));
     }
 
+    /// <summary>
+    /// Force sign-out from the admin workspace page — one member, or all of them. Each account goes
+    /// through the same audited revoke as the route above, filed under the workspace in the route.
+    /// </summary>
+    [HttpPost("workspaces/{workspaceId:guid}/revoke-sessions")]
+    public async Task<IActionResult> RevokeSessionsForWorkspace(
+        Guid workspaceId,
+        [FromBody] AdminWorkspaceSignOutRequest request,
+        CancellationToken ct)
+    {
+        if (!TryResolveActor(out var actor)) return UnauthorizedActor();
+        return ToActionResult(await _adminUserService.RevokeSessionsForWorkspaceAsync(workspaceId, request, actor, ct));
+    }
+
     [HttpPost("{id:guid}/deactivate")]
     public async Task<IActionResult> Deactivate(
         Guid id,

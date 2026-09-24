@@ -1245,6 +1245,13 @@ public class TranslationRoomService : ITranslationRoomService
                 await PublishParticipantWaitingAsync(translationRoom.Id, userId, participant.DisplayName);
             }
 
+            // The first admitted join is when this meeting started, for the platform success rate.
+            // A row still in the lobby has not joined anything yet.
+            if (participant.Status != TranslationRoomParticipantStatuses.Waiting)
+            {
+                await RecordMeetingStartedOnceAsync(translationRoom.Id);
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -1344,6 +1351,75 @@ public class TranslationRoomService : ITranslationRoomService
                 publishEx,
                 "Failed to publish participant externality for RoomId: {RoomId}, UserId: {UserId}; their usage will be attributed as internal.",
                 translationRoomId, userId);
+        }
+    }
+
+    /// <summary>
+    /// Counts this room's meeting as started, once, however many people join and however many
+    /// replicas serve them: the counter is guarded by an atomic SET NX on the shared marker, so
+    /// only the writer that creates it increments. Best-effort like every other realtime write on
+    /// the join path — a metric must never be able to fail somebody's join.
+    /// </summary>
+    private async Task RecordMeetingStartedOnceAsync(Guid translationRoomId)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var won = await _redisStateRepository.StringSetIfAbsentAsync(
+                MeetingLifecycleKeys.StartedAt(translationRoomId),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture),
+                MeetingLifecycleKeys.Ttl);
+            if (won)
+            {
+                MeetingLifecycleMetrics.RecordStarted();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not record the meeting start marker for RoomId: {RoomId}", translationRoomId);
+        }
+    }
+
+    /// <summary>
+    /// Records how this room's meeting ended — see <see cref="MeetingLifecycleMetrics"/>.
+    ///
+    /// Only a room somebody actually joined is a meeting: a room created and ended with nobody
+    /// ever in it has no start marker and is skipped, so it cannot read as a failed meeting.
+    /// </summary>
+    private async Task RecordMeetingEndedAsync(Guid translationRoomId, string endReason, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var startedRaw = await _redisStateRepository.StringGetAsync(MeetingLifecycleKeys.StartedAt(translationRoomId));
+            if (string.IsNullOrEmpty(startedRaw))
+            {
+                return;
+            }
+
+            var captionRaw = await _redisStateRepository.StringGetAsync(MeetingLifecycleKeys.FirstCaptionAt(translationRoomId));
+            var everJoined = await _participantRepository.CountEverJoinedAsync(translationRoomId, ct);
+
+            TimeSpan? duration = long.TryParse(startedRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var startedMs)
+                ? DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(startedMs)
+                : null;
+
+            MeetingLifecycleMetrics.RecordEnded(
+                endReason,
+                MeetingLifecycleMetrics.ReachedLive(everJoined, !string.IsNullOrEmpty(captionRaw)),
+                duration);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not record the meeting outcome for RoomId: {RoomId}", translationRoomId);
         }
     }
 
@@ -2250,6 +2326,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.EndReasonExpired, ct);
 
             // WT-314: same door as Cancel above. Expiry is driven by IdleRoomMonitoringWorker
             // on rooms nobody ever started, which is precisely the population that has no
@@ -2365,6 +2442,9 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // After the commit, so a failed save can never be counted as an ended meeting.
+            await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.CurrentEndReason, ct);
 
             // WT-191: tell everyone still in the room that it is over. The host ends the meeting
             // over REST, so TranslationRoomHub.EndTranslationRoom (which broadcasts

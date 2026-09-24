@@ -131,6 +131,18 @@ public static class NotificationValidator
             }
         },
         {
+            // The admin workspace page's "send a notice to the owner". The notice text is the
+            // title and body; the payload only says which workspace it is about.
+            NotificationConstants.TypeWorkspaceAdminNotice, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
+        },
+        {
             NotificationConstants.TypeWorkspaceReactivated, new PayloadSchema
             {
                 RequiredFields =

@@ -35,6 +35,8 @@ builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.App
 builder.Services.AddScoped<IWorkspaceEntitlementService, WarpTalk.WorkspaceService.Application.Services.WorkspaceEntitlementService>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
+// The admin workspace page's actions: transfer ownership, notice to the owner, notes, timeline, export.
+builder.Services.AddScoped<IAdminWorkspaceActionService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceActionService>();
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
 builder.Services.AddScoped<IWorkspaceAuditLogService, WarpTalk.WorkspaceService.Application.Services.WorkspaceAuditLogService>();
 builder.Services.AddScoped<IAdminPlatformHealthService, WarpTalk.WorkspaceService.Application.Services.AdminPlatformHealthService>();

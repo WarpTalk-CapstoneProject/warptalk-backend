@@ -29,6 +29,7 @@ public interface IAdminAuditRecorder
         Guid actorId,
         string reason,
         string correlationId,
+        Guid? workspaceId,
         IReadOnlyDictionary<string, string?>? beforeSummary = null,
         IReadOnlyDictionary<string, string?>? afterSummary = null,
         CancellationToken ct = default);

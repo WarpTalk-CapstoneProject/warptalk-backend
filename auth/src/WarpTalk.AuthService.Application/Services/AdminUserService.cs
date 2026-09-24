@@ -17,6 +17,9 @@ namespace WarpTalk.AuthService.Application.Services;
 /// <inheritdoc cref="IAdminUserService"/>
 public class AdminUserService : IAdminUserService
 {
+    /// <summary>The largest roster one workspace sign-out takes in a single request.</summary>
+    public const int MaxWorkspaceSignOutUsers = 500;
+
     /// <summary>What <c>usersByMonth</c> means at its edges, sent with it rather than implied.</summary>
     public const string UsersByMonthNote =
         "The latest month is month-to-date. Active = signed in or refreshed a session that month; totals exclude accounts deleted by the month's end.";
@@ -220,6 +223,69 @@ public class AdminUserService : IAdminUserService
             },
             ct);
 
+    public async Task<Result<AdminWorkspaceSignOutResultDto>> RevokeSessionsForWorkspaceAsync(
+        Guid workspaceId,
+        AdminWorkspaceSignOutRequest request,
+        AdminActorContext actor,
+        CancellationToken ct = default)
+    {
+        if (Normalize(request?.Reason) is null)
+        {
+            return Result.Failure<AdminWorkspaceSignOutResultDto>(
+                "A reason is required. It is the only record of why this was done.",
+                ErrorCodes.ValidationError);
+        }
+
+        var userIds = (request!.UserIds ?? Array.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (userIds.Count == 0)
+        {
+            return Result.Failure<AdminWorkspaceSignOutResultDto>(
+                "Name at least one member to sign out.", ErrorCodes.ValidationError);
+        }
+
+        if (userIds.Count > MaxWorkspaceSignOutUsers)
+        {
+            return Result.Failure<AdminWorkspaceSignOutResultDto>(
+                $"At most {MaxWorkspaceSignOutUsers} members can be signed out at once.", ErrorCodes.ValidationError);
+        }
+
+        // One account at a time, each through the same change-record-commit as the single
+        // revoke: one account whose record fails is left untouched and reported, and never takes
+        // the others down with it — nor goes unrecorded.
+        var signedOut = new List<Guid>();
+        var failed = new List<AdminWorkspaceSignOutFailureDto>();
+        var perUser = new AdminUserActionRequest(request.Reason);
+        foreach (var userId in userIds)
+        {
+            var result = await PerformAsync(
+                userId,
+                actor,
+                perUser,
+                AdminAuditUserActions.SessionsRevoked,
+                async (user, before) =>
+                {
+                    await _unitOfWork.RefreshTokenRepository.RevokeAllForUserAsync(user.Id, ct);
+                    return new Dictionary<string, string?> { ["active_sessions"] = "0" };
+                },
+                ct,
+                workspaceId);
+
+            if (result.IsSuccess)
+            {
+                signedOut.Add(userId);
+            }
+            else
+            {
+                failed.Add(new AdminWorkspaceSignOutFailureDto(userId, result.Error ?? "Not signed out."));
+            }
+        }
+
+        return Result.Success(new AdminWorkspaceSignOutResultDto(workspaceId, signedOut, failed));
+    }
+
     public Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
         Guid userId,
         bool isActive,
@@ -304,7 +370,8 @@ public class AdminUserService : IAdminUserService
         AdminUserActionRequest request,
         string action,
         Func<Domain.Entities.User, IReadOnlyDictionary<string, string?>, Task<Dictionary<string, string?>>> mutate,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? workspaceId = null)
     {
         var reason = Normalize(request?.Reason);
         if (reason is null)
@@ -340,6 +407,7 @@ public class AdminUserService : IAdminUserService
                 actor.ActorId,
                 reason,
                 actor.CorrelationId,
+                workspaceId,
                 before,
                 after,
                 ct);

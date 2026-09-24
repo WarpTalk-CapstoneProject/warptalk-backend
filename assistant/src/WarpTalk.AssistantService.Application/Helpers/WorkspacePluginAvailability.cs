@@ -12,9 +12,17 @@ namespace WarpTalk.AssistantService.Application.Helpers;
 /// <para>
 /// "That workspace's list" has two readings, and <see cref="IsCurated"/> says which applies. A
 /// workspace whose Owner has written the list at least once is judged by the list alone. A
-/// workspace that has never been curated is still judged by the pre-marketplace switch
-/// (AllowAnyPlugins): on means every marketplace plugin, off means none. That is the transition,
-/// and it is what lets the marketplace ship without a member losing a plugin they used yesterday.
+/// workspace that has never been curated has no list rows, so its list is what it CARRIES OVER
+/// from before the marketplace (<see cref="CarriedOver"/>): the marketplace plugins its members
+/// have actually used there, while the legacy AllowAnyPlugins switch is on - and nothing when it
+/// is off.
+/// </para>
+/// <para>
+/// It used to carry over EVERY marketplace plugin while the switch was on. That made the Owner's
+/// page list the whole marketplace under "In this workspace" for a workspace that had chosen
+/// nothing, and made every new marketplace row appear in every such workspace the moment an admin
+/// created it. A list the Owner never made is not the workspace's list; the plugins its members
+/// were really using are, and those are the ones nobody may lose on deploy.
 /// </para>
 /// </remarks>
 public sealed class WorkspacePluginAvailability
@@ -24,16 +32,26 @@ public sealed class WorkspacePluginAvailability
     public WorkspacePluginAvailability(
         Guid workspaceId,
         bool isCurated,
-        bool legacyAllowsEveryPlugin,
         IReadOnlySet<Guid> addedPluginIds,
         bool callerIsOwner = false)
     {
         WorkspaceId = workspaceId;
         IsCurated = isCurated;
-        LegacyAllowsEveryPlugin = legacyAllowsEveryPlugin;
         _addedPluginIds = addedPluginIds;
         CallerIsOwner = callerIsOwner;
     }
+
+    /// <summary>
+    /// What a workspace that never edited its plugin list has: the plugins its members have used
+    /// there, while the legacy AllowAnyPlugins switch is on; nothing while it is off.
+    /// </summary>
+    /// <remarks>
+    /// The one statement of the transition, shared by the guard (every tool call), the first edit
+    /// that turns it into real list rows, and the admin catalog's workspace count - so the three
+    /// cannot disagree about which workspace has which plugin.
+    /// </remarks>
+    public static IReadOnlySet<Guid> CarriedOver(bool allowAnyPlugins, IReadOnlySet<Guid> usedPluginIds) =>
+        allowAnyPlugins ? usedPluginIds : new HashSet<Guid>();
 
     public Guid WorkspaceId { get; }
 
@@ -51,12 +69,6 @@ public sealed class WorkspacePluginAvailability
     /// <summary>Whether the Owner has written this workspace's plugin list at least once.</summary>
     public bool IsCurated { get; }
 
-    /// <summary>
-    /// What AllowAnyPlugins said. Only consulted while <see cref="IsCurated"/> is false; always
-    /// false once it is, so a stale switch can never widen an explicit list.
-    /// </summary>
-    public bool LegacyAllowsEveryPlugin { get; }
-
     /// <returns>
     /// <see cref="WorkspacePluginConstants.Availability.Private"/>,
     /// <see cref="WorkspacePluginConstants.Availability.Added"/> or
@@ -73,8 +85,7 @@ public sealed class WorkspacePluginAvailability
                 : WorkspacePluginConstants.Availability.NotAdded;
         }
 
-        var added = IsCurated ? _addedPluginIds.Contains(plugin.Id) : LegacyAllowsEveryPlugin;
-        return added
+        return _addedPluginIds.Contains(plugin.Id)
             ? WorkspacePluginConstants.Availability.Added
             : WorkspacePluginConstants.Availability.NotAdded;
     }

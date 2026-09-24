@@ -16,7 +16,21 @@ public interface ICreditTransactionRepository : IGenericRepository<CreditTransac
     /// <summary>Consumed credits, derived overage and reconstructable provider cost for [from, to).</summary>
     Task<ConsumptionTotals> GetConsumptionTotalsAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
-    /// <summary>Consumed credits in [from, to) per charge type (usage type when the charge type is empty), largest first.</summary>
+    /// <summary>
+    /// <see cref="GetConsumptionTotalsAsync"/> for one workspace — the rate-card provider cost of
+    /// what THIS workspace consumed. Same coverage rule, same charge-type key.
+    /// </summary>
+    Task<ConsumptionTotals> GetWorkspaceConsumptionTotalsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every ledger row of one workspace in [from, to) as (when, amount, balance after), oldest
+    /// first — the input of the credit burn chart. Three scalars per row, projected, never a record
+    /// the database is asked to shape.
+    /// </summary>
+    Task<IReadOnlyList<LedgerPoint>> GetWorkspaceLedgerPointsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
     /// <summary>Consume rows in [from, to) of the given charge types, per UTC day and charge type.</summary>
     Task<IReadOnlyList<DailyChargeTypeConsumption>> GetConsumptionByUtcDayAsync(
         DateTime from, DateTime to, IReadOnlyCollection<string> chargeTypes, CancellationToken cancellationToken = default);

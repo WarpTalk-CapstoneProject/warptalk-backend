@@ -67,6 +67,14 @@ public static class NotificationConstants
     public const string TypeWorkspaceReactivated = "WORKSPACE_REACTIVATED";
 
     /// <summary>
+    /// A notice a platform administrator sends a workspace owner from the admin workspace page —
+    /// "your invoice is overdue", "we credited you for yesterday's outage". Produced by the
+    /// workspace service's AdminWorkspaceActionService; registered in the same change, because an
+    /// unregistered type carrying metadata is rejected outright and the producer cannot tell.
+    /// </summary>
+    public const string TypeWorkspaceAdminNotice = "WORKSPACE_ADMIN_NOTICE";
+
+    /// <summary>
     /// The Leave Workspace round trip. WT-521.
     ///
     /// A member asked to leave and nobody was told, in either direction: Owners and Admins had to

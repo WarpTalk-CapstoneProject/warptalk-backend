@@ -707,9 +707,19 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
 
         if (!allowedEverything) return Result.Success<IReadOnlyList<WorkspacePlugin>>([]);
 
-        var marketplace = await _unitOfWork.PluginRepository.FindAsync(
-            p => p.IsActive && p.OwnerWorkspaceId == null,
-            ct: ct);
+        // Seeds exactly what the guard was already allowing (WorkspacePluginAvailability.CarriedOver):
+        // the marketplace plugins members have used here. Seeding the whole marketplace wrote a list
+        // the Owner never chose, and handed members plugins they had never had.
+        var used = WorkspacePluginAvailability.CarriedOver(
+            allowedEverything,
+            await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedInWorkspaceAsync(workspaceId, ct));
+        // A List, not the set: EF translates List.Contains into an IN, not IReadOnlySet.Contains.
+        var usedIds = used.ToList();
+        var marketplace = usedIds.Count == 0
+            ? Array.Empty<Plugin>()
+            : await _unitOfWork.PluginRepository.FindAsync(
+                p => p.IsActive && p.OwnerWorkspaceId == null && usedIds.Contains(p.Id),
+                ct: ct);
         var seeded = new List<WorkspacePlugin>(marketplace.Count);
         foreach (var plugin in marketplace)
         {
@@ -727,7 +737,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         }
 
         _logger.LogInformation(
-            "Workspace {WorkspaceId} curated its plugin list for the first time; seeded {Count} marketplace plugin(s) from AllowAnyPlugins=true.",
+            "Workspace {WorkspaceId} curated its plugin list for the first time; seeded the {Count} marketplace plugin(s) its members already used under AllowAnyPlugins=true.",
             workspaceId,
             marketplace.Count);
 

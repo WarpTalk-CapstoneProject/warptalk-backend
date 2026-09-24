@@ -223,12 +223,7 @@ public class InvoiceService : IInvoiceService
                 return Result.Success(invoice.ToDto(invoice.Payment.Subscription.WorkspaceId));
             }
 
-            var paidAt = DateTime.UtcNow;
-            invoice.Status = InvoiceConstants.InvoiceStatuses.Paid;
-            invoice.PaidAt = paidAt;
-            invoice.Payment.Status = PaymentConstants.PaymentStatuses.Paid;
-            invoice.Payment.PaidAt = paidAt;
-            invoice.Payment.UpdatedAt = DateTime.UtcNow;
+            invoice.MarkPaid(DateTime.UtcNow);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             return Result.Success(invoice.ToDto(invoice.Payment.Subscription.WorkspaceId));

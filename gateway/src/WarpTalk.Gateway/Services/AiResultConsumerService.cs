@@ -65,6 +65,8 @@ public sealed class AiResultConsumerService : BackgroundService
     /// </summary>
     private readonly ConcurrentDictionary<string, string> _speakerNameCache = new();
 
+    private readonly MeetingCaptionMetrics _captionMetrics;
+
     public AiResultConsumerService(
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
@@ -79,6 +81,7 @@ public sealed class AiResultConsumerService : BackgroundService
         _workspaceClient = workspaceClient;
         _roomClient = roomClient;
         _logger = logger;
+        _captionMetrics = new MeetingCaptionMetrics(streamService, logger);
     }
 
 
@@ -350,6 +353,9 @@ public sealed class AiResultConsumerService : BackgroundService
                         .Group($"translationRoom:{translationRoomId}")
                         .SendAsync("TranscriptSegmentReceived", segment, ct);
 
+                    MeetingCaptionMetrics.RecordDelivered(MeetingCaptionMetrics.KindTranscript);
+                    await _captionMetrics.MarkFirstCaptionAsync(translationRoomId);
+
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
                 }
 
@@ -458,6 +464,9 @@ public sealed class AiResultConsumerService : BackgroundService
                         .Group($"translationRoom:{translationRoomId}")
                         .SendAsync("TranslationTextReceived", dto, ct);
 
+                    MeetingCaptionMetrics.RecordDelivered(MeetingCaptionMetrics.KindTranslation);
+                    await _captionMetrics.MarkFirstCaptionAsync(translationRoomId);
+
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
                 }
 
@@ -517,6 +526,8 @@ public sealed class AiResultConsumerService : BackgroundService
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
                         .SendAsync("TranslatedAudioReceived", audioDto, ct);
+
+                    MeetingCaptionMetrics.RecordDelivered(MeetingCaptionMetrics.KindAudio);
 
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
 

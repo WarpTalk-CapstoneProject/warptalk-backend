@@ -11,4 +11,10 @@ public interface IWorkspaceDirectoryClient
     /// does not know the workspace; never throws.
     /// </summary>
     Task<WorkspaceProfile?> GetProfileAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The user ids of the workspace's ACTIVE members. Null when the workspace service cannot be
+    /// reached or does not know the workspace - never an empty list standing in for "unknown".
+    /// </summary>
+    Task<IReadOnlyList<Guid>?> ListActiveMemberUserIdsAsync(Guid workspaceId, CancellationToken ct = default);
 }

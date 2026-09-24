@@ -45,4 +45,27 @@ public class WorkspaceDirectoryGrpcClient : IWorkspaceDirectoryClient
             return null;
         }
     }
+
+    public async Task<IReadOnlyList<Guid>?> ListActiveMemberUserIdsAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _workspaceClient.ListWorkspaceMemberUserIdsAsync(
+                new ListWorkspaceMemberUserIdsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            if (!response.WorkspaceFound) return null;
+
+            return response.UserIds
+                .Select(id => Guid.TryParse(id, out var userId) ? userId : Guid.Empty)
+                .Where(userId => userId != Guid.Empty)
+                .Distinct()
+                .ToList();
+        }
+        catch (RpcException ex)
+        {
+            _logger.LogWarning(ex, "Could not list workspace {WorkspaceId}'s members from the workspace service.", workspaceId);
+            return null;
+        }
+    }
 }

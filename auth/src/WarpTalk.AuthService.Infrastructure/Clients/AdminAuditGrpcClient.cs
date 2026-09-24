@@ -42,6 +42,7 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
         Guid actorId,
         string reason,
         string correlationId,
+        Guid? workspaceId,
         IReadOnlyDictionary<string, string?>? beforeSummary = null,
         IReadOnlyDictionary<string, string?>? afterSummary = null,
         CancellationToken ct = default)
@@ -52,10 +53,11 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
             Action = action,
             EntityType = AdminAuditEntityTypes.User,
             EntityId = entityId.ToString(),
-            // Auth actions are not scoped to a workspace. Left empty rather than filled with
-            // something plausible: a wrong workspace id would file the entry under a tenant that
-            // had nothing to do with it.
-            WorkspaceId = string.Empty,
+            // Auth actions are not scoped to a workspace, except the sign-outs the admin workspace
+            // page makes, which name the workspace in their route so they appear on its timeline.
+            // Otherwise empty rather than something plausible: a wrong workspace id would file the
+            // entry under a tenant that had nothing to do with it.
+            WorkspaceId = workspaceId?.ToString() ?? string.Empty,
             ActorId = actorId.ToString(),
             Reason = reason,
             Result = AdminAuditResults.Succeeded,
