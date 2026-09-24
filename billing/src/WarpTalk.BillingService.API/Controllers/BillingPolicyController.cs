@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -26,6 +29,7 @@ public class BillingPolicyController : ControllerBase
     }
 
     [HttpPut]
+    [AdminAudited(AdminAuditBillingActions.BillingPolicyUpdated, AdminAuditEntityTypes.BillingPolicy, typeof(BillingPolicyConfig))]
     public async Task<ActionResult<BillingPolicyDto>> UpdateBillingPolicy(
         [FromBody] UpdateBillingPolicyRequest request,
         CancellationToken cancellationToken)

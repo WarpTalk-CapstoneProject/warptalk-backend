@@ -46,4 +46,26 @@ public partial class WorkspaceAdminAction
 
     /// <summary>Redacted JSON summary of resulting state, or null when not applicable.</summary>
     public string? AfterSummary { get; set; }
+
+    // Context for the platform audit screen (migration 20260924150000). All optional: rows written
+    // before it have none, and a producer that cannot know a field leaves it null.
+
+    /// <summary>The actor's e-mail as their token carried it — a snapshot beside the id.</summary>
+    public string? ActorEmail { get; set; }
+
+    public string? ActorName { get; set; }
+
+    /// <summary>Natural key of a subject with no GUID (a language code, a plugin key).</summary>
+    public string? EntityKey { get; set; }
+
+    /// <summary>What the subject was called at the time.</summary>
+    public string? EntityLabel { get; set; }
+
+    /// <summary>Why a failed entry failed. Null on success.</summary>
+    public string? ErrorMessage { get; set; }
+
+    /// <summary>First X-Forwarded-For hop of the admin's own request.</summary>
+    public string? IpAddress { get; set; }
+
+    public string? UserAgent { get; set; }
 }

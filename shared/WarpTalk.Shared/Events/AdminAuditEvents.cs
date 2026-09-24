@@ -33,6 +33,31 @@ public static class AdminAuditEntityTypes
     public const string WorkspaceNote = "workspace_note";
     /// <summary>A marketplace row of the assistant plugin catalog. Entity id = the plugin's id.</summary>
     public const string Plugin = "plugin";
+    /// <summary>A sellable plan (billing <c>plans</c>): name, price, credits and quotas.</summary>
+    public const string Plan = "plan";
+    /// <summary>The platform billing policy (today the VAT rate).</summary>
+    public const string BillingPolicy = "billing_policy";
+    /// <summary>The platform pricing configuration (markup, FX, credit value).</summary>
+    public const string PricingConfig = "pricing_config";
+    /// <summary>An inbound enterprise sales enquiry.</summary>
+    public const string SalesLead = "sales_lead";
+    /// <summary>The platform audit log itself — read out of the portal as an export.</summary>
+    public const string AuditLog = "audit_log";
+    /// <summary>A payment recorded by hand against a subscription (bank transfer, offline).</summary>
+    public const string Payment = "payment";
+    /// <summary>The USD→VND rate VND reports convert with (billing <c>fx_rates</c> + its config keys).</summary>
+    public const string FxRate = "fx_rate";
+
+    /// <summary>
+    /// Every value above, so the audit screen's entity filter and the web's label table have one
+    /// list to agree with.
+    /// </summary>
+    public static readonly string[] All =
+    [
+        Workspace, CreditAdjustment, PricingVersion, UsageRate, PaymentMethod, GlossaryTerm,
+        Notification, User, SupportedLanguage, Subscription, Invoice, WorkspaceNote, Plugin, Plan,
+        BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
+    ];
 }
 
 /// <summary>
@@ -62,6 +87,71 @@ public static class AdminAuditWorkspaceActions
 
     /// <summary>The width of <c>workspace.workspace_admin_actions.action</c>.</summary>
     public const int MaxLength = 30;
+}
+
+/// <summary>
+/// Verbs for the platform billing and catalog writes that predate the admin workspace page:
+/// plans, rate cards, pricing, VAT, contracts, the /admin/subscriptions lifecycle buttons and the
+/// sales-lead inbox. Recorded by <c>WarpTalk.Shared.AdminAudit</c> rather than by hand.
+/// Every value fits <see cref="AdminAuditWorkspaceActions.MaxLength"/>.
+/// </summary>
+public static class AdminAuditBillingActions
+{
+    public const string PlanCreated = "plan.created";
+    public const string PlanUpdated = "plan.updated";
+    public const string RateCardUpserted = "rate_card.upserted";
+    public const string RateCardDeactivated = "rate_card.deactivated";
+    public const string RateCardCostSet = "rate_card.provider_cost_set";
+    public const string PricingConfigUpdated = "pricing_config.updated";
+    public const string BillingPolicyUpdated = "billing_policy.updated";
+    public const string ContractCreated = "subscription.contract_created";
+    public const string ContractTermsUpdated = "subscription.contract_terms";
+    public const string SubscriptionCancelled = "subscription.cancelled";
+    public const string SubscriptionReactivated = "subscription.reactivated";
+    public const string SubscriptionResumed = "subscription.resumed";
+    public const string SalesLeadStatusChanged = "sales_lead.status_changed";
+    public const string PaymentRecorded = "payment.recorded";
+    public const string FxRateRefreshed = "fx_rate.refreshed";
+    public const string FxRateOverridden = "fx_rate.overridden";
+    public const string FxRateOverrideCleared = "fx_rate.override_cleared";
+
+    public static readonly string[] All =
+    [
+        PlanCreated, PlanUpdated, RateCardUpserted, RateCardDeactivated, RateCardCostSet,
+        PricingConfigUpdated, BillingPolicyUpdated, ContractCreated, ContractTermsUpdated,
+        SubscriptionCancelled, SubscriptionReactivated, SubscriptionResumed, SalesLeadStatusChanged,
+        PaymentRecorded, FxRateRefreshed, FxRateOverridden, FxRateOverrideCleared,
+    ];
+}
+
+/// <summary>Verbs for the platform-wide glossary (transcript service, /admin/global-glossary).</summary>
+public static class AdminAuditGlossaryActions
+{
+    public const string TermCreated = "glossary.term_created";
+    public const string TermUpdated = "glossary.term_updated";
+    public const string TermDeleted = "glossary.term_deleted";
+    public const string TermPublished = "glossary.term_published";
+    public const string TermArchived = "glossary.term_archived";
+    public const string BulkImported = "glossary.bulk_imported";
+
+    public static readonly string[] All =
+        [TermCreated, TermUpdated, TermDeleted, TermPublished, TermArchived, BulkImported];
+}
+
+/// <summary>Verbs for platform announcements (notification service, /admin/announcements).</summary>
+public static class AdminAuditAnnouncementActions
+{
+    public const string Sent = "announcement.sent";
+
+    public static readonly string[] All = [Sent];
+}
+
+/// <summary>Verbs the audit screen records about itself.</summary>
+public static class AdminAuditLogActions
+{
+    public const string Exported = "audit_log.exported";
+
+    public static readonly string[] All = [Exported];
 }
 
 /// <summary>Service identifiers used as the audit entry's source.</summary>
@@ -145,4 +235,27 @@ public sealed record AdminActionRecordedEvent(
     [property: JsonPropertyName("performed_at")] DateTime PerformedAt,
     [property: JsonPropertyName("correlation_id")] string? CorrelationId,
     [property: JsonPropertyName("before_summary")] IReadOnlyDictionary<string, string?>? BeforeSummary,
-    [property: JsonPropertyName("after_summary")] IReadOnlyDictionary<string, string?>? AfterSummary);
+    [property: JsonPropertyName("after_summary")] IReadOnlyDictionary<string, string?>? AfterSummary)
+{
+    // Optional context, added after the positional contract shipped. Init-only so every existing
+    // constructor call keeps compiling and an older publisher's JSON still deserializes.
+
+    /// <summary>The actor's e-mail as the token carried it — a snapshot, the id stays the identity.</summary>
+    [JsonPropertyName("actor_email")] public string? ActorEmail { get; init; }
+
+    [JsonPropertyName("actor_name")] public string? ActorName { get; init; }
+
+    /// <summary>A subject whose natural key is not a GUID (a language code, a plugin key).</summary>
+    [JsonPropertyName("entity_key")] public string? EntityKey { get; init; }
+
+    /// <summary>What the subject was called at the time.</summary>
+    [JsonPropertyName("entity_label")] public string? EntityLabel { get; init; }
+
+    /// <summary>Why a failed entry failed. Null on success.</summary>
+    [JsonPropertyName("error_message")] public string? ErrorMessage { get; init; }
+
+    /// <summary>The admin's address as the gateway forwarded it.</summary>
+    [JsonPropertyName("ip_address")] public string? IpAddress { get; init; }
+
+    [JsonPropertyName("user_agent")] public string? UserAgent { get; init; }
+}

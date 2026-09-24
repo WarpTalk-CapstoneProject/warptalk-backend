@@ -14,6 +14,9 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -71,6 +74,7 @@ public class PaymentsController : ControllerBase
     /// </summary>
     [HttpPost]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.PaymentRecorded, AdminAuditEntityTypes.Payment, typeof(Payment))]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
