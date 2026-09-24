@@ -50,7 +50,7 @@ public class TranscriptCleanTextConsumerTests
         var segment = Assert.Single(fixture.AddedSegments);
         Assert.Equal("ừm thì mình mình chốt thứ hai nhé", segment.OriginalText);
         Assert.Equal("thì mình chốt thứ hai nhé", segment.CleanText);
-        Assert.Equal(["fillers_removed", "stutter_removed"], segment.CleanFlags);
+        Assert.Equal(["fillers_removed", "stutter_removed"], Assert.IsType<string[]>(segment.CleanFlags));
     }
 
     [Fact]
@@ -77,7 +77,7 @@ public class TranscriptCleanTextConsumerTests
         var segment = Assert.Single(fixture.AddedSegments);
         Assert.Equal("えーと、あの", segment.OriginalText);
         Assert.Equal(string.Empty, segment.CleanText);
-        Assert.Equal(["filler_only"], segment.CleanFlags);
+        Assert.Equal(["filler_only"], Assert.IsType<string[]>(segment.CleanFlags));
     }
 
     [Fact]
