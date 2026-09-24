@@ -197,7 +197,9 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             IsProfanityFilterEnabled = settings.IsProfanityFilterEnabled,
             AllowExternalLlm = settings.AllowExternalLlm,
             UseGlobalGlossary = settings.UseGlobalGlossary,
-            AllowAnyPlugins = settings.AllowAnyPlugins
+            AllowAnyPlugins = settings.AllowAnyPlugins,
+            // WT-707: 0 on the wire means no quota applies.
+            MaxLanguages = settings.MaxLanguages is > 0 ? settings.MaxLanguages.Value : 0
         };
         response.AllowedTargetLanguages.AddRange(settings.AllowedTargetLanguages);
         return response;

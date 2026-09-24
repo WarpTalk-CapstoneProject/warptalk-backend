@@ -199,7 +199,9 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             }
         }
 
-        var planLanguageDenial = ValidatePlanLanguageQuota(entitlements, targetLanguages.Count);
+        // WT-707: the quota counts DISTINCT languages, so "en" and "en-US" are one language, the
+        // same way translation-room counts them when the room is edited later.
+        var planLanguageDenial = ValidatePlanLanguageQuota(entitlements, CountDistinctLanguages(targetLanguages));
         if (planLanguageDenial != null)
         {
             return Decision(planLanguageDenial);
@@ -226,6 +228,13 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
     /// is a denial; the workspace's own AllowedTargetLanguages policy governs those cases, exactly
     /// as it did before WT-262. See WorkspaceEntitlements for the cold-start reasoning.
     /// </summary>
+    private static int CountDistinctLanguages(IEnumerable<string> languages) =>
+        languages
+            .Select(lang => (lang ?? string.Empty).Trim().Split('-')[0].ToLowerInvariant())
+            .Where(lang => lang.Length > 0)
+            .Distinct()
+            .Count();
+
     private static MeetingCreationDecisionDto? ValidatePlanLanguageQuota(
         WorkspaceEntitlements entitlements,
         int requestedLanguageCount)
@@ -367,6 +376,16 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
 
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
+        // WT-707: translation-room enforces the plan's language quota on room edits, so it needs
+        // the same number ValidatePlanLanguageQuota applies at creation — `Limit`, from the same
+        // local snapshot. Null (cold start, no live subscription, unlimited) means no quota.
+        var snapshot = await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, ct);
+        var entitlements = snapshot == null
+            ? WorkspaceEntitlements.Unknown
+            : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+        var maxLanguages = entitlements.Limit(EntitlementKeys.MaxLanguages);
+
         return Result.Success(new WorkspaceSettingsSnapshotDto(
             config.ArtifactRetentionDays,
             config.AllowExternalCollaboration,
@@ -377,7 +396,10 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             config.AiUsagePolicy?.AllowExternalLlm ?? true,
             config.AiUsagePolicy?.UseGlobalGlossary ?? true,
             config.AllowedTargetLanguages?.ToArray() ?? Array.Empty<string>(),
-            config.AllowAnyPlugins));
+            config.AllowAnyPlugins,
+            maxLanguages is > 0
+                ? (int)Math.Clamp(maxLanguages.Value, int.MinValue, int.MaxValue)
+                : null));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(
