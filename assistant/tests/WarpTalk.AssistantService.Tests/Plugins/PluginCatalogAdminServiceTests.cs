@@ -42,7 +42,7 @@ public class PluginCatalogAdminServiceTests
     private readonly IPluginConfirmationTokenRepository _confirmationTokenRepository = Substitute.For<IPluginConfirmationTokenRepository>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
     private readonly IWorkspacePluginRepository _workspacePluginRepository = Substitute.For<IWorkspacePluginRepository>();
-    private readonly IWorkspacePluginPolicyClient _policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
+    private readonly PluginWorkspaceFixture _world = new();
     private readonly IAdminAuditRecorder _auditRecorder = Substitute.For<IAdminAuditRecorder>();
     private readonly List<(string Action, Guid EntityId, IReadOnlyDictionary<string, string?>? Before, IReadOnlyDictionary<string, string?>? After, int SavesSoFar)> _recorded = [];
     private int _saves;
@@ -55,15 +55,11 @@ public class PluginCatalogAdminServiceTests
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
         _unitOfWork.WorkspacePluginRepository.Returns(_workspacePluginRepository);
-        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, int>());
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(_ =>
         {
             _saves++;
             return 1;
         });
-        _auditRepository.GetPluginIdsUsedByUncuratedWorkspaceAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, IReadOnlySet<Guid>>());
         _auditRecorder.RecordPluginActionAsync(
                 Arg.Any<string>(),
                 Arg.Any<Guid>(),
@@ -1085,7 +1081,7 @@ public class PluginCatalogAdminServiceTests
     // Helpers
     // -----------------------------------------------------------------------------------------
 
-    private PluginCatalogAdminService CreateSut() => new(_unitOfWork, _credentialProtector, _policyClient, _auditRecorder);
+    private PluginCatalogAdminService CreateSut() => new(_unitOfWork, _credentialProtector, _auditRecorder, _world.Directory);
 
     private void AuditLogIsDown() =>
         _auditRecorder.RecordPluginActionAsync(
@@ -1110,14 +1106,15 @@ public class PluginCatalogAdminServiceTests
     }
 
     [Fact]
-    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsCuratedWorkspaces()
+    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsWorkspacesThatAddedIt()
     {
         var marketplace = WorkspacePluginGuardTests.Marketplace("linear");
         var privateRow = WorkspacePluginGuardTests.Marketplace("ws_crm_1a2b3c4d");
         privateRow.OwnerWorkspaceId = Guid.NewGuid();
         StubAllPlugins(marketplace, privateRow);
-        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, int> { [marketplace.Id] = 6 });
+        WireWorld();
+        for (var i = 0; i < 6; i++) _world.AddToList(marketplace, _world.AddWorkspace($"W{i}"));
+        _world.AddWorkspace("Untouched");
 
         var result = await CreateSut().ListAsync();
 
@@ -1127,35 +1124,82 @@ public class PluginCatalogAdminServiceTests
     }
 
     [Fact]
-    public async Task ListAsync_CountsCuratedWorkspaces_AndUncuratedOnesThatCarryThePluginOver()
+    public async Task ListAsync_CountsWorkspacesWhereAMemberConnectedIt_EvenIfTheOwnerNeverAddedIt()
     {
-        // The owner report: "no workspaces" on every row. A workspace that never edited its list
-        // still has the plugins its members use there while AllowAnyPlugins is on, and the column
-        // counts it by the same rule the guard enforces.
+        // The owner report, again: "no workspaces" on every row. #443 counted the Owner's list and
+        // carried-over tool calls - and almost no Owner has ever edited a list, while connections
+        // (what members actually do) carry a user, never a workspace, so they were never counted.
         var linear = WorkspacePluginGuardTests.Marketplace("linear");
         var notion = WorkspacePluginGuardTests.Marketplace("notion");
         StubAllPlugins(linear, notion);
-        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, int> { [linear.Id] = 2 });
-        var allowsA = Guid.NewGuid();
-        var switchedOff = Guid.NewGuid();
-        var allowsB = Guid.NewGuid();
-        _auditRepository.GetPluginIdsUsedByUncuratedWorkspaceAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, IReadOnlySet<Guid>>
-            {
-                [allowsA] = new HashSet<Guid> { linear.Id },
-                [switchedOff] = new HashSet<Guid> { linear.Id, notion.Id },
-                [allowsB] = new HashSet<Guid> { notion.Id },
-            });
-        _policyClient.AllowsPluginUsageAsync(allowsA, Arg.Any<CancellationToken>()).Returns(true);
-        _policyClient.AllowsPluginUsageAsync(switchedOff, Arg.Any<CancellationToken>()).Returns(false);
-        _policyClient.AllowsPluginUsageAsync(allowsB, Arg.Any<CancellationToken>()).Returns(true);
+        WireWorld();
+        var a = _world.AddWorkspace("A");
+        var b = _world.AddWorkspace("B");
+        _world.AddWorkspace("C");
+        _world.Connect(linear, a);
+        _world.Connect(linear, a);
+        _world.Connect(linear, b);
+        _world.Connect(notion, b);
 
         var rows = (await CreateSut().ListAsync()).Value!;
 
-        Assert.Equal(3, rows.Single(r => r.PluginKey == "linear").WorkspaceCount);
+        Assert.Equal(2, rows.Single(r => r.PluginKey == "linear").WorkspaceCount);
         Assert.Equal(1, rows.Single(r => r.PluginKey == "notion").WorkspaceCount);
     }
+
+    [Fact]
+    public async Task ListAsync_DoesNotCountAWorkspaceThePlatformTurnedThePluginOffFor()
+    {
+        var linear = WorkspacePluginGuardTests.Marketplace("linear");
+        StubAllPlugins(linear);
+        WireWorld();
+        var a = _world.AddWorkspace("A");
+        var b = _world.AddWorkspace("B");
+        _world.Connect(linear, a);
+        _world.AddToList(linear, b);
+        _world.Override(linear, b, PluginWorkspaceAccessConstants.OverrideState.Disabled, "security review");
+
+        var row = Assert.Single((await CreateSut().ListAsync()).Value!);
+
+        Assert.Equal(1, row.WorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_WorkspaceCountIsUnknown_NotZero_WhenTheWorkspaceServiceIsDown()
+    {
+        var linear = WorkspacePluginGuardTests.Marketplace("linear");
+        StubAllPlugins(linear);
+        WireWorld();
+        _world.DirectoryDown = true;
+
+        var row = Assert.Single((await CreateSut().ListAsync()).Value!);
+
+        Assert.Null(row.WorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_ReportsEachRowsDefaultAndPlanRule()
+    {
+        var available = WorkspacePluginGuardTests.Marketplace("linear");
+        var optIn = WorkspacePluginGuardTests.Marketplace("notion");
+        optIn.WorkspaceDefault = PluginWorkspaceAccessConstants.Default.OptIn;
+        optIn.AllowedPlanSlugsJson = "[\"business\",\"enterprise\"]";
+        var retired = WorkspacePluginGuardTests.Marketplace("figma");
+        retired.IsActive = false;
+        StubAllPlugins(available, optIn, retired);
+        WireWorld();
+
+        var rows = (await CreateSut().ListAsync()).Value!;
+
+        Assert.Equal("available", rows.Single(r => r.PluginKey == "linear").WorkspaceDefault);
+        Assert.Null(rows.Single(r => r.PluginKey == "linear").AllowedPlans);
+        Assert.Equal("opt_in", rows.Single(r => r.PluginKey == "notion").WorkspaceDefault);
+        Assert.Equal(["business", "enterprise"], rows.Single(r => r.PluginKey == "notion").AllowedPlans);
+        Assert.Equal("retired", rows.Single(r => r.PluginKey == "figma").WorkspaceDefault);
+    }
+
+    private void WireWorld() =>
+        _world.Wire(_unitOfWork, _workspacePluginRepository, _auditRepository, _installationRepository, _connectionRepository);
 
     [Fact]
     public async Task ListAsync_SendsTheRowsAvatar_SoTheAdminPageDrawsTheSameGlyph()

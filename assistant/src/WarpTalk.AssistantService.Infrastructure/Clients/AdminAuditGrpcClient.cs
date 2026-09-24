@@ -81,6 +81,59 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
         }
     }
 
+    public async Task<Result> RecordPluginWorkspaceActionAsync(
+        string action,
+        Guid pluginId,
+        Guid workspaceId,
+        Guid actorId,
+        string? reason,
+        IReadOnlyDictionary<string, string?>? beforeSummary,
+        IReadOnlyDictionary<string, string?>? afterSummary,
+        CancellationToken ct = default)
+    {
+        var request = new RecordAdminActionRequest
+        {
+            SourceService = AdminAuditSources.AssistantService,
+            Action = action,
+            EntityType = AdminAuditEntityTypes.Plugin,
+            EntityId = pluginId.ToString(),
+            // Unlike a catalog edit, this one is about a workspace: filed under it, so the
+            // workspace's audit trail shows who turned the plugin on or off there.
+            WorkspaceId = workspaceId.ToString(),
+            ActorId = actorId.ToString(),
+            Reason = reason ?? string.Empty,
+            Result = AdminAuditResults.Succeeded,
+            PerformedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            CorrelationId = Guid.NewGuid().ToString(),
+            // The plugin's key, so the audit screen names the plugin rather than a bare row id.
+            EntityKey = (beforeSummary ?? afterSummary)?.GetValueOrDefault("plugin_key") ?? string.Empty,
+        };
+
+        Fill(request.BeforeSummary, beforeSummary);
+        Fill(request.AfterSummary, afterSummary);
+
+        // Who asked and from where, read from the admin's own request (#450).
+        AdminAuditRequestMetadata.FromHttpContext(_httpContextAccessor?.HttpContext).ApplyTo(request);
+
+        try
+        {
+            var response = await _client.RecordAdminActionAsync(request, cancellationToken: ct);
+            if (response.Recorded) return Result.Success();
+
+            _logger.LogError("Admin audit refused. Action: {Action}, Reason: {Error}", action, response.ErrorMessage);
+            return Result.Failure(
+                "The change was not made because it could not be recorded in the audit log.",
+                ErrorCodes.ServiceUnavailable);
+        }
+        catch (RpcException ex)
+        {
+            _logger.LogError(ex, "Admin audit call failed. Action: {Action}, Status: {Status}", action, ex.Status);
+            return Result.Failure(
+                "The change was not made because the audit log could not be reached.",
+                ErrorCodes.ServiceUnavailable);
+        }
+    }
+
     /// <summary>proto3 maps hold no nulls, so a null value is dropped rather than written as "".</summary>
     private static void Fill(
         Google.Protobuf.Collections.MapField<string, string> target,

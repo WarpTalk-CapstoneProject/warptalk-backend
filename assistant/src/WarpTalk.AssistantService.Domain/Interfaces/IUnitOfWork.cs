@@ -17,6 +17,7 @@ public interface IUnitOfWork : IDisposable
     IWorkspacePluginRepository WorkspacePluginRepository { get; }
     IWorkspacePluginCurationRepository WorkspacePluginCurationRepository { get; }
     IPluginRequestRepository PluginRequestRepository { get; }
+    IWorkspacePluginOverrideRepository WorkspacePluginOverrideRepository { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

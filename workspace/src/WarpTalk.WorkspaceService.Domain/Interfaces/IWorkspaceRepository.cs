@@ -46,6 +46,9 @@ public interface IWorkspaceRepository : IGenericRepository<Workspace>
     /// <summary>Suspended right now: not deleted and not active — the directory's "suspended".</summary>
     Task<int> CountSuspendedAsync(CancellationToken ct = default);
 
+    /// <summary>Every workspace that is not deleted, untracked, ordered by name.</summary>
+    Task<List<Workspace>> GetNotDeletedAsync(CancellationToken ct = default);
+
     Task<WorkspaceConfiguration> GetSettingsAsync(Guid workspaceId, CancellationToken ct = default);
     Task<bool> UpdateSettingsAsync(Guid workspaceId, WorkspaceConfiguration settings, Guid userId, CancellationToken ct = default);
 }

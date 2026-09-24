@@ -22,6 +22,13 @@ public static class WorkspacePluginConstants
         /// <summary>A marketplace plugin the workspace does not have; a member may request it.</summary>
         public const string NotAdded = "not_added";
 
+        /// <summary>
+        /// A marketplace plugin the PLATFORM has turned off for this workspace (retired, an override,
+        /// the plan rule or an opt-in default). Not in the Owner's marketplace, not requestable, not
+        /// usable - whatever the workspace's own list says. Members' connections are kept, inert.
+        /// </summary>
+        public const string DisabledByPlatform = "platform_disabled";
+
         public static bool IsUsable(string availability) =>
             availability is Added or Private;
     }

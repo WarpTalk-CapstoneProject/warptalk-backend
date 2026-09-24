@@ -103,22 +103,36 @@ public class PluginToolAuditRepository : GenericRepository<PluginToolAudit>, IPl
         return ids.ToHashSet();
     }
 
-    public async Task<IReadOnlyDictionary<Guid, IReadOnlySet<Guid>>> GetPluginIdsUsedByUncuratedWorkspaceAsync(
+    public async Task<IReadOnlyList<WorkspacePluginUsage>> GetSuccessfulUsageByWorkspaceAsync(
+        IReadOnlyCollection<Guid> pluginIds,
+        Guid? workspaceId,
         CancellationToken ct = default)
     {
-        var pairs = await _db.PluginToolAudits.AsNoTracking()
+        if (pluginIds.Count == 0) return [];
+
+        // A List, so EF translates Contains into an IN; an anonymous projection, materialised, then
+        // mapped, because EF cannot translate a positional record.
+        var ids = pluginIds.ToList();
+        var query = _db.PluginToolAudits.AsNoTracking()
             .Where(audit => audit.WorkspaceId != null
                 && audit.ResultStatus == SuccessStatus
-                && !_db.WorkspacePluginCurations.Any(curation => curation.WorkspaceId == audit.WorkspaceId))
-            .Select(audit => new { WorkspaceId = audit.WorkspaceId!.Value, audit.PluginId })
-            .Distinct()
+                && ids.Contains(audit.PluginId));
+        if (workspaceId is { } only) query = query.Where(audit => audit.WorkspaceId == only);
+
+        var rows = await query
+            .GroupBy(audit => new { WorkspaceId = audit.WorkspaceId!.Value, audit.PluginId })
+            .Select(group => new
+            {
+                group.Key.WorkspaceId,
+                group.Key.PluginId,
+                Count = group.Count(),
+                LastUsedAt = group.Max(audit => audit.CreatedAt),
+            })
             .ToListAsync(ct);
 
-        return pairs
-            .GroupBy(pair => pair.WorkspaceId)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlySet<Guid>)group.Select(pair => pair.PluginId).ToHashSet());
+        return rows
+            .Select(row => new WorkspacePluginUsage(row.WorkspaceId, row.PluginId, row.Count, row.LastUsedAt))
+            .ToList();
     }
 
     public async Task<IReadOnlyDictionary<Guid, PluginUsageByUser>> GetUsageByUserAsync(

@@ -4,9 +4,9 @@ using WarpTalk.AssistantService.Infrastructure.Persistence;
 
 namespace WarpTalk.AssistantService.Infrastructure.Repositories;
 
-public class WorkspacePluginRepository : GenericRepository<WorkspacePlugin>, IWorkspacePluginRepository
+public class WorkspacePluginOverrideRepository : GenericRepository<WorkspacePluginOverride>, IWorkspacePluginOverrideRepository
 {
-    public WorkspacePluginRepository(AssistantDbContext db) : base(db)
+    public WorkspacePluginOverrideRepository(AssistantDbContext db) : base(db)
     {
     }
 }

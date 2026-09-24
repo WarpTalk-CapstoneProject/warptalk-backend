@@ -188,6 +188,16 @@ public static class AdminAuditPluginActions
     public const string OAuthClientSet = "plugin.oauth_client_set";
     public const string ToolsReplaced = "plugin.tools_replaced";
     public const string Rediscovered = "plugin.rediscovered";
+
+    // Per-workspace availability. Recorded with the workspace's id, so the workspace's own audit
+    // trail shows who turned a plugin on or off for it, and why.
+
+    /// <summary>The platform default (available / opt-in / retired) or the plan rule changed.</summary>
+    public const string AvailabilitySet = "plugin.availability_set";
+    public const string WorkspaceEnabled = "plugin.workspace_enabled";
+    public const string WorkspaceDisabled = "plugin.workspace_disabled";
+    /// <summary>A workspace override removed: the workspace follows the platform default again.</summary>
+    public const string WorkspaceReset = "plugin.workspace_reset";
 }
 
 /// <summary>

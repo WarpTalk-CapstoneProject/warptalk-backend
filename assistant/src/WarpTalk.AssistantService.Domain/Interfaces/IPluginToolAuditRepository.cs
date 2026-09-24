@@ -85,11 +85,12 @@ public interface IPluginToolAuditRepository : IGenericRepository<PluginToolAudit
     Task<IReadOnlySet<Guid>> GetPluginIdsUsedInWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
 
     /// <summary>
-    /// For every workspace that has never curated its plugin list and has successful tool calls,
-    /// the plugins used there. Backs the admin catalog's workspace count; a workspace with no usage
-    /// has nothing to carry over and is absent.
+    /// Successful calls grouped by (workspace, plugin), for the given plugins - and one workspace
+    /// when <paramref name="workspaceId"/> is set. Calls with no workspace are not counted.
     /// </summary>
-    Task<IReadOnlyDictionary<Guid, IReadOnlySet<Guid>>> GetPluginIdsUsedByUncuratedWorkspaceAsync(
+    Task<IReadOnlyList<WorkspacePluginUsage>> GetSuccessfulUsageByWorkspaceAsync(
+        IReadOnlyCollection<Guid> pluginIds,
+        Guid? workspaceId,
         CancellationToken ct = default);
 
     /// <summary>
@@ -103,3 +104,6 @@ public interface IPluginToolAuditRepository : IGenericRepository<PluginToolAudit
 
 /// <summary>One member's successful use of one plugin in one workspace.</summary>
 public sealed record PluginUsageByUser(DateTime LastUsedAt, int CallCount);
+
+/// <summary>Successful calls of one plugin inside one workspace.</summary>
+public sealed record WorkspacePluginUsage(Guid WorkspaceId, Guid PluginId, int CallCount, DateTime LastUsedAt);

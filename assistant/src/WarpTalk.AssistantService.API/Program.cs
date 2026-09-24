@@ -72,6 +72,9 @@ try
     // The operator-side lifecycle of a catalog row. Separate from the installation service because
     // it writes the global catalog rather than one user's own rows, and is gated accordingly.
     builder.Services.AddScoped<IPluginCatalogAdminService, PluginCatalogAdminService>();
+    // Which workspaces a marketplace plugin reaches: default, plan rule and per-workspace overrides.
+    // Writes only; the guard enforces what it writes.
+    builder.Services.AddScoped<IPluginWorkspaceAccessAdminService, PluginWorkspaceAccessAdminService>();
     builder.Services.AddScoped<IMcpConfirmationTokenService, McpConfirmationTokenService>();
     builder.Services.AddScoped<PluginConnectionService>();
     builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());

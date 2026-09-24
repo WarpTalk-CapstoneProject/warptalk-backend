@@ -83,9 +83,13 @@ public class PluginInstallationService : IPluginInstallationService
                 var blockReason = workspaceRefusal
                     ?? (workspaceAvailability is null || WorkspacePluginConstants.Availability.IsUsable(workspaceAvailability)
                         ? null
-                        : plugin.OwnerWorkspaceId is null
-                            ? WorkspacePluginConstants.Messages.NotAdded
-                            : WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace);
+                        : plugin.OwnerWorkspaceId is not null
+                            ? WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace
+                            : workspaceAvailability == WorkspacePluginConstants.Availability.DisabledByPlatform
+                                // Says the connection is kept: the row is here only so it can be
+                                // seen and, if the member wants, disconnected.
+                                ? PluginWorkspaceAccessConstants.Messages.DisabledByPlatform
+                                : WorkspacePluginConstants.Messages.NotAdded);
 
                 // The Owner browsing their own member page: a marketplace plugin their workspace has
                 // not added is theirs to add, not something to ask themselves for (gap 9).
@@ -112,7 +116,8 @@ public class PluginInstallationService : IPluginInstallationService
     }
 
     /// <summary>
-    /// Every marketplace row; a private row only inside the workspace that owns it.
+    /// Every marketplace row the platform lets this workspace have; a private row only inside the
+    /// workspace that owns it.
     /// </summary>
     /// <remarks>
     /// The one exception is a private plugin the caller has installed, which stays listed wherever
@@ -125,7 +130,16 @@ public class PluginInstallationService : IPluginInstallationService
         WorkspacePluginAvailability? availability,
         IReadOnlyList<PluginInstallation> installations)
     {
-        if (plugin.OwnerWorkspaceId is null) return true;
+        if (plugin.OwnerWorkspaceId is null)
+        {
+            // Turned off for this workspace by the platform: hidden, like another workspace's
+            // private plugin - except from a member who already installed it, who has to be able
+            // to see that it is off here and to disconnect it.
+            return availability is null
+                || availability.Of(plugin) != WorkspacePluginConstants.Availability.DisabledByPlatform
+                || installations.Any(i => i.PluginId == plugin.Id);
+        }
+
         if (availability is not null && plugin.OwnerWorkspaceId == availability.WorkspaceId) return true;
         return installations.Any(i => i.PluginId == plugin.Id);
     }

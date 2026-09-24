@@ -2,6 +2,6 @@ using WarpTalk.AssistantService.Domain.Entities;
 
 namespace WarpTalk.AssistantService.Domain.Interfaces;
 
-public interface IWorkspacePluginRepository : IGenericRepository<WorkspacePlugin>
+public interface IWorkspacePluginOverrideRepository : IGenericRepository<WorkspacePluginOverride>
 {
 }

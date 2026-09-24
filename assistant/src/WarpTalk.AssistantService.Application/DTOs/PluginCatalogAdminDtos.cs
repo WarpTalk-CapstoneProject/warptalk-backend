@@ -92,11 +92,15 @@ public record PluginCatalogAdminListItemDto(
     /// </summary>
     int InstallationCount,
     /// <summary>
-    /// How many workspaces have the plugin available, by the rule the guard enforces: a curated
-    /// workspace's own list, or - for a workspace that never edited its list - the plugins its
-    /// members already use there while the legacy AllowAnyPlugins switch is on.
+    /// "Workspaces using it": workspaces the platform lets have the plugin AND that have it - on the
+    /// Owner's list (or carried over), or connected by at least one active member. Null when the
+    /// workspace service could not be reached, rather than a zero that means "unknown".
     /// </summary>
-    int WorkspaceCount = 0);
+    int? WorkspaceCount = null,
+    /// <summary><c>available</c>, <c>opt_in</c> or <c>retired</c>.</summary>
+    string WorkspaceDefault = "available",
+    /// <summary>The plan rule; null means every plan.</summary>
+    IReadOnlyList<string>? AllowedPlans = null);
 
 /// <summary>
 /// One catalog row in full, with the tool manifest that <c>PUT .../tools</c> replaces.
@@ -143,7 +147,11 @@ public record PluginCatalogAdminDetailDto(
     int ConnectionCount,
     Guid? UpdatedBy,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    /// <summary><c>available</c>, <c>opt_in</c> or <c>retired</c>.</summary>
+    string WorkspaceDefault = "available",
+    /// <summary>The plan rule; null means every plan.</summary>
+    IReadOnlyList<string>? AllowedPlans = null);
 
 /// <summary>
 /// A partial edit: every property is optional and only the ones supplied are written.
