@@ -3,6 +3,7 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Application.Services;
 
 namespace WarpTalk.AuthService.API.GrpcServices;
 
@@ -11,15 +12,42 @@ public class UserServiceGrpc : UserService.UserServiceBase
     private readonly IUserDirectoryService _userDirectory;
     private readonly IVoiceConsentService _voiceConsent;
     private readonly IVoiceProfileService _voiceProfiles;
+    private readonly IStaffAccessService? _staffAccess;
 
     public UserServiceGrpc(
         IUserDirectoryService userDirectory,
         IVoiceConsentService voiceConsent,
-        IVoiceProfileService voiceProfiles)
+        IVoiceProfileService voiceProfiles,
+        IStaffAccessService? staffAccess = null)
     {
         _userDirectory = userDirectory;
         _voiceConsent = voiceConsent;
         _voiceProfiles = voiceProfiles;
+        _staffAccess = staffAccess;
+    }
+
+    /// <summary>
+    /// G10: every other service's admin permission check lands here (through its own short cache).
+    /// Answered from the database on every call — caching is the caller's job, so that the one
+    /// place holding the truth never serves a stale copy of it. An unparseable id is "not staff";
+    /// a database failure throws, which the caller treats as "refuse, and do not cache".
+    /// </summary>
+    public override async Task<GetStaffAccessResponse> GetStaffAccess(GetUserRequest request, ServerCallContext context)
+    {
+        if (_staffAccess is null || !Guid.TryParse(request.Id, out var userId))
+            return new GetStaffAccessResponse { IsStaff = false };
+
+        var access = await _staffAccess.GetAccessAsync(userId, context?.CancellationToken ?? default);
+        var response = new GetStaffAccessResponse
+        {
+            IsStaff = access.IsStaff,
+            RoleSlug = access.RoleSlug ?? string.Empty,
+            RoleName = access.RoleName ?? string.Empty,
+            IsSuperAdmin = access.IsSuperAdmin,
+        };
+        if (access.IsStaff && !access.IsSuperAdmin)
+            response.Permissions.AddRange(access.Permissions.OrderBy(code => code, StringComparer.Ordinal));
+        return response;
     }
 
     /// <summary>

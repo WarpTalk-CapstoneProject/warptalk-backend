@@ -41,7 +41,7 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
         _httpContextAccessor = httpContextAccessor;
     }
 
-    public async Task<Result> RecordAsync(
+    public Task<Result> RecordAsync(
         string action,
         Guid entityId,
         Guid actorId,
@@ -52,17 +52,36 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
         IReadOnlyDictionary<string, string?>? afterSummary = null,
         CancellationToken ct = default)
     {
-        var request = new RecordAdminActionRequest
+        var request = NewRequest(action, AdminAuditEntityTypes.User, entityId, actorId, reason, correlationId);
+        // Auth actions are not scoped to a workspace, except the sign-outs the admin workspace
+        // page makes, which name the workspace in their route so they appear on its timeline.
+        // Otherwise empty rather than something plausible: a wrong workspace id would file the
+        // entry under a tenant that had nothing to do with it.
+        request.WorkspaceId = workspaceId?.ToString() ?? string.Empty;
+        Fill(request.BeforeSummary, beforeSummary);
+        Fill(request.AfterSummary, afterSummary);
+        return SendAsync(request, action, entityId, ct);
+    }
+
+    public Task<Result> RecordSubjectAsync(AdminAuditSubjectRecord record, CancellationToken ct = default)
+    {
+        var request = NewRequest(
+            record.Action, record.EntityType, record.EntityId, record.ActorId, record.Reason, record.CorrelationId);
+        request.EntityLabel = record.EntityLabel ?? string.Empty;
+        Fill(request.BeforeSummary, record.BeforeSummary);
+        Fill(request.AfterSummary, record.AfterSummary);
+        return SendAsync(request, record.Action, record.EntityId ?? Guid.Empty, ct);
+    }
+
+    private RecordAdminActionRequest NewRequest(
+        string action, string entityType, Guid? entityId, Guid actorId, string reason, string correlationId) =>
+        new()
         {
             SourceService = AdminAuditSources.AuthService,
             Action = action,
-            EntityType = AdminAuditEntityTypes.User,
-            EntityId = entityId.ToString(),
-            // Auth actions are not scoped to a workspace, except the sign-outs the admin workspace
-            // page makes, which name the workspace in their route so they appear on its timeline.
-            // Otherwise empty rather than something plausible: a wrong workspace id would file the
-            // entry under a tenant that had nothing to do with it.
-            WorkspaceId = workspaceId?.ToString() ?? string.Empty,
+            EntityType = entityType,
+            EntityId = entityId?.ToString() ?? string.Empty,
+            WorkspaceId = string.Empty,
             ActorId = actorId.ToString(),
             Reason = reason,
             Result = AdminAuditResults.Succeeded,
@@ -70,11 +89,8 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
             CorrelationId = correlationId,
         };
 
-        Fill(request.BeforeSummary, beforeSummary);
-        Fill(request.AfterSummary, afterSummary);
-
-        // Who asked and from where, read from the admin's own request here — the store only ever
-        // sees this service's gRPC call.
+    private async Task<Result> SendAsync(RecordAdminActionRequest request, string action, Guid entityId, CancellationToken ct)
+    {
         AdminAuditRequestMetadata.FromHttpContext(_httpContextAccessor?.HttpContext).ApplyTo(request);
 
         try

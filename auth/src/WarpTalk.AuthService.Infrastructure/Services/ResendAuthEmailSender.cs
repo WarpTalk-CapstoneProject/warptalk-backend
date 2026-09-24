@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.Shared.Configuration;
 using WarpTalk.Shared.Email;
@@ -71,6 +72,26 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
             ct);
 
         await SendAsync(user.Email, email, ct);
+    }
+
+    public async Task SendStaffInvitationEmailAsync(
+        string toEmail,
+        string inviterName,
+        string roleName,
+        CancellationToken ct = default)
+    {
+        var email = await _templates.ComposeAsync(
+            EmailTemplateCatalog.AuthStaffInvitation,
+            new Dictionary<string, string>
+            {
+                ["InviterName"] = inviterName,
+                ["RoleName"] = roleName,
+                ["SignInUrl"] = $"{_appBaseUrl}/login?redirect={Uri.EscapeDataString("/admin")}",
+                ["ExpiresIn"] = $"{StaffConstants.InvitationLifetimeDays} days",
+            },
+            ct);
+
+        await SendAsync(toEmail, email, ct);
     }
 
     private async Task SendAsync(string to, RenderedEmail email, CancellationToken ct)

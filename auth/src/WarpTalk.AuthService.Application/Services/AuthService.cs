@@ -34,6 +34,9 @@ public class AuthService : IAuthService
     private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
     private readonly IAuthEmailSender _authEmailSender;
 
+    // G10: optional so the many hand-built test instances keep compiling; DI always supplies it.
+    private readonly IStaffAccessService? _staffAccess;
+
     public AuthService(
         IUnitOfWork unitOfWork,
         IPasswordHasher passwordHasher,
@@ -42,8 +45,10 @@ public class AuthService : IAuthService
         IOptions<AuthSettings> authSettings,
         ILogger<AuthService> logger,
         IWorkspaceInvitationClient workspaceInvitationClient,
-        IAuthEmailSender authEmailSender)
+        IAuthEmailSender authEmailSender,
+        IStaffAccessService? staffAccess = null)
     {
+        _staffAccess = staffAccess;
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
         _jwtGenerator = jwtGenerator;
@@ -129,7 +134,7 @@ public class AuthService : IAuthService
                 return Result.Success(new RegisterResponse(EmailVerificationRequired: true, Auth: null));
             }
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(new RegisterResponse(EmailVerificationRequired: false, Auth: response));
         }
         catch (Exception ex)
@@ -189,7 +194,7 @@ public class AuthService : IAuthService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(response);
         }
         catch (Exception ex)
@@ -423,7 +428,7 @@ public class AuthService : IAuthService
             await _unitOfWork.CommitTransactionAsync(ct);
 
             // 7. Create Auth response
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(response);
         }
         catch (Exception ex)
