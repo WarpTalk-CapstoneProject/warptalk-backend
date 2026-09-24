@@ -184,10 +184,11 @@ public class AdminWorkspaceActionServiceTests
         var result = await Service().GetTimelineAsync(_workspaceId, null);
 
         Assert.True(result.IsSuccess, result.Error);
-        Assert.Equal(new[] { "action", "note", "action" }, result.Value!.Select(e => e.Kind));
-        Assert.Equal(new[] { "Outage", "Owner called", "Fraud check" }, result.Value.Select(e => e.Text));
-        Assert.Equal("250", result.Value[0].After!["amount"]);
-        Assert.All(result.Value, e => Assert.Equal("Ops Admin", e.ActorName));
+        var entries = result.Value!;
+        Assert.Equal(new[] { "action", "note", "action" }, entries.Select(e => e.Kind));
+        Assert.Equal(new[] { "Outage", "Owner called", "Fraud check" }, entries.Select(e => e.Text));
+        Assert.Equal("250", entries[0].After!["amount"]);
+        Assert.All(entries, e => Assert.Equal("Ops Admin", e.ActorName));
     }
 
     // ── export ─────────────────────────────────────────────────────────────────────────────

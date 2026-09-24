@@ -1245,6 +1245,13 @@ public class TranslationRoomService : ITranslationRoomService
                 await PublishParticipantWaitingAsync(translationRoom.Id, userId, participant.DisplayName);
             }
 
+            // The first admitted join is when this meeting started, for the platform success rate.
+            // A row still in the lobby has not joined anything yet.
+            if (participant.Status != TranslationRoomParticipantStatuses.Waiting)
+            {
+                await RecordMeetingStartedOnceAsync(translationRoom.Id);
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -1344,6 +1351,75 @@ public class TranslationRoomService : ITranslationRoomService
                 publishEx,
                 "Failed to publish participant externality for RoomId: {RoomId}, UserId: {UserId}; their usage will be attributed as internal.",
                 translationRoomId, userId);
+        }
+    }
+
+    /// <summary>
+    /// Counts this room's meeting as started, once, however many people join and however many
+    /// replicas serve them: the counter is guarded by an atomic SET NX on the shared marker, so
+    /// only the writer that creates it increments. Best-effort like every other realtime write on
+    /// the join path — a metric must never be able to fail somebody's join.
+    /// </summary>
+    private async Task RecordMeetingStartedOnceAsync(Guid translationRoomId)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var won = await _redisStateRepository.StringSetIfAbsentAsync(
+                MeetingLifecycleKeys.StartedAt(translationRoomId),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture),
+                MeetingLifecycleKeys.Ttl);
+            if (won)
+            {
+                MeetingLifecycleMetrics.RecordStarted();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not record the meeting start marker for RoomId: {RoomId}", translationRoomId);
+        }
+    }
+
+    /// <summary>
+    /// Records how this room's meeting ended — see <see cref="MeetingLifecycleMetrics"/>.
+    ///
+    /// Only a room somebody actually joined is a meeting: a room created and ended with nobody
+    /// ever in it has no start marker and is skipped, so it cannot read as a failed meeting.
+    /// </summary>
+    private async Task RecordMeetingEndedAsync(Guid translationRoomId, string endReason, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var startedRaw = await _redisStateRepository.StringGetAsync(MeetingLifecycleKeys.StartedAt(translationRoomId));
+            if (string.IsNullOrEmpty(startedRaw))
+            {
+                return;
+            }
+
+            var captionRaw = await _redisStateRepository.StringGetAsync(MeetingLifecycleKeys.FirstCaptionAt(translationRoomId));
+            var everJoined = await _participantRepository.CountEverJoinedAsync(translationRoomId, ct);
+
+            TimeSpan? duration = long.TryParse(startedRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var startedMs)
+                ? DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(startedMs)
+                : null;
+
+            MeetingLifecycleMetrics.RecordEnded(
+                endReason,
+                MeetingLifecycleMetrics.ReachedLive(everJoined, !string.IsNullOrEmpty(captionRaw)),
+                duration);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not record the meeting outcome for RoomId: {RoomId}", translationRoomId);
         }
     }
 
@@ -2250,6 +2326,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.EndReasonExpired, ct);
 
             // WT-314: same door as Cancel above. Expiry is driven by IdleRoomMonitoringWorker
             // on rooms nobody ever started, which is precisely the population that has no
@@ -2333,6 +2410,11 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
+            // WT-826: publish the record to the people who took part, unless the host turned that
+            // off. Inside the same save as ENDED, so there is no moment in which the meeting is
+            // over and its record is still waiting on a click nobody is going to make.
+            await ApplyRecordAutoShareAtEndAsync(translationRoom, ct);
+
             _translationRoomRepository.Update(translationRoom);
 
             // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
@@ -2360,6 +2442,9 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // After the commit, so a failed save can never be counted as an ended meeting.
+            await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.CurrentEndReason, ct);
 
             // WT-191: tell everyone still in the room that it is over. The host ends the meeting
             // over REST, so TranslationRoomHub.EndTranslationRoom (which broadcasts
@@ -2441,10 +2526,27 @@ public class TranslationRoomService : ITranslationRoomService
             // happen once the meeting is over and those artifacts exist. Routing it through that
             // method would have made the feature refuse in exactly the state it is for.
             var settings = ReadSettings(translationRoom.Settings);
-            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal))
+
+            // WT-826: before the meeting has ended, Publish/Unpublish IS the host stating whether
+            // the record should be shared when it ends — so it sets the toggle too, and ending the
+            // room cannot quietly reverse a host who chose "keep private" mid-meeting. After the
+            // end the toggle has already done its one job; leave it as the record of what happened.
+            //
+            // Part of the no-op test below, not only of the write: a room created before the
+            // toggle already STORES HOST_ONLY (as a default), so "keep it private" sends the level
+            // it already has — and returning early there would drop the one thing the host said.
+            var ended = string.Equals(translationRoom.Status, "ENDED", StringComparison.Ordinal);
+            bool? autoShareRecord = ended
+                ? settings.AutoShareRecord
+                : string.Equals(level, ArtifactAccessLevels.AllParticipants, StringComparison.Ordinal);
+
+            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal)
+                && settings.AutoShareRecord == autoShareRecord)
                 return Result.Success();
 
             settings.ArtifactAccess = level;
+            settings.AutoShareRecord = autoShareRecord;
+
             translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
             translationRoom.UpdatedAt = DateTime.UtcNow;
             translationRoom.UpdatedBy = hostId;
@@ -2471,6 +2573,62 @@ public class TranslationRoomService : ITranslationRoomService
                 hostId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// WT-826: at the moment a room ends, share its record if the room's toggle says so, and let
+    /// that count as the host releasing the recording consent hold (backend #432 made the host and
+    /// booker read directly; everybody else waits for a release, and this is one).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only recordings that exist NOW are released here. A recording LiveKit finishes uploading
+    /// after the end is written by <c>RecordingLifecycleEventProcessor</c>, which asks
+    /// <see cref="RecordAutoShare.ReleasesRecordingHold"/> the same question.
+    /// </para>
+    /// <para>
+    /// A failure to release is logged and does not fail the end. The meeting is over either way,
+    /// and a recording left held is what the host's own release button already fixes — whereas a
+    /// room that refused to end strands everybody in it.
+    /// </para>
+    /// </remarks>
+    private async Task ApplyRecordAutoShareAtEndAsync(TranslationRoom translationRoom, CancellationToken ct)
+    {
+        var settings = RecordAutoShare.Read(translationRoom.Settings);
+        if (!RecordAutoShare.ApplyAtMeetingEnd(settings))
+            return;
+
+        translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
+
+        try
+        {
+            var held = await _unitOfWork.TranslationRoomArtifactRepository.FindAsync(
+                artifact => artifact.TranslationRoomId == translationRoom.Id
+                    && artifact.ConsentRequired
+                    && artifact.DeletedAt == null,
+                ct: ct);
+
+            foreach (var artifact in held)
+            {
+                artifact.ConsentRequired = false;
+                _unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not release the recording consent hold while auto-sharing room {RoomId}; the host can still release it by hand",
+                translationRoom.Id);
+        }
+
+        // The same audit line a host's own Publish writes: who opened this up and when is the
+        // question asked afterwards, and "the room's own setting, at the end" is an answer.
+        _logger.LogInformation(
+            "artifact_access_changed: RoomId={RoomId} HostId={HostId} Level={Level} Reason=auto_share_at_end",
+            translationRoom.Id,
+            translationRoom.HostId,
+            settings.ArtifactAccess);
     }
 
     /// <summary>
@@ -2746,6 +2904,17 @@ public class TranslationRoomService : ITranslationRoomService
                 // turning it on yields a transcript that begins at minute twelve and is silent
                 // about the twelve, and turning it off cannot unwrite what is already committed.
                 current.SaveTranscript = request.Settings.SaveTranscript ?? current.SaveTranscript;
+
+                // WT-826. The toggle carries the room's level with it while the meeting has not
+                // happened yet, so the two cannot disagree — a room saying "share automatically"
+                // while holding HOST_ONLY would show the host "Draft" all meeting and then publish
+                // anyway. A caller that names a level outright still wins, as on create.
+                if (request.Settings.AutoShareRecord is { } autoShareRecord)
+                {
+                    current.AutoShareRecord = autoShareRecord;
+                    if (request.Settings.ArtifactAccess is null)
+                        current.ArtifactAccess = RecordAutoShare.ArtifactAccessFor(autoShareRecord);
+                }
 
                 translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(current);
             }

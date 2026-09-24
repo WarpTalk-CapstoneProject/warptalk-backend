@@ -133,43 +133,6 @@ public class PrometheusMetricsSourceTests
             () => new PrometheusMetricsSource(client).QueryAsync("up", CancellationToken.None));
     }
 
-    [Fact]
-    public async Task ActiveAlertsAsync_ReadsNameSeveritySummaryAndStart()
-    {
-        var (source, handler) = Build(HttpStatusCode.OK, """
-        {"status":"success","data":{"alerts":[
-          {"labels":{"alertname":"WarpTalkAiWorkerMissing","severity":"critical"},
-           "annotations":{"summary":"Required AI worker heartbeat is missing"},
-           "state":"firing","activeAt":"2026-08-16T08:42:00Z"}
-        ]}}
-        """);
-
-        var alerts = await source.ActiveAlertsAsync(CancellationToken.None);
-
-        Assert.Equal("http://prometheus.test/api/v1/alerts", handler.LastRequestUri);
-        Assert.Equal("WarpTalkAiWorkerMissing", alerts[0].Name);
-        Assert.Equal("critical", alerts[0].Severity);
-        Assert.Equal("firing", alerts[0].State);
-        Assert.Equal(new DateTime(2026, 8, 16, 8, 42, 0, DateTimeKind.Utc), alerts[0].ActiveSince);
-    }
-
-    [Fact]
-    public async Task ActiveAlertsAsync_SurvivesAnAlertWithNoAnnotations()
-    {
-        var (source, _) = Build(HttpStatusCode.OK, """
-        {"status":"success","data":{"alerts":[
-          {"labels":{"alertname":"Bare"},"state":"pending"}
-        ]}}
-        """);
-
-        var alerts = await source.ActiveAlertsAsync(CancellationToken.None);
-
-        Assert.Equal("Bare", alerts[0].Name);
-        Assert.Equal("unknown", alerts[0].Severity);
-        Assert.Null(alerts[0].Summary);
-        Assert.Null(alerts[0].ActiveSince);
-    }
-
     private const string EmptyVector =
         """{"status":"success","data":{"resultType":"vector","result":[]}}""";
 

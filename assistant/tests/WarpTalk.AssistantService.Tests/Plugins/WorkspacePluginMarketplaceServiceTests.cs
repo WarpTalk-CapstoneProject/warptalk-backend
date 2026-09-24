@@ -36,6 +36,8 @@ public class WorkspacePluginMarketplaceServiceTests
     private readonly List<UserNotification> _sent = [];
     private readonly List<PluginConnection> _connections = [];
     private readonly List<PluginInstallation> _installations = [];
+    /// <summary>Marketplace plugins members have successfully used in <see cref="WorkspaceId"/>.</summary>
+    private readonly HashSet<Guid> _usedHere = [];
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IWorkspacePluginPolicyClient _policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
@@ -65,6 +67,8 @@ public class WorkspacePluginMarketplaceServiceTests
         var auditRepository = Substitute.For<IPluginToolAuditRepository>();
         auditRepository.CountDistinctUsersByPluginForWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(new Dictionary<Guid, int>());
+        auditRepository.GetPluginIdsUsedInWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlySet<Guid>)(call.ArgAt<Guid>(0) == WorkspaceId ? _usedHere.ToHashSet() : []));
 
         _unitOfWork.PluginRepository.Returns(pluginRepository);
         _unitOfWork.WorkspacePluginRepository.Returns(workspacePluginRepository);
@@ -234,11 +238,13 @@ public class WorkspacePluginMarketplaceServiceTests
     // ---- the transition ------------------------------------------------------------------------
 
     [Fact]
-    public async Task Transition_AnUncuratedWorkspaceOnAllowAnyPlugins_KeepsEveryOtherPlugin_WhenTheOwnerRemovesOne()
+    public async Task Transition_AnUncuratedWorkspaceOnAllowAnyPlugins_KeepsEveryOtherPluginItsMembersUse_WhenTheOwnerRemovesOne()
     {
         // The migration-safety guarantee: the Owner's first change is the ONLY change. Removing
-        // Linear from a workspace that had every plugin leaves it with every other active one.
+        // Linear from a workspace whose members used Linear and Notion leaves it with Notion - and
+        // a retired plugin they once used is not brought back.
         AllowAnyPlugins(true);
+        _usedHere.UnionWith([_linear.Id, _notion.Id, _slackRetired.Id]);
 
         var result = await Sut().RemovePluginAsync(WorkspaceId, OwnerId, "linear");
 
@@ -251,17 +257,56 @@ public class WorkspacePluginMarketplaceServiceTests
     }
 
     [Fact]
-    public async Task Transition_AnUncuratedWorkspace_ReadsAsHavingEveryMarketplacePlugin()
+    public async Task Transition_AnUncuratedWorkspace_HasOnlyThePluginsItsMembersUse()
+    {
+        // The owner report: a workspace that had chosen nothing listed the whole marketplace under
+        // "In this workspace". What it really has is what its members were already using.
+        AllowAnyPlugins(true);
+        _usedHere.Add(_notion.Id);
+
+        var overview = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
+
+        Assert.False(overview.IsCurated);
+        Assert.Equal(["notion"], overview.InWorkspace.Select(p => p.Key));
+        Assert.Equal(["linear"], overview.Marketplace.Select(p => p.Key));
+        // Reading never curates: only a write does.
+        Assert.Empty(_curations);
+    }
+
+    [Fact]
+    public async Task Transition_AnUncuratedWorkspaceNobodyUsedAPluginIn_HasNone_EvenWithAllowAnyPluginsOn()
     {
         AllowAnyPlugins(true);
 
         var overview = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
 
-        Assert.False(overview.IsCurated);
-        Assert.Equal(["linear", "notion"], overview.InWorkspace.Select(p => p.Key).Order());
-        Assert.Empty(overview.Marketplace);
-        // Reading never curates: only a write does.
-        Assert.Empty(_curations);
+        Assert.Empty(overview.InWorkspace);
+        Assert.Equal(["linear", "notion"], overview.Marketplace.Select(p => p.Key).Order());
+    }
+
+    [Fact]
+    public async Task Transition_WithAllowAnyPluginsOff_UsedPluginsAreNotCarriedOver()
+    {
+        AllowAnyPlugins(false);
+        _usedHere.Add(_notion.Id);
+
+        var overview = (await Sut().GetOverviewAsync(WorkspaceId, OwnerId)).Value!;
+
+        Assert.Empty(overview.InWorkspace);
+    }
+
+    [Fact]
+    public async Task Transition_TheFirstEdit_SeedsOnlyThePluginsMembersUse()
+    {
+        AllowAnyPlugins(true);
+        _usedHere.Add(_notion.Id);
+
+        await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
+
+        Assert.True(Assert.Single(_curations).SeededFromAllowAnyPlugins);
+        Assert.Equal(new[] { _linear.Id, _notion.Id }.Order(), _workspacePlugins.Select(r => r.PluginId).Order());
+        Assert.Null(_workspacePlugins.Single(r => r.PluginId == _notion.Id).AddedBy);
+        Assert.Equal(OwnerId, _workspacePlugins.Single(r => r.PluginId == _linear.Id).AddedBy);
     }
 
     [Fact]
@@ -329,6 +374,7 @@ public class WorkspacePluginMarketplaceServiceTests
     public async Task Transition_RetiredPluginsAreNotSeeded()
     {
         AllowAnyPlugins(true);
+        _usedHere.UnionWith([_linear.Id, _notion.Id, _slackRetired.Id]);
 
         await Sut().AddMarketplacePluginAsync(WorkspaceId, OwnerId, "linear");
 
@@ -402,6 +448,7 @@ public class WorkspacePluginMarketplaceServiceTests
     public async Task RequestingAPluginTheWorkspaceAlreadyHas_IsAConflict()
     {
         AllowAnyPlugins(true);
+        _usedHere.Add(_linear.Id);
 
         var result = await Sut().CreateRequestAsync(WorkspaceId, MemberId, null, new CreatePluginRequestRequest("linear"));
 
@@ -851,6 +898,7 @@ public class WorkspacePluginMarketplaceServiceTests
     [InlineData(WorkspacePluginConstants.ErrorCodes.InvalidPrivatePlugin, 400)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.PolicyUnavailable, 503)]
     [InlineData(WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently, 409)]
+    [InlineData(WorkspacePluginConstants.ErrorCodes.MembersUnavailable, 503)]
     public void TheControllerMapsRefusalsToStatuses(string errorCode, int status)
     {
         Assert.Equal(status, WorkspacePluginsController.StatusFor(errorCode));
