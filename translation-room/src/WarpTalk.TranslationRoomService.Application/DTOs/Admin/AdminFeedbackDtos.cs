@@ -15,6 +15,9 @@ public record AdminFeedbackQuery : AdminPageRequest
     /// </summary>
     public DateTime? From { get; init; }
     public DateTime? To { get; init; }
+
+    /// <summary>Comments only: <c>recent</c> (default, newest first) or <c>lowest</c> (lowest overall rating first).</summary>
+    public string? Sort { get; init; }
 }
 
 /// <summary>
@@ -32,11 +35,29 @@ public record AdminFeedbackQuery : AdminPageRequest
 /// Counts for ratings 1..5, index 0 being a rating of 1. A mean of 3.0 from all threes and one
 /// from half ones and half fives are the same number and entirely different feedback.
 /// </param>
+/// <param name="ResponseShare">
+/// WT-694: respondents who answered this dimension over all respondents in the window. Null when
+/// nobody responded at all.
+/// </param>
+/// <param name="Confidence">
+/// <c>none</c> (nobody answered — show "no data", not a score), <c>low</c> (thin sample; see
+/// <paramref name="ConfidenceNote"/>) or <c>ok</c>. Thresholds live on AdminFeedbackInsightsCalculator.
+/// </param>
+/// <param name="PreviousAverageRating">The same dimension over the previous window of equal length; null when unanswered.</param>
+/// <param name="PreviousConfidence">How far the previous figure can be trusted, same rules.</param>
+/// <param name="AverageDelta">Current minus previous average; null unless both exist.</param>
 public record AdminFeedbackDimensionDto(
     string Dimension,
     int ResponseCount,
     double? AverageRating,
-    IReadOnlyList<int> Distribution);
+    IReadOnlyList<int> Distribution,
+    double? ResponseShare = null,
+    string Confidence = "none",
+    string? ConfidenceNote = null,
+    int PreviousResponseCount = 0,
+    double? PreviousAverageRating = null,
+    string PreviousConfidence = "none",
+    double? AverageDelta = null);
 
 /// <summary>
 /// The report.
@@ -49,6 +70,15 @@ public record AdminFeedbackDimensionDto(
 /// Rooms that received at least one rating, over meetings that ended. Null when nothing ended in
 /// the window, because a rate with no denominator is not zero.
 /// </param>
+/// <param name="PreviousFrom">WT-694: start of the comparison window — the same length, immediately before.</param>
+/// <param name="Confidence">Survey-level <c>none</c> / <c>low</c> / <c>ok</c>; <paramref name="ConfidenceNote"/> says why.</param>
+/// <param name="LowestDimension">
+/// The weakest dimension by average, preferring ones with a trustworthy sample; null when nothing
+/// was rated. <paramref name="LowestDimensionNote"/> is set when every candidate was thin.
+/// </param>
+/// <param name="DimensionsWithoutData">Dimensions nobody answered in the window, e.g. voice clone quality.</param>
+/// <param name="MinResponses">The low-confidence threshold on answers, so the page can state it.</param>
+/// <param name="MinRate">The low-confidence threshold on response rate / share (0..1).</param>
 public record AdminFeedbackSummaryDto(
     DateTime From,
     DateTime To,
@@ -56,7 +86,18 @@ public record AdminFeedbackSummaryDto(
     int RatedMeetings,
     int EndedMeetings,
     double? ResponseRate,
-    IReadOnlyList<AdminFeedbackDimensionDto> Dimensions);
+    IReadOnlyList<AdminFeedbackDimensionDto> Dimensions,
+    DateTime? PreviousFrom = null,
+    DateTime? PreviousTo = null,
+    int PreviousResponseCount = 0,
+    double? PreviousResponseRate = null,
+    string Confidence = "none",
+    string? ConfidenceNote = null,
+    string? LowestDimension = null,
+    string? LowestDimensionNote = null,
+    IReadOnlyList<string>? DimensionsWithoutData = null,
+    int MinResponses = 10,
+    double MinRate = 0.10);
 
 /// <summary>
 /// One free-text comment.

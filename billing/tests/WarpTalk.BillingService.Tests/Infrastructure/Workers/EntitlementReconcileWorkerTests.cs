@@ -14,6 +14,7 @@ using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Options;
 using WarpTalk.BillingService.Infrastructure.Workers;
+using WarpTalk.Shared.Coordination;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Infrastructure.Workers;
@@ -32,7 +33,7 @@ public class EntitlementReconcileWorkerTests
     private readonly Mock<IEntitlementChangePublisher> _publisher = new();
     private readonly List<(Guid WorkspaceId, string Reason)> _enqueued = new();
 
-    private EntitlementReconcileWorker Build(int intervalMinutes = 60)
+    private EntitlementReconcileWorker Build(int intervalMinutes = 60, IDistributedLockProvider? locks = null)
     {
         _unitOfWork.Setup(u => u.SubscriptionRepository).Returns(_subscriptions.Object);
         _unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
@@ -51,7 +52,37 @@ public class EntitlementReconcileWorkerTests
             Options.Create(new BillingWorkerOptions
             {
                 EntitlementReconcileIntervalMinutes = intervalMinutes
-            }));
+            }),
+            locks ?? new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
+    }
+
+    [Fact]
+    public async Task TwoReplicas_StartingTogether_RepublishEachWorkspaceOnce()
+    {
+        // Multi-replica: every replica sweeps on start, and each sweep writes a fresh outbox row per
+        // workspace. The shared lease (held for most of the interval) lets exactly one of them run.
+        var workspaceId = Guid.NewGuid();
+        _subscriptions
+            .Setup(r => r.GetActiveSubscriptionsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Subscription> { For(workspaceId) });
+        var sharedLocks = new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System);
+
+        var first = Build(locks: sharedLocks);
+        var second = Build(locks: sharedLocks);
+        await first.StartAsync(CancellationToken.None);
+        await second.StartAsync(CancellationToken.None);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (_enqueued.Count == 0)
+        {
+            await Task.Delay(10, timeout.Token);
+        }
+
+        await Task.Delay(200);
+        await first.StopAsync(CancellationToken.None);
+        await second.StopAsync(CancellationToken.None);
+
+        _enqueued.Should().ContainSingle().Which.WorkspaceId.Should().Be(workspaceId);
     }
 
     private static Subscription For(Guid workspaceId) => new()

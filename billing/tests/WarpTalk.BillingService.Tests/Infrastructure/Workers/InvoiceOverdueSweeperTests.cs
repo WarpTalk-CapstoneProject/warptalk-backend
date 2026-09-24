@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -78,7 +79,8 @@ public class InvoiceOverdueSweeperTests
         var sweeper = new InvoiceOverdueSweeper(
             services,
             Mock.Of<ILogger<InvoiceOverdueSweeper>>(),
-            Options.Create(new BillingWorkerOptions()));
+            Options.Create(new BillingWorkerOptions()),
+            new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
 
         await sweeper.SweepAsync(CancellationToken.None);
 

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using System;
 using System.Linq;
 using System.Threading;
@@ -42,18 +43,24 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 public class EntitlementReconcileWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<EntitlementReconcileWorker> _logger;
     private readonly BillingWorkerOptions _options;
 
     public EntitlementReconcileWorker(
         IServiceProvider serviceProvider,
         ILogger<EntitlementReconcileWorker> logger,
-        IOptions<BillingWorkerOptions> options)
+        IOptions<BillingWorkerOptions> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
     }
+
+    /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
+    public const string LockResource = "billing:entitlement-reconcile";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -76,7 +83,16 @@ public class EntitlementReconcileWorker : BackgroundService
             // a snapshot to be stale — a direct data change is usually followed by a restart.
             try
             {
-                await ReconcileAsync(stoppingToken);
+                // ONCE PER INTERVAL CLUSTER-WIDE. Each sweep writes a fresh outbox row (new event id) per
+                // workspace, so N replicas published N entitlement events per workspace per interval. The
+                // lease is kept for 90% of the interval, so the other replicas' timers skip until then.
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromTicks((long)(_options.EntitlementReconcileInterval.Ticks * 0.9)),
+                    ct => ReconcileAsync(ct),
+                    _logger,
+                    stoppingToken,
+                    holdAfterCompletion: true);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

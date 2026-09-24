@@ -85,3 +85,29 @@ public record AdminUserSessionDto(
 /// client-supplied actor would make the trail forgeable.
 /// </summary>
 public record AdminUserActionRequest(string Reason);
+
+/// <summary>One point of a per-day series. <paramref name="Date"/> is a local day of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.</summary>
+public record AdminDailyCountDto(string Date, int Count);
+
+/// <summary>
+/// <c>GET /api/v1/admin/users/insights</c>: metrics <c>newUsers</c> and <c>activeUsers</c>, plus
+/// sign-ups per local day (of the request's <c>tz</c>) across the current range (zero-filled).
+/// </summary>
+public record AdminUserInsightsDto(
+    AdminInsightRange Range,
+    AdminInsightRange PreviousRange,
+    IReadOnlyList<AdminInsightMetric> Metrics,
+    IReadOnlyList<AdminDailyCountDto> NewUsersByDay,
+    IReadOnlyList<AdminUserMonthDto>? UsersByMonth = null,
+    string? UsersByMonthNote = null);
+
+/// <summary>
+/// WT-692: one local calendar month (of the request's <c>tz</c>, <c>yyyy-MM</c>) of user growth,
+/// over the six months ending with the month of <c>to</c> — the same months as billing's
+/// <c>revenueByMonth</c>.
+/// </summary>
+/// <param name="NewUsers">Accounts created in the month, soft-deleted ones included.</param>
+/// <param name="TotalUsers">Accounts that existed at the END of the month: created before it and not deleted by then.</param>
+/// <param name="ActiveUsers">Distinct accounts issued a refresh token in the month (same definition as <c>activeUsers</c>).</param>
+public record AdminUserMonthDto(string Month, int NewUsers, int TotalUsers, int ActiveUsers);
+

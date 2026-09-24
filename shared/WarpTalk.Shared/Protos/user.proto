@@ -24,6 +24,24 @@ service UserService {
   // and the two sharing a table is the reason an uploaded recording changed nothing. Empty means
   // "not chosen", and the caller falls back to cloning the speaker live from the meeting.
   rpc GetPreferredVoice (GetUserRequest) returns (GetPreferredVoiceResponse);
+
+  // WT-699 / TC4104: the audience of a BROADCAST admin announcement. Ids only, keyset-paged by id,
+  // active and not deleted — the notification service resolves "everyone" with it and needs
+  // nothing else about the people it is writing to.
+  rpc ListActiveUserIds (ListActiveUserIdsRequest) returns (ListActiveUserIdsResponse);
+}
+
+message ListActiveUserIdsRequest {
+  // Empty for the first page; otherwise the next_page_token of the previous page.
+  string page_token = 1;
+  // Clamped server-side to 1..1000.
+  int32 page_size = 2;
+}
+
+message ListActiveUserIdsResponse {
+  repeated string user_ids = 1;
+  // Empty when this was the last page.
+  string next_page_token = 2;
 }
 
 message GetUserRequest {

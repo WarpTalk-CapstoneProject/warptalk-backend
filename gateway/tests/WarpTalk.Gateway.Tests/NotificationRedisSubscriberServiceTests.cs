@@ -1,3 +1,4 @@
+using WarpTalk.Gateway.Tests.Helpers;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -59,7 +60,8 @@ public class NotificationRedisSubscriberServiceTests
         _service = new NotificationRedisSubscriberService(
             _mockRedis.Object,
             _mockHubContext.Object,
-            _mockLogger.Object);
+            _mockLogger.Object,
+            new TestPubSubLeadership());
     }
 
     [Fact]

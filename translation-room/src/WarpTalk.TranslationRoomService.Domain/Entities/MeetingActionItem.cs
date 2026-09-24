@@ -5,9 +5,14 @@ namespace WarpTalk.TranslationRoomService.Domain.Entities;
 /// <summary>
 /// One commitment from an approved biên bản, as a row somebody can be assigned and can close.
 ///
-/// Created only when minutes are APPROVED. Before that the document is a draft, and a draft's
+/// Two ways in, told apart by <see cref="Source"/>:
+///
+/// MINUTES — created when minutes are APPROVED. Before that the document is a draft, and a draft's
 /// commitments are proposals — putting them in people's task lists would mean withdrawing them
 /// whenever the secretary edited a line.
+///
+/// ASSISTANT — somebody asked WarpBot for it in so many words ("action: …, owner: me"). The person
+/// asking is the ratification, so there is no document to wait for, and no minutes id to carry.
 /// </summary>
 public partial class MeetingActionItem
 {
@@ -18,7 +23,17 @@ public partial class MeetingActionItem
     /// <summary>External AuthService workspace id. No physical FK.</summary>
     public Guid WorkspaceId { get; set; }
 
-    public Guid SourceMinutesId { get; set; }
+    /// <summary>The approved minutes this came from. NULL exactly when <see cref="Source"/> is ASSISTANT.</summary>
+    public Guid? SourceMinutesId { get; set; }
+
+    /// <summary>MINUTES or ASSISTANT — see MeetingActionItemConstants.</summary>
+    public string Source { get; set; } = "MINUTES";
+
+    /// <summary>
+    /// External AuthService user id of whoever asked for an ASSISTANT row. No physical FK. NULL on
+    /// MINUTES rows, whose approver the minutes record already names.
+    /// </summary>
+    public Guid? CreatedBy { get; set; }
 
     /// <summary>
     /// Denormalised from the room. Carry-over asks what the previous occurrence of a recurring

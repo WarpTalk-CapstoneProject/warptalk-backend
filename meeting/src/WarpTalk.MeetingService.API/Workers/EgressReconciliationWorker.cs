@@ -1,4 +1,5 @@
 using WarpTalk.MeetingService.Application.Interfaces;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.MeetingService.API.Workers;
 
@@ -17,15 +18,25 @@ public sealed class EgressReconciliationWorker : BackgroundService
     /// </summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(2);
 
+    /// <summary>
+    /// One replica per tick. Each sweep asks LiveKit about every in-progress recording and
+    /// publishes a completion event for each finished one; the consumer ignores duplicates, but N
+    /// replicas meant N LiveKit calls and N events per recording.
+    /// </summary>
+    public const string LockResource = "meeting:egress-reconciliation";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<EgressReconciliationWorker> _logger;
+    private readonly IDistributedLockProvider _locks;
 
     public EgressReconciliationWorker(
         IServiceScopeFactory scopeFactory,
-        ILogger<EgressReconciliationWorker> logger)
+        ILogger<EgressReconciliationWorker> logger,
+        IDistributedLockProvider locks)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _locks = locks;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -35,21 +46,12 @@ public sealed class EgressReconciliationWorker : BackgroundService
         {
             try
             {
-                using var scope = _scopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<IEgressReconciliation>();
-                var result = await service.ReconcileAsync(DateTime.UtcNow, stoppingToken);
-
-                if (!result.IsSuccess)
-                {
-                    _logger.LogWarning(
-                        "Egress reconciliation failed: {ErrorCode} {Error}",
-                        result.ErrorCode,
-                        result.Error);
-                }
-                else if (result.Value > 0)
-                {
-                    _logger.LogInformation("Reconciled {EgressCount} finished egresses", result.Value);
-                }
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(1),
+                    SweepOnceAsync,
+                    _logger,
+                    stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -65,5 +67,24 @@ public sealed class EgressReconciliationWorker : BackgroundService
             }
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+
+    private async Task SweepOnceAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<IEgressReconciliation>();
+        var result = await service.ReconcileAsync(DateTime.UtcNow, cancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            _logger.LogWarning(
+                "Egress reconciliation failed: {ErrorCode} {Error}",
+                result.ErrorCode,
+                result.Error);
+        }
+        else if (result.Value > 0)
+        {
+            _logger.LogInformation("Reconciled {EgressCount} finished egresses", result.Value);
+        }
     }
 }

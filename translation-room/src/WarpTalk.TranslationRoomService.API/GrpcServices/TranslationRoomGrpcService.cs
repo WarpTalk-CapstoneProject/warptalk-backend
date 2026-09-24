@@ -1,6 +1,7 @@
 using Grpc.Core;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 
@@ -112,7 +113,9 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
                 DisplayName = p.DisplayName,
                 Role = p.Role,
                 Language = p.SpeakLanguage,
-                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status)
+                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status),
+                // WT-699 / TC1806: the hub needs the status itself, not only the seat bit.
+                Status = p.Status ?? string.Empty
             });
         }
 
@@ -154,7 +157,52 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Kick refused."));
         }
 
-        return new KickRoomParticipantResponse { Kicked = result.Value };
+        // Kicked keeps its original meaning ("a roster row now says KICKED"), so an older caller
+        // that reads only it is unchanged. WT-699 / TC2103: AlreadyKicked is what lets a newer one
+        // tell the host the truth about a second press.
+        return new KickRoomParticipantResponse
+        {
+            Kicked = result.Value != RosterRemovalOutcome.NotOnRoster,
+            AlreadyKicked = result.Value == RosterRemovalOutcome.AlreadyRemoved
+        };
+    }
+
+    /// <summary>
+    /// WT-699 / TC2402. MeetingService owns the Reject action; the lobby row it refuses lives here.
+    /// Same three-way error split as the kick.
+    /// </summary>
+    public override async Task<RejectRoomParticipantResponse> RejectRoomParticipant(
+        RejectRoomParticipantRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var roomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        if (!Guid.TryParse(request.ParticipantUserId, out var participantUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        if (!Guid.TryParse(request.RequestedByUserId, out var requestedByUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        var result = await _directoryService.RejectParticipantByUserAsync(
+            roomId, requestedByUserId, participantUserId, context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                throw new RpcException(new Status(StatusCode.PermissionDenied, result.Error ?? "Not the current host."));
+
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Reject refused."));
+        }
+
+        return new RejectRoomParticipantResponse
+        {
+            Rejected = result.Value == RosterRemovalOutcome.Removed,
+            AlreadyRejected = result.Value == RosterRemovalOutcome.AlreadyRemoved
+        };
     }
 
     /// <summary>

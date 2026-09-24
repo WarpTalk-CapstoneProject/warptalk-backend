@@ -52,6 +52,14 @@ public static class TranslationRoomConstants
     /// </summary>
     public static readonly TimeSpan SummaryVariantInFlightTtl = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// WT-701 — the one retry a rendering gets when its run reported `completed` but no stored row
+    /// matches the pair that was asked for. The value is the request id of that retry, so the
+    /// retry's own `completed` is recognised and answered with `failed` instead of queueing again.
+    /// Lives as long as the outcome it is compared against (<see cref="SummaryRewriteStatusTtl"/>).
+    /// </summary>
+    public const string SummaryVariantRequeueKeyPrefix = "summary_variant_requeued:";
+
     // Terminal Statuses
     public static readonly string[] TerminalStatuses = new[]
     {
@@ -139,6 +147,13 @@ public static class TranslationRoomConstants
     public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";
     public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";
     public const string ErrorParticipantKicked = "You have been permanently removed from this room and cannot rejoin.";
+
+    /// <summary>WT-699 / TC2402: what a rejected knock is told when it tries again.</summary>
+    public const string ErrorParticipantRejected = "The host declined your request to join this meeting.";
+    public const string ErrorOnlyHostCanReject = "Only the host can decline a request to join.";
+    public const string ErrorParticipantNotWaiting = "This person is not waiting to join, so there is nothing to decline.";
+    /// <summary>WT-699 / TC2103: a second Kick for somebody who is already out.</summary>
+    public const string ErrorParticipantAlreadyKicked = "This participant has already been removed from the meeting.";
 
     /// <summary>WT-262. Format arg {0} is the room's MaxParticipants.</summary>
     public const string ErrorRoomAtCapacity = "This room is full ({0} participants). Ask the host to remove someone or start a larger room.";

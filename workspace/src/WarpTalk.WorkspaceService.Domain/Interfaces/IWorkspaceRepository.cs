@@ -33,6 +33,19 @@ public interface IWorkspaceRepository : IGenericRepository<Workspace>
     /// that has to reach deleted workspaces at all.
     /// </summary>
     Task<WorkspaceDirectoryRow?> GetAdminDetailBySlugAsync(string slug, CancellationToken ct = default);
+
+    /// <summary>
+    /// Workspaces created in <c>[from, to)</c>, soft-deleted ones INCLUDED: a creation that
+    /// happened in a past window stays counted there after the workspace is deleted.
+    /// </summary>
+    Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>WT-692: workspaces that existed at <paramref name="instant"/> — created before it, not deleted by then.</summary>
+    Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default);
+
+    /// <summary>Suspended right now: not deleted and not active — the directory's "suspended".</summary>
+    Task<int> CountSuspendedAsync(CancellationToken ct = default);
+
     Task<WorkspaceConfiguration> GetSettingsAsync(Guid workspaceId, CancellationToken ct = default);
     Task<bool> UpdateSettingsAsync(Guid workspaceId, WorkspaceConfiguration settings, Guid userId, CancellationToken ct = default);
 }

@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Mappers;
 using WarpTalk.MeetingService.Domain.Entities;
@@ -28,19 +29,36 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
     private const long ReclaimIdleMilliseconds = 30_000;
     private const long MaxAttempts = 5;
 
+    /// <summary>
+    /// Lease name: ONE replica reads this stream at a time.
+    ///
+    /// Multi-replica: the meeting service runs several replicas behind one consumer group.
+    /// A consumer group would hand consecutive entries of the same reply to different replicas,
+    /// and their broadcasts — each through the SignalR backplane — would reach clients in whatever
+    /// order the replicas happened to finish: chunks of one answer arriving shuffled, and a
+    /// replica still marking a request "processing" after another had completed it. One reader
+    /// keeps the single-replica ordering. Failover loses nothing: entries the old leader read but
+    /// did not acknowledge stay pending and are reclaimed by XAUTOCLAIM after
+    /// ReclaimIdleMilliseconds.
+    /// </summary>
+    public const string LeaseResource = "meeting:chat-assistant-results";
+
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILeaderElection _leadership;
     private readonly ILogger<MeetingChatAssistantResultConsumerService> _logger;
     private readonly string _consumerName = $"meeting-chat-{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public MeetingChatAssistantResultConsumerService(
         IConnectionMultiplexer redis,
         IServiceScopeFactory scopeFactory,
-        ILogger<MeetingChatAssistantResultConsumerService> logger)
+        ILogger<MeetingChatAssistantResultConsumerService> logger,
+        ILeaderElection leadership)
     {
         _redis = redis;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _leadership = leadership;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -53,6 +71,12 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
         {
             try
             {
+                if (!_leadership.IsLeader)
+                {
+                    await Task.Delay(500, stoppingToken);
+                    continue;
+                }
+
                 var reclaimed = await db.StreamAutoClaimAsync(
                     StreamName,
                     GroupName,
@@ -76,6 +100,10 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
 
                 foreach (var entry in entries)
                 {
+                    // Leadership can move mid-batch; the rest stays pending for the new leader.
+                    if (!_leadership.IsLeader)
+                        break;
+
                     try
                     {
                         await ProcessEntryAsync(entry, stoppingToken);
@@ -259,6 +287,22 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
             await notifier.BroadcastAssistantQuestionAsync(
                 groupRoomId,
                 request.Id,
+                fields.GetValueOrDefault("tool_calls_json", ""),
+                ct);
+            return;
+        }
+
+        // "Move this to the widget so I can keep discussing." The worker publishes this when the
+        // model calls continue_in_widget; the requester's own client opens the widget on the
+        // thread. Addressed with RequestedByUserId because the group is the whole room, and the
+        // worker's copy of that id is only as good as the request it was given — this row is the
+        // service's own record of who asked.
+        if (resultType == "handoff")
+        {
+            await notifier.BroadcastAssistantHandoffAsync(
+                groupRoomId,
+                request.Id,
+                request.RequestedByUserId,
                 fields.GetValueOrDefault("tool_calls_json", ""),
                 ct);
             return;

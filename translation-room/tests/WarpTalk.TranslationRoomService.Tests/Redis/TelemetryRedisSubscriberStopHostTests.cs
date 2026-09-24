@@ -33,7 +33,8 @@ public sealed class TelemetryRedisSubscriberStopHostTests
         var service = new TelemetryRedisSubscriber(
             redis.Object,
             Mock.Of<IServiceScopeFactory>(),
-            logger.Object);
+            logger.Object,
+            Mock.Of<WarpTalk.Shared.Coordination.IPubSubLeadership>(l => l.ShouldHandle == true));
 
         await service.StartAsync(CancellationToken.None);
         await WaitForErrorLogAsync(logger);
