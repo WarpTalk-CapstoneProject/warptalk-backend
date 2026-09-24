@@ -32,6 +32,20 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
             .ToListAsync(ct);
     }
 
+    public async Task<List<Guid>> GetActiveWorkspaceIdsForUserAsync(Guid userId, CancellationToken ct = default)
+    {
+        return await (
+                from member in _dbSet.AsNoTracking()
+                join workspace in _context.Workspaces.AsNoTracking() on member.WorkspaceId equals workspace.Id
+                where member.UserId == userId
+                      && member.Status.ToLower() == ActiveStatus
+                      && member.RemovedAt == null
+                      && workspace.DeletedAt == null
+                select member.WorkspaceId)
+            .Distinct()
+            .ToListAsync(ct);
+    }
+
     public async Task<int> CountActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
     {
         return await _dbSet.CountAsync(

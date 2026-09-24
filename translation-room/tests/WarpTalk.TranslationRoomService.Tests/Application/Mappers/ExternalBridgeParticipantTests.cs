@@ -147,4 +147,41 @@ public class ExternalBridgeParticipantTests
 
         host.Status.Should().Be(TranslationRoomParticipantStatuses.Invited);
     }
+    // ── What the far side speaks ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public void TheFarSideShouldNotInheritTheHostsLanguage_WhenTheHostsLanguageIsListedFirst()
+    {
+        // Both web clients send the source as the first target. Reading targetLanguages[0] put the
+        // far side on the host's language, and a same-language pair has no route either way.
+        var farSide = TranslationRoomMapper.BuildExternalBridgeParticipant(
+            Guid.NewGuid(), "vi", new List<string> { "vi", "en" });
+
+        farSide.SpeakLanguage.Should().Be("en");
+        farSide.ListenLanguage.Should().Be("en");
+    }
+
+    [Fact]
+    public void TheFarSideComparisonShouldIgnoreTheRegion()
+    {
+        TranslationRoomMapper.ResolveExternalMeetingLanguage("vi-VN", new List<string> { "vi", "en-US" })
+            .Should().Be("en-US");
+    }
+
+    [Fact]
+    public void AnExplicitFarSideLanguageShouldWin()
+    {
+        var farSide = TranslationRoomMapper.BuildExternalBridgeParticipant(
+            Guid.NewGuid(), "vi", new List<string> { "vi", "en", "ja" }, externalMeetingLanguage: "ja");
+
+        farSide.SpeakLanguage.Should().Be("ja");
+        farSide.ListenLanguage.Should().Be("ja");
+    }
+
+    [Fact]
+    public void AOneLanguageRoomShouldFallBackToThatLanguage()
+    {
+        TranslationRoomMapper.ResolveExternalMeetingLanguage("vi", new List<string> { "vi" })
+            .Should().Be("vi");
+    }
 }

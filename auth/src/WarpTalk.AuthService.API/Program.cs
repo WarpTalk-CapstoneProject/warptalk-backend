@@ -22,6 +22,7 @@ using WarpTalk.AuthService.Infrastructure.Extensions;
 using WarpTalk.AuthService.Infrastructure.Services;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Email;
 using WarpTalk.Shared.Grpc;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -151,6 +152,19 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAud
 // The recorder reads the admin's e-mail, address and user agent from the request it serves.
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
+
+// The verification and password-reset emails are admin-editable templates stored by the
+// notification service. ResendAuthEmailSender reads them through IEmailTemplateComposer on every
+// send; a notification outage falls back to the built-in wording rather than blocking sign-up.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:NotificationServiceUrl",
+        "http://localhost:50054");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddWarpTalkEmailTemplates();
 
 // Clean & Secure JWT Authentication
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
@@ -36,6 +37,31 @@ public class WorkspaceGrpcServiceTests
         _coMembership = Substitute.For<IWorkspaceCoMembershipService>();
         _service = new WorkspaceGrpcService(_workspaceDirectory, _coMembership);
         _context = new TestServerCallContext(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ListUserWorkspaceAudience_SendsAnEmptyPlanForAWorkspaceWithoutOne_AndNothingForABadId()
+    {
+        var userId = Guid.NewGuid();
+        var onPro = Guid.NewGuid();
+        var noPlan = Guid.NewGuid();
+        _workspaceDirectory
+            .ListUserWorkspaceAudienceAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success<IReadOnlyList<UserWorkspaceAudienceDto>>(new List<UserWorkspaceAudienceDto>
+            {
+                new(onPro, "pro"),
+                new(noPlan, null),
+            }));
+
+        var response = await _service.ListUserWorkspaceAudience(
+            new ListUserWorkspaceAudienceRequest { UserId = userId.ToString() }, _context);
+        var bad = await _service.ListUserWorkspaceAudience(
+            new ListUserWorkspaceAudienceRequest { UserId = "not-a-guid" }, _context);
+
+        Assert.Equal(
+            new[] { (onPro.ToString(), "pro"), (noPlan.ToString(), string.Empty) },
+            response.Workspaces.Select(item => (item.WorkspaceId, item.PlanSlug)));
+        Assert.Empty(bad.Workspaces);
     }
 
     [Fact]

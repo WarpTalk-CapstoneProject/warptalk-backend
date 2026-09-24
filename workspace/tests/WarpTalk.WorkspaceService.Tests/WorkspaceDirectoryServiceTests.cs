@@ -58,6 +58,28 @@ public class WorkspaceDirectoryServiceTests
         Assert.Equal(new[] { alice, bob }, result.Value);
     }
 
+    // ── Announcement targeting: who the viewer is ────────────────────────────────────
+
+    [Fact]
+    public async Task ListUserWorkspaceAudienceAsync_PairsEachActiveWorkspaceWithItsPlan()
+    {
+        var userId = Guid.NewGuid();
+        var onPro = Guid.NewGuid();
+        var noPlan = Guid.NewGuid();
+        _unitOfWork.WorkspaceMemberRepository.GetActiveWorkspaceIdsForUserAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new List<Guid> { onPro, noPlan });
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetPlanSlugsAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, string> { [onPro] = "pro" });
+
+        var result = await _service.ListUserWorkspaceAudienceAsync(userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            new[] { (onPro, (string?)"pro"), (noPlan, (string?)null) },
+            result.Value!.Select(item => (item.WorkspaceId, item.PlanSlug)));
+    }
+
     [Fact]
     public async Task ListActiveMemberUserIdsAsync_AnswersNull_ForADeletedOrUnknownWorkspace()
     {
