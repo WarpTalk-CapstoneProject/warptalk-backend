@@ -75,11 +75,36 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
     // Consume rows only. Soft-delete query filters are ignored: usage on a since-deleted
     // subscription was still consumed (and still cost the provider).
 
-    public async Task<ConsumptionTotals> GetConsumptionTotalsAsync(
+    public Task<ConsumptionTotals> GetConsumptionTotalsAsync(
         DateTime from, DateTime to, CancellationToken cancellationToken = default)
+        => ReadConsumptionTotalsAsync(ConsumeIn(@from, to), cancellationToken);
+
+    public Task<ConsumptionTotals> GetWorkspaceConsumptionTotalsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+        => ReadConsumptionTotalsAsync(
+            ConsumeIn(@from, to).Where(t => t.WorkspaceId == workspaceId),
+            cancellationToken);
+
+    public async Task<IReadOnlyList<LedgerPoint>> GetWorkspaceLedgerPointsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var rows = await _dbSet.IgnoreQueryFilters().AsNoTracking()
+            .Where(t => t.WorkspaceId == workspaceId && t.CreatedAt >= from && t.CreatedAt < to)
+            .OrderBy(t => t.CreatedAt)
+            .ThenBy(t => t.Id)
+            .Select(t => new { t.CreatedAt, t.Type, t.Amount, t.BalanceAfter })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(r => new LedgerPoint(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc), r.Type, r.Amount, r.BalanceAfter))
+            .ToList();
+    }
+
+    private async Task<ConsumptionTotals> ReadConsumptionTotalsAsync(
+        IQueryable<CreditTransaction> consumed, CancellationToken cancellationToken)
     {
         var rows =
-            from t in ConsumeIn(@from, to)
+            from t in consumed
             join u in _context.UsageRecords.IgnoreQueryFilters() on t.UsageRecordId equals (Guid?)u.Id into usage
             from u in usage.DefaultIfEmpty()
             join r in _context.UsageRateCards on t.PricingRateCardId equals (Guid?)r.Id into cards

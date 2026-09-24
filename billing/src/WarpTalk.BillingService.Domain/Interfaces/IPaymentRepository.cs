@@ -35,6 +35,19 @@ public interface IPaymentRepository : IGenericRepository<Payment>
     Task<IReadOnlyList<PaidAmountRow>> GetCountedPaidAmountsAsync(
         DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
+    // ── Admin workspace page (ERP detail). The same counting rules, scoped to one workspace. ──
+
+    /// <summary>
+    /// <see cref="GetCountedPaidTotalsAsync"/> for one workspace: paid payments on any of its
+    /// subscriptions, the Stripe in_… twin of a checkout session left out exactly as Insights does.
+    /// </summary>
+    Task<IReadOnlyList<PaymentCurrencyTotal>> GetWorkspaceCountedPaidTotalsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary><see cref="CountStripeInvoiceDuplicatesAsync"/> for one workspace.</summary>
+    Task<int> CountWorkspaceStripeInvoiceDuplicatesAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
     /// <summary>Newest payments that represent a charge attempt (not pending, not subscription_updated), newest first.</summary>
     Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default);
 }

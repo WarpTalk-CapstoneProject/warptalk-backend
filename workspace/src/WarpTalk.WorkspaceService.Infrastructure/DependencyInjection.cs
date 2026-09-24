@@ -57,6 +57,7 @@ public static class DependencyInjection
         services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
         services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
         services.AddScoped<IAdminAuditLogRepository, AdminAuditLogRepository>();
+        services.AddScoped<IWorkspaceAdminNoteRepository, WorkspaceAdminNoteRepository>();
 
         // 3. Object Storage Options & Adapters
         services.AddWarpTalkObjectStorageOptions(configuration);

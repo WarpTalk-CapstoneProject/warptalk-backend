@@ -7,6 +7,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 using WarpTalk.BillingService.Tests.Integration;
@@ -414,6 +415,52 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
     }
 
     // ── Seed ────────────────────────────────────────────────────────────────
+
+    // ── One workspace (the admin workspace page): the same counting rules, scoped ──────────
+
+    /// <summary>
+    /// W1 in September: cs_a counted, its in_a twin left out, in_b (no session twin) counted, and
+    /// cs_today counted — the rule Insights applies platform-wide, applied to one tenant.
+    /// </summary>
+    [DockerFact]
+    public async Task WorkspaceRevenue_CountsEachPaidChargeOnce_ForThatWorkspaceOnly()
+    {
+        var unitOfWork = new UnitOfWork(_context);
+
+        var paid = await unitOfWork.PaymentRepository.GetWorkspaceCountedPaidTotalsAsync(_w1, Utc(9, 1), Utc(10, 1));
+        var twins = await unitOfWork.PaymentRepository.CountWorkspaceStripeInvoiceDuplicatesAsync(_w1, Utc(9, 1), Utc(10, 1));
+
+        paid.Should().ContainSingle().Which.Should().Be(new PaymentCurrencyTotal("VND", 3, 1_650_000m));
+        twins.Should().Be(1);
+        (await unitOfWork.PaymentRepository.GetWorkspaceCountedPaidTotalsAsync(_w2, Utc(9, 1), Utc(10, 1)))
+            .Should().ContainSingle().Which.Total.Should().Be(2_000_000m);
+    }
+
+    [DockerFact]
+    public async Task WorkspaceConsumption_PricesOnlyThatWorkspacesRows()
+    {
+        var totals = await new UnitOfWork(_context).CreditTransactionRepository
+            .GetWorkspaceConsumptionTotalsAsync(_w1, Utc(9, 1), Utc(10, 1));
+
+        totals.CreditsConsumed.Should().Be(450);
+        totals.Transactions.Should().Be(3);
+        totals.CostCoveredTransactions.Should().Be(1);
+        totals.ProviderCostUsd.Should().Be(0.2m);
+    }
+
+    [DockerFact]
+    public async Task WorkspaceLedgerAndOutstandingInvoices_AreScopedToTheWorkspace()
+    {
+        var unitOfWork = new UnitOfWork(_context);
+
+        var ledger = await unitOfWork.CreditTransactionRepository.GetWorkspaceLedgerPointsAsync(_w1, Utc(9, 1), Utc(10, 1));
+        ledger.Select(p => p.Amount).Should().Equal(-100, -300, -50, 500);
+        ledger.Last().BalanceAfter.Should().Be(350);
+
+        (await unitOfWork.InvoiceRepository.GetOutstandingForWorkspaceAsync(_w2))
+            .Should().ContainSingle().Which.Total.Should().Be(1_000_000m);
+        (await unitOfWork.InvoiceRepository.GetOutstandingForWorkspaceAsync(_w1)).Should().BeEmpty();
+    }
 
     private async Task SeedAsync()
     {

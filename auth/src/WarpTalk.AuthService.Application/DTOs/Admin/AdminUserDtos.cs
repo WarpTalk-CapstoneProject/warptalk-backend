@@ -86,6 +86,21 @@ public record AdminUserSessionDto(
 /// </summary>
 public record AdminUserActionRequest(string Reason);
 
+/// <summary>
+/// Force sign-out from the admin workspace page: one member, or every member the page lists. The
+/// workspace is named by the ROUTE, not here, and is what files each entry on that workspace's
+/// timeline.
+/// </summary>
+public record AdminWorkspaceSignOutRequest(IReadOnlyList<Guid> UserIds, string Reason);
+
+public record AdminWorkspaceSignOutFailureDto(Guid UserId, string Error);
+
+/// <summary>Per account: signed out, or why not. One refusal never undoes the others.</summary>
+public record AdminWorkspaceSignOutResultDto(
+    Guid WorkspaceId,
+    IReadOnlyList<Guid> SignedOut,
+    IReadOnlyList<AdminWorkspaceSignOutFailureDto> Failed);
+
 /// <summary>One point of a per-day series. <paramref name="Date"/> is a local day of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.</summary>
 public record AdminDailyCountDto(string Date, int Count);
 

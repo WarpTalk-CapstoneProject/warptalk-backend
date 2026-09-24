@@ -5,20 +5,17 @@ using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
-using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Events;
 using WarpTalk.Shared.Protos;
 
-namespace WarpTalk.AuthService.Infrastructure.Clients;
+namespace WarpTalk.BillingService.Infrastructure.Clients;
 
 /// <summary>
-/// Writes auth's admin actions into the platform audit log, which the workspace service owns.
-///
-/// Every failure — a refused record, an RPC error, the workspace service being down — comes back
-/// as a failed <see cref="Result"/>. Nothing is swallowed, because the caller's response to this
-/// failing is to abandon the action rather than to log and continue. That is the whole reason
-/// this is a gRPC call and not a publish.
+/// Writes billing's admin actions into the platform audit log over gRPC — the same contract auth
+/// and translation-room use. Every failure comes back as a failed <see cref="Result"/>; nothing is
+/// swallowed, because the caller abandons its change when the record fails.
 /// </summary>
 public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
 {
@@ -38,29 +35,27 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
 
     public async Task<Result> RecordAsync(
         string action,
-        Guid entityId,
+        string entityType,
+        Guid? entityId,
+        Guid workspaceId,
         Guid actorId,
         string reason,
         string correlationId,
-        Guid? workspaceId,
         IReadOnlyDictionary<string, string?>? beforeSummary = null,
         IReadOnlyDictionary<string, string?>? afterSummary = null,
+        bool succeeded = true,
         CancellationToken ct = default)
     {
         var request = new RecordAdminActionRequest
         {
-            SourceService = AdminAuditSources.AuthService,
+            SourceService = AdminAuditSources.BillingService,
             Action = action,
-            EntityType = AdminAuditEntityTypes.User,
-            EntityId = entityId.ToString(),
-            // Auth actions are not scoped to a workspace, except the sign-outs the admin workspace
-            // page makes, which name the workspace in their route so they appear on its timeline.
-            // Otherwise empty rather than something plausible: a wrong workspace id would file the
-            // entry under a tenant that had nothing to do with it.
-            WorkspaceId = workspaceId?.ToString() ?? string.Empty,
+            EntityType = entityType,
+            EntityId = entityId?.ToString() ?? string.Empty,
+            WorkspaceId = workspaceId.ToString(),
             ActorId = actorId.ToString(),
             Reason = reason,
-            Result = AdminAuditResults.Succeeded,
+            Result = succeeded ? AdminAuditResults.Succeeded : AdminAuditResults.Failed,
             PerformedAt = _timeProvider.GetUtcNow().UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
             CorrelationId = correlationId,
         };
@@ -77,34 +72,22 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
             }
 
             _logger.LogError(
-                "Admin audit refused. Action: {Action}, Entity: {EntityId}, Reason: {Error}",
-                action,
-                entityId,
-                response.ErrorMessage);
+                "Admin audit refused. Action: {Action}, WorkspaceId: {WorkspaceId}, Reason: {Error}",
+                action, workspaceId, response.ErrorMessage);
             return Result.Failure(
-                "The action was not performed because it could not be recorded in the audit log.",
+                "The change was not made because it could not be recorded in the audit log.",
                 ErrorCodes.InternalServerError);
         }
         catch (RpcException ex)
         {
-            _logger.LogError(
-                ex,
-                "Admin audit call failed. Action: {Action}, Entity: {EntityId}, Status: {Status}",
-                action,
-                entityId,
-                ex.Status);
+            _logger.LogError(ex, "Admin audit call failed. Action: {Action}, Status: {Status}", action, ex.Status);
             return Result.Failure(
-                "The action was not performed because the audit log could not be reached.",
+                "The change was not made because the audit log could not be reached.",
                 ErrorCodes.InternalServerError);
         }
     }
 
-    /// <summary>
-    /// proto3 maps hold no nulls, so a null value is dropped rather than written as "".
-    ///
-    /// An empty string in a before/after summary would read as "this field was blank", which is a
-    /// different claim from "this field was not part of the change".
-    /// </summary>
+    /// <summary>proto3 maps hold no nulls, so a null value is dropped rather than written as "".</summary>
     private static void Fill(
         Google.Protobuf.Collections.MapField<string, string> target,
         IReadOnlyDictionary<string, string?>? source)

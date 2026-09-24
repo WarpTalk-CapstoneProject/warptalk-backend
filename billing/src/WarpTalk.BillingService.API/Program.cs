@@ -107,6 +107,8 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // --- Grpc Clients ---
     builder.Services.AddScoped<IAdminWorkspaceAnalyticsService, AdminWorkspaceAnalyticsService>();
     builder.Services.AddScoped<IAdminBillingInsightsService, AdminBillingInsightsService>();
+    builder.Services.AddScoped<IAdminWorkspaceBillingService, AdminWorkspaceBillingService>();
+    builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.BillingService.Infrastructure.Clients.AdminAuditGrpcClient>();
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {
@@ -116,6 +118,18 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+    {
+        var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"]
+            ?? builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
+            ?? "http://localhost:50056";
+        o.Address = new Uri(url);
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // The platform audit log lives in the workspace service: same address as the workspace client
+    // above, a second contract on it. Synchronous so an admin action that cannot be recorded is
+    // refused rather than committed unaudited (see IAdminAuditRecorder).
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
     {
         var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"]
             ?? builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
