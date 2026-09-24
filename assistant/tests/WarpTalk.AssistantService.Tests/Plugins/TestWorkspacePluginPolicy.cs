@@ -32,14 +32,15 @@ internal static class TestWorkspacePluginPolicy
 
     /// <summary>
     /// A guard whose policy client answers <paramref name="allowsPluginUsage"/> and whose
-    /// membership client reports the caller as <paramref name="isActiveMember"/>.
+    /// membership client reports the caller as <paramref name="isActiveMember"/>, in
+    /// <paramref name="roleName"/>.
     /// </summary>
-    public static WorkspacePluginGuard Guard(bool allowsPluginUsage, bool isActiveMember)
+    public static WorkspacePluginGuard Guard(bool allowsPluginUsage, bool isActiveMember, string roleName = "Member")
     {
         var policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
         policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(allowsPluginUsage);
-        return Guard(policyClient, isActiveMember);
+        return Guard(policyClient, isActiveMember, roleName);
     }
 
     /// <summary>
@@ -49,12 +50,13 @@ internal static class TestWorkspacePluginPolicy
     /// </summary>
     public static WorkspacePluginGuard Guard(
         IWorkspacePluginPolicyClient policyClient,
-        bool isActiveMember = true)
+        bool isActiveMember = true,
+        string roleName = "Member")
     {
         var membershipClient = Substitute.For<IWorkspaceMembershipClient>();
         membershipClient.GetMembershipAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(isActiveMember
-                ? new WorkspaceMembership(IsMember: true, RoleName: "Member", IsActive: true)
+                ? new WorkspaceMembership(IsMember: true, RoleName: roleName, IsActive: true)
                 : WorkspaceMembership.None);
 
         // A workspace that has never curated its plugin list: judged by the policy client's

@@ -344,7 +344,11 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     // Cleared, so asking again starts a new run rather than replaying this answer
                     // forever. A rendering that failed for a reason the reader can act on — a
                     // transcript that has since been fixed, say — must be askable again.
-                    await _redisStateRepo.KeyDeleteAsync(inFlightKey);
+                    //
+                    // Only while the claim is still THIS run's. Two polls can both read the failed
+                    // outcome; if the first has already released it and a new reader has claimed
+                    // the pair, an unconditional delete here would release the new run's claim.
+                    await _redisStateRepo.KeyDeleteIfEqualsAsync(inFlightKey, runningRequestId);
                     return Result<SummaryVariantDto>.Success(new SummaryVariantDto(
                         wantedTemplate,
                         wantedLanguage,
@@ -378,14 +382,20 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 // the run that just completed WAS that one retry, in which case say it failed.
                 var requeuedAs = await _redisStateRepo.StringGetAsync(requeueKey);
 
-                await _redisStateRepo.KeyDeleteAsync(inFlightKey);
+                // COMPARE-AND-DELETE, NOT DELETE. Two pollers can both land here having read the
+                // same completed run. With plain deletes the second one's delete arrived after the
+                // first had already re-claimed the pair for its retry, removed THAT claim, and the
+                // next poll queued a third run beside it — each poller releasing the other's claim.
+                // Released only while it still names the run this poll read.
+                await _redisStateRepo.KeyDeleteIfEqualsAsync(inFlightKey, runningRequestId);
                 await _redisStateRepo.KeyDeleteAsync(
                     TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + runningRequestId);
 
                 if (string.Equals(requeuedAs, runningRequestId, StringComparison.Ordinal))
                 {
-                    // Cleared too, so a reader who asks again later starts from a clean slate.
-                    await _redisStateRepo.KeyDeleteAsync(requeueKey);
+                    // Cleared too, so a reader who asks again later starts from a clean slate —
+                    // and again only while it still names this run, not a newer retry's marker.
+                    await _redisStateRepo.KeyDeleteIfEqualsAsync(requeueKey, runningRequestId);
 
                     _logger.LogWarning(
                         "A {TemplateKey}/{Language} rendering of room {RoomId}'s summary completed twice without a stored row matching the request; reporting it as failed",
@@ -454,14 +464,32 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                         TranslationRoomConstants.SummaryRewriteStatusTtl);
                 }
 
+                // A LANGUAGE SWITCH IS A TRANSLATION, NOT A SECOND SUMMARY.
+                //
+                // When only the language differs from what the host published, the published
+                // summary goes along and the worker translates it (reusing the translation the
+                // summary already carries for this language when it has one) instead of writing a
+                // new summary from the transcript. The reader gets the meeting's summary in their
+                // language with the same sections and the same cited moments — which is also the
+                // only thing the biên bản can print beside itself, because MeetingMinutesService
+                // refuses a rendering whose sections do not line up with the document's.
+                var translateFrom = TranslatableSource(canonical.Content, wantedTemplate, wantedLanguage);
+
                 await QueueSummaryAsync(
-                    room, wantedTemplate, wantedLanguage, bearerToken, SummaryDelivery.Variant, variantRequestId);
+                    room,
+                    wantedTemplate,
+                    wantedLanguage,
+                    bearerToken,
+                    SummaryDelivery.Variant,
+                    variantRequestId,
+                    translateFrom);
             }
             catch
             {
                 // The claim outlives its run only if we let it. Releasing it here means the next
-                // poll tries again instead of watching a job that was never queued.
-                await _redisStateRepo.KeyDeleteAsync(inFlightKey);
+                // poll tries again instead of watching a job that was never queued — our claim
+                // only, never one somebody else took after it.
+                await _redisStateRepo.KeyDeleteIfEqualsAsync(inFlightKey, variantRequestId);
                 throw;
             }
 
@@ -567,7 +595,10 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         // Supplied when the caller has already claimed the run under this id and needs the queued
         // job to carry the SAME one — a claim filed under a different id than the job it is
         // holding the place for could never be asked about. Minted here otherwise.
-        string? requestId = null)
+        string? requestId = null,
+        // The published summary to TRANSLATE rather than a transcript to summarise. See
+        // SummaryRequestMode; null keeps every existing caller on `generate`.
+        string? translateFromContent = null)
     {
         var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
         requestId ??= Guid.NewGuid().ToString();
@@ -589,6 +620,8 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // spelling reached it. Empty means the caller expressed no preference.
             ["summary_language"] = language,
             ["delivery"] = delivery,
+            ["mode"] = translateFromContent == null ? SummaryRequestMode.Generate : SummaryRequestMode.Translate,
+            ["source_content_json"] = translateFromContent ?? string.Empty,
             ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
         });
 
@@ -632,6 +665,46 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // a generation against an artifact nobody can read.
             return ("general", string.Empty);
         }
+    }
+
+    /// <summary>
+    /// The published summary's content when a (template, language) request can be answered by
+    /// translating it, otherwise null (write one from the transcript).
+    ///
+    /// Only for a structured summary — one the AI stamped with a templateKey — in the SAME shape,
+    /// with a language actually named, and with something in it: a placeholder or the markdown
+    /// fallback has no sections to carry across, and translating "could not generate a summary"
+    /// would publish that sentence in a second language. A different shape is a different summary
+    /// and still has to be written from what was said.
+    /// </summary>
+    public static string? TranslatableSource(string? canonicalContent, string templateKey, string language)
+    {
+        if (string.IsNullOrWhiteSpace(language) || string.IsNullOrWhiteSpace(canonicalContent)) return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(canonicalContent);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            if (!root.TryGetProperty("templateKey", out var templateNode)
+                || templateNode.ValueKind != JsonValueKind.String
+                || NormalizeTemplateKey(templateNode.GetString()) != templateKey)
+            {
+                return null;
+            }
+
+            if (IsTrue(root, "insufficientData") || IsTrue(root, "generationFailed")) return null;
+
+            return canonicalContent;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        static bool IsTrue(JsonElement root, string name) =>
+            root.TryGetProperty(name, out var node) && node.ValueKind == JsonValueKind.True;
     }
 
     private static bool MatchesStoredSummary(string? contentJson, string templateKey, string language)
@@ -711,17 +784,28 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     ErrorCodes.InvalidState);
             }
 
-            if (artifact.ConsentRequired)
-            {
-                return Result.Failure<ArtifactDownloadDto>("Consent is required before downloading this artifact.", ErrorCodes.Unauthorized);
-            }
-
+            // WT-824: "not there yet" before "not yours yet". A recording row exists from the moment
+            // recording starts (rec-loss), so a PROCESSING row with no file used to answer "consent
+            // is required" — a permission problem, sending the reader to the host for a file that
+            // does not exist. That is how a stuck recording got reported as a consent bug.
             if (string.IsNullOrWhiteSpace(artifact.FileUrl) &&
                 string.IsNullOrWhiteSpace(artifact.Content))
             {
                 return Result.Failure<ArtifactDownloadDto>(
                     "Artifact content is not available yet.",
                     ErrorCodes.InvalidState);
+            }
+
+            // WT-824: the consent hold keeps the raw recording from the OTHER people in the meeting
+            // until the host releases it. It never applied to the host, and must not: the host's own
+            // recording was otherwise reachable only through a consent grant to themselves, and after
+            // a Transfer Host the booker (whom the access check above always admits) was refused
+            // that grant — so nobody could both release the recording and read it.
+            if (artifact.ConsentRequired && !CanReleaseArtifact(artifact.TranslationRoom, userId))
+            {
+                return Result.Failure<ArtifactDownloadDto>(
+                    "Consent is required before downloading this recording. The host has not released it to the people who took part yet.",
+                    ErrorCodes.Unauthorized);
             }
 
             // The transcript and the summary go out as plain text, whatever they are stored as.
@@ -798,7 +882,8 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     /// consent gate self-serve: a participant refused a recording download could POST here, get a
     /// 204, and then download it. Consent granted by the person who benefits from it is not
     /// consent. The approver must be someone other than the requester, and the host is the only
-    /// authority this row knows about.
+    /// authority this row knows about — the booker or the current host, see
+    /// <see cref="CanReleaseArtifact"/> (WT-824).
     /// </para>
     /// <para>
     /// KNOWN AND DELIBERATELY UNCHANGED: consent is still recorded GLOBALLY. There is one boolean
@@ -824,7 +909,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure(TranslationRoomConstants.ErrorArtifactNotFound, ErrorCodes.NotFound);
 
-            if (!artifact.TranslationRoom.IsHostedBy(userId))
+            if (!CanReleaseArtifact(artifact.TranslationRoom, userId))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedConsentArtifact, ErrorCodes.Unauthorized);
 
             artifact.ConsentRequired = false;
@@ -839,4 +924,17 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
+
+    /// <summary>
+    /// WT-824: who holds the consent lever on a room's artifacts — the booker (<c>HostId</c>, whom
+    /// <see cref="ArtifactAccessHelper"/> always admits to read them) and whoever runs the room now
+    /// (<see cref="TranslationRoom.IsHostedBy"/>, the transferee after a Transfer Host).
+    ///
+    /// It used to be <c>IsHostedBy</c> alone, which after a transfer refused the booker — the one
+    /// person guaranteed to be able to read the recording — while admitting a transferee who, under
+    /// the default HOST_ONLY policy, cannot read it at all. Both are "the host" to the people in the
+    /// meeting; neither is a participant granting consent to themselves.
+    /// </summary>
+    private static bool CanReleaseArtifact(TranslationRoom room, Guid userId) =>
+        room.HostId == userId || room.IsHostedBy(userId);
 }

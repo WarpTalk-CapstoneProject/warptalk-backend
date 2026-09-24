@@ -158,11 +158,22 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             var createdBefore = await workspaces.CountCreatedBetweenAsync(window.PreviousFrom, window.PreviousTo, ct);
             var suspended = await workspaces.CountSuspendedAsync(ct);
 
+            // WT-692: six local months of growth for the investor view on /admin/billing.
+            var months = new List<AdminWorkspaceMonthDto>(AdminComparisonRange.GrowthMonths);
+            foreach (var month in AdminComparisonRange.MonthsEnding(window.To, window.TimeZone))
+            {
+                months.Add(new AdminWorkspaceMonthDto(
+                    month.Key,
+                    await workspaces.CountCreatedBetweenAsync(month.Start, month.End, ct),
+                    await workspaces.CountExistingAtAsync(month.End, ct)));
+            }
+
             return Result.Success(new AdminWorkspaceInsightsDto(
                 window.Range,
                 window.PreviousRange,
                 [new AdminInsightMetric("newWorkspaces", created, createdBefore, AdminInsightUnits.Count, true)],
-                suspended));
+                suspended,
+                months));
         }
         catch (Exception ex)
         {

@@ -25,15 +25,28 @@ public sealed class WorkspacePluginAvailability
         Guid workspaceId,
         bool isCurated,
         bool legacyAllowsEveryPlugin,
-        IReadOnlySet<Guid> addedPluginIds)
+        IReadOnlySet<Guid> addedPluginIds,
+        bool callerIsOwner = false)
     {
         WorkspaceId = workspaceId;
         IsCurated = isCurated;
         LegacyAllowsEveryPlugin = legacyAllowsEveryPlugin;
         _addedPluginIds = addedPluginIds;
+        CallerIsOwner = callerIsOwner;
     }
 
     public Guid WorkspaceId { get; }
+
+    /// <summary>
+    /// Whether the member this was resolved for is the workspace's Owner - who adds a not-added
+    /// marketplace plugin rather than asking for it. Always false when resolved without a caller.
+    /// </summary>
+    /// <remarks>
+    /// The one thing here about the asker rather than the workspace. It rides along because the
+    /// member check that produces this object has just read the caller's role; asking again for it
+    /// would be a second workspace-service round trip on every catalog listing.
+    /// </remarks>
+    public bool CallerIsOwner { get; }
 
     /// <summary>Whether the Owner has written this workspace's plugin list at least once.</summary>
     public bool IsCurated { get; }

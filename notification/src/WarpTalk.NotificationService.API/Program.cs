@@ -87,6 +87,24 @@ builder.Services.AddTransient<IEmailSender, WarpTalk.NotificationService.Infrast
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
 builder.Services.AddScoped<IAdminNotificationDeliveryService, AdminNotificationDeliveryService>();
+
+// WT-699 / TC4104: BROADCAST and SEGMENT announcements resolve their audience through AuthService
+// and WorkspaceService. Optional configuration on purpose — without the two addresses those modes
+// are refused with a sentence saying so, and SPECIFIC_USERS keeps working exactly as before.
+var authServiceUrl = builder.Configuration["GrpcUrls:AuthServiceUrl"];
+var workspaceServiceUrl = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"];
+if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
+{
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.UserService.UserServiceClient>(o => o.Address = new Uri(authServiceUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o => o.Address = new Uri(workspaceServiceUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddScoped<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcAdminAudienceResolver>();
+}
+else
+{
+    builder.Services.AddSingleton<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredAdminAudienceResolver>();
+}
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);

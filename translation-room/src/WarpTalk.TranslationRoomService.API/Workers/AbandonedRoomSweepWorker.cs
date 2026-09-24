@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -47,6 +48,7 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 public class AbandonedRoomSweepWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<AbandonedRoomSweepWorker> _logger;
 
@@ -71,8 +73,10 @@ public class AbandonedRoomSweepWorker : BackgroundService
     public AbandonedRoomSweepWorker(
         IServiceProvider serviceProvider,
         IConnectionMultiplexer redis,
-        ILogger<AbandonedRoomSweepWorker> logger)
+        ILogger<AbandonedRoomSweepWorker> logger,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _redis = redis;
         _logger = logger;
@@ -89,7 +93,12 @@ public class AbandonedRoomSweepWorker : BackgroundService
         {
             try
             {
-                await SweepAsync(stoppingToken);
+                await _locks.TryRunExclusiveAsync(
+                    RoomEndingSweepLock.Resource,
+                    TimeSpan.FromMinutes(2),
+                    SweepAsync,
+                    _logger,
+                    stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

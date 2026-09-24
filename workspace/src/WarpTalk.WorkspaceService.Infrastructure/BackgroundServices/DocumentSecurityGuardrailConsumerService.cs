@@ -39,8 +39,15 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
     /// returns false when even the fail-safe write did not land — used to sit here forever,
     /// because nothing reclaimed them and <c>"&gt;"</c> never returns them again. An upload whose
     /// scan never completed stayed invisible instead of being retried.
+    ///
+    /// Longer than one entry can legitimately take. This was 60s while a single scan may wait
+    /// up to <see cref="SecurityScanBudget.Maximum"/> (3 min): harmless with one replica, whose
+    /// loop is sequential, but with several a second replica reclaimed a document still being
+    /// scanned and ran the whole pipeline again — a second scan request, audit row, lifecycle
+    /// broadcasts and embedding request. Scan budget plus two minutes for extraction and saves.
     /// </summary>
-    private const long ReclaimIdleMilliseconds = 60_000;
+    private static readonly long ReclaimIdleMilliseconds =
+        (long)(SecurityScanBudget.Maximum + TimeSpan.FromMinutes(2)).TotalMilliseconds;
 
     private readonly string _consumerName = $"workspace-ingestion-{Environment.MachineName}-{Guid.NewGuid():N}";
 

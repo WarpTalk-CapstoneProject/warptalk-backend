@@ -34,6 +34,9 @@ public class PluginInstallationServiceTests
     // pre-WT-646 tests keep asserting pre-WT-646 behaviour.
     private bool _workspaceAllowsPlugins = true;
 
+    // The caller's role in that workspace. A plain Member unless a test is about the Owner.
+    private string _callerRole = "Member";
+
     public PluginInstallationServiceTests()
     {
         _unitOfWork.PluginRepository.Returns(_pluginRepository);
@@ -454,6 +457,44 @@ public class PluginInstallationServiceTests
     }
 
     [Fact]
+    public async Task ListCatalogAsync_TheOwnerCanAddANotAddedMarketplacePlugin_AMemberCannot()
+    {
+        // Gap 9: the Owner's own member page offered Request on plugins they could simply add.
+        var mine = WorkspacePluginGuardTests.Private("ws_mine_00000000", WorkspaceId);
+        ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin(), mine);
+        _workspaceAllowsPlugins = false;
+
+        _callerRole = "Owner";
+        var owner = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        _callerRole = "Admin";
+        var admin = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        _callerRole = "Member";
+        var member = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        var personal = (await CreateSut().ListCatalogAsync(UserId)).Value!;
+
+        Assert.True(owner.Single(i => i.Key == GoogleDriveKey).CanAdd);
+        Assert.True(owner.Single(i => i.Key == GoogleCalendarKey).CanAdd);
+        // Already in the workspace: nothing to add.
+        Assert.False(owner.Single(i => i.Key == "ws_mine_00000000").CanAdd);
+        // Only the Owner decides the list; an Admin asks like anyone else.
+        Assert.All(admin, item => Assert.False(item.CanAdd));
+        Assert.All(member, item => Assert.False(item.CanAdd));
+        Assert.All(personal, item => Assert.False(item.CanAdd));
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_TheOwnerHasNothingToAdd_WhenTheWorkspaceHasItAlready()
+    {
+        ConfigureCatalog(GoogleDrivePlugin());
+        _workspaceAllowsPlugins = true;
+        _callerRole = "Owner";
+
+        var result = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+
+        Assert.False(Assert.Single(result).CanAdd);
+    }
+
+    [Fact]
     public async Task ListCatalogAsync_BlocksNothing_WhenTheWorkspaceAllowsPlugins()
     {
         ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin());
@@ -726,7 +767,7 @@ public class PluginInstallationServiceTests
         return new PluginInstallationService(
             _unitOfWork,
             Substitute.For<IPluginCredentialProtector>(),
-            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
+            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins, isActiveMember: true, _callerRole));
     }
 
     private static Plugin GoogleDrivePlugin()

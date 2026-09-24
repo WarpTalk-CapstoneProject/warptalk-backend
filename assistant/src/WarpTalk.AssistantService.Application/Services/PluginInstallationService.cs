@@ -82,6 +82,12 @@ public class PluginInstallationService : IPluginInstallationService
                             ? WorkspacePluginConstants.Messages.NotAdded
                             : WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace);
 
+                // The Owner browsing their own member page: a marketplace plugin their workspace has
+                // not added is theirs to add, not something to ask themselves for (gap 9).
+                var canAdd = availability is { CallerIsOwner: true }
+                    && plugin.OwnerWorkspaceId is null
+                    && workspaceAvailability == WorkspacePluginConstants.Availability.NotAdded;
+
                 // Reported, not filtered out. A user whose workspace does not have a plugin they have
                 // already installed and connected has to be able to see that row to disconnect it;
                 // dropping it from the catalog would leave them holding an OAuth grant with no way to
@@ -92,7 +98,8 @@ public class PluginInstallationService : IPluginInstallationService
                     connection,
                     blockReason,
                     workspaceAvailability,
-                    pendingPluginIds.Contains(plugin.Id) ? WorkspacePluginConstants.RequestStatus.Pending : null);
+                    pendingPluginIds.Contains(plugin.Id) ? WorkspacePluginConstants.RequestStatus.Pending : null,
+                    canAdd);
             })
             .ToList();
 

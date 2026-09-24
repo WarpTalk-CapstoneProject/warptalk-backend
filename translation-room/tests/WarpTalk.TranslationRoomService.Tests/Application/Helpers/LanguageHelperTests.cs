@@ -23,6 +23,20 @@ public class LanguageHelperTests
         Assert.Equal(expected, LanguageHelper.NormalizeLanguageCode(input));
     }
 
+    /// <summary>
+    /// The POSIX spelling. The web's normalizeRenderingLanguage and the AI's language tags both
+    /// treat `_` as a separator; this side did not, so `vi_VN` became the unknown language
+    /// `vi_vn` — refused by the artifact language policy and cached apart from `vi`.
+    /// </summary>
+    [Theory]
+    [InlineData("vi_VN", "vi")]
+    [InlineData("zh_Hans_CN", "zh")]
+    [InlineData(" JA_jp ", "ja")]
+    public void NormalizeLanguageCode_TreatsUnderscoreAsASeparatorLikeTheWebDoes(string input, string expected)
+    {
+        Assert.Equal(expected, LanguageHelper.NormalizeLanguageCode(input));
+    }
+
     [Theory]
     [InlineData("EN", "en")]
     [InlineData("  vi-VN  ", "vi")]

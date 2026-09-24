@@ -67,6 +67,16 @@ public partial class TranslationRoomArtifact
     public DateTime? RecordingStartedAt { get; set; }
 
     /// <summary>
+    /// WT-824: why a recording ended with no file — the host-facing sentence plus LiveKit's own
+    /// egress status and error (storage URLs redacted, bounded). Set only on FAILED recordings,
+    /// cleared if a real file later arrives. Null on every other row.
+    ///
+    /// Its own column rather than <see cref="Content"/>: Content is served as the artifact's body by
+    /// the download endpoint, so a reason written there would "download" as the recording itself.
+    /// </summary>
+    public string? FailureReason { get; set; }
+
+    /// <summary>
     /// External AuthService user id. No physical FK.
     /// </summary>
     public Guid? CreatedBy { get; set; }

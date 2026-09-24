@@ -27,6 +27,7 @@ public class UnitOfWork : IUnitOfWork
         OutboxMessages = new OutboxMessageRepository(db);
         InboxMessages = new InboxMessageRepository(db);
         WorkspaceEntitlementOverrides = new WorkspaceEntitlementOverrideRepository(db);
+        ProviderUsageDaily = new ProviderUsageDailyRepository(db);
     }
 
     public IPlanRepository Plans { get; }
@@ -42,6 +43,7 @@ public class UnitOfWork : IUnitOfWork
     public IOutboxMessageRepository OutboxMessages { get; }
     public IInboxMessageRepository InboxMessages { get; }
     public IWorkspaceEntitlementOverrideRepository WorkspaceEntitlementOverrides { get; }
+    public IProviderUsageDailyRepository ProviderUsageDaily { get; }
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 

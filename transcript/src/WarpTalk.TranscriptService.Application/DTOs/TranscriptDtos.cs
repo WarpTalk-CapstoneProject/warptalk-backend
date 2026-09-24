@@ -60,7 +60,10 @@ public record TranscriptTranslationDto(
     // source segment carried none.
     decimal? SourceSttConfidence,
     bool IsRetranslated,
-    int? LatencyMs
+    int? LatencyMs,
+    /// <summary>WT-704: the source line was corrected after this translation was produced and no
+    /// retranslation has replaced it yet. The client shows it as outdated.</summary>
+    bool IsStale = false
 );
 
 /// <summary>

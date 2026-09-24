@@ -107,5 +107,14 @@ public record AdminWorkspaceInsightsDto(
     AdminInsightRange Range,
     AdminInsightRange PreviousRange,
     IReadOnlyList<AdminInsightMetric> Metrics,
-    int SuspendedNow);
+    int SuspendedNow,
+    IReadOnlyList<AdminWorkspaceMonthDto>? WorkspacesByMonth = null);
+
+/// <summary>
+/// WT-692: one local calendar month (of the request's <c>tz</c>, <c>yyyy-MM</c>) of workspace
+/// growth, over the six months ending with the month of <c>to</c>.
+/// </summary>
+/// <param name="NewWorkspaces">Created in the month, deleted ones included.</param>
+/// <param name="TotalWorkspaces">Existing at the END of the month: created before it and not deleted by then (suspended ones count — they still exist).</param>
+public record AdminWorkspaceMonthDto(string Month, int NewWorkspaces, int TotalWorkspaces);
 

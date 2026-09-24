@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using System;
 using System.Linq;
 using System.Threading;
@@ -15,18 +16,24 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 public class DailyAuditAggregationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<DailyAuditAggregationWorker> _logger;
     private readonly BillingWorkerOptions _options;
 
     public DailyAuditAggregationWorker(
         IServiceProvider serviceProvider,
         ILogger<DailyAuditAggregationWorker> logger,
-        IOptions<BillingWorkerOptions> options)
+        IOptions<BillingWorkerOptions> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
     }
+
+    /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
+    public const string LockResource = "billing:daily-audit-snapshot";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -56,7 +63,17 @@ public class DailyAuditAggregationWorker : BackgroundService
 
             try
             {
-                await AggregateAndSnapshotAsync(stoppingToken);
+                // SINGLE RUNNER, ONCE PER DAY. Every replica wakes at DailyAuditHourUtc and the snapshot table
+                // has no natural key, so each replica would insert its own CreditBalanceSnapshot per
+                // subscription. The lease is kept (not released) for an hour, so the replicas that wake a few
+                // seconds later skip instead of running again.
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromHours(1),
+                    ct => AggregateAndSnapshotAsync(ct),
+                    _logger,
+                    stoppingToken,
+                    holdAfterCompletion: true);
             }
             catch (Exception ex)
             {

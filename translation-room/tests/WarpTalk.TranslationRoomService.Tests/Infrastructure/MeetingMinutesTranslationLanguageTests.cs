@@ -153,6 +153,57 @@ public sealed class MeetingMinutesTranslationLanguageTests
             Times.Never);
     }
 
+    /// <summary>
+    /// A rendering that FAILED is an answer. This used to come back as "generating", so the web
+    /// kept polling and every other poll re-queued the job — production shows one failing request
+    /// every eight seconds on one room on 12 Sep — and the reader finally saw "has not arrived"
+    /// with the reason thrown away.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_rendering_is_reported_with_its_reason_instead_of_generating_forever()
+    {
+        var room = await SeedRoomWithApprovedMinutesAsync();
+        _summaryVariants
+            .Setup(item => item.GetOrQueueSummaryVariantAsync(
+                room.Id, HostId, It.IsAny<string>(), "en", It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                "general", "en", null, false, SummaryVariantStatus.Failed, null, "Could not read the transcript.")));
+
+        var result = await _service.GetTranslationAsync(room.Id, HostId, null, "en", "Bearer t");
+
+        result.IsSuccess.Should().BeTrue("error was: {0}", result.Error);
+        result.Value!.Status.Should().Be(MinutesTranslationStatus.Unavailable);
+        result.Value.UnavailableReason.Should().Be("Could not read the transcript.");
+    }
+
+    /// <summary>
+    /// The language switch end to end on the minutes side: a translated rendering of the summary
+    /// the document was drawn from carries the same section keys, so it is served as the record
+    /// in that language.
+    /// </summary>
+    [Fact]
+    public async Task A_translation_of_the_summary_the_record_was_drawn_from_is_served()
+    {
+        var room = await SeedRoomWithApprovedMinutesAsync();
+        _summaryVariants
+            .Setup(item => item.GetOrQueueSummaryVariantAsync(
+                room.Id, HostId, "general", "en", It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<SummaryVariantDto>.Success(new SummaryVariantDto(
+                "general",
+                "en",
+                "{\"summary\":\"The board met.\",\"templateKey\":\"general\",\"summaryLanguage\":\"en\"}",
+                false,
+                SummaryVariantStatus.Ready,
+                DateTime.UtcNow)));
+
+        var result = await _service.GetTranslationAsync(room.Id, HostId, null, "en-US", "Bearer t");
+
+        result.IsSuccess.Should().BeTrue("error was: {0}", result.Error);
+        result.Value!.Status.Should().Be(MinutesTranslationStatus.Ready);
+        result.Value.Language.Should().Be("en");
+        result.Value.Sections.Should().ContainSingle(section => section.Key == "summary" && section.Text == "The board met.");
+    }
+
     [Theory]
     [InlineData("docx")]
     [InlineData("pdf")]

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace WarpTalk.BillingService.Domain.Interfaces;
 
@@ -37,6 +38,9 @@ public sealed record RecentPaymentRow(
 /// <paramref name="CostCoveredCredits"/> / <paramref name="CostCoveredTransactions"/> are the consume
 /// rows whose settled rate card carries a <c>provider_unit_cost</c> in the same unit as the usage
 /// record; <paramref name="ProviderCostUsd"/> is Σ quantity × provider_unit_cost over those rows only.
+///
+/// <paramref name="ByChargeType"/> splits the same credits by charge type (usage type when the row
+/// has none), so a partial cost can say WHICH usage it leaves out rather than only how much.
 /// </summary>
 public sealed record ConsumptionTotals(
     long CreditsConsumed,
@@ -44,7 +48,28 @@ public sealed record ConsumptionTotals(
     long OverageCredits,
     long CostCoveredCredits,
     int CostCoveredTransactions,
-    decimal ProviderCostUsd);
+    decimal ProviderCostUsd,
+    IReadOnlyList<ChargeTypeCoverage>? ByChargeType = null);
+
+/// <summary>Consumed credits of one charge type, and how many of them carry a provider cost.</summary>
+public sealed record ChargeTypeCoverage(string ChargeType, long Credits, long CoveredCredits)
+{
+    public long UncoveredCredits => Credits - CoveredCredits;
+}
+
+/// <summary>
+/// Consume rows of one charge type on one UTC calendar day (the day of <c>created_at</c> in UTC),
+/// with the same coverage rule as <see cref="ConsumptionTotals"/>. Used to swap the rate-card
+/// estimate of a Cartesia-served charge type for measured Cartesia credits, day by day.
+/// </summary>
+public sealed record DailyChargeTypeConsumption(
+    DateOnly UtcDate,
+    string ChargeType,
+    long Credits,
+    int Transactions,
+    long CoveredCredits,
+    int CoveredTransactions,
+    decimal CostUsd);
 
 /// <summary>Consumed credits for one charge / usage type.</summary>
 public sealed record CreditsByChargeType(string UsageType, long Credits);

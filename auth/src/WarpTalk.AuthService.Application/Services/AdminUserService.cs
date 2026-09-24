@@ -17,6 +17,10 @@ namespace WarpTalk.AuthService.Application.Services;
 /// <inheritdoc cref="IAdminUserService"/>
 public class AdminUserService : IAdminUserService
 {
+    /// <summary>What <c>usersByMonth</c> means at its edges, sent with it rather than implied.</summary>
+    public const string UsersByMonthNote =
+        "The latest month is month-to-date. Active = signed in or refreshed a session that month; totals exclude accounts deleted by the month's end.";
+
     /// <summary>
     /// The statuses the directory accepts. An unknown one is rejected rather than ignored: a
     /// caller who filters on a typo and gets the unfiltered list back reads it as "these are all
@@ -165,6 +169,18 @@ public class AdminUserService : IAdminUserService
                 .Select((day, i) => new AdminDailyCountDto(day.Key, counts[i]))
                 .ToList();
 
+            // WT-692: six local months of growth for the investor view on /admin/billing. Sequential
+            // on purpose (one DbContext); 18 cheap indexed counts.
+            var months = new List<AdminUserMonthDto>(AdminComparisonRange.GrowthMonths);
+            foreach (var month in AdminComparisonRange.MonthsEnding(window.To, window.TimeZone))
+            {
+                months.Add(new AdminUserMonthDto(
+                    month.Key,
+                    await users.CountCreatedBetweenAsync(month.Start, month.End, ct),
+                    await users.CountExistingAtAsync(month.End, ct),
+                    await tokens.CountDistinctUsersIssuedBetweenAsync(month.Start, month.End, ct)));
+            }
+
             return Result.Success(new AdminUserInsightsDto(
                 window.Range,
                 window.PreviousRange,
@@ -172,7 +188,9 @@ public class AdminUserService : IAdminUserService
                     new AdminInsightMetric("newUsers", newUsers, newUsersBefore, AdminInsightUnits.Count, true),
                     new AdminInsightMetric("activeUsers", activeUsers, activeUsersBefore, AdminInsightUnits.Count, true),
                 ],
-                series));
+                series,
+                months,
+                UsersByMonthNote));
         }
         catch (Exception ex)
         {
