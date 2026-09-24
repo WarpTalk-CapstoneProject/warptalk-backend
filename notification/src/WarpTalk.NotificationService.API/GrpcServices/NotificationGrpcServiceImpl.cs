@@ -22,15 +22,42 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
     private readonly INotificationService _notificationService;
     private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
     private readonly ILogger<NotificationGrpcServiceImpl> _logger;
+    private readonly WarpTalk.Shared.Email.IEmailTemplateSource _emailTemplates;
 
     public NotificationGrpcServiceImpl(
         INotificationService notificationService,
         StackExchange.Redis.IConnectionMultiplexer redis,
-        ILogger<NotificationGrpcServiceImpl> logger)
+        ILogger<NotificationGrpcServiceImpl> logger,
+        WarpTalk.Shared.Email.IEmailTemplateSource emailTemplates)
     {
         _notificationService = notificationService;
         _redis = redis;
         _logger = logger;
+        _emailTemplates = emailTemplates;
+    }
+
+    /// <summary>
+    /// The admin-edited version of a transactional email, for the service that sends it. An
+    /// unknown key is answered "not found" rather than refused: the sender then uses its built-in
+    /// wording, which is exactly what it would have done before the CMS existed.
+    /// </summary>
+    public override async Task<GetEmailTemplateResponse> GetEmailTemplate(GetEmailTemplateRequest request, ServerCallContext context)
+    {
+        if (WarpTalk.Shared.Email.EmailTemplateCatalog.Find(request.TemplateKey) is null)
+            return new GetEmailTemplateResponse { Found = false };
+
+        var stored = await _emailTemplates.FindActiveAsync(request.TemplateKey, context.CancellationToken);
+        if (stored is null)
+            return new GetEmailTemplateResponse { Found = false };
+
+        return new GetEmailTemplateResponse
+        {
+            Found = true,
+            Subject = stored.Subject,
+            Heading = stored.Heading,
+            BodyHtml = stored.BodyHtml,
+            Version = stored.Version,
+        };
     }
 
     public override async Task<SendNotificationResponse> SendNotification(SendNotificationRequest request, ServerCallContext context)

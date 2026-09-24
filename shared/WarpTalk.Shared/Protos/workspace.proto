@@ -14,6 +14,24 @@ service WorkspaceService {
   // WT-699 / TC4104: the audience of a SEGMENT admin announcement, where the segment is one
   // workspace. Active members only.
   rpc ListWorkspaceMemberUserIds (ListWorkspaceMemberUserIdsRequest) returns (ListWorkspaceMemberUserIdsResponse);
+  // The workspaces one person is an active member of, each with its plan: who a plan- or
+  // workspace-targeted announcement is shown to. Asked by the notification service on the
+  // person's own behalf.
+  rpc ListUserWorkspaceAudience (ListUserWorkspaceAudienceRequest) returns (ListUserWorkspaceAudienceResponse);
+}
+
+message ListUserWorkspaceAudienceRequest {
+  string user_id = 1;
+}
+
+message UserWorkspaceAudienceItem {
+  string workspace_id = 1;
+  // From the replicated entitlement snapshot. Empty when the workspace has no plan.
+  string plan_slug = 2;
+}
+
+message ListUserWorkspaceAudienceResponse {
+  repeated UserWorkspaceAudienceItem workspaces = 1;
 }
 
 message ListWorkspaceMemberUserIdsRequest {

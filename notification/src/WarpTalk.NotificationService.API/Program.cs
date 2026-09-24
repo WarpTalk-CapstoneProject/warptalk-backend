@@ -88,16 +88,32 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
 builder.Services.AddScoped<IAdminNotificationDeliveryService, AdminNotificationDeliveryService>();
 
+// The email template CMS. This service owns the store; its own senders (and the GetEmailTemplate
+// RPC every other sender calls) read it directly through DbEmailTemplateSource.
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateSource, DbEmailTemplateSource>();
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateComposer, WarpTalk.Shared.Email.EmailTemplateComposer>();
+builder.Services.AddScoped<IAdminEmailTemplateService, AdminEmailTemplateService>();
+builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
+
 // WT-699 / TC4104: BROADCAST and SEGMENT announcements resolve their audience through AuthService
 // and WorkspaceService. Optional configuration on purpose — without the two addresses those modes
 // are refused with a sentence saying so, and SPECIFIC_USERS keeps working exactly as before.
 var authServiceUrl = builder.Configuration["GrpcUrls:AuthServiceUrl"];
 var workspaceServiceUrl = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"];
+if (!string.IsNullOrWhiteSpace(workspaceServiceUrl))
+{
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o => o.Address = new Uri(workspaceServiceUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    // Plan- and workspace-targeted announcements ask the workspace service who the viewer is.
+    builder.Services.AddScoped<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcViewerAudienceResolver>();
+}
+else
+{
+    builder.Services.AddSingleton<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredViewerAudienceResolver>();
+}
 if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
 {
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.UserService.UserServiceClient>(o => o.Address = new Uri(authServiceUrl))
-        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
-    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o => o.Address = new Uri(workspaceServiceUrl))
         .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
     builder.Services.AddScoped<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcAdminAudienceResolver>();
 }

@@ -9,6 +9,23 @@ service NotificationGrpcService {
   rpc GetUserPreferences (GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
   rpc MarkAsRead (MarkAsReadRequest) returns (MarkAsReadResponse);
   rpc MarkAllAsRead (MarkAllAsReadRequest) returns (MarkAllAsReadResponse);
+  // The admin-edited version of a transactional email, read by every service that sends one
+  // (auth, workspace, translation-room). found=false means "use the built-in wording" — either
+  // nobody edited it or it was reset to default.
+  rpc GetEmailTemplate (GetEmailTemplateRequest) returns (GetEmailTemplateResponse);
+}
+
+message GetEmailTemplateRequest {
+  // An EmailTemplateCatalog key, e.g. "auth.verify-email".
+  string template_key = 1;
+}
+
+message GetEmailTemplateResponse {
+  bool found = 1;
+  string subject = 2;
+  string heading = 3;
+  string body_html = 4;
+  int32 version = 5;
 }
 
 message SendNotificationRequest {

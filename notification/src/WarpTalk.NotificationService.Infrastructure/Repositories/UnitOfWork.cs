@@ -12,6 +12,9 @@ public class UnitOfWork : IUnitOfWork
     private IPushSubscriptionRepository? _pushSubscriptionRepository;
     private IAdminNotificationRepository? _adminNotificationRepository;
     private INotificationInboxMessageRepository? _notificationInboxMessageRepository;
+    private INotificationTemplateVersionRepository? _notificationTemplateVersionRepository;
+    private IAnnouncementRepository? _announcementRepository;
+    private IAnnouncementDismissalRepository? _announcementDismissalRepository;
 
     public UnitOfWork(NotificationDbContext context)
     {
@@ -35,6 +38,15 @@ public class UnitOfWork : IUnitOfWork
 
     public INotificationInboxMessageRepository NotificationInboxMessageRepository =>
         _notificationInboxMessageRepository ??= new NotificationInboxMessageRepository(_context);
+
+    public INotificationTemplateVersionRepository NotificationTemplateVersionRepository =>
+        _notificationTemplateVersionRepository ??= new NotificationTemplateVersionRepository(_context);
+
+    public IAnnouncementRepository AnnouncementRepository =>
+        _announcementRepository ??= new AnnouncementRepository(_context);
+
+    public IAnnouncementDismissalRepository AnnouncementDismissalRepository =>
+        _announcementDismissalRepository ??= new AnnouncementDismissalRepository(_context);
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 

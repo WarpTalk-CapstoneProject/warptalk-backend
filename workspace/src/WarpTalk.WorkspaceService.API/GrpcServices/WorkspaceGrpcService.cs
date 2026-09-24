@@ -65,6 +65,30 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         return response;
     }
 
+    /// <summary>
+    /// The notification service deciding which targeted announcements one person sees. Answers
+    /// with the person's active, non-deleted workspaces and each one's replicated plan.
+    /// </summary>
+    public override async Task<ListUserWorkspaceAudienceResponse> ListUserWorkspaceAudience(
+        ListUserWorkspaceAudienceRequest request,
+        ServerCallContext context)
+    {
+        var response = new ListUserWorkspaceAudienceResponse();
+        if (!Guid.TryParse(request.UserId, out var userId))
+            return response;
+
+        var result = await _workspaceDirectory.ListUserWorkspaceAudienceAsync(userId, context.CancellationToken);
+        if (!result.IsSuccess || result.Value is null)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list the user's workspaces."));
+
+        response.Workspaces.AddRange(result.Value.Select(item => new UserWorkspaceAudienceItem
+        {
+            WorkspaceId = item.WorkspaceId.ToString(),
+            PlanSlug = item.PlanSlug ?? string.Empty,
+        }));
+        return response;
+    }
+
     public override async Task<GetSharedWorkspaceMembersResponse> GetSharedWorkspaceMembers(
         GetSharedWorkspaceMembersRequest request,
         ServerCallContext context)
