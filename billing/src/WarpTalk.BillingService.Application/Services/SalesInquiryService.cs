@@ -6,6 +6,7 @@ using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 using System.Linq.Expressions;
 using System.Text.Json;
 
@@ -95,6 +96,20 @@ public class SalesInquiryService : ISalesInquiryService
 
     public async Task<Result<PaginatedResponse<SalesInquiryDto>>> GetSalesInquiriesAsync(SalesInquiryQuery query, CancellationToken cancellationToken = default)
     {
+        string? sort = null;
+        if (query.Sort is not null && !AdminSort.TryResolve(
+                query.Sort, SalesInquiryConstants.Sorts.All, SalesInquiryConstants.Sorts.CreatedDesc, out sort))
+        {
+            return Result.Failure<PaginatedResponse<SalesInquiryDto>>(
+                SalesInquiryConstants.Errors.SortInvalid, ErrorCodes.ValidationError);
+        }
+
+        if (AdminDateFilter.ValidateRange(query.CreatedFrom, query.CreatedTo, "createdFrom", "createdTo")
+            is { } rangeError)
+        {
+            return Result.Failure<PaginatedResponse<SalesInquiryDto>>(rangeError, ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize, skip) = NormalizePagination(query);
         var normalizedStatus = NormalizeStatus(query.Status);
         var predicate = BuildQueryPredicate(query, normalizedStatus);
@@ -104,7 +119,9 @@ public class SalesInquiryService : ISalesInquiryService
             predicate,
             skip,
             pageSize,
-            query.NewestFirst
+            sort is not null
+                ? AdminInboxOrder(sort)
+                : query.NewestFirst
                 ? q => q.OrderByDescending(i => i.CreatedAt).ThenByDescending(i => i.Id)
                 : q => q
                 .OrderBy(i =>
@@ -289,14 +306,38 @@ public class SalesInquiryService : ISalesInquiryService
         return (page, pageSize, (page - 1) * pageSize);
     }
 
+    /// <summary>
+    /// The admin inbox's explicit orderings. created_desc is exactly the NewestFirst ordering, so
+    /// sending it changes nothing; every key ends on Id so pages stay stable.
+    /// </summary>
+    private static Func<IQueryable<WarpTalk.BillingService.Domain.Entities.SalesInquiry>, IQueryable<WarpTalk.BillingService.Domain.Entities.SalesInquiry>> AdminInboxOrder(string sort)
+        => sort switch
+        {
+            SalesInquiryConstants.Sorts.CreatedAsc => q => q.OrderBy(i => i.CreatedAt).ThenBy(i => i.Id),
+            SalesInquiryConstants.Sorts.CompanyAsc => q => q
+                .OrderBy(i => i.Company).ThenByDescending(i => i.CreatedAt).ThenByDescending(i => i.Id),
+            SalesInquiryConstants.Sorts.CompanyDesc => q => q
+                .OrderByDescending(i => i.Company).ThenByDescending(i => i.CreatedAt).ThenByDescending(i => i.Id),
+            _ => q => q.OrderByDescending(i => i.CreatedAt).ThenByDescending(i => i.Id),
+        };
+
     private static Expression<Func<WarpTalk.BillingService.Domain.Entities.SalesInquiry, bool>> BuildQueryPredicate(SalesInquiryQuery query, string? normalizedStatus)
     {
         var search = query.Search?.Trim().ToLowerInvariant();
         var workspaceId = query.WorkspaceId;
+        var requestType = string.IsNullOrWhiteSpace(query.RequestType) ? null : query.RequestType.Trim().ToLowerInvariant();
+        var source = string.IsNullOrWhiteSpace(query.Source) ? null : query.Source.Trim().ToLowerInvariant();
+        // Half-open: inclusive from, exclusive to.
+        var createdFrom = AdminDateFilter.ToUtc(query.CreatedFrom);
+        var createdTo = AdminDateFilter.ToUtc(query.CreatedTo);
 
         return inquiry =>
             (normalizedStatus == null || inquiry.Status == normalizedStatus) &&
             (workspaceId == null || inquiry.WorkspaceId == workspaceId) &&
+            (requestType == null || inquiry.RequestType.ToLower() == requestType) &&
+            (source == null || inquiry.Source.ToLower() == source) &&
+            (createdFrom == null || inquiry.CreatedAt >= createdFrom) &&
+            (createdTo == null || inquiry.CreatedAt < createdTo) &&
             (search == null ||
              inquiry.WorkEmail.ToLower().Contains(search) ||
              inquiry.Company.ToLower().Contains(search) ||

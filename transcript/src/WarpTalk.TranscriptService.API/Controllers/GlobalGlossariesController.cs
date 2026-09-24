@@ -147,6 +147,7 @@ public class GlobalGlossariesController : ControllerBase
         {
             "NOT_FOUND" => NotFound(error),
             "BAD_REQUEST" => BadRequest(error),
+            WarpTalk.Shared.ErrorCodes.ValidationError => BadRequest(error),
             "UNAUTHORIZED" => StatusCode(403, error),
             _ => StatusCode(500, error)
         };

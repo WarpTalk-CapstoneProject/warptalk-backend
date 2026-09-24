@@ -41,6 +41,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         WorkspaceDirectorySort.MembersDesc,
         WorkspaceDirectorySort.MembersAsc,
         WorkspaceDirectorySort.UpdatedDesc,
+        WorkspaceDirectorySort.UpdatedAsc,
     ];
 
     private readonly IUnitOfWork _unitOfWork;
@@ -107,6 +108,13 @@ public class AdminWorkspaceService : IAdminWorkspaceService
                 WorkspaceAdminErrors.InvalidMemberCountRange, ErrorCodes.ValidationError);
         }
 
+        if (AdminDateFilter.ValidateRange(query.CreatedFrom, query.CreatedTo, "createdFrom", "createdTo")
+            is { } createdRangeError)
+        {
+            return Result.Failure<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+                createdRangeError, ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize) = query.Normalize();
 
         var filter = new WorkspaceDirectoryFilter(
@@ -116,7 +124,9 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             status,
             query.MinMembers is { } minMembers ? Math.Max(minMembers, 0) : null,
             query.MaxMembers is { } maxMembers ? Math.Max(maxMembers, 0) : null,
-            sort);
+            sort,
+            AdminDateFilter.ToUtc(query.CreatedFrom),
+            AdminDateFilter.ToUtc(query.CreatedTo));
 
         try
         {

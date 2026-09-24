@@ -20,6 +20,28 @@ public record AdminUserDirectoryQuery : AdminPageRequest
     /// <summary>A platform role name. Null lists every role.</summary>
     public string? Role { get; init; }
 
+    /// <summary>Inclusive lower bound on <c>created_at</c> (UTC; a value without an offset is read as UTC).</summary>
+    public DateTime? CreatedFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>created_at</c>. Must not be earlier than <see cref="CreatedFrom"/>.</summary>
+    public DateTime? CreatedTo { get; init; }
+
+    /// <summary>
+    /// Inclusive lower bound on <c>last_login_at</c>. Accounts that never signed in have no
+    /// last login and therefore never match a last-login bound.
+    /// </summary>
+    public DateTime? LastLoginFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>last_login_at</c>. Must not be earlier than <see cref="LastLoginFrom"/>.</summary>
+    public DateTime? LastLoginTo { get; init; }
+
+    /// <summary>
+    /// true: only accounts that have never signed in (<c>last_login_at IS NULL</c>). false: only
+    /// accounts that have. Null (default): no constraint. true cannot be combined with a
+    /// last-login bound — no row could match both.
+    /// </summary>
+    public bool? NeverSignedIn { get; init; }
+
     /// <summary>
     /// created_desc | created_asc | name_asc | name_desc | last_login_desc | last_login_asc.
     /// Defaults to created_desc.

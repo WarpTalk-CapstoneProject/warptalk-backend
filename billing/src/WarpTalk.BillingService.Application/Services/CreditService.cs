@@ -12,6 +12,7 @@ using WarpTalk.BillingService.Domain.Interfaces;
 
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -267,11 +268,18 @@ public class CreditService : ICreditService
     }
 
     public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(
-        CreditHistoryQuery query,
+        GlobalCreditHistoryQuery query,
         CancellationToken cancellationToken = default)
     {
+        if (!AdminSort.TryResolve(query.Sort, CreditHistorySorts.All, CreditHistorySorts.CreatedDesc, out var sort))
+        {
+            return Result.Failure<PaginatedResponse<CreditTransactionDto>>(
+                $"Unknown sort. Expected one of: {string.Join(", ", CreditHistorySorts.All)}.",
+                ErrorCodes.ValidationError);
+        }
+
         var page = await _unitOfWork.CreditTransactionRepository.GetHistoryPageAsync(
-            BillingQueryHelper.ToCreditTransactionHistoryFilter(query, null),
+            BillingQueryHelper.ToCreditTransactionHistoryFilter(query, null, query.Search, sort),
             cancellationToken);
 
         var dtos = page.Items.ToDtoList();

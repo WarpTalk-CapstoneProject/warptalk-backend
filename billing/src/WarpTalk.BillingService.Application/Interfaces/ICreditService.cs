@@ -50,7 +50,7 @@ public interface ICreditService
         CancellationToken cancellationToken = default);
 
     Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(Guid workspaceId, CreditHistoryQuery query, CancellationToken cancellationToken = default);
-    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(CreditHistoryQuery query, CancellationToken cancellationToken = default);
+    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(GlobalCreditHistoryQuery query, CancellationToken cancellationToken = default);
 
 }
 
