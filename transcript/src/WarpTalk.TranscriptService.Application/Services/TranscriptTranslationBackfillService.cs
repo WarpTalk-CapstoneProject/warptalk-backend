@@ -79,17 +79,20 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranscriptReadAccess _readAccess;
+    private readonly ITranscriptRoomLanguagePolicy _languagePolicy;
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<TranscriptTranslationBackfillService> _logger;
 
     public TranscriptTranslationBackfillService(
         IUnitOfWork unitOfWork,
         ITranscriptReadAccess readAccess,
+        ITranscriptRoomLanguagePolicy languagePolicy,
         IConnectionMultiplexer redis,
         ILogger<TranscriptTranslationBackfillService> logger)
     {
         _unitOfWork = unitOfWork;
         _readAccess = readAccess;
+        _languagePolicy = languagePolicy;
         _redis = redis;
         _logger = logger;
     }
@@ -151,7 +154,10 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
     {
         try
         {
-            var context = await LoadAsync(transcriptId, userId, targetLanguage, cancellationToken);
+            // Not a write: a locked transcript can still be read, and its coverage is part of reading
+            // it. The language gate still applies — coverage is only ever the prelude to a backfill,
+            // and a language the meeting may not be translated into has no gap worth reporting.
+            var context = await LoadAsync(transcriptId, userId, targetLanguage, forWrite: false, cancellationToken);
             if (!context.IsSuccess)
             {
                 return Result.Failure<TranscriptLanguageCoverageDto>(context.Error!, context.ErrorCode);
@@ -172,9 +178,14 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         string targetLanguage,
         CancellationToken cancellationToken = default)
     {
+        // Only a run that got as far as owning the marker may leave "failed" on it. A request
+        // refused before that (wrong language, locked transcript) must not paint a failure over a
+        // marker it never held — possibly another reader's live run.
+        var markerClaimed = false;
+
         try
         {
-            var context = await LoadAsync(transcriptId, userId, targetLanguage, cancellationToken);
+            var context = await LoadAsync(transcriptId, userId, targetLanguage, forWrite: true, cancellationToken);
             if (!context.IsSuccess)
             {
                 return Result.Failure<TranscriptLanguageCoverageDto>(context.Error!, context.ErrorCode);
@@ -200,6 +211,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             // must watch it, not queue every segment again. Losing this race is the normal
             // outcome, not an error — both callers want the same rows to exist.
             var claimed = await db.StringSetAsync(markerKey, StatusRunning, RunMarkerTtl, When.NotExists);
+            markerClaimed = claimed;
             if (!claimed)
             {
                 // Unless the marker is a corpse. A run that failed leaves one behind for the rest
@@ -214,6 +226,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 }
 
                 await db.StringSetAsync(markerKey, StatusRunning, RunMarkerTtl);
+                markerClaimed = true;
             }
 
             // Reserved only by a run that is about to queue: an in-flight duplicate has already
@@ -223,6 +236,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 // Release the marker just claimed: nothing is running, and leaving it would show a
                 // progress bar for twenty minutes over a request that was refused.
                 await db.KeyDeleteAsync(markerKey);
+                markerClaimed = false;
                 _logger.LogWarning(
                     "Refused to backfill transcript {TranscriptId} into {Language}: {Segments} more lines would exceed its budget of {Budget} per {Window}",
                     transcriptId,
@@ -276,7 +290,10 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
 
             // A marker claimed a moment ago and then abandoned would report a run that is not
             // happening until its TTL expires. Say what actually became of it instead.
-            await TryMarkFailedAsync(transcriptId, targetLanguage);
+            if (markerClaimed)
+            {
+                await TryMarkFailedAsync(transcriptId, targetLanguage);
+            }
 
             return Result.Failure<TranscriptLanguageCoverageDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
@@ -286,6 +303,7 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         Guid transcriptId,
         Guid userId,
         string targetLanguage,
+        bool forWrite,
         CancellationToken cancellationToken)
     {
         var language = NormalizeLanguage(targetLanguage);
@@ -303,6 +321,34 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
         if (!await _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, cancellationToken))
         {
             return Result.Failure<BackfillWork>("You do not have access to this transcript.", "FORBIDDEN");
+        }
+
+        // WT-704. Both gates come after the access check so that a caller who cannot read the
+        // transcript learns nothing about its state or its room's languages.
+        if (forWrite && IsLocked(transcript))
+        {
+            return Result.Failure<BackfillWork>(
+                "This transcript is locked and no longer accepts new translations.",
+                TranscriptLanguageErrors.TranscriptLocked);
+        }
+
+        // Generation is bounded by the room's allowed languages (L2 ∩ L1). Checked before any
+        // segment is read, so a refused language costs one RPC and queues nothing.
+        var policy = await _languagePolicy.GetAsync(transcript.TranslationRoomId, cancellationToken);
+        if (!policy.IsSuccess)
+        {
+            return Result.Failure<BackfillWork>(policy.Error!, policy.ErrorCode);
+        }
+
+        var snapshot = policy.Value!;
+        if (!snapshot.IsAllowed(language))
+        {
+            var allowed = snapshot.AllowedLanguages.Count > 0
+                ? string.Join(", ", snapshot.AllowedLanguages)
+                : "none";
+            return Result.Failure<BackfillWork>(
+                $"Language '{targetLanguage.Trim()}' is not allowed for this meeting's artifacts. Allowed languages: {allowed}.",
+                TranscriptLanguageErrors.LanguageNotAllowed);
         }
 
         var segments = (await _unitOfWork.TranscriptSegments.FindAsync(
@@ -335,6 +381,14 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             translatedIds.Count,
             missing));
     }
+
+    /// <summary>
+    /// Finalized and archived transcripts are the record as signed off; generating new content
+    /// into them would change what was approved. Same statuses TranscriptCorrectionService refuses.
+    /// </summary>
+    private static bool IsLocked(Transcript transcript) =>
+        string.Equals(transcript.Status, "FINALIZED", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(transcript.Status, "ARCHIVED", StringComparison.OrdinalIgnoreCase);
 
     private async Task<TranscriptLanguageCoverageDto> DescribeAsync(
         BackfillWork work,
@@ -414,11 +468,41 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
                 return 0;
             }
 
+            // WT-704: a correction may only regenerate languages the room still allows. A line can
+            // hold a translation the policy has since dropped; that one stays readable as it is
+            // (reading is never re-filtered), it is just not redone. Without an answer from the
+            // room nothing is redone — the correction stands either way.
+            var policy = await _languagePolicy.GetAsync(transcript.TranslationRoomId, cancellationToken);
+            if (!policy.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "Skipped retranslating corrected segment {SegmentId}: could not resolve the allowed languages of room {RoomId} ({ErrorCode})",
+                    segmentId,
+                    transcript.TranslationRoomId,
+                    policy.ErrorCode);
+                return 0;
+            }
+
             var sourceLanguage = NormalizeLanguage(segment.OriginalLanguage);
-            var languages = links
+            var candidates = links
                 .Select(l => NormalizeLanguage(l.TargetLanguage))
                 .Where(language => language.Length > 0 && language != sourceLanguage)
                 .ToHashSet(StringComparer.Ordinal);
+
+            // Filtered before the budget is reserved, so the budget counts only what is queued.
+            var languages = candidates
+                .Where(language => policy.Value!.IsAllowed(language))
+                .ToHashSet(StringComparer.Ordinal);
+
+            if (languages.Count < candidates.Count)
+            {
+                _logger.LogInformation(
+                    "Skipped retranslating corrected segment {SegmentId} into {Skipped} language(s) outside room {RoomId}'s allowed languages",
+                    segmentId,
+                    candidates.Count - languages.Count,
+                    transcript.TranslationRoomId);
+            }
+
             var db = _redis.GetDatabase();
 
             // Corrections spend the same budget as gap fills: each one redoes every language the

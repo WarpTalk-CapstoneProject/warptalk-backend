@@ -38,6 +38,12 @@ service TranslationRoomService {
 
 message GetTranslationRoomRequest {
   string id = 1;
+  // WT-704: opt in to generatable_artifact_languages on the response. Off by default because
+  // computing it costs a workspace RPC plus a catalog read, and this RPC sits on hot paths —
+  // gateway RoomLanguagePolicy / RoomHostAuthority / AiResultConsumer, meeting, workspace, and
+  // transcript read access — none of which need it. Only callers that gate GENERATION of new
+  // language content (transcript backfill, MT correction) set it.
+  bool include_artifact_languages = 2;
 }
 
 message GetTranslationRoomByCodeRequest {
@@ -106,6 +112,22 @@ message GetTranslationRoomResponse {
   // ArtifactAccessHelper.ReadArtifactAccessLevel fails in for an unparseable blob. An
   // authorization input is not a fail-open case, so absent must never widen access.
   string artifact_access = 15;
+  // WT-704: the meeting's declared languages (L2) — the room's source and target languages as
+  // stored. Always filled. Empty from an older server.
+  string source_language = 16;
+  repeated string target_languages = 17;
+  // WT-704: which languages NEW content may be generated in for this room — L2 narrowed by the
+  // workspace whitelist (L1) and the active catalog, exactly what IRoomArtifactLanguagePolicy
+  // accepts. Filled only when the request set include_artifact_languages.
+  //
+  // Read it together with artifact_languages_resolved, never on its own: proto3 cannot tell an
+  // empty repeated field from an absent one.
+  repeated string generatable_artifact_languages = 18;
+  // WT-704: true when generatable_artifact_languages is the server's actual answer. False means
+  // it was not requested, the server predates the field, or the computation failed — the reader
+  // must then fall back to the room's own set (source_language + target_languages), never to
+  // "anything". An EMPTY list with resolved=true is an answer: nothing may be generated.
+  bool artifact_languages_resolved = 19;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

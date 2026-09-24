@@ -56,6 +56,11 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptReadAccess,
     WarpTalk.TranscriptService.Application.Authorization.TranscriptReadAccess>();
 
+// WT-704: which languages new transcript content (backfill, MT correction) may be generated in —
+// read from TranslationRoomService's L2 ∩ L1 answer rather than recomputed here.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptRoomLanguagePolicy,
+    WarpTalk.TranscriptService.Application.Authorization.TranscriptRoomLanguagePolicy>();
+
 // WT-605: who may Pause/Resume Transcript — host-only, separate from the read predicate above
 // so widening read access can never silently widen who can stop recording.
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptPauseAccess,
