@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using WarpTalk.AssistantService.Application.Interfaces;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.AssistantService.API.Hubs;
 
@@ -11,10 +12,17 @@ namespace WarpTalk.AssistantService.API.Hubs;
 public class AssistantHub : Hub
 {
     private readonly IAssistantConversationService _conversationService;
+    private readonly IPlatformAssistantConversationService _platformConversationService;
+    private readonly IAuthorizationService _authorizationService;
 
-    public AssistantHub(IAssistantConversationService conversationService)
+    public AssistantHub(
+        IAssistantConversationService conversationService,
+        IPlatformAssistantConversationService platformConversationService,
+        IAuthorizationService authorizationService)
     {
         _conversationService = conversationService;
+        _platformConversationService = platformConversationService;
+        _authorizationService = authorizationService;
     }
 
     public async Task JoinConversation(Guid conversationId)
@@ -25,10 +33,27 @@ public class AssistantHub : Hub
 
         var access = await _conversationService.AuthorizeConversationAccessAsync(
             conversationId, userId, Context.ConnectionAborted);
-        if (!access.IsSuccess)
+        if (!access.IsSuccess && !await CanJoinPlatformConversationAsync(conversationId, userId))
             throw new HubException("Forbidden: this conversation does not belong to you.");
 
         await Groups.AddToGroupAsync(Context.ConnectionId, GetConversationGroupName(conversationId));
+    }
+
+    /// <summary>
+    /// A platform-scope conversation streams through the same group, but joining it needs the
+    /// system-admin policy AS WELL AS ownership — the same gate its REST controller has. Evaluated
+    /// with the real policy rather than a role string, so the hub and the controller cannot drift
+    /// into two different ideas of who an admin is.
+    /// </summary>
+    private async Task<bool> CanJoinPlatformConversationAsync(Guid conversationId, Guid userId)
+    {
+        if (Context.User is null) return false;
+        var isSystemAdmin = await _authorizationService.AuthorizeAsync(Context.User, SystemAdminAuthorization.PolicyName);
+        if (!isSystemAdmin.Succeeded) return false;
+
+        var access = await _platformConversationService.AuthorizeConversationAccessAsync(
+            conversationId, userId, Context.ConnectionAborted);
+        return access.IsSuccess;
     }
 
     public async Task LeaveConversation(Guid conversationId)

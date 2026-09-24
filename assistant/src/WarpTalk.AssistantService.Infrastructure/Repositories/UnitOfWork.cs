@@ -13,6 +13,8 @@ public class UnitOfWork : IUnitOfWork
         AssistantConversationRepository = new AssistantConversationRepository(db);
         AssistantMessageRepository = new AssistantMessageRepository(db);
         AssistantToolCallRepository = new AssistantToolCallRepository(db);
+        PlatformConversationRepository = new PlatformConversationRepository(db);
+        PlatformMessageRepository = new PlatformMessageRepository(db);
         PluginRepository = new PluginRepository(db);
         PluginInstallationRepository = new PluginInstallationRepository(db);
         PluginConnectionRepository = new PluginConnectionRepository(db);
@@ -26,6 +28,8 @@ public class UnitOfWork : IUnitOfWork
     public IAssistantConversationRepository AssistantConversationRepository { get; }
     public IAssistantMessageRepository AssistantMessageRepository { get; }
     public IAssistantToolCallRepository AssistantToolCallRepository { get; }
+    public IPlatformConversationRepository PlatformConversationRepository { get; }
+    public IPlatformMessageRepository PlatformMessageRepository { get; }
     public IPluginRepository PluginRepository { get; }
     public IPluginInstallationRepository PluginInstallationRepository { get; }
     public IPluginConnectionRepository PluginConnectionRepository { get; }

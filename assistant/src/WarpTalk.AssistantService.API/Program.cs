@@ -67,6 +67,7 @@ try
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
+    builder.Services.AddScoped<IPlatformAssistantConversationService, PlatformAssistantConversationService>();
     builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
     // The operator-side lifecycle of a catalog row. Separate from the installation service because
     // it writes the global catalog rather than one user's own rows, and is gated accordingly.
