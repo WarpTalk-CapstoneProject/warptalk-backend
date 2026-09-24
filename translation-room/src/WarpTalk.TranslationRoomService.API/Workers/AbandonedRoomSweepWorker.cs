@@ -29,8 +29,9 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 ///     as LIVE NOW. They never reach History, they keep claiming occupancy, and their transcript
 ///     and summary are never finalized — because finalization is queued by ending.
 ///
-///     ExpireTranslationRoomAsync looks like the cure and is not: it only moves SCHEDULED or
-///     WAITING rooms to EXPIRED, cannot touch IN_PROGRESS, and has no production callers.
+///     ExpireTranslationRoomAsync looks like the cure and is not: it only moves rooms nobody ever
+///     got into — SCHEDULED, WAITING or OPEN — to EXPIRED and cannot touch IN_PROGRESS. WT-714's
+///     booking sweep calls it for bookings nobody attended, which is the opposite population.
 ///
 /// HOW IT ENDS THEM
 ///     Through <see cref="ITranslationRoomService.EndTranslationRoomAsync"/> with the room's own

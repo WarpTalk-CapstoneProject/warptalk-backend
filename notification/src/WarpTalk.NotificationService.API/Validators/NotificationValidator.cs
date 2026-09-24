@@ -71,6 +71,15 @@ public static class NotificationValidator
             }
         },
         {
+            // WT-612. Same two fields as MEETING_STARTED, because the client resolves both
+            // through one payload reader — the difference between them is where the click goes,
+            // not what they carry.
+            NotificationConstants.TypeMeetingOpened, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
             NotificationConstants.TypeMeetingSummaryReady, new PayloadSchema
             {
                 RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
