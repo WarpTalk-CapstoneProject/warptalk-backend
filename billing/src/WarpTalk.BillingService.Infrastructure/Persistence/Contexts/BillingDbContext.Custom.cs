@@ -28,6 +28,12 @@ public partial class BillingDbContext
     /// <summary>Recorded exchange rates per UTC day and source (migration 20260924150000, Stripe FX).</summary>
     public DbSet<FxRate> FxRates => Set<FxRate>();
 
+    /// <summary>Our calls to external providers per UTC hour (migration 20260925090000, admin Providers page).</summary>
+    public DbSet<ProviderCallStat> ProviderCallStats => Set<ProviderCallStat>();
+
+    /// <summary>Incidents from providers' public status pages (migration 20260925090000, admin Providers page).</summary>
+    public DbSet<ProviderStatusIncident> ProviderStatusIncidents => Set<ProviderStatusIncident>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
         // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
@@ -105,6 +111,54 @@ public partial class BillingDbContext
             entity.Property(e => e.GroupId).HasColumnName("group_id").HasMaxLength(200);
             entity.Property(e => e.GroupLabel).HasColumnName("group_label").HasMaxLength(300);
             entity.Property(e => e.Credits).HasColumnName("credits");
+            entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        modelBuilder.Entity<ProviderCallStat>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("provider_call_stats_pkey");
+            entity.ToTable("provider_call_stats", "subscription");
+            entity.HasIndex(e => new { e.Provider, e.HourStart, e.Operation, e.Model })
+                .IsUnique()
+                .HasDatabaseName("ux_provider_call_stats_hour");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.HourStart).HasColumnName("hour_start");
+            entity.Property(e => e.Operation).HasColumnName("operation").HasMaxLength(80);
+            entity.Property(e => e.Model).HasColumnName("model").HasMaxLength(120);
+            entity.Property(e => e.Ok).HasColumnName("ok");
+            entity.Property(e => e.Quota).HasColumnName("quota");
+            entity.Property(e => e.RateLimited).HasColumnName("rate_limited");
+            entity.Property(e => e.Auth).HasColumnName("auth");
+            entity.Property(e => e.ClientError).HasColumnName("client_error");
+            entity.Property(e => e.ServerError).HasColumnName("server_error");
+            entity.Property(e => e.Timeout).HasColumnName("timeout");
+            entity.Property(e => e.NetworkError).HasColumnName("network_error");
+            entity.Property(e => e.Error).HasColumnName("error");
+            entity.Property(e => e.LatencyCount).HasColumnName("latency_count");
+            entity.Property(e => e.LatencySumMs).HasColumnName("latency_sum_ms");
+            entity.Property(e => e.LatencyBuckets).HasColumnName("latency_buckets").HasColumnType("jsonb");
+            entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        modelBuilder.Entity<ProviderStatusIncident>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("provider_status_incidents_pkey");
+            entity.ToTable("provider_status_incidents", "subscription");
+            entity.HasIndex(e => new { e.Provider, e.ExternalId })
+                .IsUnique()
+                .HasDatabaseName("ux_provider_status_incidents_external");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.ExternalId).HasColumnName("external_id").HasMaxLength(100);
+            entity.Property(e => e.Name).HasColumnName("name").HasMaxLength(500);
+            entity.Property(e => e.Impact).HasColumnName("impact").HasMaxLength(20);
+            entity.Property(e => e.Status).HasColumnName("status").HasMaxLength(40);
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.ResolvedAt).HasColumnName("resolved_at");
+            entity.Property(e => e.Url).HasColumnName("url").HasMaxLength(500);
             entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
         });
 

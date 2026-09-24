@@ -108,6 +108,19 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // --- Grpc Clients ---
     builder.Services.AddScoped<IAdminWorkspaceAnalyticsService, AdminWorkspaceAnalyticsService>();
     builder.Services.AddScoped<IAdminBillingInsightsService, AdminBillingInsightsService>();
+    // Admin Providers page. The option facts say whether a secret is SET, never what it is.
+    builder.Services.AddSingleton(new AdminProvidersOptions
+    {
+        StatusPages = (builder.Configuration.GetSection(WarpTalk.BillingService.Infrastructure.Options.ProviderStatusOptions.SectionName)
+                .Get<WarpTalk.BillingService.Infrastructure.Options.ProviderStatusOptions>()?.Pages
+            ?? new Dictionary<string, string>())
+            .Where(page => Uri.TryCreate(page.Value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+            .ToDictionary(page => page.Key.ToLowerInvariant(), page => page.Value.TrimEnd('/'), StringComparer.OrdinalIgnoreCase),
+        StripeSecretKeyConfigured = !string.IsNullOrWhiteSpace(builder.Configuration["Stripe:SecretKey"]),
+        StripeWebhookSecretConfigured = !string.IsNullOrWhiteSpace(builder.Configuration["Stripe:WebhookSecret"]),
+    });
+    builder.Services.AddScoped<IMediaUsageClient, WarpTalk.BillingService.Infrastructure.Clients.MediaUsageGrpcClient>();
+    builder.Services.AddScoped<IAdminProvidersService, AdminProvidersService>();
     builder.Services.AddScoped<IAdminWorkspaceBillingService, AdminWorkspaceBillingService>();
     builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.BillingService.Infrastructure.Clients.AdminAuditGrpcClient>();
 
@@ -123,6 +136,16 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
         var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"]
             ?? builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
             ?? "http://localhost:50056";
+        o.Address = new Uri(url);
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // LiveKit usage for the admin Providers page (translation-room GetMediaUsage).
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
+    {
+        var url = builder.Configuration["GrpcSettings:TranslationRoomServiceUrl"]
+            ?? builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]
+            ?? "http://localhost:50052";
         o.Address = new Uri(url);
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
@@ -232,6 +255,10 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddHostedService<CartesiaUsageSyncWorker>();
     // Stripe's USD→VND rate once per UTC day, for every VND report. Billing:Fx:CheckIntervalMinutes = 0 disables it.
     builder.Services.AddHostedService<FxRateRefreshWorker>();
+    // Admin Providers page: our provider calls (Redis → Postgres) and the providers' public status pages.
+    // ProviderStatus:CallStatsSyncIntervalMinutes / PollIntervalMinutes = 0 disable them; no pages = no polling.
+    builder.Services.AddHostedService<ProviderCallStatsSyncWorker>();
+    builder.Services.AddHostedService<ProviderStatusPollWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>

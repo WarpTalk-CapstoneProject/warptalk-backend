@@ -50,4 +50,10 @@ public interface IPaymentRepository : IGenericRepository<Payment>
 
     /// <summary>Newest payments that represent a charge attempt (not pending, not subscription_updated), newest first.</summary>
     Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Paid (counted, Stripe invoice twins removed) and failed payments of <paramref name="provider"/>
+    /// whose paid_at / updated_at falls in [from, to). Admin Providers page.
+    /// </summary>
+    Task<IReadOnlyList<ProviderPaymentRow>> GetProviderPaymentsAsync(string provider, DateTime from, DateTime to, CancellationToken cancellationToken = default);
 }

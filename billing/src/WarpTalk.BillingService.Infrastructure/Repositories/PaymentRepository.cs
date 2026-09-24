@@ -100,6 +100,41 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
             .ToList();
     }
 
+    public async Task<IReadOnlyList<ProviderPaymentRow>> GetProviderPaymentsAsync(
+        string provider, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var key = provider.Trim().ToLowerInvariant();
+        var paid = await CountedPaidIn(from, to)
+            .Where(p => p.Provider.ToLower() == key)
+            .Select(p => new
+            {
+                At = p.PaidAt ?? p.UpdatedAt,
+                p.Status,
+                Currency = p.Currency.ToUpper(),
+                p.TotalAmount,
+                WorkspaceId = (Guid?)p.Subscription.WorkspaceId,
+            })
+            .ToListAsync(cancellationToken);
+        var failed = await _dbSet.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.Provider.ToLower() == key
+                        && p.Status == PaymentConstants.PaymentStatuses.Failed
+                        && p.UpdatedAt >= from
+                        && p.UpdatedAt < to)
+            .Select(p => new
+            {
+                At = p.UpdatedAt,
+                p.Status,
+                Currency = p.Currency.ToUpper(),
+                p.TotalAmount,
+                WorkspaceId = (Guid?)p.Subscription.WorkspaceId,
+            })
+            .ToListAsync(cancellationToken);
+
+        return paid.Concat(failed)
+            .Select(r => new ProviderPaymentRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Status, r.Currency, r.TotalAmount, r.WorkspaceId))
+            .ToList();
+    }
+
     public async Task<IReadOnlyList<PaymentCurrencyTotal>> GetWorkspaceCountedPaidTotalsAsync(
         Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
     {
