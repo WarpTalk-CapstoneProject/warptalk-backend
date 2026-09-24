@@ -129,9 +129,25 @@ public class SmtpEmailServiceEncodingTests
         message.TextBody.Should().Contain($"Open ({Link})");
     }
 
+    [Fact]
+    public async Task Invitation_UsesAPublishedLayout_OnTheSmtpPathToo()
+    {
+        var source = new FixedTemplateSource(EmailTemplateCatalog.MeetingInvitation, new StoredEmailTemplate(
+            "Invite: {{MeetingTitle}}", "", "<a href=\"{{MeetingLink}}\">Join</a>", 4)
+        {
+            LayoutHtml = "<html><head></head><body><div class=\"cms-layout\">{{content}}</div></body></html>",
+            Preheader = "{{ScheduledTime}}",
+        });
+
+        var message = await Service(source).BuildMeetingInvitationMessageAsync("guest@example.com", "Participant", Link, "Sync", "10:00");
+
+        message.HtmlBody.Should().Contain("<div class=\"cms-layout\">");
+        message.HtmlBody.Should().NotContain("WarpTalk<span");
+    }
+
     private sealed class FixedTemplateSource(string key, StoredEmailTemplate template) : IEmailTemplateSource
     {
-        public Task<StoredEmailTemplate?> FindActiveAsync(string templateKey, CancellationToken ct = default) =>
+        public Task<StoredEmailTemplate?> FindActiveAsync(string templateKey, string? locale, CancellationToken ct = default) =>
             Task.FromResult(templateKey == key ? template : null);
     }
 }

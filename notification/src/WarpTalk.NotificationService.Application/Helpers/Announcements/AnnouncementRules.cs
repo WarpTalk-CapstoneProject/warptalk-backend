@@ -27,6 +27,18 @@ public static partial class AnnouncementRules
 
         var ctaUrl = string.IsNullOrWhiteSpace(request.CtaUrl) ? null : request.CtaUrl.Trim();
         var ctaLabel = string.IsNullOrWhiteSpace(request.CtaLabel) ? null : request.CtaLabel.Trim();
+        var secondaryUrl = string.IsNullOrWhiteSpace(request.SecondaryCtaUrl) ? null : request.SecondaryCtaUrl.Trim();
+        var secondaryLabel = string.IsNullOrWhiteSpace(request.SecondaryCtaLabel) ? null : request.SecondaryCtaLabel.Trim();
+        var roles = (request.TargetRoles ?? [])
+            .Select(role => AnnouncementConstants.Roles.FirstOrDefault(known => string.Equals(known, role?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? (role ?? string.Empty).Trim())
+            .Where(role => role.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var locales = (request.TargetLocales ?? [])
+            .Select(locale => (locale ?? string.Empty).Trim().ToLowerInvariant())
+            .Where(locale => locale.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
         return request with
         {
@@ -40,6 +52,16 @@ public static partial class AnnouncementRules
             CtaUrl = ctaUrl,
             StartsAt = AsUtc(request.StartsAt),
             EndsAt = AsUtc(request.EndsAt),
+            Placement = (request.Placement ?? string.Empty).Trim().ToUpperInvariant(),
+            Variant = (request.Variant ?? string.Empty).Trim().ToUpperInvariant(),
+            AccentColor = (request.AccentColor ?? string.Empty).Trim().ToUpperInvariant(),
+            Icon = string.IsNullOrWhiteSpace(request.Icon) ? null : request.Icon.Trim().ToLowerInvariant(),
+            ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim(),
+            Frequency = (request.Frequency ?? string.Empty).Trim().ToUpperInvariant(),
+            TargetRoles = roles,
+            TargetLocales = locales,
+            SecondaryCtaLabel = secondaryLabel,
+            SecondaryCtaUrl = secondaryUrl,
         };
     }
 
@@ -91,11 +113,59 @@ public static partial class AnnouncementRules
                 return "The link must be an https:// or http:// address, or a path in the app starting with /.";
         }
 
+        if (request.SecondaryCtaUrl is null && request.SecondaryCtaLabel is not null)
+            return "The second button's label needs a link.";
+        if (request.SecondaryCtaUrl is not null)
+        {
+            if (request.CtaUrl is null) return "Add the main button before a second one.";
+            if (request.SecondaryCtaLabel is null) return "The second button's link needs a label.";
+            if (request.SecondaryCtaLabel.Length > AnnouncementConstants.MaxCtaLabelLength)
+                return $"The second button's label must be {AnnouncementConstants.MaxCtaLabelLength} characters or fewer.";
+            if (request.SecondaryCtaUrl.Length > AnnouncementConstants.MaxCtaUrlLength || !IsAllowedLink(request.SecondaryCtaUrl))
+                return "The second button's link must be an https:// or http:// address, or a path in the app starting with /.";
+        }
+
         if (request.StartsAt is { } start && request.EndsAt is { } end && end <= start)
             return "The end of the window must be after its start.";
 
+        if (!AnnouncementConstants.Placements.Contains(request.Placement))
+            return $"Placement must be one of {string.Join(", ", AnnouncementConstants.Placements)}.";
+        if (!AnnouncementConstants.Variants.Contains(request.Variant))
+            return $"Style must be one of {string.Join(", ", AnnouncementConstants.Variants)}.";
+        if (!AnnouncementConstants.AccentColors.Contains(request.AccentColor))
+            return $"Color must be one of {string.Join(", ", AnnouncementConstants.AccentColors)}.";
+        if (request.Icon is not null && !AnnouncementConstants.Icons.Contains(request.Icon))
+            return $"'{request.Icon}' is not an icon the app can draw.";
+        if (request.ImageUrl is not null
+            && (request.ImageUrl.Length > AnnouncementConstants.MaxImageUrlLength || !IsAllowedImage(request.ImageUrl)))
+            return "The image must be an uploaded image or an https:// address.";
+        if (request.Priority is < 0 or > AnnouncementConstants.MaxPriority)
+            return $"Priority must be between 0 and {AnnouncementConstants.MaxPriority}.";
+        if (!AnnouncementConstants.Frequencies.Contains(request.Frequency))
+            return $"Frequency must be one of {string.Join(", ", AnnouncementConstants.Frequencies)}.";
+
+        var roles = request.TargetRoles ?? [];
+        var badRole = roles.FirstOrDefault(role => !AnnouncementConstants.Roles.Contains(role));
+        if (badRole is not null) return $"'{badRole}' is not a workspace role. Use {string.Join(", ", AnnouncementConstants.Roles)}.";
+        var locales = request.TargetLocales ?? [];
+        var badLocale = locales.FirstOrDefault(locale => !AnnouncementConstants.Locales.Contains(locale));
+        if (badLocale is not null) return $"'{badLocale}' is not a language the app speaks. Use {string.Join(", ", AnnouncementConstants.Locales)}.";
+        if (request.NewUsersWithinDays is { } days && (days < 1 || days > AnnouncementConstants.MaxNewUserDays))
+            return $"\"New users\" must be between 1 and {AnnouncementConstants.MaxNewUserDays} days.";
+
         return null;
     }
+
+    /// <summary>An uploaded announcement asset, or an https image anywhere.</summary>
+    public static bool IsAllowedImage(string url)
+    {
+        if (url.StartsWith(AssetPathPrefix, StringComparison.Ordinal))
+            return Guid.TryParse(url[AssetPathPrefix.Length..], out _);
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && !url.Any(char.IsWhiteSpace);
+    }
+
+    /// <summary>Where an uploaded asset is served (under the gateway's /api/v1/notifications route).</summary>
+    public const string AssetPathPrefix = "/api/v1/notifications/announcements/assets/";
 
     /// <summary>An absolute http(s) URL, or an in-app path ("/…" but not "//…", which is another host).</summary>
     public static bool IsAllowedLink(string link)

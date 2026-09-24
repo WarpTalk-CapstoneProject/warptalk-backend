@@ -13,11 +13,28 @@ service NotificationGrpcService {
   // (auth, workspace, translation-room). found=false means "use the built-in wording" — either
   // nobody edited it or it was reset to default.
   rpc GetEmailTemplate (GetEmailTemplateRequest) returns (GetEmailTemplateResponse);
+  // One email handed to a provider (or refused by it), counted per template, locale and day for
+  // the CMS's delivery stats. Fire-and-forget from the sender's side.
+  rpc RecordEmailDelivery (RecordEmailDeliveryRequest) returns (RecordEmailDeliveryResponse);
+}
+
+message RecordEmailDeliveryRequest {
+  string template_key = 1;
+  string locale = 2;
+  bool succeeded = 3;
+  int32 version = 4;
+}
+
+message RecordEmailDeliveryResponse {
+  bool recorded = 1;
 }
 
 message GetEmailTemplateRequest {
   // An EmailTemplateCatalog key, e.g. "auth.verify-email".
   string template_key = 1;
+  // The recipient's language ("vi", "ja"...). Empty means English. The published content for it
+  // is returned, falling back to English; drafts are never returned.
+  string locale = 2;
 }
 
 message GetEmailTemplateResponse {
@@ -26,6 +43,15 @@ message GetEmailTemplateResponse {
   string heading = 3;
   string body_html = 4;
   int32 version = 5;
+  // CMS v2. Content with partials expanded, and the layout it uses (empty = built-in layout).
+  string preheader = 6;
+  // Hand-written plain text; empty = derive it from the HTML.
+  string text_body = 7;
+  string layout_html = 8;
+  string layout_text = 9;
+  string layout_dark_css = 10;
+  // The locale the content is written in, after fallback.
+  string locale = 11;
 }
 
 message SendNotificationRequest {

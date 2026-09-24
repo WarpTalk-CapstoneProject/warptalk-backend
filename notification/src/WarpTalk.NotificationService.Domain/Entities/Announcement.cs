@@ -36,10 +36,50 @@ public partial class Announcement
     /// <summary>WORKSPACES: the workspaces whose members see it.</summary>
     public Guid[] AudienceWorkspaceIds { get; set; } = [];
 
+    /// <summary>
+    /// Where it shows: TOP_BANNER, MODAL, TOAST, NOTIFICATION_CENTER or DASHBOARD_CARD. Every value
+    /// has a renderer in the web app; a placement nothing draws is not offered.
+    /// </summary>
+    public string Placement { get; set; } = null!;
+
+    /// <summary>SUBTLE, SOLID or OUTLINE: how loud it is.</summary>
+    public string Variant { get; set; } = null!;
+
+    /// <summary>BRAND, BLUE, GREEN, AMBER, RED, VIOLET or NEUTRAL.</summary>
+    public string AccentColor { get; set; } = null!;
+
+    /// <summary>A name from the web app's announcement icon set, or null for the type's icon.</summary>
+    public string? Icon { get; set; }
+
+    /// <summary>A hero image: an uploaded announcement asset or an https URL.</summary>
+    public string? ImageUrl { get; set; }
+
+    /// <summary>Higher shows first. 0–100.</summary>
+    public int Priority { get; set; }
+
+    /// <summary>False hides the close button; it shows until its window ends or it is unpublished.</summary>
+    public bool Dismissible { get; set; } = true;
+
+    /// <summary>UNTIL_DISMISSED, ONCE, EVERY_SESSION or DAILY.</summary>
+    public string Frequency { get; set; } = null!;
+
+    /// <summary>Workspace roles (Owner, Admin, Member…). Empty means any role.</summary>
+    public string[] TargetRoles { get; set; } = [];
+
+    /// <summary>UI locales (en, vi, ja). Empty means any locale.</summary>
+    public string[] TargetLocales { get; set; } = [];
+
+    /// <summary>Only accounts created within this many days. Null means any account age.</summary>
+    public int? NewUsersWithinDays { get; set; }
+
     public string? CtaLabel { get; set; }
 
     /// <summary>An absolute http(s) URL or an in-app path starting with "/".</summary>
     public string? CtaUrl { get; set; }
+
+    public string? SecondaryCtaLabel { get; set; }
+
+    public string? SecondaryCtaUrl { get; set; }
 
     /// <summary>When it starts showing. Null means from the moment it is published.</summary>
     public DateTime? StartsAt { get; set; }

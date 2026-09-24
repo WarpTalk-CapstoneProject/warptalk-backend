@@ -71,10 +71,31 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         Guid userId,
         CancellationToken ct = default)
     {
-        var workspaceIds = await _unitOfWork.WorkspaceMemberRepository.GetActiveWorkspaceIdsForUserAsync(userId, ct);
-        var plans = await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetPlanSlugsAsync(workspaceIds, ct);
-        IReadOnlyList<UserWorkspaceAudienceDto> items = workspaceIds
-            .Select(id => new UserWorkspaceAudienceDto(id, plans.GetValueOrDefault(id)))
+        var memberships = (await _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUserAsync(userId, ct))
+            .GroupBy(member => member.WorkspaceId)
+            .Select(group => group.First())
+            .ToList();
+        var plans = await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetPlanSlugsAsync(memberships.Select(member => member.WorkspaceId).ToList(), ct);
+
+        // Role names live in auth; a person has few distinct roles, so this is one lookup per role.
+        var roleNames = new Dictionary<Guid, string?>();
+        foreach (var roleId in memberships.Select(member => member.RoleId).Distinct())
+        {
+            try
+            {
+                roleNames[roleId] = await _authIdentity.GetRoleNameByIdAsync(roleId, ct);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // Role targeting then simply does not match; plan and workspace targeting still work.
+                roleNames[roleId] = null;
+            }
+        }
+
+        IReadOnlyList<UserWorkspaceAudienceDto> items = memberships
+            .Select(member => new UserWorkspaceAudienceDto(
+                member.WorkspaceId, plans.GetValueOrDefault(member.WorkspaceId), roleNames.GetValueOrDefault(member.RoleId)))
             .ToList();
         return Result.Success(items);
     }

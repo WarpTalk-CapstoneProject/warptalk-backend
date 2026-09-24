@@ -23,21 +23,36 @@ public class SmtpEmailService : IEmailService
 {
     private readonly SmtpSettings _settings;
     private readonly IEmailTemplateComposer _templates;
+    private readonly IEmailDeliveryRecorder _deliveries;
     private readonly ILogger<SmtpEmailService> _logger;
 
-    public SmtpEmailService(IOptions<SmtpSettings> options, IEmailTemplateComposer templates, ILogger<SmtpEmailService> logger)
+    public SmtpEmailService(
+        IOptions<SmtpSettings> options,
+        IEmailTemplateComposer templates,
+        ILogger<SmtpEmailService> logger,
+        IEmailDeliveryRecorder? deliveries = null)
     {
         _settings = options.Value;
         _templates = templates;
         _logger = logger;
+        _deliveries = deliveries ?? NullEmailDeliveryRecorder.Instance;
     }
 
     public async Task SendMeetingInvitationAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string scheduledTime, CancellationToken ct = default)
     {
         try
         {
-            var message = await BuildMeetingInvitationMessageAsync(toEmail, participantName, meetingLink, meetingTitle, scheduledTime, ct);
-            await SendEmailAsync(message, ct);
+            var (message, email) = await ComposeMeetingInvitationAsync(toEmail, participantName, meetingLink, meetingTitle, scheduledTime, ct);
+            var sent = false;
+            try
+            {
+                await SendEmailAsync(message, ct);
+                sent = true;
+            }
+            finally
+            {
+                await _deliveries.RecordAsync(email, sent, ct);
+            }
             _logger.LogInformation("Invitation email sent successfully to {Email}", toEmail);
         }
         catch (Exception ex)
@@ -50,8 +65,17 @@ public class SmtpEmailService : IEmailService
     {
         try
         {
-            var message = await BuildMeetingReminderMessageAsync(toEmail, participantName, meetingLink, meetingTitle, startsIn, ct);
-            await SendEmailAsync(message, ct);
+            var (message, email) = await ComposeMeetingReminderAsync(toEmail, participantName, meetingLink, meetingTitle, startsIn, ct);
+            var sent = false;
+            try
+            {
+                await SendEmailAsync(message, ct);
+                sent = true;
+            }
+            finally
+            {
+                await _deliveries.RecordAsync(email, sent, ct);
+            }
             _logger.LogInformation("Reminder email sent successfully to {Email}", toEmail);
         }
         catch (Exception ex)
@@ -64,7 +88,13 @@ public class SmtpEmailService : IEmailService
     // substituted into the HTML is encoded (EmailTemplateRenderer does that for every template).
     // The subject is a MIME header, not HTML: MimeKit encodes it, and encoding it here would show
     // recipients a literal "&lt;".
-    public async Task<MimeMessage> BuildMeetingInvitationMessageAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string scheduledTime, CancellationToken ct = default)
+    public async Task<MimeMessage> BuildMeetingInvitationMessageAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string scheduledTime, CancellationToken ct = default) =>
+        (await ComposeMeetingInvitationAsync(toEmail, participantName, meetingLink, meetingTitle, scheduledTime, ct)).Message;
+
+    public async Task<MimeMessage> BuildMeetingReminderMessageAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string startsIn, CancellationToken ct = default) =>
+        (await ComposeMeetingReminderAsync(toEmail, participantName, meetingLink, meetingTitle, startsIn, ct)).Message;
+
+    private async Task<(MimeMessage Message, RenderedEmail Email)> ComposeMeetingInvitationAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string scheduledTime, CancellationToken ct)
     {
         var link = RequireWebLink(meetingLink);
         var email = await _templates.ComposeAsync(
@@ -76,11 +106,12 @@ public class SmtpEmailService : IEmailService
                 ["ScheduledTime"] = scheduledTime,
                 ["MeetingLink"] = link,
             },
+            null,
             ct);
-        return ToMimeMessage(toEmail, participantName, email);
+        return (ToMimeMessage(toEmail, participantName, email), email);
     }
 
-    public async Task<MimeMessage> BuildMeetingReminderMessageAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string startsIn, CancellationToken ct = default)
+    private async Task<(MimeMessage Message, RenderedEmail Email)> ComposeMeetingReminderAsync(string toEmail, string participantName, string meetingLink, string meetingTitle, string startsIn, CancellationToken ct)
     {
         var link = RequireWebLink(meetingLink);
         var email = await _templates.ComposeAsync(
@@ -92,8 +123,9 @@ public class SmtpEmailService : IEmailService
                 ["StartsIn"] = startsIn,
                 ["MeetingLink"] = link,
             },
+            null,
             ct);
-        return ToMimeMessage(toEmail, participantName, email);
+        return (ToMimeMessage(toEmail, participantName, email), email);
     }
 
     private MimeMessage ToMimeMessage(string toEmail, string participantName, RenderedEmail email)
