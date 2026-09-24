@@ -84,11 +84,19 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
         // asked to shape. Three scalars per paid payment; bucketing by local day happens in the
         // calculator because a UTC date_trunc would put a Vietnam evening on the wrong day.
         var rows = await CountedPaidIn(from, to)
-            .Select(p => new { At = p.PaidAt ?? p.UpdatedAt, Currency = p.Currency.ToUpper(), p.TotalAmount })
+            .Select(p => new
+            {
+                At = p.PaidAt ?? p.UpdatedAt,
+                Currency = p.Currency.ToUpper(),
+                p.TotalAmount,
+                // For the profit-and-loss report: who paid, and on which plan.
+                WorkspaceId = (Guid?)p.Subscription.WorkspaceId,
+                PlanId = (Guid?)p.Subscription.PlanId,
+            })
             .ToListAsync(cancellationToken);
 
         return rows
-            .Select(r => new PaidAmountRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Currency, r.TotalAmount))
+            .Select(r => new PaidAmountRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Currency, r.TotalAmount, r.WorkspaceId, r.PlanId))
             .ToList();
     }
 

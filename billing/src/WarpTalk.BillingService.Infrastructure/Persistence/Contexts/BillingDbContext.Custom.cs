@@ -25,6 +25,9 @@ public partial class BillingDbContext
     /// <summary>Provider-measured usage per UTC day (migration 20260918120000, Cartesia usage sync).</summary>
     public DbSet<ProviderUsageDaily> ProviderUsageDaily => Set<ProviderUsageDaily>();
 
+    /// <summary>Recorded exchange rates per UTC day and source (migration 20260924150000, Stripe FX).</summary>
+    public DbSet<FxRate> FxRates => Set<FxRate>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
         // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
@@ -103,6 +106,25 @@ public partial class BillingDbContext
             entity.Property(e => e.GroupLabel).HasColumnName("group_label").HasMaxLength(300);
             entity.Property(e => e.Credits).HasColumnName("credits");
             entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        modelBuilder.Entity<FxRate>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("fx_rates_pkey");
+            entity.ToTable("fx_rates", "subscription");
+            entity.HasIndex(e => new { e.BaseCurrency, e.QuoteCurrency, e.RateDate, e.Source })
+                .IsUnique()
+                .HasDatabaseName("ux_fx_rates_pair_day_source");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.BaseCurrency).HasColumnName("base_currency").HasMaxLength(3);
+            entity.Property(e => e.QuoteCurrency).HasColumnName("quote_currency").HasMaxLength(3);
+            entity.Property(e => e.RateDate).HasColumnName("rate_date");
+            entity.Property(e => e.Rate).HasColumnName("rate").HasPrecision(24, 10);
+            entity.Property(e => e.Source).HasColumnName("source").HasMaxLength(40);
+            entity.Property(e => e.FeeInclusiveRate).HasColumnName("fee_inclusive_rate").HasPrecision(24, 10);
+            entity.Property(e => e.SourceRef).HasColumnName("source_ref").HasMaxLength(200);
+            entity.Property(e => e.FetchedAt).HasColumnName("fetched_at");
         });
 
         modelBuilder.Entity<BillingPricingConfig>(entity =>

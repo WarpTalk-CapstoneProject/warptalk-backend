@@ -48,13 +48,16 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
     private readonly IUsageRateCardRepository _repository;
     private readonly ILogger<UsageRateCardAdminService> _logger;
+    private readonly IFxRateService? _fx;
 
     public UsageRateCardAdminService(
         IUsageRateCardRepository repository,
-        ILogger<UsageRateCardAdminService> logger)
+        ILogger<UsageRateCardAdminService> logger,
+        IFxRateService? fx = null)
     {
         _repository = repository;
         _logger = logger;
+        _fx = fx;
     }
 
     public async Task<Result<IReadOnlyList<UsageRateCardDto>>> GetActiveRateCardsAsync(CancellationToken cancellationToken = default)
@@ -267,8 +270,9 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             var cartesiaUsdPerCredit = await _repository.ReadPricingConfigValueAsync(
                 ProviderUsageConstants.CartesiaUsdPerCreditConfigKey, ProviderUsageConstants.DefaultCartesiaUsdPerCredit, cancellationToken);
 
+            var fxStatus = _fx is null ? null : await _fx.GetStatusAsync(cancellationToken);
             return Result.Success(CreatePricingConfig(
-                fxRate,
+                fxStatus?.Rate ?? fxRate,
                 creditValue,
                 minimumPricePerCredit,
                 minimumContractPrice,
@@ -280,7 +284,7 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 defaultOverageCapRatio,
                 defaultInvoiceTermsDays,
                 defaultInvoiceGraceHours,
-                cartesiaUsdPerCredit));
+                cartesiaUsdPerCredit) with { FxRate = fxStatus });
         }
         catch (Exception ex)
         {
@@ -293,7 +297,7 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     {
         // Null credit value / price floor = "keep what is stored" (WT-690); a value, when sent,
         // must still be positive.
-        if (request.FxRateUsdVnd <= 0 ||
+        if (request.FxRateUsdVnd is <= 0 ||
             request.CreditValueVnd is <= 0 ||
             request.MinimumPricePerCreditVnd is <= 0 ||
             request.MinimumContractPriceVnd <= 0 ||
@@ -321,8 +325,16 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         try
         {
 
+            var storedFx = await _repository.ReadPricingConfigValueAsync(
+                FxRateConfigKey, SubscriptionConstants.RateCardDefaults.FxRateUsdVnd, cancellationToken);
+            var fxOverride = request.FxRateUsdVnd is { } requestedFx && requestedFx != storedFx ? requestedFx : (decimal?)null;
+
             await _repository.BeginTransactionAsync(cancellationToken);
-            await _repository.UpsertPricingConfigValueAsync(FxRateConfigKey, request.FxRateUsdVnd, cancellationToken);
+            if (fxOverride is { } overrideRate && _fx is null)
+            {
+                // No FX service (tests, tools): the stored rate is all there is.
+                await _repository.UpsertPricingConfigValueAsync(FxRateConfigKey, overrideRate, cancellationToken);
+            }
             var creditValue = await WriteOrReadAsync(
                 CreditValueConfigKey, request.CreditValueVnd,
                 SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
@@ -352,8 +364,16 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
             await _repository.CommitTransactionAsync(cancellationToken);
 
+            AdminFxRateStatusDto? fxStatus = null;
+            if (_fx is not null)
+            {
+                fxStatus = fxOverride is { } manualRate
+                    ? (await _fx.SetOverrideAsync(manualRate, cancellationToken)).Value
+                    : await _fx.GetStatusAsync(cancellationToken);
+            }
+
             return Result.Success(CreatePricingConfig(
-                request.FxRateUsdVnd,
+                fxStatus?.Rate ?? fxOverride ?? storedFx,
                 creditValue,
                 minimumPricePerCredit,
                 request.MinimumContractPriceVnd,
@@ -365,7 +385,7 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 request.DefaultOverageCapRatio,
                 request.DefaultInvoiceTermsDays,
                 request.DefaultInvoiceGraceHours,
-                cartesiaUsdPerCredit.Value));
+                cartesiaUsdPerCredit.Value) with { FxRate = fxStatus });
         }
         catch (Exception ex)
         {

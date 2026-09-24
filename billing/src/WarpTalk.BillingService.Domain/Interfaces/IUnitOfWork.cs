@@ -25,6 +25,9 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Provider-measured usage per UTC day (Cartesia usage sync).</summary>
     IProviderUsageDailyRepository ProviderUsageDaily { get; }
 
+    /// <summary>Recorded USD→VND (and other) exchange rates per UTC day and source.</summary>
+    IFxRateRepository FxRates { get; }
+
     // This interface deliberately exposes no way to reach the raw database
     // connection. Doing so pulled a data-provider dependency into the Domain layer
     // and let any caller bypass the repositories with hand-written SQL. The two

@@ -80,7 +80,9 @@ public record PricingConfigDto(
     // USD per Cartesia credit (billing_pricing_config cartesia_usd_per_credit). Insights price the
     // dubbing provider cost as measured Cartesia credits × this × FX. Default: the Startup plan's
     // $49 / 1,250,000 credits.
-    decimal CartesiaUsdPerCredit = ProviderUsageConstants.DefaultCartesiaUsdPerCredit);
+    decimal CartesiaUsdPerCredit = ProviderUsageConstants.DefaultCartesiaUsdPerCredit,
+    // Where FxRateUsdVnd comes from (Stripe by default), as of when, and whether it is stale.
+    AdminFxRateStatusDto? FxRate = null);
 
 /// <summary>
 /// <c>PUT /usages/pricing-config</c>.
@@ -95,7 +97,10 @@ public record PricingConfigDto(
 /// money-critical economics by leaving them out. Changing either is a migration now.
 /// </summary>
 public record UpdatePricingConfigRequest(
-    decimal FxRateUsdVnd,
+    // Null keeps the rate as it is (Stripe's, by default). A value DIFFERENT from the current rate is an
+    // explicit manual override (same as PUT /admin/billing/fx/override); the same value is a no-op, so a
+    // client echoing the whole form back cannot switch Stripe off by accident.
+    decimal? FxRateUsdVnd,
     decimal? CreditValueVnd,
     decimal? MinimumPricePerCreditVnd,
     decimal MinimumContractPriceVnd,
