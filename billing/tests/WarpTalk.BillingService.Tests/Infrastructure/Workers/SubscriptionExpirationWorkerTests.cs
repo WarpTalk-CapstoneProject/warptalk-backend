@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -57,7 +58,8 @@ public class SubscriptionExpirationWorkerTests
         var worker = new SubscriptionExpirationWorker(
             services,
             Mock.Of<ILogger<SubscriptionExpirationWorker>>(),
-            Options.Create(new BillingWorkerOptions()));
+            Options.Create(new BillingWorkerOptions()),
+            new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
 
         await worker.SweepAsync(CancellationToken.None);
 
@@ -105,7 +107,8 @@ public class SubscriptionExpirationWorkerTests
         var worker = new SubscriptionExpirationWorker(
             services,
             Mock.Of<ILogger<SubscriptionExpirationWorker>>(),
-            Options.Create(new BillingWorkerOptions()));
+            Options.Create(new BillingWorkerOptions()),
+            new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
 
         await worker.SweepAsync(CancellationToken.None);
 

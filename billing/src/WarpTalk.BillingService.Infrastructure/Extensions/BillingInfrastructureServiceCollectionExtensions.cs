@@ -84,6 +84,8 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 
+        AddCartesiaUsageSync(services, configuration);
+
         // WT-263: the entitlement layer. The resolver is the single place entitlements are computed;
         // the publisher is the single place they leave this service.
         services.AddScoped<
@@ -94,6 +96,35 @@ public static class BillingInfrastructureServiceCollectionExtensions
             WarpTalk.BillingService.Application.Entitlements.EntitlementChangePublisher>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Cartesia usage sync: options, the HTTP client, and the status the Insights snapshot reads.
+    /// Registered whether or not an admin key is configured — without one the worker only marks
+    /// itself disabled, and Insights fall back to rate-card estimates.
+    /// </summary>
+    private static void AddCartesiaUsageSync(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(CartesiaUsageOptions.SectionName);
+        services.AddOptions<CartesiaUsageOptions>().Bind(section);
+
+        var options = section.Get<CartesiaUsageOptions>() ?? new CartesiaUsageOptions();
+        services.AddHttpClient(CartesiaUsageOptions.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+        });
+        services.AddSingleton<ICartesiaUsageClient, CartesiaUsageClient>();
+
+        // Shared through Redis: billing runs several replicas, only one syncs at a time, and every
+        // replica's Insights snapshot has to report the sync that actually ran.
+        services.AddSingleton<ICartesiaSyncCoordinator>(sp =>
+            new RedisCartesiaSyncCoordinator(sp.GetRequiredService<IConnectionMultiplexer>()));
+        services.AddSingleton<ICartesiaUsageSyncStatus>(sp =>
+            new RedisCartesiaUsageSyncStatus(
+                sp.GetRequiredService<IConnectionMultiplexer>(),
+                configured: options.IsConfigured && options.UsageSyncIntervalMinutes > 0,
+                filteredToApiKey: options.IsFilteredToApiKey,
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RedisCartesiaUsageSyncStatus>>()));
     }
 
     public static void VerifyBillingDatabase(this IServiceProvider serviceProvider)

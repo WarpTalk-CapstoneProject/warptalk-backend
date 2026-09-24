@@ -112,6 +112,18 @@ public class StripeWebhookService : IStripeWebhookService
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
+            // WT-699 / TC3906: the buyer abandoned Checkout and Stripe expired the session. This
+            // event used to fall through every branch unhandled, so a payment waiting on the
+            // session stayed Pending forever. Same failure contract as every branch here — a
+            // retryable failure is reported so Stripe redelivers.
+            else if (type == PaymentConstants.StripeEvents.CheckoutSessionExpired)
+            {
+                if (stripeEvent.Data.Object is Session expiredSession)
+                {
+                    var result = await _paymentAppService.ExpireCheckoutSessionAsync(expiredSession.Id, cancellationToken);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
+                }
+            }
             else if (type == PaymentConstants.StripeEvents.PaymentIntentPaymentFailed)
             {
                 if (stripeEvent.Data.Object is PaymentIntent intent)

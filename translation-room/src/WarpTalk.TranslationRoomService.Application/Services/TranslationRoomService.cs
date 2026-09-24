@@ -1074,6 +1074,14 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorParticipantKicked, ErrorCodes.Forbidden);
             }
 
+            // WT-699 / TC2402: a declined knock is as final as a kick. REJECTED used to have no
+            // branch here or in UpdateFrom, so knocking again "succeeded" with a row that still
+            // said REJECTED and a lobby screen that waited for an answer already given.
+            if (participant != null && participant.Status == TranslationRoomParticipantStatuses.Rejected)
+            {
+                return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorParticipantRejected, ErrorCodes.Forbidden);
+            }
+
             // BR-011 & BR-012: Parse Settings
             bool requiresApproval = true;
             if (!string.IsNullOrEmpty(translationRoom.Settings))
@@ -1892,6 +1900,103 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-699 / TC3705: refuse Start Translation for a workspace whose AI service is suspended,
+    /// with the reason it is suspended.
+    ///
+    /// Translation used to start — and keep running — at zero credits. The settlement function
+    /// refused every charge (applied=false), warptalk-ai's billing_worker logged it and moved on,
+    /// and the meeting went on translating and dubbing for free while the UI said nothing. The
+    /// billing_worker now marks the room and the workspace suspended in Redis when a charge is
+    /// refused, keeps the mark alive for as long as the subscription stays suspended, and clears
+    /// it when it is not; BillingService writes the same workspace flag when a trial ends or an
+    /// invoice goes overdue. This reads those flags.
+    ///
+    /// Fails OPEN on a Redis error, deliberately unlike the permission checks: the charge itself
+    /// is still refused by the settlement function, and translation_worker stops the room the
+    /// moment the flag can be read — so an outage here costs at most a few free sentences, never a
+    /// paying workspace its meeting.
+    /// </summary>
+    private async Task<Result> EnsureTranslationCreditsAsync(TranslationRoom translationRoom, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+            return Result.Success();
+
+        try
+        {
+            var roomKey = $"translationRoom:{translationRoom.Id}";
+            var workspaceKey = $"workspace:{translationRoom.WorkspaceId}";
+
+            string? stateJson = null;
+            if (IsTrue(await _redisStateRepository.StringGetAsync($"{roomKey}:ai_service_suspended")))
+            {
+                stateJson = await _redisStateRepository.StringGetAsync($"{roomKey}:ai_service_state");
+            }
+            else if (IsTrue(await _redisStateRepository.StringGetAsync($"{workspaceKey}:ai_service_suspended")))
+            {
+                stateJson = await _redisStateRepository.StringGetAsync($"{workspaceKey}:ai_service_state");
+            }
+            else
+            {
+                return Result.Success();
+            }
+
+            var reason = ReadSuspendedReason(stateJson);
+            _logger.LogWarning(
+                "Refused Start Translation in room {RoomId}: workspace {WorkspaceId} AI service is suspended ({Reason}).",
+                translationRoom.Id,
+                translationRoom.WorkspaceId,
+                reason ?? "unknown");
+
+            return Result.Failure(TranslationSuspendedMessage(reason), ErrorCodes.Forbidden);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read the AI service state for room {RoomId}; allowing Start Translation.", translationRoom.Id);
+            return Result.Success();
+        }
+
+        static bool IsTrue(string? value) => string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ReadSuspendedReason(string? stateJson)
+    {
+        if (string.IsNullOrWhiteSpace(stateJson))
+            return null;
+
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(stateJson);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "suspendedReason", StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    return property.Value.GetString();
+                }
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // An unreadable state still means suspended; only the sentence gets less specific.
+        }
+
+        return null;
+    }
+
+    /// <summary>The sentence the host reads. Each one names the actual reason, never a guess.</summary>
+    internal static string TranslationSuspendedMessage(string? suspendedReason) => suspendedReason switch
+    {
+        "invoice_overdue" =>
+            "Translation is unavailable because this workspace has an overdue invoice. Ask a workspace owner to settle it.",
+        "trial_ended" =>
+            "Translation is unavailable because this workspace's trial has ended. Ask a workspace owner to choose a plan.",
+        "overage_cap" or "insufficient_credits" =>
+            "This workspace has run out of credits, so translation cannot start. Ask a workspace owner to add credits or upgrade the plan.",
+        _ =>
+            "Translation is unavailable because this workspace's AI service is suspended. Ask a workspace owner to check billing.",
+    };
+
     public async Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
         var transactionStarted = false;
@@ -1930,6 +2035,11 @@ public class TranslationRoomService : ITranslationRoomService
             // by session number, not by which endpoint was called.
             if (translationRoom.Status != "PAUSED" && translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
+
+            // WT-699 / TC3705: a workspace that cannot pay for translation may not turn it on.
+            var credits = await EnsureTranslationCreditsAsync(translationRoom, ct);
+            if (!credits.IsSuccess)
+                return credits;
 
             await _unitOfWork.BeginTransactionAsync(ct);
             transactionStarted = true;
@@ -3763,7 +3873,8 @@ public class TranslationRoomService : ITranslationRoomService
             Content: includeContent ? artifact.Content : null,
             UpdatedAt: artifact.UpdatedAt,
             // WT-473: null means NOT SEEKABLE, and the client must read it that way.
-            RecordingStartedAt: artifact.RecordingStartedAt
+            RecordingStartedAt: artifact.RecordingStartedAt,
+            FailureReason: artifact.FailureReason
         );
     }
 

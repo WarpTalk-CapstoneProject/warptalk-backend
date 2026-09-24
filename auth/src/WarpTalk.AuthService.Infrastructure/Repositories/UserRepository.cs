@@ -14,6 +14,15 @@ public class UserRepository : GenericRepository<User>, IUserRepository
     {
     }
 
+    public async Task<IReadOnlyList<Guid>> GetActiveUserIdsPageAsync(Guid? afterId, int pageSize, CancellationToken ct = default)
+    {
+        var query = _dbSet.AsNoTracking().Where(u => u.IsActive && u.DeletedAt == null);
+        if (afterId is { } after)
+            query = query.Where(u => u.Id.CompareTo(after) > 0);
+
+        return await query.OrderBy(u => u.Id).Select(u => u.Id).Take(pageSize).ToListAsync(ct);
+    }
+
     public async Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default)
     {
         return await _dbSet.AnyAsync(u => u.Email == email, ct);
@@ -285,4 +294,28 @@ public class UserRepository : GenericRepository<User>, IUserRepository
             .ThenBy(u => u.LastLoginAt),
         _ => query.OrderByDescending(u => u.CreatedAt),
     };
+
+    public Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .CountAsync(u => u.CreatedAt < instant && (u.DeletedAt == null || u.DeletedAt >= instant), ct);
+
+    public Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .CountAsync(u => u.CreatedAt >= from && u.CreatedAt < to, ct);
+
+    public async Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(u => u.CreatedAt >= from && u.CreatedAt < to)
+            .Select(u => u.CreatedAt)
+            .ToListAsync(ct);
+
+        return rows.Select(at => DateTime.SpecifyKind(at, DateTimeKind.Utc)).ToList();
+    }
 }

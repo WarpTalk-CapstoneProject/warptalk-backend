@@ -21,6 +21,15 @@ public interface IAdminWorkspaceService
     Task<Result<AdminWorkspaceDetailDto>> GetDetailAsync(Guid workspaceId, CancellationToken ct = default);
 
     /// <summary>
+    /// Workspaces created over a window, compared with the window before it, plus how many are
+    /// suspended right now. A backwards, oversized or unknown-compare window is a
+    /// <see cref="ErrorCodes.ValidationError"/>.
+    /// </summary>
+    Task<Result<AdminWorkspaceInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// The same detail addressed by the workspace's own slug, so the portal's URL can name the
     /// workspace rather than carry its primary key (WT-560). Returns NotFound for an unknown or
     /// blank slug, exactly as the id lookup does — a caller must not be able to tell the two

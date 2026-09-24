@@ -40,6 +40,14 @@ public interface IAdminUserService
     Task<Result<AdminUserDetailDto>> GetDetailAsync(Guid userId, CancellationToken ct = default);
 
     /// <summary>
+    /// New and active accounts over a window, compared with the window before it. A backwards,
+    /// oversized or unknown-compare window is a <see cref="ErrorCodes.ValidationError"/>.
+    /// </summary>
+    Task<Result<AdminUserInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Ends every session the account has open, by revoking its live refresh tokens.
     ///
     /// Does not lock the account or change its password — the person can sign in again

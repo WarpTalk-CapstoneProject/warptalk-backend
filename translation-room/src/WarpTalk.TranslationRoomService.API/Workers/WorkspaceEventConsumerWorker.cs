@@ -26,7 +26,20 @@ public class WorkspaceEventConsumerWorker : BackgroundService
 
     private const string StreamName = "workspace-events";
     private const string GroupName = "translation-room-group";
-    private const string ConsumerName = "translation-room-consumer";
+
+    /// <summary>
+    /// Unique per process. This used to be the constant "translation-room-consumer", shared by
+    /// every replica: one pending list for all of them, so an entry a replica failed to handle (or
+    /// held when it died) could not be told apart from the others' and was never read again.
+    /// </summary>
+    private readonly string _consumerName = $"translation-room-{Environment.MachineName}-{Guid.NewGuid():N}";
+
+    /// <summary>
+    /// Entries pending this long — on a replica that died, or one whose handler threw before the
+    /// acknowledgement — are claimed by whichever replica reads next. Both handlers filter on
+    /// current status, so handling an entry a second time is harmless.
+    /// </summary>
+    internal static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(60);
 
     public WorkspaceEventConsumerWorker(
         IRedisStreamRepository redisStreamRepository,
@@ -51,7 +64,11 @@ public class WorkspaceEventConsumerWorker : BackgroundService
         {
             try
             {
-                var messages = await _redisStreamRepository.ReadGroupAsync(StreamName, GroupName, ConsumerName, count: 10);
+                var messages = await _redisStreamRepository.ClaimStaleAsync(StreamName, GroupName, _consumerName, StaleAfter, count: 10);
+                if (messages.Count == 0)
+                {
+                    messages = await _redisStreamRepository.ReadGroupAsync(StreamName, GroupName, _consumerName, count: 10);
+                }
 
                 foreach (var message in messages)
                 {

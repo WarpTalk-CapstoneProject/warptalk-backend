@@ -8,6 +8,7 @@ using StackExchange.Redis;
 using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Configuration;
 using WarpTalk.Gateway.Constants;
@@ -140,18 +141,27 @@ var signalRBuilder = builder.Services.AddSignalR(options =>
     options.MaximumReceiveMessageSize = 128 * 1024; // 128 KB — voice-cloned audio chunks
 });
 
-// Optional: Use Redis backplane for horizontal scaling
-var redisConnectionString = builder.Configuration["SignalR:Redis"];
-if (!string.IsNullOrEmpty(redisConnectionString))
+// Redis backplane: REQUIRED as soon as there is more than one gateway replica. The relay
+// subscribers (RealtimeRelay) and the AI result stream consumer group each hand an event to ONE
+// pod and rely on the backplane to reach the clients held by the others. Reads SignalR:Redis and
+// falls back to Redis:ConnectionString, so a deployment that forgets SignalR__Redis still scales
+// correctly instead of silently delivering to 1/N of the clients. abortConnect=false: a backplane
+// that cannot reach Redis degrades this instance to single-node SignalR rather than stopping the
+// gateway from booting (same reason as the multiplexer below). Channel prefix unchanged.
+//
+// Negotiate -> connect: the gateway hubs are negotiated and connected through Traefik, whose
+// sticky cookie (warptalk_gw_stick, deploy/k3s/chart/templates/ingress.yaml) pins both requests to
+// one gateway pod. Long Polling also depends on that stickiness.
+var backplaneRedis = SignalRBackplaneExtensions.ResolveBackplaneConnectionString(builder.Configuration);
+if (backplaneRedis is not null)
 {
-    signalRBuilder.AddStackExchangeRedis(redisConnectionString, options =>
+    signalRBuilder.AddStackExchangeRedis(backplaneRedis, options =>
     {
         options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk");
-        // Same reason as the multiplexer below: a backplane that cannot reach Redis must
-        // degrade this instance to single-node SignalR, not stop the gateway from booting.
         options.Configuration.AbortOnConnectFail = false;
     });
 }
+var redisConnectionString = builder.Configuration["SignalR:Redis"];
 
 // 6. Register Connection Manager (singleton — in-memory tracking)
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
@@ -186,6 +196,10 @@ builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddSingleton<IPresenceStore, RedisPresenceStore>();
 builder.Services.AddSingleton<IPresenceNotifier, PresenceNotifier>();
 builder.Services.AddHostedService<PresenceHeartbeatService>();
+
+// One gateway pod at a time relays pub/sub events into SignalR; see RealtimeRelay. Registered
+// before the subscribers so the elector starts first and stops (releasing its lease) last.
+builder.Services.AddWarpTalkPubSubLeadership(RealtimeRelay.LeaseResource, RealtimeRelay.RequiredSubscriptions);
 
 builder.Services.AddHostedService<AiResultConsumerService>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();

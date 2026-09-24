@@ -70,10 +70,24 @@ public interface ITranslationRoomDirectoryService
     /// JoinTranslationRoomAsync refuses on (BR-010). Host authority is re-checked against THIS
     /// service's tables rather than trusted from the caller, the same way TransferHostAsync does.
     ///
-    /// Returns false when the person had no roster row, which is not a failure: there was nothing
-    /// to terminate and the kick still stands.
+    /// Returns <see cref="RosterRemovalOutcome.NotOnRoster"/> when the person had no roster row,
+    /// which is not a failure: there was nothing to terminate and the kick still stands. WT-699 /
+    /// TC2103: a row that was already KICKED answers <see cref="RosterRemovalOutcome.AlreadyRemoved"/>
+    /// rather than pretending this call did it.
     /// </summary>
-    Task<Result<bool>> KickParticipantByUserAsync(
+    Task<Result<RosterRemovalOutcome>> KickParticipantByUserAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-699 / TC2402: refuse a knock. Moves a WAITING (or INVITED — a knock whose tab dropped)
+    /// row to the TERMINAL status REJECTED, which the join path refuses on, and tells the person's
+    /// open lobby tab. Host authority is re-checked here exactly as for the kick. A participant
+    /// already admitted cannot be "rejected" — that is a kick — and is refused as a precondition.
+    /// </summary>
+    Task<Result<RosterRemovalOutcome>> RejectParticipantByUserAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
         Guid participantUserId,

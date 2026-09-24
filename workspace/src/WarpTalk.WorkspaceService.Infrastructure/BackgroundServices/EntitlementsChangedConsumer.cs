@@ -100,6 +100,14 @@ public class EntitlementsChangedConsumer : BackgroundService
 
             await ApplyAsync(unitOfWork, envelope, ct);
         }
+        catch (Exception ex) when (WarpTalk.Shared.PersistenceConflict.IsUniqueViolation(ex))
+        {
+            // Multi-replica: every workspace replica receives this pub/sub message and upserts the
+            // same snapshot row. On a workspace's FIRST snapshot the replicas race to insert it and
+            // the primary key lets one win; the rest land here with the same values already
+            // stored. Expected, not an error.
+            _logger.LogDebug(ex, "Entitlement snapshot was inserted by another replica first.");
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "EntitlementsChangedConsumer failed to process an entitlements.changed message.");

@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Interfaces;
@@ -29,19 +30,36 @@ public class AssistantChatResultConsumerService : BackgroundService
     private const long ReclaimIdleMilliseconds = 30_000;
     private const long MaxAttempts = 5;
 
+    /// <summary>
+    /// Lease name: ONE replica reads this stream at a time.
+    ///
+    /// Multi-replica: the assistant service runs several replicas behind one consumer group.
+    /// A consumer group would hand consecutive entries of the same reply to different replicas,
+    /// and their broadcasts — each through the SignalR backplane — would reach clients in whatever
+    /// order the replicas happened to finish: chunks of one answer arriving shuffled, and a
+    /// replica still marking a request "processing" after another had completed it. One reader
+    /// keeps the single-replica ordering. Failover loses nothing: entries the old leader read but
+    /// did not acknowledge stay pending and are reclaimed by XAUTOCLAIM after
+    /// ReclaimIdleMilliseconds.
+    /// </summary>
+    public const string LeaseResource = "assistant:chat-results";
+
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILeaderElection _leadership;
     private readonly ILogger<AssistantChatResultConsumerService> _logger;
     private readonly string _consumerName = $"assistant-service-{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public AssistantChatResultConsumerService(
         IConnectionMultiplexer redis,
         IServiceScopeFactory scopeFactory,
-        ILogger<AssistantChatResultConsumerService> logger)
+        ILogger<AssistantChatResultConsumerService> logger,
+        ILeaderElection leadership)
     {
         _redis = redis;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _leadership = leadership;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -54,6 +72,12 @@ public class AssistantChatResultConsumerService : BackgroundService
         {
             try
             {
+                if (!_leadership.IsLeader)
+                {
+                    await Task.Delay(500, stoppingToken);
+                    continue;
+                }
+
                 var reclaimed = await db.StreamAutoClaimAsync(
                     StreamName,
                     GroupName,
@@ -79,6 +103,10 @@ public class AssistantChatResultConsumerService : BackgroundService
 
                 foreach (var entry in entries)
                 {
+                    // Leadership can move mid-batch; the rest stays pending for the new leader.
+                    if (!_leadership.IsLeader)
+                        break;
+
                     try
                     {
                         await ProcessEntryAsync(entry, stoppingToken);
@@ -103,9 +131,10 @@ public class AssistantChatResultConsumerService : BackgroundService
                     }
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 // shutting down
+                break;
             }
             catch (Exception ex)
             {

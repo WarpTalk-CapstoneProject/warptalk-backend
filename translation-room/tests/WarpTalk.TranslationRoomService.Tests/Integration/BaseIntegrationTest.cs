@@ -30,6 +30,15 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
     /// </summary>
     protected IServiceScope CreateScope() => _factory.Services.CreateScope();
 
+    /// <summary>
+    /// Last word on the host's services, for a suite that needs one more collaborator replaced —
+    /// e.g. the audit recorder, whose real implementation dials a workspace service this harness
+    /// does not run.
+    /// </summary>
+    protected virtual void ConfigureTestServices(IServiceCollection services)
+    {
+    }
+
     public async Task InitializeAsync()
     {
         await _dbContainer.StartAsync();
@@ -112,6 +121,8 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                             .RequireAuthenticatedUser()
                             .Build();
                     });
+
+                    ConfigureTestServices(services);
                 });
             });
 

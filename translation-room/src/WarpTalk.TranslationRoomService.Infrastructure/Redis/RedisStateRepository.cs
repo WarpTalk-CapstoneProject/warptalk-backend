@@ -96,6 +96,13 @@ public class RedisStateRepository : IRedisStateRepository
         return await GetDb().StringSetAsync(key, value, expiry, When.NotExists);
     }
 
+    public async Task<bool> KeyDeleteIfEqualsAsync(string key, string expectedValue)
+    {
+        // LockRelease is StackExchange.Redis's compare-and-delete: a transaction guarded by
+        // `StringEqual(key, value)`, so the delete only runs if the value is still ours.
+        return await GetDb().LockReleaseAsync(key, expectedValue);
+    }
+
     public async Task<string?> StringGetAsync(string key)
     {
         var val = await GetDb().StringGetAsync(key);
