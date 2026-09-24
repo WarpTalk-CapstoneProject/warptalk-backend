@@ -28,3 +28,21 @@ public static class SummaryDelivery
     public static string OrDefault(string? value) =>
         string.Equals(value, Variant, System.StringComparison.OrdinalIgnoreCase) ? Variant : Canonical;
 }
+
+/// <summary>
+/// HOW a summary request is to be answered — the `mode` field on `assistant:summary_requests`,
+/// mirrored by warptalk-ai's SummaryRequestMessage.mode.
+///
+/// <see cref="Generate"/> (also the meaning of an absent field) writes a summary from the saved
+/// transcript. <see cref="Translate"/> writes the SAME summary in another language from the
+/// published one, which travels on the request as `source_content_json`: every section, item
+/// and cited moment is kept, and only the words change. A reader switching language wants the
+/// meeting's summary in their language, not a second summary that happens to be in it — and a
+/// biên bản can only be read in another language if the sections line up with the document's.
+/// </summary>
+public static class SummaryRequestMode
+{
+    public const string Generate = "generate";
+
+    public const string Translate = "translate";
+}

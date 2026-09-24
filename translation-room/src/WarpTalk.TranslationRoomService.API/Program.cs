@@ -1,4 +1,5 @@
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using Npgsql;
 using Npgsql.NameTranslation;
 using Microsoft.EntityFrameworkCore;
@@ -95,6 +96,8 @@ builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>()
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
+// WT-691: language catalog writes, each recorded in the platform audit log before it is saved.
+builder.Services.AddScoped<IAdminLanguageService, AdminLanguageService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -141,6 +144,18 @@ builder.Services.AddScoped<IRedisStateRepository, RedisStateRepository>();
 builder.Services.AddSingleton<IRedisStreamRepository, RedisStreamRepository>();
 builder.Services.AddScoped<ITranscriptCacheService, TranscriptCacheService>();
 builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalizationQueue>();
+// Multi-replica coordination. Periodic sweeps take a Redis lease per tick (IDistributedLockProvider);
+// the pub/sub consumers (participant offline/online, telemetry) and the room system-event stream
+// are handled by ONE elected replica at a time — see each class's remarks. Registered before the
+// workers so the elector starts first and stops (releasing its lease) last.
+builder.Services.AddWarpTalkDistributedLocks();
+builder.Services.AddWarpTalkPubSubLeadership(
+    "translation-room:event-consumers",
+    [
+        ParticipantOfflineConsumerWorker.ParticipantOfflineChannel,
+        ParticipantOfflineConsumerWorker.ParticipantOnlineChannel,
+        TelemetryRedisSubscriber.TelemetryChannel,
+    ]);
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 // Recovers the failures the two workers above cannot see: a finalization that never ran,
@@ -172,6 +187,7 @@ builder.Services.AddScoped<IVoiceConsentDirectory, VoiceConsentGrpcDirectory>();
 builder.Services.AddScoped<IDubVoiceDirectory, DubVoiceGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMemberDirectory, WorkspaceMemberGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMeetingPolicy, WorkspaceMeetingPolicyGrpcClient>();
+builder.Services.AddScoped<IRoomArtifactLanguagePolicy, RoomArtifactLanguagePolicy>();
 builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.AppSettings>(builder.Configuration.GetSection("App"));
 builder.Services.Configure<WarpTalk.Shared.Configuration.SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<WarpTalk.Shared.Interfaces.IEmailService, WarpTalk.Shared.Services.SmtpEmailService>();
@@ -186,10 +202,16 @@ builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
 // abortConnect=false: room CRUD and the gRPC surface are Postgres-backed; Redis is the event
-// bus. Safe here specifically because the two Redis-backed *gates* fail CLOSED rather than
-// open — SubscriptionQuotaInterceptor and RateLimitingFilter let the RedisConnectionException
-// surface, so the guarded call is rejected rather than silently allowed. If either is ever
-// changed to catch-and-allow, this line becomes a quota bypass and must be revisited.
+// bus. Safe here specifically because RateLimitingFilter, the Redis-backed gate, fails CLOSED
+// rather than open — it lets the RedisConnectionException surface, so the guarded call is
+// rejected rather than silently allowed. If it is ever changed to catch-and-allow, this line
+// becomes a bypass and must be revisited.
+//
+// WT-699 / TC3705: SubscriptionQuotaInterceptor, once named here, is gone. It was never
+// registered, and it intercepted "/JoinRoom" and "/CreateRoom" — RPCs this service does not
+// have — so registering it would have gated nothing. The credit gate that actually runs is
+// TranslationRoomService.EnsureTranslationCreditsAsync on Start Translation, fed by
+// warptalk-ai's billing_worker, which is the only thing that knows when a charge is refused.
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
@@ -261,6 +283,18 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// WT-691: the platform audit log lives in the workspace service, and this service has no bus —
+// the same situation, and the same synchronous transport, as auth's admin actions. Same address as
+// the workspace client above: one workspace service, two contracts on it.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.TranslationRoomService.Infrastructure.Clients.AdminAuditGrpcClient>();
 // WT-14: reused by ReminderNotificationWorker to push reminder notifications through the
 // same NotificationService gRPC path other services use (see NotificationGrpcServiceImpl.SendNotification).
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>

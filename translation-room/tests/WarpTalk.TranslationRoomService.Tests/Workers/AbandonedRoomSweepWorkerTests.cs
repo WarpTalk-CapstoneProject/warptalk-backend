@@ -162,7 +162,8 @@ public sealed class AbandonedRoomSweepWorkerTests
             _worker = new AbandonedRoomSweepWorker(
                 services.BuildServiceProvider(),
                 Redis.Multiplexer,
-                NullLogger<AbandonedRoomSweepWorker>.Instance);
+                NullLogger<AbandonedRoomSweepWorker>.Instance,
+                new WarpTalk.Shared.Coordination.DistributedLockProvider(new WarpTalk.Shared.Coordination.InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
 
             Dictionary<Guid, int> Count(IReadOnlyCollection<Guid> ids, Func<TranslationRoomParticipant, bool> counts) =>
                 participants

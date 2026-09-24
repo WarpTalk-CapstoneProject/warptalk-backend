@@ -72,6 +72,7 @@ public sealed class EgressCompletion : IEgressCompletion
         var clearsActiveEgress = room.ActiveEgressId == egressId;
 
         string? fileUrl = null;
+        string? unuploadedPath = null;
         long? fileSizeBytes = null;
         var fileResults = TryGetArray(egressInfo, "fileResults") ?? TryGetArray(egressInfo, "file_results");
         if (fileResults is JsonElement results)
@@ -79,7 +80,28 @@ public sealed class EgressCompletion : IEgressCompletion
             var first = results.EnumerateArray().FirstOrDefault();
             if (first.ValueKind == JsonValueKind.Object)
             {
-                fileUrl = TryGetString(first, "location") ?? TryGetString(first, "filename");
+                // WT-824 — `filename` IS NOT A FALLBACK FOR `location`, AND USING IT AS ONE TURNED A
+                // LOST RECORDING INTO A COMPLETED ONE.
+                //
+                // The two fields answer different questions. `location` is where the file was
+                // UPLOADED, and livekit/egress fills it only after the upload succeeds; `filename`
+                // is where the egress container wrote it on its own disk, which it fills before
+                // uploading anything. So an upload that fails — a wrong bucket, a region the store
+                // rejects, expired keys — leaves `location` empty and `filename` set, and reading
+                // one for the other published RecordingCompleted for a file nobody can reach.
+                //
+                // Downstream that was worse than losing it quietly: the row went COMPLETED with an
+                // mp4 format, the record page offered a download, and the click failed with a 500
+                // from S3ArtifactUrlSigner ("is a filesystem path, not an object in storage") —
+                // rather than the FAILED row, with a reason on it, that WT-824 gives a host.
+                //
+                // The status is deliberately NOT a second gate here. `location` is itself proof
+                // that the upload happened, and a terminal status that says otherwise while a
+                // location is present would only make us discard a file that exists — the one
+                // outcome rec-loss exists to prevent.
+                fileUrl = TryGetString(first, "location");
+                if (string.IsNullOrWhiteSpace(fileUrl))
+                    unuploadedPath = TryGetString(first, "filename");
                 fileSizeBytes = TryGetInt64(first, "size")
                     ?? TryGetInt64(first, "fileSize")
                     ?? TryGetInt64(first, "file_size");
@@ -116,13 +138,19 @@ public sealed class EgressCompletion : IEgressCompletion
         // logged nothing at all when it cleared — is covered by the same line.
         if (string.IsNullOrWhiteSpace(egressId) || string.IsNullOrWhiteSpace(fileUrl))
         {
+            // WT-824: `unuploaded path` is the fourth field, and it splits the two cases that read
+            // identically above — nothing was ever recorded, or a file was recorded and never
+            // reached storage. The second one sends whoever reads this to the bucket credentials,
+            // and it is the one that used to be reported as a successful recording.
             _logger.LogWarning(
                 "Egress {EgressId} for room {RoomName} produced no recording file. "
-                + "LiveKit status={Status}, error={Error}. No recording artifact will exist for it.",
+                + "LiveKit status={Status}, error={Error}, unuploaded path={UnuploadedPath}. "
+                + "No recording artifact will exist for it.",
                 egressId ?? "(none)",
                 roomName ?? "(unknown)",
                 ReadEgressStatus(egressInfo) ?? "(absent)",
-                ReadEgressError(egressInfo) ?? "(none)");
+                ReadEgressError(egressInfo) ?? "(none)",
+                unuploadedPath ?? "(none)");
 
             // rec-loss: and tell the rest of the system, not only the log. Without this a failed
             // recording left no row anywhere, and the record page showed exactly what it shows for
@@ -134,7 +162,7 @@ public sealed class EgressCompletion : IEgressCompletion
                 await PublishFailedAsync(
                     room.TranslationRoomId,
                     egressId,
-                    DescribeNoFile(status),
+                    DescribeNoFile(status, wroteButDidNotUpload: unuploadedPath != null),
                     status,
                     ReadEgressError(egressInfo));
             }
@@ -192,12 +220,22 @@ public sealed class EgressCompletion : IEgressCompletion
     /// travels in its own field for operators. The three branches are the three responses WT-660
     /// separated in the log: minutes ran out (a plan matter), LiveKit broke, or nothing to record.
     /// </summary>
-    private static string DescribeNoFile(string? status) => status?.ToUpperInvariant() switch
+    private static string DescribeNoFile(string? status, bool wroteButDidNotUpload)
     {
-        "EGRESS_LIMIT_REACHED" => "The recording stopped because the workspace ran out of recording minutes.",
-        "EGRESS_FAILED" or "EGRESS_ABORTED" => "The recording failed and no file was saved.",
-        _ => "The recording finished but produced no file.",
-    };
+        // WT-824: the egress recorded something and could not put it anywhere. Said as its own
+        // sentence because the answer is a storage one — the bucket, its region, its keys — and
+        // none of the three below would send a reader there. It outranks the status: LiveKit
+        // reports a failed upload as EGRESS_FAILED, which would otherwise read as "LiveKit broke".
+        if (wroteButDidNotUpload)
+            return "The recording was made but could not be uploaded to storage.";
+
+        return status?.ToUpperInvariant() switch
+        {
+            "EGRESS_LIMIT_REACHED" => "The recording stopped because the workspace ran out of recording minutes.",
+            "EGRESS_FAILED" or "EGRESS_ABORTED" => "The recording failed and no file was saved.",
+            _ => "The recording finished but produced no file.",
+        };
+    }
 
     /// <summary>
     /// Throws when the publish fails, exactly like the Completed path and for the same reason:

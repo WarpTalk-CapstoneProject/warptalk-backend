@@ -230,7 +230,8 @@ public class TranscriptQueryService : ITranscriptQueryService
                         content.TranslatorModel,
                         content.SourceSttConfidence,
                         content.IsRetranslated,
-                        content.LatencyMs);
+                        content.LatencyMs,
+                        l.IsStale);
                 });
 
             var result = new PagedResult<TranscriptTranslationDto>(totalCount, items);

@@ -3,8 +3,10 @@ using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.TranscriptService.Application.Authorization;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
+using WarpTalk.TranscriptService.Application.Services;
 
 using Microsoft.AspNetCore.Authorization;
 
@@ -108,7 +110,12 @@ public class TranscriptTranslationsController : ControllerBase
             "FORBIDDEN" => Forbid(),
             "VALIDATION_ERROR" => BadRequest(new { Message = error }),
             "TOO_LARGE" => BadRequest(new { Message = error }),
-            "RATE_LIMITED" => StatusCode(429, new { Message = error }),
+            // WT-704: the code travels in the body so a client can tell "not this language" and
+            // "not any more" apart from a malformed request.
+            TranscriptLanguageErrors.LanguageNotAllowed => BadRequest(new { Message = error, Code = errorCode }),
+            TranscriptLanguageErrors.TranscriptLocked => BadRequest(new { Message = error, Code = errorCode }),
+            TranscriptTranslationBackfillService.BudgetExhaustedCode =>
+                StatusCode(429, new { Message = error, Code = errorCode }),
             _ => StatusCode(500, new { Message = error })
         };
 }

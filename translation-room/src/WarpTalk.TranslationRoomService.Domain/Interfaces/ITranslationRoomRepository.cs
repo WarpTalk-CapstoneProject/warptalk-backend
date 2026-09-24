@@ -42,6 +42,26 @@ public sealed record AdminMeetingRow(
     int? DurationSeconds,
     DateTime CreatedAt);
 
+/// <summary>
+/// When one started meeting ran, as far as the row knows. <paramref name="EndedAt"/> is null while
+/// it is live — and, for a few terminal paths that never stamped it, forever.
+/// </summary>
+public sealed record AdminMeetingSpan(
+    DateTime StartedAt,
+    DateTime? EndedAt,
+    int? DurationSeconds,
+    string Status);
+
+/// <summary>
+/// The languages of one room that has not finished (WT-691): enough to say which catalog
+/// languages are in use before an administrator switches one off. <paramref name="TargetLanguages"/>
+/// is the raw JSONB text; it is parsed in the application, not in SQL.
+/// </summary>
+public sealed record AdminOpenRoomLanguages(
+    string Status,
+    string SourceLanguage,
+    string? TargetLanguages);
+
 public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom>
 {
     /// <summary>
@@ -64,6 +84,23 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<(int Live, int StartedSince)> GetAdminCountsAsync(
         DateTime since,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Every non-deleted meeting that started before <paramref name="to"/> and could have been
+    /// running after <paramref name="from"/>: ended after it, still live, or started inside the
+    /// window with no end recorded. Scalars only — the insights maths clips them per day.
+    /// </summary>
+    Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Languages of every non-deleted room that is live (IN_PROGRESS, PAUSED), about to be
+    /// (WAITING) or booked (SCHEDULED). Finished rooms are left out: switching a language off does
+    /// not touch a meeting that already happened.
+    /// </summary>
+    Task<IReadOnlyList<AdminOpenRoomLanguages>> GetOpenRoomLanguagesAsync(CancellationToken ct = default);
 
     Task<bool> ExistsByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default);
     Task<TranslationRoom?> GetByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default);

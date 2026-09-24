@@ -28,6 +28,10 @@ public interface ITranscriptTranslationBackfillService
     /// Safe to poll — it is two indexed reads and a Redis GET, and it is how a client watches a
     /// running backfill make progress.
     /// </summary>
+    /// <remarks>
+    /// WT-704: refuses a language outside the room's allowed set (<c>LANGUAGE_NOT_ALLOWED</c>),
+    /// but still answers for a finalized or archived transcript — reading it is not a write.
+    /// </remarks>
     Task<Result<TranscriptLanguageCoverageDto>> GetCoverageAsync(
         Guid transcriptId,
         Guid userId,
@@ -42,6 +46,11 @@ public interface ITranscriptTranslationBackfillService
     /// that returns the current coverage rather than queueing the same segments twice, and a call
     /// with nothing missing returns <c>idle</c> without touching Redis.
     /// </summary>
+    /// <remarks>
+    /// WT-704: open to anyone who can read the transcript, but only into the room's allowed
+    /// languages (meeting ∩ workspace ∩ catalog, <c>LANGUAGE_NOT_ALLOWED</c>) and never into a
+    /// finalized or archived transcript (<c>TRANSCRIPT_LOCKED</c>).
+    /// </remarks>
     Task<Result<TranscriptLanguageCoverageDto>> RequestBackfillAsync(
         Guid transcriptId,
         Guid userId,
@@ -63,6 +72,8 @@ public interface ITranscriptTranslationBackfillService
     /// <remarks>
     /// Authorization is the caller's. This is reached only after a correction has been accepted
     /// and committed, and it deliberately does not re-ask a question that was already answered.
+    /// Languages are not the caller's, though (WT-704): only those the room still allows are
+    /// redone, and nothing is when the room's languages cannot be resolved.
     /// </remarks>
     Task<int> RequestRetranslationAsync(
         Guid segmentId,

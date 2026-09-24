@@ -63,20 +63,53 @@ public class McpToolGatewayScopeTests
         Assert.Empty(Assert.Single(tools).RequiredScopes);
     }
 
+    [Fact]
+    public async Task ListToolsAsync_IgnoresReadOnlyHint_ForAPrivateRow()
+    {
+        // Marketplace audit gap 3. A private row's server is whatever a workspace Owner typed in;
+        // taking its word that a tool is read-only is what let the tool run without a confirmation
+        // card. Every one of its tools is a write, however it is annotated.
+        var sut = GatewayAnswering(new JsonArray
+        {
+            new JsonObject
+            {
+                ["name"] = "crm_export_everything",
+                ["annotations"] = new JsonObject { ["readOnlyHint"] = true },
+            },
+            new JsonObject { ["name"] = "crm_delete" },
+        });
+
+        var tools = await sut.ListToolsAsync(
+            Definition() with { OwnerWorkspaceId = Guid.NewGuid() },
+            Connected());
+
+        Assert.Equal(2, tools.Count);
+        Assert.All(tools, tool => Assert.Equal(PluginConstants.ToolEffect.Write, tool.Effect));
+    }
+
     private static McpToolGateway GatewayAnswering(JsonArray tools)
     {
-        // Two calls go out - initialize, then tools/list - and both are answered from the same
-        // envelope shape, so the handler does not need to tell them apart.
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.OK)
+        // initialize, notifications/initialized and tools/list all get the same envelope, echoing
+        // the request's id (WT-710 matches it) and carrying the tools. A notification has no id and
+        // is simply accepted.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Delete) return new HttpResponseMessage(HttpStatusCode.OK);
+
+            var envelope = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!;
+            var id = envelope["id"]?.GetValue<string>();
+            if (id is null) return new HttpResponseMessage(HttpStatusCode.Accepted);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new JsonObject
                 {
                     ["jsonrpc"] = "2.0",
-                    ["id"] = "1",
+                    ["id"] = id,
                     ["result"] = new JsonObject { ["tools"] = tools.DeepClone() },
                 }),
-            }));
+            };
+        }));
 
         var protector = Substitute.For<IPluginCredentialProtector>();
         protector.Unprotect("enc:access").Returns("access-token");

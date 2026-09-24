@@ -526,6 +526,7 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.TranslationContentId).HasColumnName("translation_content_id");
             entity.Property(e => e.TargetLanguage).HasMaxLength(15).HasColumnName("target_language");
             entity.Property(e => e.IsCurrent).HasDefaultValue(true).HasColumnName("is_current");
+            entity.Property(e => e.IsStale).HasDefaultValue(false).HasColumnName("is_stale");
             entity.Property(e => e.DeliveredAt).HasColumnName("delivered_at");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
 

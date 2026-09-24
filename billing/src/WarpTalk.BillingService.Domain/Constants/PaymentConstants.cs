@@ -39,6 +39,12 @@ public static class PaymentConstants
         public const string Paid = "paid";
         public const string Failed = "failed";
         public const string Cancelled = "cancelled";
+        /// <summary>
+        /// WT-699 / TC3906: the checkout this payment was waiting on expired unpaid. Distinct from
+        /// Cancelled on purpose — Cancelled routes to CancellationPaymentEventHandler, which ends
+        /// the workspace's SUBSCRIPTION; an abandoned checkout must never do that.
+        /// </summary>
+        public const string Expired = "expired";
         public const string Refunded = "refunded";
         public const string Disputed = "disputed";
         public const string SubscriptionUpdated = "subscription_updated";
@@ -81,6 +87,11 @@ public static class PaymentConstants
     public static class StripeEvents
     {
         public const string CheckoutSessionCompleted = "checkout.session.completed";
+        /// <summary>
+        /// WT-699 / TC3906: a Checkout Session the buyer abandoned. Stripe expires it (24h by
+        /// default) and it can never be paid afterwards.
+        /// </summary>
+        public const string CheckoutSessionExpired = "checkout.session.expired";
         public const string PaymentIntentPaymentFailed = "payment_intent.payment_failed";
         public const string ChargeRefunded = "charge.refunded";
         public const string ChargeDisputeCreated = "charge.dispute.created";

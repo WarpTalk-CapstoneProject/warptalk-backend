@@ -19,6 +19,7 @@ using WarpTalk.AssistantService.Infrastructure.OAuth;
 using WarpTalk.AssistantService.Infrastructure.Plugins;
 using WarpTalk.AssistantService.Infrastructure.Security;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using WarpTalk.Shared.Protos;
@@ -83,6 +84,11 @@ try
     // so the null-versus-empty allowlist rule exists once.
     builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
     builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
+    // The workspace plugin marketplace: which plugins a workspace has, private MCP plugins, and
+    // members asking the Owner for more. Notifies through the notification service's gRPC.
+    builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();
+    builder.Services.AddScoped<IWorkspaceDirectoryClient, WorkspaceDirectoryGrpcClient>();
+    builder.Services.AddScoped<IUserNotificationClient, UserNotificationGrpcClient>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
     // has no official remote MCP server for Drive/Calendar.
@@ -147,6 +153,18 @@ try
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
+    // Plugin request notifications (member asks the Owner; the Owner decides). Required outside
+    // Development like every other gRPC address: GetRequiredServiceUri throws when it is missing, and
+    // warptalk-infrastructure's check-grpc-config-coverage.mjs fails a descriptor that omits it.
+    builder.Services.AddGrpcClient<NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:NotificationServiceUrl",
+            "http://localhost:50054");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
     // The OpenAI tool-calling loop runs in ai_assistant_worker (Python) — this service only
     // publishes the chat request (see IAssistantChatRequestPublisher) and consumes the result
     // stream (see AssistantChatResultConsumerService) to update the DB and relay to SignalR.
@@ -159,6 +177,9 @@ try
     // conversation history still reads from Postgres while the assistant pipeline is down.
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
         _ => StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
+    // One replica reads assistant:chat_results at a time (ordered reply chunks); see
+    // AssistantChatResultConsumerService.LeaseResource.
+    builder.Services.AddWarpTalkLeaderElection(AssistantChatResultConsumerService.LeaseResource);
     builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
     builder.Services.AddWarpTalkJwtAuthentication(
@@ -220,7 +241,19 @@ try
     // shared with auth/billing/notification (role 'admin'), not the workspace 'Admin' role.
     builder.Services.AddWarpTalkSystemAdminAuthorization();
 
-    builder.Services.AddSignalR();
+    // Multi-replica: AssistantChatResultConsumerService hands each stream entry to ONE pod
+    // (consumer group) and AssistantNotifier sends from there; without the Redis backplane only
+    // the clients connected to that pod received the reply chunks.
+    var signalR = builder.Services.AddSignalR();
+    var backplaneRedis = SignalRBackplaneExtensions.ResolveBackplaneConnectionString(builder.Configuration);
+    if (backplaneRedis is not null)
+    {
+        signalR.AddStackExchangeRedis(backplaneRedis, options =>
+        {
+            options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk.Assistant");
+            options.Configuration.AbortOnConnectFail = false;
+        });
+    }
 
     var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
     builder.Services.AddCors(options =>
@@ -325,7 +358,9 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
-    app.MapHub<AssistantHub>("/api/v1/assistant/chat-hub");
+    // WebSockets only: reached through the gateway's YARP route to the Kubernetes Service, which
+    // pins nothing to a pod. See SignalRBackplaneExtensions.UseWebSocketsOnly.
+    app.MapHub<AssistantHub>("/api/v1/assistant/chat-hub", SignalRBackplaneExtensions.UseWebSocketsOnly);
 
     using (var scope = app.Services.CreateScope())
     {

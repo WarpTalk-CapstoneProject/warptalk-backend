@@ -65,4 +65,16 @@ public interface IPluginToolAuditRepository : IGenericRepository<PluginToolAudit
     /// that reason and for no other.
     /// </remarks>
     Task<int> CountForPluginAsync(Guid pluginId, CancellationToken ct = default);
+
+    /// <summary>
+    /// For each plugin, how many distinct members have run one of its tools in this workspace.
+    /// </summary>
+    /// <remarks>
+    /// What the workspace Plugins page shows beside a plugin. Connections are personal - one grant,
+    /// every workspace - so the audit trail is the only workspace-scoped evidence of use there is.
+    /// Only successful calls count; a refusal is not use.
+    /// </remarks>
+    Task<IReadOnlyDictionary<Guid, int>> CountDistinctUsersByPluginForWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
 }

@@ -40,6 +40,31 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
     /// cannot positively resolve to a shared workspace must simply not come back. Failing the whole
     /// call for one bad id would also hand a caller a way to distinguish "bad id" from "not yours".
     /// </summary>
+    /// <summary>
+    /// WT-699 / TC4104: the notification service resolving a SEGMENT announcement's audience.
+    /// A mesh call, like the rest of this service — there is no end user to authorize here; the
+    /// caller authorized the platform admin before asking.
+    /// </summary>
+    public override async Task<ListWorkspaceMemberUserIdsResponse> ListWorkspaceMemberUserIds(
+        ListWorkspaceMemberUserIdsRequest request,
+        ServerCallContext context)
+    {
+        var response = new ListWorkspaceMemberUserIdsResponse();
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            return response;
+
+        var result = await _workspaceDirectory.ListActiveMemberUserIdsAsync(workspaceId, context.CancellationToken);
+        if (!result.IsSuccess)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list workspace members."));
+
+        if (result.Value is null)
+            return response;
+
+        response.WorkspaceFound = true;
+        response.UserIds.AddRange(result.Value.Select(id => id.ToString()));
+        return response;
+    }
+
     public override async Task<GetSharedWorkspaceMembersResponse> GetSharedWorkspaceMembers(
         GetSharedWorkspaceMembersRequest request,
         ServerCallContext context)
@@ -225,7 +250,8 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             WorkspaceName = preflight.WorkspaceName,
             WorkspaceSlug = preflight.WorkspaceSlug,
             IsDomainMatched = preflight.IsDomainMatched,
-            AllowExternalCollaboration = preflight.AllowExternalCollaboration
+            AllowExternalCollaboration = preflight.AllowExternalCollaboration,
+            OwnerUserId = preflight.OwnerUserId?.ToString() ?? string.Empty
         };
     }
 }

@@ -9,4 +9,23 @@ public interface ICreditTransactionRepository : IGenericRepository<CreditTransac
 {
     Task<PagedResult<CreditTransaction>> GetHistoryPageAsync(CreditTransactionHistoryFilter filter, CancellationToken cancellationToken = default);
     Task<CreditTransaction?> GetLatestBeforeAsync(Guid subscriptionId, DateTime before, CancellationToken cancellationToken = default);
+
+    // ── Admin Insights (2026-09-17). Consume transactions only; soft-deleted subscriptions included. ──
+
+    /// <summary>Consumed credits, derived overage and reconstructable provider cost for [from, to).</summary>
+    Task<ConsumptionTotals> GetConsumptionTotalsAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary>Consumed credits in [from, to) per charge type (usage type when the charge type is empty), largest first.</summary>
+    /// <summary>Consume rows in [from, to) of the given charge types, per UTC day and charge type.</summary>
+    Task<IReadOnlyList<DailyChargeTypeConsumption>> GetConsumptionByUtcDayAsync(
+        DateTime from, DateTime to, IReadOnlyCollection<string> chargeTypes, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<CreditsByChargeType>> GetConsumedByChargeTypeAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary>WT-692: distinct workspaces with at least one consume row in [from, to).</summary>
+    Task<int> CountConsumingWorkspacesAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary>Workspaces consuming at least <paramref name="minCredits"/> in [from, to), largest first.</summary>
+    Task<IReadOnlyList<WorkspaceCredits>> GetTopConsumingWorkspacesAsync(
+        DateTime from, DateTime to, int take, long minCredits = 1, CancellationToken cancellationToken = default);
 }

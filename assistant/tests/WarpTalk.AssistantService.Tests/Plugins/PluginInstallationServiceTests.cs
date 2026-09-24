@@ -34,6 +34,9 @@ public class PluginInstallationServiceTests
     // pre-WT-646 tests keep asserting pre-WT-646 behaviour.
     private bool _workspaceAllowsPlugins = true;
 
+    // The caller's role in that workspace. A plain Member unless a test is about the Owner.
+    private string _callerRole = "Member";
+
     public PluginInstallationServiceTests()
     {
         _unitOfWork.PluginRepository.Returns(_pluginRepository);
@@ -345,6 +348,41 @@ public class PluginInstallationServiceTests
         await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task CreateMcpPluginAsync_MarksAnApiKeyRow_SoConnectAsksForAKey()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp", AuthMode: "api_key"),
+            UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+        await _pluginRepository.Received(1).AddAsync(
+            Arg.Is<Plugin>(plugin => plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_RefusesAnApiKeyRowThatAlsoCarriesAnOAuthClient()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest(
+                "linear", "Linear", "Issues.", "https://mcp.linear.app/mcp",
+                OAuth: new CreateMcpPluginOAuthRequest("client-1"),
+                AuthMode: "api_key"),
+            UserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidCatalogUpdate, result.ErrorCode);
+        await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
+    }
+
     // ---- WT-646: workspace plugin policy ------------------------------------------------------
 
     private static readonly Guid WorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
@@ -381,13 +419,79 @@ public class PluginInstallationServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, result.Value!.Count);
+        // A workspace still on AllowAnyPlugins=false has added nothing: each row reads not_added,
+        // which is what the member page turns into a Request button.
         Assert.All(result.Value, item =>
-            Assert.Equal(PluginConstants.WorkspacePolicyMessages.PluginsDisabled, item.WorkspacePolicyBlockReason));
+        {
+            Assert.Equal(WorkspacePluginConstants.Messages.NotAdded, item.WorkspacePolicyBlockReason);
+            Assert.Equal(WorkspacePluginConstants.Availability.NotAdded, item.WorkspaceAvailability);
+        });
 
         // Still reported as installed. The rows are untouched; the block is a verdict, not a
         // rewrite of what the user has.
         var calendar = Assert.Single(result.Value, item => item.Key == GoogleCalendarKey);
         Assert.Equal(PluginConstants.InstallationStatus.Installed, calendar.InstallationStatus);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_ListsAPrivatePluginOnlyInsideItsOwnWorkspace()
+    {
+        var mine = WorkspacePluginGuardTests.Private("ws_mine_00000000", WorkspaceId);
+        var theirs = WorkspacePluginGuardTests.Private("ws_theirs_00000000", Guid.NewGuid());
+        ConfigureCatalog(GoogleDrivePlugin(), mine, theirs);
+        _workspaceAllowsPlugins = true;
+
+        var inWorkspace = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        var personal = (await CreateSut().ListCatalogAsync(UserId)).Value!;
+
+        Assert.Equal([GoogleDriveKey, "ws_mine_00000000"], inWorkspace.Select(i => i.Key).Order());
+        Assert.Equal(
+            WorkspacePluginConstants.Availability.Private,
+            inWorkspace.Single(i => i.Key == "ws_mine_00000000").WorkspaceAvailability);
+        Assert.Equal(
+            WorkspacePluginConstants.Availability.Added,
+            inWorkspace.Single(i => i.Key == GoogleDriveKey).WorkspaceAvailability);
+        // No workspace: no private rows at all, and no workspace verdict on the rest.
+        var row = Assert.Single(personal);
+        Assert.Null(row.WorkspaceAvailability);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_TheOwnerCanAddANotAddedMarketplacePlugin_AMemberCannot()
+    {
+        // Gap 9: the Owner's own member page offered Request on plugins they could simply add.
+        var mine = WorkspacePluginGuardTests.Private("ws_mine_00000000", WorkspaceId);
+        ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin(), mine);
+        _workspaceAllowsPlugins = false;
+
+        _callerRole = "Owner";
+        var owner = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        _callerRole = "Admin";
+        var admin = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        _callerRole = "Member";
+        var member = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        var personal = (await CreateSut().ListCatalogAsync(UserId)).Value!;
+
+        Assert.True(owner.Single(i => i.Key == GoogleDriveKey).CanAdd);
+        Assert.True(owner.Single(i => i.Key == GoogleCalendarKey).CanAdd);
+        // Already in the workspace: nothing to add.
+        Assert.False(owner.Single(i => i.Key == "ws_mine_00000000").CanAdd);
+        // Only the Owner decides the list; an Admin asks like anyone else.
+        Assert.All(admin, item => Assert.False(item.CanAdd));
+        Assert.All(member, item => Assert.False(item.CanAdd));
+        Assert.All(personal, item => Assert.False(item.CanAdd));
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_TheOwnerHasNothingToAdd_WhenTheWorkspaceHasItAlready()
+    {
+        ConfigureCatalog(GoogleDrivePlugin());
+        _workspaceAllowsPlugins = true;
+        _callerRole = "Owner";
+
+        var result = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+
+        Assert.False(Assert.Single(result).CanAdd);
     }
 
     [Fact]
@@ -663,7 +767,7 @@ public class PluginInstallationServiceTests
         return new PluginInstallationService(
             _unitOfWork,
             Substitute.For<IPluginCredentialProtector>(),
-            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
+            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins, isActiveMember: true, _callerRole));
     }
 
     private static Plugin GoogleDrivePlugin()

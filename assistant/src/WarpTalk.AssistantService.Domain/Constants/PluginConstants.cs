@@ -101,6 +101,29 @@ public static class PluginConstants
 
         /// <summary>Credentials came from RFC 7591 dynamic registration. Deprecated by the spec.</summary>
         public const string Dcr = "dcr";
+
+        /// <summary>
+        /// No OAuth at all: each user pastes their own API key, sent as <c>Authorization: Bearer</c>.
+        /// For servers that accept a personal key in place of a token (Linear does). The row holds no
+        /// client, and the key lives in the user's own connection, never on the row.
+        /// </summary>
+        public const string ApiKey = "api_key";
+    }
+
+    /// <summary>
+    /// How users connect an MCP row, as the admin surface and the catalog express it. It is a view of
+    /// <see cref="OAuthClientSource"/>: <see cref="ApiKey"/> is exactly <c>api_key</c>, and every
+    /// other source is <see cref="OAuth"/>.
+    /// </summary>
+    public static class AuthMode
+    {
+        public const string OAuth = "oauth";
+        public const string ApiKey = "api_key";
+
+        public static bool IsKnown(string? value) => value is OAuth or ApiKey;
+
+        public static string Of(string? oauthClientSource) =>
+            oauthClientSource == OAuthClientSource.ApiKey ? ApiKey : OAuth;
     }
 
     /// <summary>
@@ -215,6 +238,22 @@ public static class PluginConstants
         /// not something reconnecting fixes: the remedy is the user's own setting.
         /// </summary>
         public const string ToolBlocked = "tool_blocked";
+
+        /// <summary>
+        /// The tool ran and reported its own failure (<c>isError</c> in the result). WT-710. Kept
+        /// apart from <see cref="ProviderUnavailable"/> because the remedy differs: the server is up
+        /// and the connection works; the arguments or the request were refused.
+        /// </summary>
+        public const string ToolError = "tool_error";
+
+        /// <summary>
+        /// The row connects with a personal API key, so there is no OAuth flow to start. The client
+        /// should ask the user for their key instead.
+        /// </summary>
+        public const string ApiKeyRequired = "api_key_required";
+
+        /// <summary>The server refused the key the user pasted.</summary>
+        public const string InvalidApiKey = "invalid_api_key";
 
         /// <summary>A tool policy update named a value other than allow, approval or blocked.</summary>
         public const string InvalidToolPolicy = "invalid_tool_policy";

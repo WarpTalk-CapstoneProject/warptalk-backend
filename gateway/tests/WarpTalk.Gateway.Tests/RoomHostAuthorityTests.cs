@@ -135,6 +135,104 @@ public class RoomHostAuthorityTests
         Assert.False(await sut.HasHostAuthorityAsync(RoomId, string.Empty));
     }
 
+    // ── WT-699 / TC1806: GetRoomAdmissionAsync ────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("CONNECTED", RoomAdmission.Admitted)]
+    // A dropped socket is recorded DISCONNECTED before SignalR reconnects; refusing it would strand
+    // everybody whose wifi blinked.
+    [InlineData("DISCONNECTED", RoomAdmission.Admitted)]
+    [InlineData("WAITING", RoomAdmission.Lobby)]
+    [InlineData("INVITED", RoomAdmission.Lobby)]
+    [InlineData("KICKED", RoomAdmission.Refused)]
+    [InlineData("REJECTED", RoomAdmission.Refused)]
+    [InlineData("LEFT", RoomAdmission.Refused)]
+    public async Task Admission_FollowsTheRosterStatus(string status, RoomAdmission expected)
+    {
+        var caller = Guid.NewGuid();
+        var sut = CreateWithRoster(
+            RoomResponse(Guid.NewGuid()),
+            new Participant { Id = caller.ToString(), Status = status, IsActive = status == "CONNECTED" });
+
+        Assert.Equal(expected, await sut.GetRoomAdmissionAsync(RoomId, caller.ToString()));
+    }
+
+    [Fact]
+    public async Task Admission_RefusesSomebodyNotOnTheRoster()
+    {
+        var sut = CreateWithRoster(RoomResponse(Guid.NewGuid()));
+
+        Assert.Equal(RoomAdmission.Refused, await sut.GetRoomAdmissionAsync(RoomId, Guid.NewGuid().ToString()));
+    }
+
+    /// <summary>The host is never turned away from their own meeting, even ahead of their REST join.</summary>
+    [Fact]
+    public async Task Admission_AdmitsTheEffectiveHostWithoutARosterRow()
+    {
+        var host = Guid.NewGuid();
+        var room = RoomResponse(Guid.NewGuid());
+        room.EffectiveHostId = host.ToString();
+        var sut = CreateWithRoster(room);
+
+        Assert.Equal(RoomAdmission.Admitted, await sut.GetRoomAdmissionAsync(RoomId, host.ToString()));
+    }
+
+    /// <summary>A kicked row stays refused even though the host fallback is consulted for LEFT.</summary>
+    [Fact]
+    public async Task Admission_NeverReadmitsAKickedParticipant()
+    {
+        var caller = Guid.NewGuid();
+        var sut = CreateWithRoster(
+            RoomResponse(caller),
+            new Participant { Id = caller.ToString(), Status = "KICKED" });
+
+        Assert.Equal(RoomAdmission.Refused, await sut.GetRoomAdmissionAsync(RoomId, caller.ToString()));
+    }
+
+    /// <summary>An older room service sends no status: IsActive is all there is, and anything else
+    /// may only ever land in the lobby.</summary>
+    [Theory]
+    [InlineData(true, RoomAdmission.Admitted)]
+    [InlineData(false, RoomAdmission.Lobby)]
+    public async Task Admission_FallsBackToIsActive_WhenTheServerSendsNoStatus(bool isActive, RoomAdmission expected)
+    {
+        var caller = Guid.NewGuid();
+        var sut = CreateWithRoster(
+            RoomResponse(Guid.NewGuid()),
+            new Participant { Id = caller.ToString(), IsActive = isActive });
+
+        Assert.Equal(expected, await sut.GetRoomAdmissionAsync(RoomId, caller.ToString()));
+    }
+
+    [Fact]
+    public async Task Admission_FailsClosed_WhenTheRosterCannotBeRead()
+    {
+        var roomClient = new Mock<Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
+        roomClient.Setup(c => c.GetParticipantsByRoomIdAsync(
+                It.IsAny<GetParticipantsByRoomIdRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Throws(new RpcException(new Status(StatusCode.Unavailable, "down")));
+        var sut = new RoomHostAuthority(
+            roomClient.Object, new Mock<WorkspaceService.WorkspaceServiceClient>().Object, new NullLogger<RoomHostAuthority>());
+
+        Assert.Equal(RoomAdmission.Refused, await sut.GetRoomAdmissionAsync(RoomId, Guid.NewGuid().ToString()));
+    }
+
+    private static RoomHostAuthority CreateWithRoster(GetTranslationRoomResponse room, params Participant[] roster)
+    {
+        var roomClient = new Mock<Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
+        roomClient.Setup(c => c.GetTranslationRoomByIdAsync(
+                It.IsAny<GetTranslationRoomRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Returns(AsyncUnary(room));
+        var response = new GetParticipantsByRoomIdResponse();
+        response.Participants.AddRange(roster);
+        roomClient.Setup(c => c.GetParticipantsByRoomIdAsync(
+                It.IsAny<GetParticipantsByRoomIdRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Returns(AsyncUnary(response));
+
+        return new RoomHostAuthority(
+            roomClient.Object, new Mock<WorkspaceService.WorkspaceServiceClient>().Object, new NullLogger<RoomHostAuthority>());
+    }
+
     private static GetTranslationRoomResponse RoomResponse(Guid hostId) => new()
     {
         Id = RoomId.ToString(),

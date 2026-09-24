@@ -40,8 +40,13 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
     {
         // Unfiltered on purpose. The user-facing catalog shows only is_active rows, which makes a
         // retired row invisible in the one place someone would go to un-retire it.
-        var plugins = await _unitOfWork.PluginRepository.GetAllAsync(ct: ct);
+        //
+        // Marketplace rows only. A workspace Owner's private plugin is that workspace's, not the
+        // marketplace's: listing it here would present it as something the admin curates and every
+        // Owner could add. It stays reachable by key for support, but is not a marketplace row.
+        var plugins = await _unitOfWork.PluginRepository.FindAsync(p => p.OwnerWorkspaceId == null, ct: ct);
         var installationCounts = await _unitOfWork.PluginInstallationRepository.CountByPluginAsync(ct);
+        var workspaceCounts = await _unitOfWork.WorkspacePluginRepository.CountWorkspacesByPluginAsync(ct);
 
         var items = plugins
             // sort_order is the curated order the catalog page renders; label breaks the tie for
@@ -62,7 +67,8 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 !string.IsNullOrWhiteSpace(plugin.OAuthClientId),
                 !string.IsNullOrWhiteSpace(plugin.OAuthClientSecretEncrypted),
                 ReadTools(plugin).Count,
-                installationCounts.TryGetValue(plugin.Id, out var count) ? count : 0))
+                installationCounts.TryGetValue(plugin.Id, out var count) ? count : 0,
+                workspaceCounts.TryGetValue(plugin.Id, out var workspaces) ? workspaces : 0))
             .ToList();
 
         return Result.Success<IReadOnlyList<PluginCatalogAdminListItemDto>>(items);
@@ -180,6 +186,41 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
             else edits.Add(row => row.Category = category);
         }
 
+        var authModeChanged = false;
+        if (request.AuthMode is not null)
+        {
+            var authMode = request.AuthMode.Trim();
+            if (!string.Equals(plugin.Kind, PluginConstants.PluginKind.Mcp, StringComparison.Ordinal))
+            {
+                errors.Add($"'authMode' applies only to a kind='{PluginConstants.PluginKind.Mcp}' row; '{plugin.PluginKey}' is '{plugin.Kind}'.");
+            }
+            else if (!PluginConstants.AuthMode.IsKnown(authMode))
+            {
+                errors.Add($"'authMode' must be '{PluginConstants.AuthMode.OAuth}' or '{PluginConstants.AuthMode.ApiKey}'.");
+            }
+            else if (authMode != PluginConstants.AuthMode.Of(plugin.OAuthClientSource))
+            {
+                // Every connection to this row was made with the other kind of credential, so none
+                // of them may be used past this edit. Same treatment as repointing the host.
+                authModeChanged = true;
+                edits.Add(row =>
+                {
+                    if (authMode == PluginConstants.AuthMode.ApiKey)
+                    {
+                        row.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+                        // plugins_api_key_forbids_oauth_client: the row cannot keep a client.
+                        row.OAuthClientId = null;
+                        row.OAuthClientSecretEncrypted = null;
+                    }
+                    else
+                    {
+                        // Back to the ladder, which picks CIMD or DCR on the next connect.
+                        row.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+                    }
+                });
+            }
+        }
+
         if (request.IsActive is { } isActive) edits.Add(row => row.IsActive = isActive);
         if (request.IsFeatured is { } isFeatured) edits.Add(row => row.IsFeatured = isFeatured);
         if (request.SortOrder is { } sortOrder) edits.Add(row => row.SortOrder = sortOrder);
@@ -189,7 +230,7 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
 
         foreach (var edit in edits) edit(plugin);
 
-        if (serverUrlChanged) await InvalidateProviderConnectionsAsync(plugin, ct);
+        if (serverUrlChanged || authModeChanged) await InvalidateProviderConnectionsAsync(plugin, ct);
 
         await StampAndSaveAsync(plugin, adminUserId, ct);
         return Result.Success(await ToDetailAsync(plugin, ct));
@@ -213,6 +254,16 @@ public class PluginCatalogAdminService : IPluginCatalogAdminService
                 [
                     $"'{plugin.PluginKey}' is a '{plugin.Kind}' plugin: its OAuth client is read from service "
                     + "configuration, not from the catalog row. Set it in the environment instead.",
+                ],
+                PluginConstants.ErrorCodes.InvalidCatalogUpdate);
+        }
+
+        if (plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+        {
+            return Invalid<PluginCatalogAdminDetailDto>(
+                [
+                    $"'{plugin.PluginKey}' connects with each user's API key and has no OAuth client. "
+                    + "Switch it to OAuth first if it should have one.",
                 ],
                 PluginConstants.ErrorCodes.InvalidCatalogUpdate);
         }

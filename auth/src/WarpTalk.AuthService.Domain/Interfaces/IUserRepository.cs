@@ -52,6 +52,12 @@ public sealed record AdminUserSessionRow(
 public interface IUserRepository : IGenericRepository<User>
 {
     Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-699 / TC4104: one keyset page of ACTIVE, undeleted user ids, ascending by id, strictly
+    /// after <paramref name="afterId"/> when given. Ids only — the broadcast audience needs nothing else.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> GetActiveUserIdsPageAsync(Guid? afterId, int pageSize, CancellationToken ct = default);
     Task<User?> GetByEmailWithRolesAsync(string email, CancellationToken ct = default);
     Task<User?> GetByIdWithRolesAsync(Guid id, CancellationToken ct = default);
     Task<User?> GetByGoogleIdWithRolesAsync(string googleId, CancellationToken ct = default);
@@ -77,5 +83,27 @@ public interface IUserRepository : IGenericRepository<User>
     /// <summary>Sessions that are live right now — not revoked, not expired — newest first.</summary>
     Task<IReadOnlyList<AdminUserSessionRow>> GetActiveSessionsAsync(
         Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Accounts created in <c>[from, to)</c>, soft-deleted ones INCLUDED: the figure is "how many
+    /// people signed up in that window", and a later deletion must not rewrite a past period.
+    /// </summary>
+    Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-692: accounts that existed at <paramref name="instant"/> — created before it and not
+    /// soft-deleted by then. A later deletion does not rewrite an earlier month's total.
+    /// </summary>
+    Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default);
+
+    /// <summary>
+    /// The creation instants of the same accounts, unordered. Deliberately not grouped by day in
+    /// SQL: which day an instant belongs to depends on the caller's time zone (the insights
+    /// <c>tz</c>), and the caller buckets them on those local days.
+    /// </summary>
+    Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
+        DateTime from,
+        DateTime to,
         CancellationToken ct = default);
 }

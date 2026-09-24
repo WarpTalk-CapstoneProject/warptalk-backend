@@ -37,17 +37,16 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         IReadOnlyCollection<string>? excludedPluginKeys = null,
         CancellationToken ct = default)
     {
-        // Answered for the whole list at once: the workspace either permits plugins here or it
-        // does not, so there is nothing to decide per plugin.
+        // What this workspace has, read once for the whole list.
         //
-        // An empty list, not a refusal. This is what WarpBot may reach for in this conversation,
-        // so in a workspace with plugins off the model never learns the tools exist and never
-        // proposes an action that would be refused downstream.
+        // An empty list, not a refusal, when the caller is not a member or named no workspace. This
+        // is what WarpBot may reach for in this conversation, so a plugin the workspace does not
+        // have never reaches the model and it never proposes an action that would be refused.
         //
         // The in-workspace check, so an omitted or borrowed workspaceId cannot widen the list: this
         // is a conversation, and a conversation has a workspace.
-        var permitted = await _workspacePluginGuard.CanUsePluginsInWorkspaceAsync(workspaceId, userId, ct);
-        if (!permitted.IsSuccess)
+        var availability = await _workspacePluginGuard.GetAvailabilityForMemberAsync(workspaceId, userId, ct);
+        if (!availability.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
@@ -69,15 +68,66 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         //     refuses it as well, because that one IS a boundary.
         var excluded = excludedPluginKeys?.ToHashSet(StringComparer.Ordinal) ?? [];
 
-        var tools = plugins
-            .Where(plugin => !excluded.Contains(plugin.PluginKey))
-            .SelectMany(plugin => PluginToolPolicyStore.WithPolicies(
-                PluginDefinitionMapper.ToDefinition(plugin).Tools,
-                installationsByPlugin[plugin.Id].ConfigJson))
+        // A plugin the user installed is still only offered where the workspace has it.
+        var usable = plugins.Where(availability.Value!.IsUsable);
+
+        var tools = ClaimToolNames(usable)
+            .Where(claim => !excluded.Contains(claim.Plugin.PluginKey))
+            .SelectMany(claim => PluginToolPolicyStore.WithPolicies(
+                claim.Tools,
+                installationsByPlugin[claim.Plugin.Id].ConfigJson))
             .Where(tool => tool.Policy != PluginConstants.ToolPolicy.Blocked)
             .ToList();
 
         return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(tools);
+    }
+
+    /// <summary>
+    /// Each plugin's tools, minus every name a more trusted plugin has already claimed - so that in
+    /// one user's list a tool name means exactly one plugin.
+    /// </summary>
+    /// <remarks>
+    /// Tool names are not namespaced: the model calls <c>google_drive_search</c>, and the worker
+    /// turns that name back into the (pluginKey, toolName) pair it executes with. With two plugins
+    /// declaring the same name, which one a call reached depended on row order - and a workspace
+    /// Owner's private MCP server could simply declare <c>google_drive_search</c> and receive the
+    /// queries meant for Drive, answering with whatever it liked.
+    /// <para>
+    /// So a name belongs to the first claimant in trust order: marketplace and native rows, which
+    /// an operator vetted, before private rows, whose server anyone who owns a workspace can point
+    /// anywhere. Plugin key breaks ties within a tier, so the answer never depends on the order the
+    /// database happened to return rows in. The loser's tool is dropped rather than renamed: a
+    /// renamed tool is a name the server never declared, and execution would have to translate it
+    /// back.
+    /// </para>
+    /// <para>
+    /// Claims are taken over every usable plugin BEFORE the conversation toggle and the user's
+    /// blocks narrow the list. Switching Drive off for a conversation, or blocking its search, must
+    /// not hand the name to the next plugin that declares it - the model would call it believing it
+    /// was still Drive. Compared case-insensitively, as PluginToolManifestValidator does within a
+    /// row: two names differing only in case are two entries the model cannot tell apart.
+    /// </para>
+    /// <para>
+    /// Execution needs no counterpart. It resolves a call by the (pluginKey, toolName) the request
+    /// names, and only among the tools that row itself declares - see ExecuteAsync - so a call
+    /// can never land on a plugin other than the one that declared the tool the worker bound it to.
+    /// </para>
+    /// </remarks>
+    private static List<(Plugin Plugin, IReadOnlyList<McpToolDescriptorDto> Tools)> ClaimToolNames(
+        IEnumerable<Plugin> plugins)
+    {
+        var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return plugins
+            .OrderBy(plugin => plugin.OwnerWorkspaceId is null ? 0 : 1)
+            .ThenBy(plugin => plugin.PluginKey, StringComparer.Ordinal)
+            .Select(plugin => (
+                Plugin: plugin,
+                Tools: (IReadOnlyList<McpToolDescriptorDto>)PluginDefinitionMapper.ToDefinition(plugin).Tools
+                    .Where(tool => claimed.Add(tool.Name))
+                    .ToList()))
+            // Eager, so every claim is settled before the caller's filters see a single plugin.
+            .ToList();
     }
 
     public async Task<Result<McpToolExecutionResult>> ExecuteAsync(Guid userId, McpToolExecutionRequest request, CancellationToken ct = default)
@@ -87,6 +137,11 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (pluginEntity == null)
             return Result.Failure<McpToolExecutionResult>("Unknown plugin.", PluginConstants.ErrorCodes.UnknownPlugin);
 
+        // Resolved by the (pluginKey, toolName) pair, and only among the tools this row itself
+        // declares. A tool name is never looked up across plugins: a request naming Drive's key
+        // with a tool only some other plugin declares is an unknown tool, not a call to that
+        // plugin. Together with ClaimToolNames that is the whole defence against one plugin
+        // capturing another's calls.
         var plugin = PluginDefinitionMapper.ToDefinition(pluginEntity);
         var tool = plugin.Tools.FirstOrDefault(t => string.Equals(t.Name, request.ToolName, StringComparison.Ordinal));
         if (tool == null)
@@ -103,9 +158,10 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         // workspace they named. Omitting the field used to pass this gate outright, and the audit
         // row it wrote carried workspace_id = NULL - so the calls that slipped past the policy were
         // also the ones its Owner could not see.
-        var policyCheck = await _workspacePluginGuard.CanUsePluginsInWorkspaceAsync(
+        var policyCheck = await _workspacePluginGuard.CanUsePluginInWorkspaceAsync(
             request.WorkspaceId,
             userId,
+            pluginEntity,
             ct);
         if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(

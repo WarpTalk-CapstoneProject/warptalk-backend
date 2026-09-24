@@ -23,7 +23,12 @@ public record CreateMcpPluginRequest(
     string McpServerUrl,
     string? AvatarUrl = null,
     IReadOnlyList<string>? RequiredScopes = null,
-    CreateMcpPluginOAuthRequest? OAuth = null);
+    CreateMcpPluginOAuthRequest? OAuth = null,
+    /// <summary>
+    /// <c>oauth</c> (the default) or <c>api_key</c>, where each user pastes their own key. An
+    /// <c>api_key</c> row cannot also carry <see cref="OAuth"/>.
+    /// </summary>
+    string? AuthMode = null);
 
 /// <summary>
 /// Pre-registered client credentials, for a server that supports neither Client ID Metadata
@@ -76,7 +81,12 @@ public record PluginCatalogAdminListItemDto(
     bool HasClientId,
     bool HasClientSecret,
     int ToolCount,
-    int InstallationCount);
+    int InstallationCount,
+    /// <summary>
+    /// How many workspaces have added the plugin to their list. Counts explicit lists only: a
+    /// workspace still on the pre-marketplace "every plugin" default has no list to be counted in.
+    /// </summary>
+    int WorkspaceCount = 0);
 
 /// <summary>
 /// One catalog row in full, with the tool manifest that <c>PUT .../tools</c> replaces.
@@ -144,7 +154,12 @@ public record UpdatePluginCatalogRequest(
     bool? IsActive = null,
     bool? IsFeatured = null,
     int? SortOrder = null,
-    string? Category = null);
+    string? Category = null,
+    /// <summary>
+    /// <c>oauth</c> or <c>api_key</c>. Changing it revokes every existing connection to the row:
+    /// those were made with the other kind of credential.
+    /// </summary>
+    string? AuthMode = null);
 
 /// <summary>
 /// Sets or rotates a row's pre-registered OAuth client.

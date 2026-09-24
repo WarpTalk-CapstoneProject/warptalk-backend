@@ -1647,12 +1647,245 @@ public class PluginConnectionServiceTests
     {
         return new PluginConnectionService(
             _unitOfWork,
-            new TestPluginProviderResolver(oauthClient: _oauthClient),
+            new TestPluginProviderResolver(_gateway, _oauthClient),
             _stateProtector,
             _credentialProtector,
             NullLogger<PluginConnectionService>.Instance,
             new TestMcpClientProvisioner(),
             TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
+    }
+
+    /// <summary>Null unless a test needs the tool sync to reach a gateway; the sync swallows its absence.</summary>
+    private IMcpToolGateway? _gateway;
+
+    // ---- API-key auth ---------------------------------------------------------------------------
+
+    private Plugin ArrangeApiKeyPlugin(PluginInstallation? installation = null)
+    {
+        var remote = RemoteMcpPlugin();
+        remote.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(remote);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation ?? new PluginInstallation
+            {
+                Id = Guid.NewGuid(),
+                UserId = UserId,
+                PluginId = RemotePluginId,
+                Status = PluginConstants.InstallationStatus.Installed,
+                InstalledAt = DateTime.UtcNow,
+            });
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _gateway = Substitute.For<IMcpToolGateway>();
+        return remote;
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_VerifiesTheKey_ThenStoresItEncrypted_AndSyncsTools()
+    {
+        var remote = ArrangeApiKeyPlugin();
+        _gateway!.ListToolsAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Is<PluginConnection>(c => c.EncryptedAccessToken == "protected:lin_api_123"),
+                Arg.Any<CancellationToken>())
+            .Returns([new McpToolDescriptorDto("list_issues", RemoteAppKey, "List issues", "", "read", [], new System.Text.Json.Nodes.JsonObject())]);
+
+        // Pasted as a header value: the prefix is not part of the key.
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "  Bearer lin_api_123 ");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.ConnectionStatus);
+        Assert.Contains("list_issues", remote.ToolsJson);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(c =>
+                c.Status == PluginConstants.ConnectionStatus.Connected
+                && c.EncryptedAccessToken == "protected:lin_api_123"
+                && c.EncryptedRefreshToken == null
+                && c.AccessTokenExpiresAt == null),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_RefusesAKeyTheServerRejects_AndStoresNothing()
+    {
+        ArrangeApiKeyPlugin();
+        _gateway!.ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new PluginProviderException(PluginConstants.ErrorCodes.ConnectionRequired, "401"));
+
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "lin_api_wrong");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidApiKey, result.ErrorCode);
+        await _connectionRepository.DidNotReceive().AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_RefusesARowThatSignsInWithOAuth()
+    {
+        var remote = ArrangeApiKeyPlugin();
+        remote.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "lin_api_123");
+
+        Assert.False(result.IsSuccess);
+        await _gateway!.DidNotReceive().ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SendsAnApiKeyRowToTheKeyField_InsteadOfAConsentPage()
+    {
+        ArrangeApiKeyPlugin();
+
+        var result = await CreateSut().ConnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(result.Value!.Connected);
+        Assert.Null(result.Value.Url);
+        Assert.True(result.Value.ApiKeyRequired);
+    }
+
+    [Fact]
+    public async Task DisconnectAsync_ClearsAnApiKey_WithoutSendingItToARevocationEndpoint()
+    {
+        ArrangeApiKeyPlugin();
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "protected:lin_api_123",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var result = await CreateSut().DisconnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+        await _oauthClient.DidNotReceive()
+            .RevokeTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _credentialProtector.DidNotReceive().Unprotect(Arg.Any<string>());
+    }
+
+    // ---- WT-710: remote MCP servers as they actually behave ------------------------------------
+
+    [Fact]
+    public async Task CompleteMcpOAuthCallbackAsync_Connects_WhenTheServerIssuesNoRefreshToken()
+    {
+        var remote = RemoteMcpPlugin();
+        ConfigureInstalledPlugin(remote, RemoteAppKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _oauthClient.ExchangeCodeAsync(remote, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(null, null, [], "access-token", null, DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut().CompleteMcpOAuthCallbackAsync("oauth-code", "state-token");
+
+        // Usable now; when the access token runs out, the refresh path finds nothing to refresh with
+        // and asks the user to connect again.
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(connection =>
+                connection.Status == PluginConstants.ConnectionStatus.Connected
+                && connection.EncryptedAccessToken == "protected:access-token"
+                && connection.EncryptedRefreshToken == null),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteMcpOAuthCallbackAsync_DropsTheDeadRefreshToken_WhenReconnectingAnExpiredConnection()
+    {
+        var remote = RemoteMcpPlugin();
+        ConfigureInstalledPlugin(remote, RemoteAppKey);
+        var expired = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = RemotePluginId,
+            Provider = RemoteAppKey,
+            Status = PluginConstants.ConnectionStatus.Expired,
+            EncryptedRefreshToken = "protected:revoked-refresh-token",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(expired);
+        _oauthClient.ExchangeCodeAsync(remote, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(null, null, [], "new-access-token", null, DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut().CompleteMcpOAuthCallbackAsync("oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, expired.Status);
+        Assert.Equal("protected:new-access-token", expired.EncryptedAccessToken);
+        Assert.Null(expired.EncryptedRefreshToken);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SyncsTools_WhenAnExistingGrantConnectsThePluginOnTheSpot()
+    {
+        var remote = RemoteMcpPlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(remote);
+        var installation = new PluginInstallation
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = RemotePluginId,
+            Status = PluginConstants.InstallationStatus.Installed,
+            InstalledAt = DateTime.UtcNow,
+        };
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation);
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = RemotePluginId,
+            Provider = RemoteAppKey,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "protected:access-token",
+            ScopesJson = "[]",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+        _gateway = Substitute.For<IMcpToolGateway>();
+        _gateway.ListToolsAsync(Arg.Any<PluginDefinitionDto>(), connection, Arg.Any<CancellationToken>())
+            .Returns([new McpToolDescriptorDto("remote_search", RemoteAppKey, "Search", "", "read", [], new System.Text.Json.Nodes.JsonObject())]);
+
+        var result = await CreateSut().ConnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.Value!.Connected);
+        Assert.Contains("remote_search", remote.ToolsJson);
+        Assert.NotNull(remote.ToolsSyncedAt);
     }
 
     private static Plugin GoogleDrivePlugin()

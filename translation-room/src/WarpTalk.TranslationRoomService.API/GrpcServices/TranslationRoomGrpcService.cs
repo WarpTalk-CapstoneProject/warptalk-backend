@@ -1,6 +1,7 @@
 using Grpc.Core;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 
@@ -29,12 +30,16 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         // directory service, the interface that already exists for exactly that ("a server-to-server
         // caller has no such user to check against"). Same query, same DTO; the only thing that
         // changed is that the unchecked read is no longer reachable from the HTTP controller.
-        var result = await _directoryService.GetRoomAsync(parsedId, context.CancellationToken);
+        //
+        // WT-704: the generatable artifact languages are opt-in — they cost a workspace RPC plus a
+        // catalog read, and most callers of this RPC are on hot paths that never need them.
+        var result = await _directoryService.GetRoomAsync(
+            parsedId, request.IncludeArtifactLanguages, context.CancellationToken);
 
         if (!result.IsSuccess)
             throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.Id);
 
-        return new GetTranslationRoomResponse
+        var response = new GetTranslationRoomResponse
         {
             Id = result.Value!.Id.ToString(),
             WorkspaceId = result.Value!.WorkspaceId.ToString(),
@@ -63,8 +68,24 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             EffectiveHostId = (result.Value!.EffectiveHostId ?? result.Value!.HostId).ToString(),
             // WT-480: the room's visibility switch, so a consumer can apply the same rule the
             // download endpoint applies instead of inventing a looser one.
-            ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty
+            ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty,
+            // WT-704: the meeting's declared languages (L2). Always sent, so a consumer whose
+            // opt-in could not be answered still has the room's own set to fall back to.
+            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty
         };
+        response.TargetLanguages.AddRange(result.Value!.TargetLanguages ?? []);
+
+        // WT-704: `resolved` is set only alongside a real answer. An empty list with resolved=true
+        // means "nothing may be generated"; resolved=false means "no answer" and the consumer falls
+        // back to source + targets above. Never set it without the list, or a computation failure
+        // would read as a policy that forbids everything.
+        if (request.IncludeArtifactLanguages && result.Value!.ArtifactLanguages is { } artifactLanguages)
+        {
+            response.GeneratableArtifactLanguages.AddRange(artifactLanguages.Generatable);
+            response.ArtifactLanguagesResolved = true;
+        }
+
+        return response;
     }
 
     public override async Task<GetParticipantsByRoomIdResponse> GetParticipantsByRoomId(GetParticipantsByRoomIdRequest request, ServerCallContext context)
@@ -92,7 +113,9 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
                 DisplayName = p.DisplayName,
                 Role = p.Role,
                 Language = p.SpeakLanguage,
-                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status)
+                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status),
+                // WT-699 / TC1806: the hub needs the status itself, not only the seat bit.
+                Status = p.Status ?? string.Empty
             });
         }
 
@@ -134,7 +157,52 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Kick refused."));
         }
 
-        return new KickRoomParticipantResponse { Kicked = result.Value };
+        // Kicked keeps its original meaning ("a roster row now says KICKED"), so an older caller
+        // that reads only it is unchanged. WT-699 / TC2103: AlreadyKicked is what lets a newer one
+        // tell the host the truth about a second press.
+        return new KickRoomParticipantResponse
+        {
+            Kicked = result.Value != RosterRemovalOutcome.NotOnRoster,
+            AlreadyKicked = result.Value == RosterRemovalOutcome.AlreadyRemoved
+        };
+    }
+
+    /// <summary>
+    /// WT-699 / TC2402. MeetingService owns the Reject action; the lobby row it refuses lives here.
+    /// Same three-way error split as the kick.
+    /// </summary>
+    public override async Task<RejectRoomParticipantResponse> RejectRoomParticipant(
+        RejectRoomParticipantRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var roomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        if (!Guid.TryParse(request.ParticipantUserId, out var participantUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        if (!Guid.TryParse(request.RequestedByUserId, out var requestedByUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        var result = await _directoryService.RejectParticipantByUserAsync(
+            roomId, requestedByUserId, participantUserId, context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                throw new RpcException(new Status(StatusCode.PermissionDenied, result.Error ?? "Not the current host."));
+
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Reject refused."));
+        }
+
+        return new RejectRoomParticipantResponse
+        {
+            Rejected = result.Value == RosterRemovalOutcome.Removed,
+            AlreadyRejected = result.Value == RosterRemovalOutcome.AlreadyRemoved
+        };
     }
 
     /// <summary>

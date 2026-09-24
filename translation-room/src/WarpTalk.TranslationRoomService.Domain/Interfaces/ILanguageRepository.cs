@@ -17,4 +17,13 @@ public interface ILanguageRepository
     /// present and switched off, not an absence they cannot distinguish from a missing row.
     /// </summary>
     Task<IReadOnlyList<SupportedLanguage>> GetCatalogAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// One catalog row, TRACKED, matched on the code case-insensitively — for an admin edit
+    /// (WT-691). Saved by <c>IUnitOfWork.SaveChangesAsync</c>.
+    /// </summary>
+    Task<SupportedLanguage?> GetForUpdateAsync(string code, CancellationToken ct = default);
+
+    /// <summary>Stages a new catalog row. Saved by <c>IUnitOfWork.SaveChangesAsync</c>.</summary>
+    Task AddAsync(SupportedLanguage language, CancellationToken ct = default);
 }

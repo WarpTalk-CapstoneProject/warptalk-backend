@@ -39,6 +39,7 @@ public class PluginCatalogAdminServiceTests
     private readonly IPluginToolAuditRepository _auditRepository = Substitute.For<IPluginToolAuditRepository>();
     private readonly IPluginConfirmationTokenRepository _confirmationTokenRepository = Substitute.For<IPluginConfirmationTokenRepository>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
+    private readonly IWorkspacePluginRepository _workspacePluginRepository = Substitute.For<IWorkspacePluginRepository>();
 
     public PluginCatalogAdminServiceTests()
     {
@@ -47,6 +48,9 @@ public class PluginCatalogAdminServiceTests
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
+        _unitOfWork.WorkspacePluginRepository.Returns(_workspacePluginRepository);
+        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, int>());
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
 
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => "enc:" + call.Arg<string>());
@@ -640,6 +644,60 @@ public class PluginCatalogAdminServiceTests
         Assert.Null(connection.AccessTokenExpiresAt);
     }
 
+    // ---- API-key auth ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task UpdateAsync_SwitchingToApiKey_DropsTheOAuthClient_AndEndsExistingConnections()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Preregistered;
+        plugin.OAuthClientId = "client-1";
+        plugin.OAuthClientSecretEncrypted = "enc:secret";
+        StubLookup(plugin);
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            Provider = McpKey,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "enc:oauth-token",
+        };
+        _connectionRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([connection]);
+
+        var result = await CreateSut().UpdateAsync(
+            McpKey,
+            new UpdatePluginCatalogRequest { AuthMode = PluginConstants.AuthMode.ApiKey },
+            AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, plugin.OAuthClientSource);
+        Assert.Null(plugin.OAuthClientId);
+        Assert.Null(plugin.OAuthClientSecretEncrypted);
+        // An OAuth token must not keep working against a row that now expects each user's key.
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+    }
+
+    [Fact]
+    public async Task SetOAuthClientAsync_RefusesAnApiKeyRow()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        StubLookup(plugin);
+
+        var result = await CreateSut().SetOAuthClientAsync(
+            McpKey,
+            new SetPluginOAuthClientRequest("client-1"),
+            AdminUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidCatalogUpdate, result.ErrorCode);
+        Assert.Null(plugin.OAuthClientId);
+    }
+
     [Fact]
     public async Task UpdateAsync_LeavesConnectionsAlone_WhenTheServerUrlIsResubmittedUnchanged()
     {
@@ -948,6 +1006,23 @@ public class PluginCatalogAdminServiceTests
         Assert.DoesNotContain(SecretCiphertext, json, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsWorkspacesUsing()
+    {
+        var marketplace = WorkspacePluginGuardTests.Marketplace("linear");
+        var privateRow = WorkspacePluginGuardTests.Marketplace("ws_crm_1a2b3c4d");
+        privateRow.OwnerWorkspaceId = Guid.NewGuid();
+        StubAllPlugins(marketplace, privateRow);
+        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, int> { [marketplace.Id] = 6 });
+
+        var result = await CreateSut().ListAsync();
+
+        var row = Assert.Single(result.Value!);
+        Assert.Equal("linear", row.PluginKey);
+        Assert.Equal(6, row.WorkspaceCount);
+    }
+
     private void StubLookup(Plugin? plugin) =>
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -955,8 +1030,16 @@ public class PluginCatalogAdminServiceTests
                 Arg.Any<CancellationToken>())
             .Returns(plugin);
 
+    // The listing filters in the query (marketplace rows only), so the stub applies the predicate
+    // it is handed rather than ignoring it.
     private void StubAllPlugins(params Plugin[] plugins) =>
-        _pluginRepository.GetAllAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(plugins);
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlyList<Plugin>)plugins
+                .Where(call.Arg<Expression<Func<Plugin, bool>>>().Compile())
+                .ToList());
 
     private void StubAudits(int totalCount, params PluginToolAudit[] audits) =>
         _auditRepository.ListForPluginAsync(

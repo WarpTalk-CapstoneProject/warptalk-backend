@@ -1,6 +1,8 @@
 using NSubstitute;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Services;
+using WarpTalk.AssistantService.Domain.Entities;
+using WarpTalk.AssistantService.Domain.Interfaces;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -30,14 +32,15 @@ internal static class TestWorkspacePluginPolicy
 
     /// <summary>
     /// A guard whose policy client answers <paramref name="allowsPluginUsage"/> and whose
-    /// membership client reports the caller as <paramref name="isActiveMember"/>.
+    /// membership client reports the caller as <paramref name="isActiveMember"/>, in
+    /// <paramref name="roleName"/>.
     /// </summary>
-    public static WorkspacePluginGuard Guard(bool allowsPluginUsage, bool isActiveMember)
+    public static WorkspacePluginGuard Guard(bool allowsPluginUsage, bool isActiveMember, string roleName = "Member")
     {
         var policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
         policyClient.AllowsPluginUsageAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(allowsPluginUsage);
-        return Guard(policyClient, isActiveMember);
+        return Guard(policyClient, isActiveMember, roleName);
     }
 
     /// <summary>
@@ -47,14 +50,23 @@ internal static class TestWorkspacePluginPolicy
     /// </summary>
     public static WorkspacePluginGuard Guard(
         IWorkspacePluginPolicyClient policyClient,
-        bool isActiveMember = true)
+        bool isActiveMember = true,
+        string roleName = "Member")
     {
         var membershipClient = Substitute.For<IWorkspaceMembershipClient>();
         membershipClient.GetMembershipAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(isActiveMember
-                ? new WorkspaceMembership(IsMember: true, RoleName: "Member", IsActive: true)
+                ? new WorkspaceMembership(IsMember: true, RoleName: roleName, IsActive: true)
                 : WorkspaceMembership.None);
 
-        return new WorkspacePluginGuard(policyClient, membershipClient);
+        // A workspace that has never curated its plugin list: judged by the policy client's
+        // AllowAnyPlugins answer, exactly as every workspace was before the marketplace.
+        var unitOfWork = Substitute.For<IUnitOfWork>();
+        var curations = Substitute.For<IWorkspacePluginCurationRepository>();
+        curations.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns((WorkspacePluginCuration?)null);
+        unitOfWork.WorkspacePluginCurationRepository.Returns(curations);
+
+        return new WorkspacePluginGuard(unitOfWork, policyClient, membershipClient);
     }
 }

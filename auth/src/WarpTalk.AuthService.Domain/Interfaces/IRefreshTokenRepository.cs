@@ -33,4 +33,17 @@ public interface IRefreshTokenRepository : IGenericRepository<RefreshToken>
 
     /// <summary>Revokes every live family this user has except <paramref name="keepFamilyId"/>.</summary>
     Task RevokeAllForUserExceptFamilyAsync(Guid userId, Guid keepFamilyId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Distinct accounts that were issued a refresh token in <c>[from, to)</c>.
+    ///
+    /// A token row is inserted on every sign-in (password or Google) AND on every rotation, and
+    /// rows are revoked rather than deleted, so this is an event history — unlike
+    /// <c>users.last_login_at</c>, which only remembers the latest sign-in and so undercounts
+    /// every past window. See <c>AdminUserService.GetInsightsAsync</c> for what it misses.
+    /// </summary>
+    Task<int> CountDistinctUsersIssuedBetweenAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default);
 }

@@ -230,6 +230,15 @@ public class MeetingMinutesService : IMeetingMinutesService
             bearerToken,
             ct);
 
+        // WT-703: a language this meeting does not offer is a refusal of the REQUEST, not a state
+        // of the document, and it must reach the caller as one (400) rather than be dressed up as
+        // "unavailable" below. Stored translations were answered above and never get here — what
+        // already exists stays readable whatever the meeting's languages are now.
+        if (!rendering.IsSuccess && rendering.ErrorCode == ErrorCodes.ValidationError)
+        {
+            return Result.Failure<MinutesTranslationDto>(rendering.Error!, rendering.ErrorCode);
+        }
+
         if (!rendering.IsSuccess)
         {
             // The meeting has no summary to translate from — which is a real state for a document
@@ -242,7 +251,28 @@ public class MeetingMinutesService : IMeetingMinutesService
                 "This meeting no longer has a summary to translate the record from."));
         }
 
-        if (rendering.Value!.Status != SummaryVariantStatus.Ready)
+        // A FAILED RENDERING IS AN ANSWER, NOT "STILL GENERATING".
+        //
+        // This read every non-ready status as generating. A rendering that failed was therefore
+        // reported as still on its way, the web kept polling, and each poll that read the failed
+        // outcome released the claim so the NEXT one queued the whole job again — one failing
+        // model call every eight seconds until the ninety-second deadline, and then a generic
+        // "has not arrived" with the reason thrown away. Production shows exactly that cadence
+        // (twelve Japanese requests eight seconds apart on one room on 12 Sep, every one of them
+        // failing with the same reason). The reason is the reader's to see; the choice stays
+        // askable again because the variant endpoint has already released its claim.
+        if (rendering.Value!.Status == SummaryVariantStatus.Failed)
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                string.IsNullOrWhiteSpace(rendering.Value.Error)
+                    ? "This record could not be translated into that language. Please try again."
+                    : rendering.Value.Error));
+        }
+
+        if (rendering.Value.Status != SummaryVariantStatus.Ready)
         {
             return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
                 wanted, null, MinutesTranslationStatus.Generating, null));
@@ -826,6 +856,14 @@ public class MeetingMinutesService : IMeetingMinutesService
         if (LanguageHelper.NormalizeLanguageCode(language).Length > 0)
         {
             var reading = await GetTranslationAsync(roomId, userId, userEmail, language!, bearerToken, ct);
+
+            // WT-703: the screen refuses a language the meeting does not offer, so the file does
+            // too, rather than handing back a file in a language the reader was just told no.
+            if (!reading.IsSuccess && reading.ErrorCode == ErrorCodes.ValidationError)
+            {
+                return Result.Failure<MinutesExportFile>(reading.Error!, reading.ErrorCode);
+            }
+
             if (reading.IsSuccess && reading.Value!.Status == MinutesTranslationStatus.Ready)
             {
                 requested = reading.Value.Sections;
@@ -1317,6 +1355,7 @@ public class MeetingMinutesService : IMeetingMinutesService
                 TranslationRoomId = minutes.TranslationRoomId,
                 WorkspaceId = minutes.WorkspaceId,
                 SourceMinutesId = minutes.Id,
+                Source = MeetingActionItemConstants.SourceMinutes,
                 SeriesId = room?.SeriesId,
                 Task = item.Text.Trim(),
                 // Kept exactly as the meeting said it, whether or not it resolved to anybody.

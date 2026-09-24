@@ -71,7 +71,8 @@ public class TranslationRoomFeedbackRepository : GenericRepository<TranslationRo
         AdminFeedbackFilter filter,
         int page,
         int pageSize,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool lowestRatedFirst = false)
     {
         // A comment of whitespace is not a comment, and `!= ""` does not catch one — the write
         // path trims before storing, but rows predating that are already in the table. Trim()
@@ -84,8 +85,11 @@ public class TranslationRoomFeedbackRepository : GenericRepository<TranslationRo
         // Ordered on the ENTITY, before the projection. Ordering a positional record by one of
         // its own properties does not translate — EF cannot map a constructor parameter back to
         // the expression it came from, and the endpoint 500s on every call it ever serves.
-        var rows = await query
-            .OrderByDescending(f => f.CreatedAt)
+        var ordered = lowestRatedFirst
+            ? query.OrderBy(f => f.OverallRating).ThenByDescending(f => f.CreatedAt)
+            : query.OrderByDescending(f => f.CreatedAt);
+
+        var rows = await ordered
             .ThenByDescending(f => f.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)

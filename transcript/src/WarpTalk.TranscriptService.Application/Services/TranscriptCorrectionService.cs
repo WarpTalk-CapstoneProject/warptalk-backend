@@ -33,6 +33,13 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
     private readonly TranslationRoomServiceClient _roomClient;
 
     /// <summary>
+    /// WT-704: who may write a translation by hand, and in which languages. A human MT correction
+    /// creates content in a target language, so it answers to the same L2 ∩ L1 rule as every other
+    /// generator — and to the host, because it rewrites what every reader of the record sees.
+    /// </summary>
+    private readonly ITranscriptRoomLanguagePolicy _languagePolicy;
+
+    /// <summary>
     /// Owns the one stream a saved transcript's translations are re-requested on. A correction to
     /// what somebody said invalidates every translation of that line, and this is what redoes them.
     /// </summary>
@@ -43,12 +50,14 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         IUnitOfWork unitOfWork,
         ITranscriptReadAccess readAccess,
         TranslationRoomServiceClient roomClient,
+        ITranscriptRoomLanguagePolicy languagePolicy,
         ITranscriptTranslationBackfillService backfillService,
         ILogger<TranscriptCorrectionService> logger)
     {
         _unitOfWork = unitOfWork;
         _readAccess = readAccess;
         _roomClient = roomClient;
+        _languagePolicy = languagePolicy;
         _backfillService = backfillService;
         _logger = logger;
     }
@@ -99,10 +108,26 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
                 if (string.IsNullOrWhiteSpace(dto.TargetLanguage))
                     return Result.Failure("TargetLanguage is required for MT corrections.", "BAD_REQUEST");
 
+                // WT-704: a translation typed by hand is new content in a target language. Reading
+                // the transcript is not enough to write one — the host decides what the record says
+                // in other languages — and the language must be one the meeting allows (L2 ∩ L1).
+                // Every refusal below happens before anything is saved.
+                var policy = await _languagePolicy.GetAsync(transcript.TranslationRoomId, cancellationToken);
+                if (!policy.IsSuccess)
+                    return policy;
+
+                if (policy.Value!.EffectiveHostId != userId)
+                    return Result.Failure("Only the meeting host can correct translations.", "UNAUTHORIZED");
+
                 // Normalized, because a room hands out "en-US" and the link stores "en". Comparing
                 // the raw strings found no link, so the correction recorded no row as its subject
                 // and — now that it also replaces one — would have replaced nothing.
                 var language = TranscriptTranslationBackfillService.NormalizeLanguage(dto.TargetLanguage);
+                if (!policy.Value.IsAllowed(language))
+                    return Result.Failure(
+                        $"Language '{dto.TargetLanguage}' is not enabled for this meeting.",
+                        TranscriptLanguageErrors.LanguageNotAllowed);
+
                 var currentLink = currentLinks.FirstOrDefault(
                     l => TranscriptTranslationBackfillService.NormalizeLanguage(l.TargetLanguage) == language);
 
@@ -132,6 +157,23 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
                 // Recorded truthfully rather than hardcoded: a line with no translations to redo
                 // triggers no retranslation, and claiming otherwise is what the column did before.
                 correction.TriggeredRetranslation = currentLinks.Count > 0;
+
+                // WT-704: marked here, in the same save as the new wording, so no reader ever sees
+                // the corrected sentence next to a translation presented as up to date. Every
+                // language, including ones the meeting no longer allows: those are not retranslated
+                // (the backfill only queues allowed languages) and stay visibly outdated rather than
+                // silently wrong. The consumer clears the mark when a retranslation lands.
+                //
+                // Known gap: a line corrected A -> B -> A whose retranslation dedups onto A's old,
+                // superseded content is ignored by the consumer (it only clears a CURRENT link and
+                // never re-promotes a superseded one), so B's translation stays current and stale.
+                // Fixing it belongs in the consumer; nothing here knows which superseded link was
+                // produced from which wording.
+                foreach (var link in currentLinks)
+                {
+                    link.IsStale = true;
+                    _unitOfWork.SegmentTranslationLinks.Update(link);
+                }
             }
             else
             {
@@ -250,6 +292,15 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         // and its link is already the current one. Nothing to move.
         if (superseded.Count == 1 && superseded[0].TranslationContentId == content.Id)
         {
+            // A person just confirmed this wording against the line as it reads now, so an
+            // outdated mark left by an earlier STT correction no longer applies.
+            if (superseded[0].IsStale)
+            {
+                superseded[0].IsStale = false;
+                _unitOfWork.SegmentTranslationLinks.Update(superseded[0]);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+
             return;
         }
 
@@ -265,6 +316,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             // (segment_id, translation_content_id) is the composite primary key, so a correction
             // that restores an earlier wording has to revive that row rather than insert a second.
             existing.IsCurrent = true;
+            existing.IsStale = false;
             existing.TargetLanguage = targetLanguage;
             _unitOfWork.SegmentTranslationLinks.Update(existing);
         }
@@ -276,6 +328,8 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
                 TranslationContentId = content.Id,
                 TargetLanguage = targetLanguage,
                 IsCurrent = true,
+                // Written by a person against the line as it reads now.
+                IsStale = false,
                 // Null, not UtcNow: nothing was delivered. This text was typed after the meeting
                 // and no participant ever heard it.
                 DeliveredAt = null

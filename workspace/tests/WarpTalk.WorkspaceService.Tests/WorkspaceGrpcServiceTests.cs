@@ -244,6 +244,23 @@ public class WorkspaceGrpcServiceTests
         Assert.Equal("warptalk", response.WorkspaceSlug);
         Assert.True(response.IsDomainMatched);
         Assert.False(response.AllowExternalCollaboration);
+        Assert.Equal(string.Empty, response.OwnerUserId);
+    }
+
+    [Fact]
+    public async Task GetWorkspacePreflightDetails_CarriesTheOwner()
+    {
+        // AssistantService notifies this user when a member asks for a plugin.
+        var ownerId = Guid.NewGuid();
+        _workspaceDirectory
+            .GetPreflightAsync(Arg.Any<Guid>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success(new WorkspacePreflightDto(true, "WarpTalk Team", "warptalk", false, false, ownerId)));
+
+        var response = await _service.GetWorkspacePreflightDetails(
+            new GetWorkspacePreflightRequest { WorkspaceId = Guid.NewGuid().ToString() },
+            _context);
+
+        Assert.Equal(ownerId.ToString(), response.OwnerUserId);
     }
 
     private class TestServerCallContext : ServerCallContext
