@@ -252,7 +252,14 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
             }
         }
 
+        // Google rejects a date-time with neither an offset nor a timeZone ("Missing time zone
+        // definition"), and a model told today's date in Vietnam sends exactly that: a bare
+        // "2026-09-24T10:00:00". The workspace's own zone is the one the user meant, and it is
+        // also the zone WarpBot's confirmation card prints, so the two cannot disagree.
         var timeZone = GetString(arguments, "timeZone");
+        if (string.IsNullOrWhiteSpace(timeZone) && (NeedsTimeZone(start) || NeedsTimeZone(end)))
+            timeZone = _options.DefaultTimeZone;
+
         var payload = new JsonObject
         {
             ["summary"] = summary,
@@ -333,14 +340,25 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
                 await Task.Delay(TimeSpan.FromMilliseconds(_options.MeetConferencePollDelayMilliseconds), _timeProvider, ct);
 
             var url = $"{CalendarEventsEndpoint("primary")}/{Uri.EscapeDataString(eventId)}?conferenceDataVersion=1";
-            using var request = AuthorizedRequest(HttpMethod.Get, url, accessToken);
-            using var response = await _httpClient.SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode)
-                return current;
+            try
+            {
+                using var request = AuthorizedRequest(HttpMethod.Get, url, accessToken);
+                using var response = await _httpClient.SendAsync(request, ct);
+                if (!response.IsSuccessStatusCode)
+                    return current;
 
-            var refreshed = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct);
-            if (refreshed != null)
-                current = refreshed;
+                var refreshed = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct);
+                if (refreshed != null)
+                    current = refreshed;
+            }
+            catch (Exception exception)
+                when (exception is HttpRequestException or JsonException or TaskCanceledException
+                    && !ct.IsCancellationRequested)
+            {
+                // The meeting was created; only the re-read failed. Throwing here would report a
+                // failed tool call for a booking that exists, and the user would make a second one.
+                return current;
+            }
         }
 
         return current;
@@ -449,6 +467,20 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         var endpoint = CalendarEventsEndpoint(calendarId);
         var querySeparator = endpoint.Contains('?', StringComparison.Ordinal) ? "&" : "?";
         return $"{endpoint}{querySeparator}conferenceDataVersion=1";
+    }
+
+    /// <summary>
+    /// Whether Google would refuse this date-time for having no zone: no trailing offset and no
+    /// "Z". "2026-09-24T10:00:00" is what a model sends when it was told the local date.
+    /// </summary>
+    private static bool NeedsTimeZone(string? dateTime)
+    {
+        if (string.IsNullOrWhiteSpace(dateTime))
+            return false;
+
+        return !DateTimeOffset.TryParse(dateTime, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _)
+            || (DateTime.TryParse(dateTime, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var local)
+                && local.Kind == DateTimeKind.Unspecified);
     }
 
     private static JsonObject CalendarEventDateTime(string dateTime, string? timeZone)

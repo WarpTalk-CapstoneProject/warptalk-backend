@@ -597,6 +597,104 @@ public class GoogleWorkspaceMcpToolGatewayTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_CreateMeetEvent_StampsTheWorkspaceZoneOnATimeThatCarriesNone()
+    {
+        // Google refuses a date-time with neither an offset nor a timeZone, and a model told the
+        // local date sends exactly that. The zone stamped here is the one WarpBot's confirmation
+        // card prints, so what the user read and what was booked are the same moment.
+        JsonObject? capturedPayload = null;
+        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["id"] = "event-3c",
+                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
+                }),
+            };
+        }));
+        var sut = MeetGateway(httpClient);
+
+        var result = await ExecuteMeetAsync(sut, new JsonObject
+        {
+            ["summary"] = "Roadmap",
+            ["start"] = "2026-09-24T10:00:00",
+            ["end"] = "2026-09-24T10:30:00",
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Asia/Ho_Chi_Minh", capturedPayload!["start"]!["timeZone"]!.GetValue<string>());
+        Assert.Equal("Asia/Ho_Chi_Minh", capturedPayload["end"]!["timeZone"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CreateMeetEvent_LeavesAnOffsetTimeWithoutAZone()
+    {
+        JsonObject? capturedPayload = null;
+        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new JsonObject
+                {
+                    ["id"] = "event-3d",
+                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
+                }),
+            };
+        }));
+        var sut = MeetGateway(httpClient);
+
+        var result = await ExecuteMeetAsync(sut, new JsonObject
+        {
+            ["start"] = "2026-09-24T10:00:00+07:00",
+            ["end"] = "2026-09-24T10:30:00+07:00",
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(capturedPayload!["start"]!["timeZone"]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CreateMeetEvent_KeepsTheCreatedEventWhenTheRereadFails()
+    {
+        // The meeting exists by then; reporting a failure would have the user book a second one.
+        var calls = 0;
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+        {
+            calls++;
+            if (calls == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new JsonObject
+                    {
+                        ["id"] = "event-3e",
+                        ["conferenceData"] = new JsonObject
+                        {
+                            ["createRequest"] = new JsonObject
+                            {
+                                ["status"] = new JsonObject { ["statusCode"] = "pending" },
+                            },
+                        },
+                    }),
+                };
+            }
+
+            throw new HttpRequestException("network went away");
+        }));
+        var sut = MeetGateway(httpClient);
+
+        var result = await ExecuteMeetAsync(sut, new JsonObject { ["summary"] = "Roadmap" });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("event-3e", result.Data!["eventId"]!.GetValue<string>());
+        Assert.Equal("pending", result.Data["meetLinkStatus"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task ExecuteAsync_CreateMeetEvent_TakesMeetingCodeFromConferenceId()
     {
         var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>

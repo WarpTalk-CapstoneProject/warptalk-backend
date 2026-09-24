@@ -18,4 +18,11 @@ public class GoogleWorkspaceApiOptions
     public int MeetConferencePollAttempts { get; set; } = 3;
 
     public int MeetConferencePollDelayMilliseconds { get; set; } = 700;
+
+    /// <summary>
+    /// The zone a date-time without one is read in. Google refuses "2026-09-24T10:00:00" with
+    /// neither an offset nor a timeZone, and a model told the local date sends exactly that. This
+    /// is also the zone WarpBot's confirmation card prints, so the card and the booking agree.
+    /// </summary>
+    public string DefaultTimeZone { get; set; } = "Asia/Ho_Chi_Minh";
 }
