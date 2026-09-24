@@ -4,8 +4,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -33,16 +36,19 @@ public class AdminFxRateController : ControllerBase
 
     /// <summary>Asks Stripe now. 200 with <c>error</c> set when Stripe gave nothing — the status still answers.</summary>
     [HttpPost("refresh")]
+    [AdminAudited(AdminAuditBillingActions.FxRateRefreshed, AdminAuditEntityTypes.FxRate, typeof(FxRate), typeof(BillingPricingConfig), Aggregate = true)]
     public async Task<ActionResult<AdminFxRefreshResultDto>> Refresh(CancellationToken ct)
         => Ok(await _fx.RefreshAsync(force: true, ct));
 
     /// <summary>Use this rate instead of Stripe's, from today until the override is removed. 400 on a non-positive rate.</summary>
     [HttpPut("override")]
+    [AdminAudited(AdminAuditBillingActions.FxRateOverridden, AdminAuditEntityTypes.FxRate, typeof(FxRate), typeof(BillingPricingConfig))]
     public async Task<IActionResult> SetOverride([FromBody] SetFxOverrideRequest request, CancellationToken ct)
         => ToActionResult(await _fx.SetOverrideAsync(request.Rate, ct));
 
     /// <summary>Back to Stripe's rate from today. Days the override covered keep it.</summary>
     [HttpDelete("override")]
+    [AdminAudited(AdminAuditBillingActions.FxRateOverrideCleared, AdminAuditEntityTypes.FxRate, typeof(FxRate), typeof(BillingPricingConfig))]
     public async Task<IActionResult> ClearOverride(CancellationToken ct)
         => ToActionResult(await _fx.ClearOverrideAsync(ct));
 
