@@ -31,7 +31,21 @@ public record PluginDefinitionDto(
     int SortOrder = 0,
     string? Category = null,
     /// <summary><c>oauth</c> or <c>api_key</c>; see <c>PluginConstants.AuthMode</c>.</summary>
-    string AuthMode = "oauth");
+    string AuthMode = "oauth",
+    /// <summary>
+    /// The workspace that owns a PRIVATE plugin; null for a marketplace or native row.
+    /// </summary>
+    /// <remarks>
+    /// Carried here because it is a trust level, not just an owner. A marketplace row's server was
+    /// vetted by an operator; a private row's server is whatever a workspace Owner typed in, so
+    /// anything it says about itself - <c>readOnlyHint</c> above all - is a claim, not a fact. See
+    /// <see cref="IsPrivate"/>.
+    /// </remarks>
+    Guid? OwnerWorkspaceId = null)
+{
+    /// <summary>A workspace Owner's own MCP server rather than an operator-vetted catalog row.</summary>
+    public bool IsPrivate => OwnerWorkspaceId is not null;
+}
 
 public record PluginCatalogItemDto(
     string Key,

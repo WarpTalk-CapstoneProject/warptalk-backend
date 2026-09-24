@@ -42,6 +42,16 @@ public sealed record AdminMeetingRow(
     int? DurationSeconds,
     DateTime CreatedAt);
 
+/// <summary>
+/// When one started meeting ran, as far as the row knows. <paramref name="EndedAt"/> is null while
+/// it is live — and, for a few terminal paths that never stamped it, forever.
+/// </summary>
+public sealed record AdminMeetingSpan(
+    DateTime StartedAt,
+    DateTime? EndedAt,
+    int? DurationSeconds,
+    string Status);
+
 public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom>
 {
     /// <summary>
@@ -63,6 +73,16 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     /// </summary>
     Task<(int Live, int StartedSince)> GetAdminCountsAsync(
         DateTime since,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Every non-deleted meeting that started before <paramref name="to"/> and could have been
+    /// running after <paramref name="from"/>: ended after it, still live, or started inside the
+    /// window with no end recorded. Scalars only — the insights maths clips them per day.
+    /// </summary>
+    Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
+        DateTime from,
+        DateTime to,
         CancellationToken ct = default);
 
     Task<bool> ExistsByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default);

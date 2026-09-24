@@ -78,4 +78,20 @@ public interface IUserRepository : IGenericRepository<User>
     Task<IReadOnlyList<AdminUserSessionRow>> GetActiveSessionsAsync(
         Guid userId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Accounts created in <c>[from, to)</c>, soft-deleted ones INCLUDED: the figure is "how many
+    /// people signed up in that window", and a later deletion must not rewrite a past period.
+    /// </summary>
+    Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>
+    /// The creation instants of the same accounts, unordered. Deliberately not grouped by day in
+    /// SQL: which day an instant belongs to depends on the caller's time zone (the insights
+    /// <c>tz</c>), and the caller buckets them on those local days.
+    /// </summary>
+    Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default);
 }

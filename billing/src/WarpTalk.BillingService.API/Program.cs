@@ -105,6 +105,7 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
 
     // --- Grpc Clients ---
     builder.Services.AddScoped<IAdminWorkspaceAnalyticsService, AdminWorkspaceAnalyticsService>();
+    builder.Services.AddScoped<IAdminBillingInsightsService, AdminBillingInsightsService>();
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {

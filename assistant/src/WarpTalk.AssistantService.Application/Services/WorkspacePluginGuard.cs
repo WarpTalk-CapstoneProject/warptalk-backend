@@ -93,7 +93,17 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
                 : Refuse(PluginConstants.WorkspacePolicyMessages.NotAWorkspaceMember);
         }
 
+        // The legacy personal path, left open on purpose: see IWorkspacePluginGuard.CanUsePluginAsync.
         if (!workspaceId.HasValue) return Result.Success();
+
+        // A named workspace is judged only for someone who belongs to it. Without this a caller
+        // could name any workspace that has the plugin and be judged by that one - the borrowed-id
+        // hole GetAvailabilityForMemberAsync closes on the tool path. It buys nothing over the
+        // no-workspace path today, but it must not become the way around that path once it is
+        // closed. Membership first, so the refusal does not reveal which plugins a foreign
+        // workspace has.
+        if (!await IsActiveMemberAsync(workspaceId.Value, userId, ct))
+            return Refuse(PluginConstants.WorkspacePolicyMessages.NotAWorkspaceMember);
 
         var availability = await GetAvailabilityAsync(workspaceId.Value, ct);
         return availability.IsUsable(plugin)

@@ -529,6 +529,98 @@ public sealed class SummaryLanguageVariantTests
             Times.Never);
     }
 
+    /// <summary>
+    /// WT-701. The consumer said `completed`, but no stored rendering matches the pair — so the
+    /// poll used to answer "generating" until the five-minute claim expired, and the client gave
+    /// up at ninety seconds. It now clears the claim and the stale outcome and queues once more.
+    /// </summary>
+    [Fact]
+    public async Task ACompletedRunWithNoMatchingRowIsQueuedOnceMore()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var firstRequestId = Guid.NewGuid().ToString();
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateService(room, redis, variant: null);
+        string? claimed = null;
+        redis
+            .Setup(item => item.StringGetAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))))
+            .ReturnsAsync(firstRequestId);
+        redis
+            .Setup(item => item.StringGetAsync(TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + firstRequestId))
+            .ReturnsAsync("{\"Status\":\"completed\",\"Error\":null}");
+        redis
+            .Setup(item => item.StringSetIfAbsentAsync(
+                It.Is<string>(key => key.StartsWith("summary_variant_inflight:")), It.IsAny<string>(), It.IsAny<TimeSpan>()))
+            .Callback((string _, string value, TimeSpan _) => claimed = value)
+            .ReturnsAsync(true);
+
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+
+        Assert.Equal(SummaryVariantStatus.Generating, result.Value!.Status);
+        Assert.NotNull(claimed);
+        Assert.NotEqual(firstRequestId, claimed);
+        redis.Verify(
+            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
+            Times.Once);
+        redis.Verify(
+            item => item.KeyDeleteAsync(TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + firstRequestId),
+            Times.Once);
+        // The retry is remembered under its own id, which is what lets its outcome end the loop.
+        redis.Verify(
+            item => item.StringSetAsync(
+                It.Is<string>(key => key.StartsWith(TranslationRoomConstants.SummaryVariantRequeueKeyPrefix)),
+                claimed!,
+                It.IsAny<TimeSpan?>()),
+            Times.Once);
+        redis.Verify(
+            item => item.StreamAddAsync(
+                TranslationRoomConstants.SummaryRequestStream,
+                It.Is<Dictionary<string, string>>(fields =>
+                    fields["request_id"] == claimed && fields["delivery"] == SummaryDelivery.Variant)),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// WT-701. The one retry also completed without a matching row: that is an answer, not a
+    /// reason to spend another model call. Failed, with a reason, and nothing queued.
+    /// </summary>
+    [Fact]
+    public async Task ACompletedRetryWithNoMatchingRowReportsFailedInsteadOfLooping()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "");
+        var retryRequestId = Guid.NewGuid().ToString();
+        var redis = new Mock<IRedisStateRepository>();
+        redis
+            .Setup(item => item.StringGetAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))))
+            .ReturnsAsync(retryRequestId);
+        redis
+            .Setup(item => item.StringGetAsync(TranslationRoomConstants.SummaryRewriteStatusKeyPrefix + retryRequestId))
+            .ReturnsAsync("{\"Status\":\"completed\",\"Error\":null}");
+        redis
+            .Setup(item => item.StringGetAsync(It.Is<string>(key => key.StartsWith(TranslationRoomConstants.SummaryVariantRequeueKeyPrefix))))
+            .ReturnsAsync(retryRequestId);
+
+        var service = CreateService(room, redis, variant: null);
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+
+        Assert.Equal(SummaryVariantStatus.Failed, result.Value!.Status);
+        Assert.False(string.IsNullOrWhiteSpace(result.Value.Error));
+        redis.Verify(
+            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith("summary_variant_inflight:"))),
+            Times.Once);
+        redis.Verify(
+            item => item.KeyDeleteAsync(It.Is<string>(key => key.StartsWith(TranslationRoomConstants.SummaryVariantRequeueKeyPrefix))),
+            Times.Once);
+        redis.Verify(
+            item => item.StringSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()),
+            Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
     private static TranslationRoomArtifactService CreateService(
         TranslationRoom room,
         Mock<IRedisStateRepository> redis,

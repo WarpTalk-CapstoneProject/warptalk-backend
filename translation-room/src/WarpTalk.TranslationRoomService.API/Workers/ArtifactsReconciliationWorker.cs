@@ -6,6 +6,7 @@ using StackExchange.Redis;
 using System;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Helpers;
@@ -217,6 +218,11 @@ public class ArtifactsReconciliationWorker : BackgroundService
     /// path where it found content, so a surviving key means precisely one thing: the summary
     /// was written after the artifact was. No content parsing, no marker string to drift.
     ///
+    /// WT-701 narrowed "found content" to "found structured_json": the finalizer now also keeps
+    /// the key when it saved the markdown fallback, so the structured version can upgrade it here.
+    /// That is why the artifact itself is checked too (<see cref="IsUpgradableSummary"/>) — only a
+    /// placeholder or fallback is replaced, never a structured summary.
+    ///
     /// UPDATE, NEVER ADD. The sweep above re-queues finalization, which calls
     /// `artifactRepo.AddAsync` — running it again here would give the meeting two summary
     /// artifacts rather than one correct one, and the page picks whichever it sees first.
@@ -269,6 +275,16 @@ public class ArtifactsReconciliationWorker : BackgroundService
                 continue;
             }
 
+            if (!IsUpgradableSummary(artifact.Content))
+            {
+                // WT-701. The finalizer now keeps the key when it saved only the markdown fallback,
+                // so a surviving key no longer proves the artifact is the placeholder. An artifact
+                // that already carries a templateKey is a structured summary — the finalizer's own,
+                // or a host's rewrite — and overwriting it with a stale hash would undo that.
+                await db.KeyDeleteAsync(summaryKey);
+                continue;
+            }
+
             var entries = await db.HashGetAllAsync(summaryKey);
             string? Field(string name) =>
                 entries.FirstOrDefault(e => e.Name == name) is { Value.HasValue: true } hit
@@ -310,6 +326,31 @@ public class ArtifactsReconciliationWorker : BackgroundService
             _logger.LogInformation(
                 "Recovered a late AI summary for room {RoomId} and updated its existing artifact.",
                 room.Id);
+        }
+    }
+
+    /// <summary>
+    /// WT-701. Whether a stored summary is one the late-summary recovery may replace: the
+    /// insufficient-data placeholder, or the markdown fallback written when structured_json missed
+    /// the finalizer's window. Both are built by SummaryContentBuilder without a
+    /// <c>templateKey</c>; every structured summary ai_assistant_worker produces carries one.
+    /// Content that does not parse is treated as replaceable — there is nothing worth keeping.
+    /// </summary>
+    internal static bool IsUpgradableSummary(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return true;
+
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            return document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("templateKey", out var templateKey)
+                || templateKey.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(templateKey.GetString());
+        }
+        catch (JsonException)
+        {
+            return true;
         }
     }
 }

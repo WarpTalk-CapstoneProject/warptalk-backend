@@ -285,4 +285,23 @@ public class UserRepository : GenericRepository<User>, IUserRepository
             .ThenBy(u => u.LastLoginAt),
         _ => query.OrderByDescending(u => u.CreatedAt),
     };
+
+    public Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .CountAsync(u => u.CreatedAt >= from && u.CreatedAt < to, ct);
+
+    public async Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(u => u.CreatedAt >= from && u.CreatedAt < to)
+            .Select(u => u.CreatedAt)
+            .ToListAsync(ct);
+
+        return rows.Select(at => DateTime.SpecifyKind(at, DateTimeKind.Utc)).ToList();
+    }
 }
