@@ -932,6 +932,59 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-707: the first of <paramref name="languages"/> (normalized) that the room's workspace
+    /// whitelist excludes, or null when all are allowed. Null also answers every case where the
+    /// whitelist cannot be read — failure, null result, exception — and an empty whitelist,
+    /// which means "no restriction". The null-safe pattern matters: the lookup's Result can come
+    /// back null (a loose mock, or a client that swallowed its own error), and that must read as
+    /// "unknown", not throw inside join.
+    /// </summary>
+    private async Task<string?> FindLanguageDisallowedByWorkspaceAsync(
+        TranslationRoom room,
+        IEnumerable<string?> languages,
+        CancellationToken ct)
+    {
+        try
+        {
+            var allowed = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+            if (allowed is not { IsSuccess: true, Value: { Count: > 0 } list })
+            {
+                if (allowed is not { IsSuccess: true })
+                {
+                    _logger.LogWarning(
+                        "Workspace language policy lookup failed for workspace {WorkspaceId} (room {RoomId}): {Error}. Allowing the join.",
+                        room.WorkspaceId, room.Id, allowed?.Error);
+                }
+                return null;
+            }
+
+            var allowedSet = list
+                .Select(LanguageHelper.NormalizeLanguageCode)
+                .Where(code => !string.IsNullOrEmpty(code))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (allowedSet.Count == 0)
+                return null;
+
+            foreach (var language in languages)
+            {
+                if (string.IsNullOrWhiteSpace(language))
+                    continue;
+                var normalized = LanguageHelper.NormalizeLanguageCode(language);
+                if (!allowedSet.Contains(normalized))
+                    return normalized;
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Workspace language policy lookup threw for workspace {WorkspaceId} (room {RoomId}). Allowing the join.",
+                room.WorkspaceId, room.Id);
+            return null;
+        }
+    }
+
     /// <summary>Both limits unknown, which every consumer reads as "offer everything".</summary>
     private static JoinLanguagePolicyDto EmptyJoinLanguagePolicy =>
         new(Array.Empty<string>(), Array.Empty<string>());
@@ -990,6 +1043,29 @@ public class TranslationRoomService : ITranslationRoomService
             if (validationError != null)
             {
                 return Result.Failure<JoinTranslationRoomResponse>(validationError, ErrorCodes.ValidationError);
+            }
+
+            // WT-707: the workspace's whitelist (L1). The platform check above only asks "does
+            // WarpTalk support this language at all" — nothing on this path asked the owner, so a
+            // participant row stored `ja` in a workspace that permits only vi/en, and the STT/TTS
+            // pipeline then served a language the owner had ruled out. The picker narrows what is
+            // OFFERED (GetJoinLanguagePolicyByCodeAsync); this is where it is ENFORCED, because a
+            // client that skips the picker — an old build, a direct API call — skips the offer too.
+            //
+            // Fails OPEN on a lookup error, like the suspension check above and the hub's
+            // Set*Language: a WorkspaceService blip must not lock everyone out of a live call.
+            // A lookup that SUCCEEDS and excludes the language is refused outright — there is no
+            // "closest allowed language" to fall back to that the participant actually asked for.
+            if (translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var disallowed = await FindLanguageDisallowedByWorkspaceAsync(
+                    translationRoom, [speakLang, listenLang], ct);
+                if (disallowed != null)
+                {
+                    return Result.Failure<JoinTranslationRoomResponse>(
+                        string.Format(TranslationRoomConstants.ValidationLanguageNotAllowedByWorkspace, disallowed),
+                        ErrorCodes.ValidationError);
+                }
             }
 
             // BR-010: Block KICKED participants
@@ -2257,6 +2333,11 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
+            // WT-826: publish the record to the people who took part, unless the host turned that
+            // off. Inside the same save as ENDED, so there is no moment in which the meeting is
+            // over and its record is still waiting on a click nobody is going to make.
+            await ApplyRecordAutoShareAtEndAsync(translationRoom, ct);
+
             _translationRoomRepository.Update(translationRoom);
 
             // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
@@ -2365,10 +2446,27 @@ public class TranslationRoomService : ITranslationRoomService
             // happen once the meeting is over and those artifacts exist. Routing it through that
             // method would have made the feature refuse in exactly the state it is for.
             var settings = ReadSettings(translationRoom.Settings);
-            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal))
+
+            // WT-826: before the meeting has ended, Publish/Unpublish IS the host stating whether
+            // the record should be shared when it ends — so it sets the toggle too, and ending the
+            // room cannot quietly reverse a host who chose "keep private" mid-meeting. After the
+            // end the toggle has already done its one job; leave it as the record of what happened.
+            //
+            // Part of the no-op test below, not only of the write: a room created before the
+            // toggle already STORES HOST_ONLY (as a default), so "keep it private" sends the level
+            // it already has — and returning early there would drop the one thing the host said.
+            var ended = string.Equals(translationRoom.Status, "ENDED", StringComparison.Ordinal);
+            bool? autoShareRecord = ended
+                ? settings.AutoShareRecord
+                : string.Equals(level, ArtifactAccessLevels.AllParticipants, StringComparison.Ordinal);
+
+            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal)
+                && settings.AutoShareRecord == autoShareRecord)
                 return Result.Success();
 
             settings.ArtifactAccess = level;
+            settings.AutoShareRecord = autoShareRecord;
+
             translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
             translationRoom.UpdatedAt = DateTime.UtcNow;
             translationRoom.UpdatedBy = hostId;
@@ -2395,6 +2493,62 @@ public class TranslationRoomService : ITranslationRoomService
                 hostId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// WT-826: at the moment a room ends, share its record if the room's toggle says so, and let
+    /// that count as the host releasing the recording consent hold (backend #432 made the host and
+    /// booker read directly; everybody else waits for a release, and this is one).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only recordings that exist NOW are released here. A recording LiveKit finishes uploading
+    /// after the end is written by <c>RecordingLifecycleEventProcessor</c>, which asks
+    /// <see cref="RecordAutoShare.ReleasesRecordingHold"/> the same question.
+    /// </para>
+    /// <para>
+    /// A failure to release is logged and does not fail the end. The meeting is over either way,
+    /// and a recording left held is what the host's own release button already fixes — whereas a
+    /// room that refused to end strands everybody in it.
+    /// </para>
+    /// </remarks>
+    private async Task ApplyRecordAutoShareAtEndAsync(TranslationRoom translationRoom, CancellationToken ct)
+    {
+        var settings = RecordAutoShare.Read(translationRoom.Settings);
+        if (!RecordAutoShare.ApplyAtMeetingEnd(settings))
+            return;
+
+        translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
+
+        try
+        {
+            var held = await _unitOfWork.TranslationRoomArtifactRepository.FindAsync(
+                artifact => artifact.TranslationRoomId == translationRoom.Id
+                    && artifact.ConsentRequired
+                    && artifact.DeletedAt == null,
+                ct: ct);
+
+            foreach (var artifact in held)
+            {
+                artifact.ConsentRequired = false;
+                _unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not release the recording consent hold while auto-sharing room {RoomId}; the host can still release it by hand",
+                translationRoom.Id);
+        }
+
+        // The same audit line a host's own Publish writes: who opened this up and when is the
+        // question asked afterwards, and "the room's own setting, at the end" is an answer.
+        _logger.LogInformation(
+            "artifact_access_changed: RoomId={RoomId} HostId={HostId} Level={Level} Reason=auto_share_at_end",
+            translationRoom.Id,
+            translationRoom.HostId,
+            settings.ArtifactAccess);
     }
 
     /// <summary>
@@ -2540,6 +2694,63 @@ public class TranslationRoomService : ITranslationRoomService
                     ErrorCodes.ValidationError);
             }
 
+            // WT-65: Update and Validate Source Language
+            string? normSourceLang = null;
+            if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
+            {
+                normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
+                if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
+                    return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
+            }
+
+            // WT-65: Update and Validate Target Languages
+            List<string>? normTargetLangs = null;
+            if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
+            {
+                // Deduped after normalizing: "vi" and "vi-VN" collapse to the same target, which
+                // must be stored — and counted against the plan's quota — once (WT-707).
+                normTargetLangs = request.TargetLanguages
+                    .Select(LanguageHelper.NormalizeLanguageCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                foreach (var lang in normTargetLangs)
+                {
+                    if (!await _languagePolicy.IsSupportedAsync(lang))
+                        return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
+                }
+            }
+
+            // WT-466: the workspace's whitelist applies to an EDIT as well.
+            //
+            // Everything above this line checks only that the PLATFORM supports the code. That was
+            // the entire language rule on this path, so a workspace narrowed to vi/en/ja could have
+            // any of its rooms edited into Spanish afterwards — creation enforced the owner's
+            // setting once, and every subsequent write ignored it. Both values are validated
+            // together, and BEFORE either is assigned, so a rejected edit leaves the room exactly
+            // as it was rather than half-applied.
+            // An external-bridge room can carry Guid.Empty here: it belongs to no workspace, so
+            // there is no whitelist to apply and asking would only produce a lookup that fails.
+            if ((normSourceLang != null || normTargetLangs != null) && translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                    translationRoom.WorkspaceId,
+                    normSourceLang,
+                    normTargetLangs ?? Enumerable.Empty<string>(),
+                    ct);
+
+                if (!languagePolicy.IsSuccess)
+                    return Result.Failure(
+                        languagePolicy.Error ?? "The workspace does not allow one of the requested languages.",
+                        languagePolicy.ErrorCode);
+            }
+
+            // WT-707: every check above, every side effect below. This method used to assign the
+            // title/schedule and add invitations — sending each invitee an email and an in-app
+            // notification — BEFORE the language checks ran, so an edit refused for a language
+            // the workspace forbids had already mailed people about a meeting that was never
+            // saved. An email cannot be rolled back with the transaction; the only safe order is
+            // to refuse first. The field assignments stay ahead of the invitations because the
+            // invitation email quotes the (possibly edited) title and scheduled time.
             if (!string.IsNullOrWhiteSpace(request.Title))
                 translationRoom.Title = request.Title;
 
@@ -2585,51 +2796,6 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
-            // WT-65: Update and Validate Source Language
-            string? normSourceLang = null;
-            if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
-            {
-                normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
-                if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
-                    return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
-            }
-
-            // WT-65: Update and Validate Target Languages
-            List<string>? normTargetLangs = null;
-            if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
-            {
-                normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
-                foreach (var lang in normTargetLangs)
-                {
-                    if (!await _languagePolicy.IsSupportedAsync(lang))
-                        return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
-                }
-            }
-
-            // WT-466: the workspace's whitelist applies to an EDIT as well.
-            //
-            // Everything above this line checks only that the PLATFORM supports the code. That was
-            // the entire language rule on this path, so a workspace narrowed to vi/en/ja could have
-            // any of its rooms edited into Spanish afterwards — creation enforced the owner's
-            // setting once, and every subsequent write ignored it. Both values are validated
-            // together, and BEFORE either is assigned, so a rejected edit leaves the room exactly
-            // as it was rather than half-applied.
-            // An external-bridge room can carry Guid.Empty here: it belongs to no workspace, so
-            // there is no whitelist to apply and asking would only produce a lookup that fails.
-            if ((normSourceLang != null || normTargetLangs != null) && translationRoom.WorkspaceId != Guid.Empty)
-            {
-                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
-                    translationRoom.WorkspaceId,
-                    normSourceLang,
-                    normTargetLangs ?? Enumerable.Empty<string>(),
-                    ct);
-
-                if (!languagePolicy.IsSuccess)
-                    return Result.Failure(
-                        languagePolicy.Error ?? "The workspace does not allow one of the requested languages.",
-                        languagePolicy.ErrorCode);
-            }
-
             if (normSourceLang != null)
                 translationRoom.SourceLanguage = normSourceLang;
 
@@ -2658,6 +2824,17 @@ public class TranslationRoomService : ITranslationRoomService
                 // turning it on yields a transcript that begins at minute twelve and is silent
                 // about the twelve, and turning it off cannot unwrite what is already committed.
                 current.SaveTranscript = request.Settings.SaveTranscript ?? current.SaveTranscript;
+
+                // WT-826. The toggle carries the room's level with it while the meeting has not
+                // happened yet, so the two cannot disagree — a room saying "share automatically"
+                // while holding HOST_ONLY would show the host "Draft" all meeting and then publish
+                // anyway. A caller that names a level outright still wins, as on create.
+                if (request.Settings.AutoShareRecord is { } autoShareRecord)
+                {
+                    current.AutoShareRecord = autoShareRecord;
+                    if (request.Settings.ArtifactAccess is null)
+                        current.ArtifactAccess = RecordAutoShare.ArtifactAccessFor(autoShareRecord);
+                }
 
                 translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(current);
             }

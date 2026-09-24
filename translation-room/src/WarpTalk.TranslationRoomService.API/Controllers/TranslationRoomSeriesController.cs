@@ -71,6 +71,9 @@ public class TranslationRoomSeriesController : ControllerBase
                 ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
                 ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
                 ErrorCodes.InvalidState => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
+                // WT-707: the workspace language check fails closed when WorkspaceService is
+                // unreachable. That is an outage, not a bad request — the client may retry.
+                ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(result.Error, result.ErrorCode)),
                 _ => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             };
         }

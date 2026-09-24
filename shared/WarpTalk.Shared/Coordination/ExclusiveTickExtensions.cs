@@ -45,6 +45,11 @@ public static class ExclusiveTickExtensions
     /// Never throws for a lease problem — an unreachable Redis skips the tick and logs, because an
     /// exception escaping a BackgroundService stops the whole host. Exceptions from
     /// <paramref name="work"/> itself propagate unchanged to the caller's existing handling.
+    ///
+    /// <paramref name="time"/> paces the renewal loop, and exists so a test can pace it too.
+    /// Production leaves it null and gets the system clock, exactly as before. Without it the only
+    /// way to test a tick that outlives its lease was to sleep through real lease durations and
+    /// hope the machine kept up — which is how a gateway lock test came to fail unrelated PRs.
     /// </summary>
     public static async Task<ExclusiveTickOutcome> TryRunExclusiveAsync(
         this IDistributedLockProvider locks,
@@ -53,7 +58,8 @@ public static class ExclusiveTickExtensions
         Func<CancellationToken, Task> work,
         ILogger logger,
         CancellationToken cancellationToken,
-        bool holdAfterCompletion = false)
+        bool holdAfterCompletion = false,
+        TimeProvider? time = null)
     {
         IDistributedLease? lease;
         try
@@ -81,7 +87,7 @@ public static class ExclusiveTickExtensions
 
         using var leaseLost = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var stopRenewing = new CancellationTokenSource();
-        var renewal = KeepRenewingAsync(lease, leaseDuration, leaseLost, logger, stopRenewing.Token);
+        var renewal = KeepRenewingAsync(lease, leaseDuration, leaseLost, logger, time ?? TimeProvider.System, stopRenewing.Token);
         var released = false;
 
         try
@@ -133,6 +139,7 @@ public static class ExclusiveTickExtensions
         TimeSpan leaseDuration,
         CancellationTokenSource leaseLost,
         ILogger logger,
+        TimeProvider time,
         CancellationToken stop)
     {
         var interval = TimeSpan.FromTicks(Math.Max(TimeSpan.FromMilliseconds(10).Ticks, leaseDuration.Ticks / 3));
@@ -140,7 +147,7 @@ public static class ExclusiveTickExtensions
         {
             try
             {
-                await Task.Delay(interval, stop);
+                await Task.Delay(interval, time, stop);
             }
             catch (OperationCanceledException)
             {

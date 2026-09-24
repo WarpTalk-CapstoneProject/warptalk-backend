@@ -234,6 +234,17 @@ public class TranslationRoomHub : Hub
         // on the same connection id; it leaves the lobby group as it enters the room group.
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, TranslationRoomLobbyGroupName(translationRoomId));
 
+        // WT-707: the join writes both languages straight into Redis for STT/translation/dub, so
+        // it must honour the workspace whitelist exactly like Set*Language. It runs after the
+        // admission check — a stranger is refused without costing a policy lookup — and before
+        // the kick, the group, presence, the broadcast and every Redis write, so a refusal
+        // leaves no trace of the joiner in the room.
+        await EnsureLanguageAllowedAsync(translationRoomId, speakLanguage);
+        if (normalizedListenLanguage != normalizedSpeakLanguage)
+        {
+            await EnsureLanguageAllowedAsync(translationRoomId, listenLanguage);
+        }
+
         // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
         if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
         {

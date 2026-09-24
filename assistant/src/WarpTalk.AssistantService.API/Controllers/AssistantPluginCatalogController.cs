@@ -248,6 +248,8 @@ public class AssistantPluginCatalogController : ControllerBase
         {
             PluginConstants.ErrorCodes.UnknownPlugin => NotFound(body),
             PluginConstants.ErrorCodes.PluginInUse => Conflict(body),
+            // The platform audit log could not take the record, so the change was not made.
+            WarpTalk.Shared.ErrorCodes.ServiceUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable, body),
             _ => BadRequest(body),
         };
     }

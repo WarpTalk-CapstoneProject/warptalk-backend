@@ -67,21 +67,8 @@ public record CreateMcpPluginOAuthRequest(
 /// An operator checking whether a row is credentialed needs a yes/no, and a yes/no is the largest
 /// answer that cannot leak a secret into a log, a screenshot or a browser cache.
 /// <para>
-/// <paramref name="AvatarUrl"/> is here so the listing can draw the same glyph the member and Owner
-/// pages draw, instead of a row of names an operator has to read to tell apart.
-/// </para>
-/// <para>
-/// <paramref name="CuratedWorkspaceCount"/> was <c>WorkspaceCount</c> and was renamed because that
-/// name claimed more than the number is. It counts the workspaces whose Owner has written their
-/// plugin list at least once and whose list holds this plugin - added by the Owner, or carried
-/// over when the list was first written from AllowAnyPlugins. It does NOT count a workspace that
-/// has never edited its list: that workspace still follows the workspace service's legacy
-/// AllowAnyPlugins switch, which - when on - gives it every marketplace plugin, this one included.
-/// Only the workspace service knows that switch, and it answers one workspace per call
-/// (<c>GetWorkspaceSettings</c>) with no way to enumerate or count them, so including those
-/// workspaces would take a call per workspace in the product on every page load, or a guess.
-/// Neither is acceptable for a number an operator reads as "who would I affect by retiring this",
-/// so the field says what it can actually count, and the admin page labels it the same way.
+/// <paramref name="AvatarUrl"/> is here so the listing draws the same glyph the member and Owner
+/// pages draw; a null falls back to the web's bundled brand mark for the plugin key.
 /// </para>
 /// </remarks>
 public record PluginCatalogAdminListItemDto(
@@ -99,12 +86,17 @@ public record PluginCatalogAdminListItemDto(
     bool HasClientId,
     bool HasClientSecret,
     int ToolCount,
+    /// <summary>
+    /// Users who have the plugin installed now. A row a user removed (status <c>disabled</c>) is not
+    /// an install and is not counted.
+    /// </summary>
     int InstallationCount,
     /// <summary>
-    /// Workspaces whose own plugin list holds this plugin. Workspaces still on the legacy
-    /// AllowAnyPlugins default are not counted; see the record's remarks for why they cannot be.
+    /// How many workspaces have the plugin available, by the rule the guard enforces: a curated
+    /// workspace's own list, or - for a workspace that never edited its list - the plugins its
+    /// members already use there while the legacy AllowAnyPlugins switch is on.
     /// </summary>
-    int CuratedWorkspaceCount = 0);
+    int WorkspaceCount = 0);
 
 /// <summary>
 /// One catalog row in full, with the tool manifest that <c>PUT .../tools</c> replaces.

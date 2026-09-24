@@ -7,6 +7,7 @@ using WarpTalk.MeetingService.Application.Services;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.MeetingService.Tests.Services;
 
@@ -100,6 +101,67 @@ public class EgressNoFileDiagnosticsTests
             Times.Never);
     }
 
+    /// <summary>
+    /// WT-824. `filename` is the path INSIDE the egress container, written before the upload is
+    /// attempted; `location` appears only once the upload succeeds. Reading one for the other
+    /// published RecordingCompleted for a file that is not in the bucket — the row read COMPLETED,
+    /// the page offered a download, and the click 500'd in the URL signer. A failed upload is a
+    /// failed recording, and it must be reported as one.
+    /// </summary>
+    [Fact]
+    public async Task AFilenameWithoutALocationIsNotAFile()
+    {
+        var (sut, logger) = Build();
+
+        var outcome = await sut.ApplyAsync(EgressInfo(
+            """
+            {"egressId":"EG_x","roomName":"room-1","status":"EGRESS_FAILED",
+             "error":"InvalidRegionName",
+             "fileResults":[{"filename":"/out/recordings/room-1.mp4","size":4096}]}
+            """));
+
+        Assert.Equal(EgressCompletionOutcome.Cleared, outcome);
+        AssertWarned(logger, "unuploaded path=/out/recordings/room-1.mp4");
+    }
+
+    /// <summary>
+    /// The two no-file cases need different sentences on the row: nothing was recorded, or
+    /// something was recorded and never reached storage. Only the second one is about the bucket.
+    /// </summary>
+    [Fact]
+    public async Task AnUnuploadedRecordingSaysStorage_NotThatLiveKitBroke()
+    {
+        var (sut, _, published) = BuildCapturingPublishes();
+
+        await sut.ApplyAsync(EgressInfo(
+            """
+            {"egressId":"EG_x","roomName":"room-1","status":"EGRESS_FAILED",
+             "fileResults":[{"filename":"/out/recordings/room-1.mp4"}]}
+            """));
+
+        var failed = Assert.Single(published);
+        Assert.Contains("could not be uploaded to storage", failed);
+    }
+
+    /// <summary>
+    /// A location IS proof the upload happened, so it stands on its own — including when the
+    /// status disagrees. Discarding a file that exists is the one outcome rec-loss exists to
+    /// prevent, so the status is deliberately not a second gate.
+    /// </summary>
+    [Fact]
+    public async Task ALocationIsAFile_EvenWhenTheStatusSaysFailed()
+    {
+        var (sut, _) = Build();
+
+        var outcome = await sut.ApplyAsync(EgressInfo(
+            """
+            {"egressId":"EG_x","roomName":"room-1","status":"EGRESS_FAILED",
+             "fileResults":[{"location":"https://acct.r2.cloudflarestorage.com/warptalk-recordings/room-1.mp4"}]}
+            """));
+
+        Assert.Equal(EgressCompletionOutcome.Published, outcome);
+    }
+
     private static JsonElement EgressInfo(string json) =>
         JsonDocument.Parse(json).RootElement.Clone();
 
@@ -114,7 +176,29 @@ public class EgressNoFileDiagnosticsTests
             Times.Once,
             $"expected the no-file warning to carry \"{expected}\"");
 
-    private static (EgressCompletion Sut, Mock<ILogger<EgressCompletion>> Logger) Build()
+    /// <summary>
+    /// Build(), plus the serialised envelopes of every RecordingFailed published — the reason a
+    /// host reads ends up on the artifact row through this event, so this is where to assert it.
+    /// </summary>
+    private static (EgressCompletion Sut, Mock<ILogger<EgressCompletion>> Logger, List<string> FailedEnvelopes)
+        BuildCapturingPublishes()
+    {
+        var envelopes = new List<string>();
+        var (sut, logger) = Build(values =>
+        {
+            if (values.TryGetValue("event_type", out var eventType) &&
+                eventType == MeetingEventTypes.RecordingFailed &&
+                values.TryGetValue("envelope", out var envelope))
+            {
+                envelopes.Add(envelope);
+            }
+        });
+
+        return (sut, logger, envelopes);
+    }
+
+    private static (EgressCompletion Sut, Mock<ILogger<EgressCompletion>> Logger) Build(
+        Action<Dictionary<string, string>>? onPublish = null)
     {
         var room = new MeetingRoom
         {
@@ -140,7 +224,11 @@ public class EgressNoFileDiagnosticsTests
         var redis = new Mock<IRedisService>();
         redis
             .Setup(r => r.PublishStreamMessageAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
-            .ReturnsAsync(Result.Success(true));
+            .ReturnsAsync((string _, Dictionary<string, string> values) =>
+            {
+                onPublish?.Invoke(values);
+                return Result.Success(true);
+            });
 
         var logger = new Mock<ILogger<EgressCompletion>>();
 
