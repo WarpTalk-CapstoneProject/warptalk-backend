@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -46,7 +47,8 @@ public static class TranslationRoomMapper
             settings.AutoRecord,
             settings.BreakoutsEnabled,
             settings.ParticipantsCanStartTranslation,
-            settings.SaveTranscript);
+            settings.SaveTranscript,
+            RecordAutoShare.IsOn(settings));
     }
 
     /// <summary>
@@ -312,10 +314,19 @@ public static class TranslationRoomMapper
     {
         var defaults = TranslationRoomTypePolicy.For(roomType);
 
+        // WT-826: the record is shared with the people who took part unless the host says
+        // otherwise. Written explicitly, never left absent, so a later reader can tell the host's
+        // choice from a room that predates the toggle.
+        var autoShareRecord = requested?.AutoShareRecord ?? true;
+
         return new TranslationRoomSettings
         {
             RequiresApproval = requested?.RequiresApproval ?? defaults.RequiresApproval,
-            ArtifactAccess = requested?.ArtifactAccess ?? ArtifactAccessLevels.HostOnly,
+            // Follows the toggle unless the caller named a level outright. It used to be HOST_ONLY
+            // for every room, which is why a participant opened a finished meeting and found a
+            // Recap they were not allowed to read.
+            ArtifactAccess = requested?.ArtifactAccess ?? RecordAutoShare.ArtifactAccessFor(autoShareRecord),
+            AutoShareRecord = autoShareRecord,
             MuteOnEntry = requested?.MuteOnEntry ?? defaults.MuteOnEntry,
             AutoRecord = requested?.AutoRecord ?? defaults.AutoRecord,
             BreakoutsEnabled = requested?.BreakoutsEnabled ?? defaults.BreakoutsEnabled,
