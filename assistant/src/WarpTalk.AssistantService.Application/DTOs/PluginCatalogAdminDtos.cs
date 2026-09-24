@@ -66,11 +66,16 @@ public record CreateMcpPluginOAuthRequest(
 /// <paramref name="HasClientId"/> and <paramref name="HasClientSecret"/> are booleans on purpose.
 /// An operator checking whether a row is credentialed needs a yes/no, and a yes/no is the largest
 /// answer that cannot leak a secret into a log, a screenshot or a browser cache.
+/// <para>
+/// <paramref name="AvatarUrl"/> is here so the listing draws the same glyph the member and Owner
+/// pages draw; a null falls back to the web's bundled brand mark for the plugin key.
+/// </para>
 /// </remarks>
 public record PluginCatalogAdminListItemDto(
     string PluginKey,
     string Label,
     string Description,
+    string? AvatarUrl,
     string Kind,
     string Provider,
     bool IsActive,
@@ -81,10 +86,15 @@ public record PluginCatalogAdminListItemDto(
     bool HasClientId,
     bool HasClientSecret,
     int ToolCount,
+    /// <summary>
+    /// Users who have the plugin installed now. A row a user removed (status <c>disabled</c>) is not
+    /// an install and is not counted.
+    /// </summary>
     int InstallationCount,
     /// <summary>
-    /// How many workspaces have added the plugin to their list. Counts explicit lists only: a
-    /// workspace still on the pre-marketplace "every plugin" default has no list to be counted in.
+    /// How many workspaces have the plugin available, by the rule the guard enforces: a curated
+    /// workspace's own list, or - for a workspace that never edited its list - the plugins its
+    /// members already use there while the legacy AllowAnyPlugins switch is on.
     /// </summary>
     int WorkspaceCount = 0);
 

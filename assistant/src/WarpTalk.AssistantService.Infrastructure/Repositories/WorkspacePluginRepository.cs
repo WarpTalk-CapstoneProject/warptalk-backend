@@ -18,7 +18,11 @@ public class WorkspacePluginRepository : GenericRepository<WorkspacePlugin>, IWo
     {
         // Projected into an anonymous type and materialised before anything else touches it: EF
         // cannot translate an ordering over a positional-record projection.
+        // Only rows whose workspace has a curation record: an uncurated workspace is judged by its
+        // carried-over usage, never by list rows (WorkspacePluginAvailability), so a stray row there
+        // would count a workspace as having a plugin it cannot use.
         var counts = await _db.WorkspacePlugins
+            .Where(row => _db.WorkspacePluginCurations.Any(curation => curation.WorkspaceId == row.WorkspaceId))
             .GroupBy(row => row.PluginId)
             .Select(group => new { PluginId = group.Key, Count = group.Count() })
             .ToListAsync(ct);

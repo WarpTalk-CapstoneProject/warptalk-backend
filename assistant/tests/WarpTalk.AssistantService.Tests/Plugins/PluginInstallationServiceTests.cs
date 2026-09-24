@@ -7,6 +7,7 @@ using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -27,6 +28,7 @@ public class PluginInstallationServiceTests
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
     private readonly IPluginConnectionRepository _connectionRepository = Substitute.For<IPluginConnectionRepository>();
+    private readonly IAdminAuditRecorder _auditRecorder = Substitute.For<IAdminAuditRecorder>();
 
     // WT-646. The workspace policy every test runs under, defaulting to what a workspace service
     // older than the ticket reports: no allowlist, plugins permitted, member installs permitted.
@@ -43,6 +45,11 @@ public class PluginInstallationServiceTests
         _unitOfWork.PluginInstallationRepository.Returns(_installationRepository);
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
+        _auditRecorder.RecordPluginActionAsync(
+                Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(), Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
     }
 
     [Fact]
@@ -346,6 +353,46 @@ public class PluginInstallationServiceTests
         Assert.False(result.IsSuccess);
         Assert.Contains("provider", result.Error!, StringComparison.OrdinalIgnoreCase);
         await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_IsRecordedInThePlatformAuditLog()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp"),
+            UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        await _auditRecorder.Received(1).RecordPluginActionAsync(
+            AdminAuditPluginActions.Created,
+            Arg.Any<Guid>(),
+            UserId,
+            Arg.Is<IReadOnlyDictionary<string, string?>?>(before => before == null),
+            Arg.Is<IReadOnlyDictionary<string, string?>?>(after => after != null && after["plugin_key"] == "linear"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_ThatTheAuditLogCannotRecord_IsNotCreated()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _auditRecorder.RecordPluginActionAsync(
+                Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(), Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("audit log down", ErrorCodes.ServiceUnavailable));
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp"),
+            UserId);
+
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
+        await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -767,7 +814,8 @@ public class PluginInstallationServiceTests
         return new PluginInstallationService(
             _unitOfWork,
             Substitute.For<IPluginCredentialProtector>(),
-            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins, isActiveMember: true, _callerRole));
+            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins, isActiveMember: true, _callerRole),
+            _auditRecorder);
     }
 
     private static Plugin GoogleDrivePlugin()
