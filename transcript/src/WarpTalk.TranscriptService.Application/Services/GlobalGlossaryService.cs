@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 using WarpTalk.TranscriptService.Application.Mappers;
@@ -47,6 +48,13 @@ public class GlobalGlossaryService : IGlobalGlossaryService
 
     public async Task<Result<PagedResultDto<GlobalGlossaryTermDto>>> GetTermsAsync(GlobalGlossaryTermQuery query, CancellationToken cancellationToken = default)
     {
+        if (!AdminSort.TryResolve(query.Sort, GlobalGlossaryTermSorts.All, GlobalGlossaryTermSorts.PriorityDesc, out var sort))
+        {
+            return Result.Failure<PagedResultDto<GlobalGlossaryTermDto>>(
+                $"Unknown sort. Expected one of: {string.Join(", ", GlobalGlossaryTermSorts.All)}.",
+                ErrorCodes.ValidationError);
+        }
+
         try
         {
             var page = Math.Max(1, query.Page);
@@ -60,7 +68,7 @@ public class GlobalGlossaryService : IGlobalGlossaryService
                     && (query.Search == null || t.Term.Contains(query.Search) || t.PreferredTranslation.Contains(query.Search)),
                 (page - 1) * pageSize,
                 pageSize,
-                q => q.OrderByDescending(t => t.Priority).ThenByDescending(t => t.CreatedAt),
+                TermOrder(sort),
                 cancellationToken);
 
             var totalCount = await _unitOfWork.GlobalGlossaryTerms.CountAsync(
@@ -79,6 +87,20 @@ public class GlobalGlossaryService : IGlobalGlossaryService
             return Result.Failure<PagedResultDto<GlobalGlossaryTermDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
+
+    /// <summary>
+    /// ORDER BY for the admin term list, applied by the repository in SQL. priority_desc is the
+    /// list's historical order, unchanged; the other keys end on Id so their pages are stable.
+    /// </summary>
+    private static Func<IQueryable<GlobalGlossaryTerm>, IOrderedQueryable<GlobalGlossaryTerm>> TermOrder(string sort)
+        => sort switch
+        {
+            GlobalGlossaryTermSorts.UpdatedDesc => q => q.OrderByDescending(t => t.UpdatedAt).ThenByDescending(t => t.Id),
+            GlobalGlossaryTermSorts.CreatedDesc => q => q.OrderByDescending(t => t.CreatedAt).ThenByDescending(t => t.Id),
+            GlobalGlossaryTermSorts.TermAsc => q => q.OrderBy(t => t.Term).ThenBy(t => t.Id),
+            GlobalGlossaryTermSorts.TermDesc => q => q.OrderByDescending(t => t.Term).ThenByDescending(t => t.Id),
+            _ => q => q.OrderByDescending(t => t.Priority).ThenByDescending(t => t.CreatedAt),
+        };
 
     public async Task<Result<GlobalGlossaryTermDto>> GetTermByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
