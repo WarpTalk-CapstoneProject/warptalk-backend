@@ -23,8 +23,7 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
         var filtered = ApplyHistoryFilters(_dbSet.Include(t => t.Subscription), filter);
 
         var total = await filtered.CountAsync(cancellationToken);
-        var items = await filtered
-            .OrderByDescending(t => t.CreatedAt)
+        var items = await ApplyHistorySort(filtered, filter.Sort)
             .Skip(normalized.Skip)
             .Take(normalized.PageSize)
             .ToListAsync(cancellationToken);
@@ -40,7 +39,27 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
             .FirstOrDefaultAsync(cancellationToken);
     }
 
-    private static IQueryable<CreditTransaction> ApplyHistoryFilters(
+    /// <summary>
+    /// created_desc is the ledger's historical order and is left exactly as it was — no
+    /// tiebreaker added — so the workspace-scoped history is byte-for-byte unchanged. The new
+    /// keys end on Id so their pages are stable.
+    /// </summary>
+    public static IQueryable<CreditTransaction> ApplyHistorySort(IQueryable<CreditTransaction> query, string sort) => sort switch
+    {
+        CreditHistorySorts.CreatedAsc => query.OrderBy(t => t.CreatedAt).ThenBy(t => t.Id),
+        CreditHistorySorts.AmountDesc => query
+            .OrderByDescending(t => Math.Abs(t.Amount)).ThenByDescending(t => t.CreatedAt).ThenByDescending(t => t.Id),
+        CreditHistorySorts.AmountAsc => query
+            .OrderBy(t => Math.Abs(t.Amount)).ThenByDescending(t => t.CreatedAt).ThenByDescending(t => t.Id),
+        _ => query.OrderByDescending(t => t.CreatedAt),
+    };
+
+    /// <summary>
+    /// The ledger's WHERE clause. Public so tests can run it over plain rows and ask Npgsql to
+    /// translate it (ToQueryString); the description search uses ILike, which only the latter
+    /// can evaluate.
+    /// </summary>
+    public static IQueryable<CreditTransaction> ApplyHistoryFilters(
         IQueryable<CreditTransaction> source,
         CreditTransactionHistoryFilter filter)
     {
@@ -66,6 +85,20 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
 
         if (filter.MaxAmount.HasValue)
             filtered = filtered.Where(t => Math.Abs(t.Amount) <= filter.MaxAmount.Value);
+
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            var term = filter.Search.Trim();
+            if (Guid.TryParse(term, out var id))
+            {
+                filtered = filtered.Where(t => t.Id == id || t.ReferenceId == id);
+            }
+            else
+            {
+                var pattern = $"%{term}%";
+                filtered = filtered.Where(t => t.Description != null && EF.Functions.ILike(t.Description, pattern));
+            }
+        }
 
         return filtered;
     }

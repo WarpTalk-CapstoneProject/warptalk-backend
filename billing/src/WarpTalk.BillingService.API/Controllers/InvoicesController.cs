@@ -43,7 +43,7 @@ public class InvoicesController : ControllerBase
     [HttpGet("global")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetGlobalInvoices(
-        [FromQuery] PaginationQuery query,
+        [FromQuery] GlobalInvoiceQuery query,
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);

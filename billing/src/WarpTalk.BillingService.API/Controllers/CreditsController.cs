@@ -75,7 +75,7 @@ public class CreditsController : ControllerBase
 
     [HttpGet("history/global")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] GlobalCreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
         return this.ToActionResult(result);

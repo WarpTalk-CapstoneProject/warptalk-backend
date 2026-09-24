@@ -15,7 +15,7 @@ public record InvoiceCheckoutCaller(Guid UserId, string Email, bool IsPlatformAd
 public interface IInvoiceService
 {
     Task<Result<PaginatedResponse<InvoiceDto>>> GetInvoicesAsync(Guid workspaceId, PaginationQuery query, CancellationToken cancellationToken = default);
-    Task<Result<PaginatedResponse<InvoiceDto>>> GetGlobalInvoicesAsync(PaginationQuery query, CancellationToken cancellationToken = default);
+    Task<Result<PaginatedResponse<InvoiceDto>>> GetGlobalInvoicesAsync(GlobalInvoiceQuery query, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// A Stripe checkout URL for one open invoice. The caller is authorised against the workspace
