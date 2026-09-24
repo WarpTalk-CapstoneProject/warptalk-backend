@@ -226,7 +226,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         var now = DateTime.UtcNow;
 
         var live = candidates
-            .Where(r => r.Status == "IN_PROGRESS" || r.Status == "PAUSED" || r.Status == "WAITING")
+            // OPEN belongs with these (WT-612): the clock has unlocked today's occurrence, so a
+            // click on the series link means that room. Without it the code skipped an occurrence
+            // whose slot had arrived and handed the person next week's booking instead.
+            .Where(r => r.Status == "IN_PROGRESS" || r.Status == "PAUSED" || r.Status == "WAITING" || r.Status == "OPEN")
             .OrderBy(r => r.ScheduledAt ?? r.StartedAt ?? r.CreatedAt)
             .FirstOrDefault();
         if (live is not null) return live;
