@@ -200,6 +200,25 @@ public class WorkspaceGrpcServiceTests
         Assert.Equal(allowAnyPlugins, response.AllowAnyPlugins);
     }
 
+    /// <summary>WT-707: the plan's language limit travels on the wire; 0 means no quota.</summary>
+    [Theory]
+    [InlineData(2, 2)]
+    [InlineData(null, 0)]
+    public async Task GetWorkspaceSettings_CarriesMaxLanguages(int? maxLanguages, int expected)
+    {
+        _workspaceDirectory
+            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
+                15, true, false, true, true, new[] { "vi" },
+                MaxLanguages: maxLanguages)));
+
+        var response = await _service.GetWorkspaceSettings(
+            new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
+            _context);
+
+        Assert.Equal(expected, response.MaxLanguages);
+    }
+
     [Fact]
     public async Task GetWorkspaceSettings_ThrowsNotFound_WhenLookupFails()
     {

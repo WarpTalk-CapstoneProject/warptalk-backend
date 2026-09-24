@@ -10,6 +10,7 @@ using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -36,6 +37,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomSeriesRepository _seriesRepository;
     private readonly ITranslationRoomService _translationRoomService;
+    private readonly IWorkspaceMeetingPolicy _workspaceMeetingPolicy;
+    private readonly ILanguagePolicy _languagePolicy;
     private readonly ILogger<TranslationRoomSeriesService> _logger;
 
     /// <summary>
@@ -47,12 +50,16 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     public TranslationRoomSeriesService(
         IUnitOfWork unitOfWork,
         ITranslationRoomService translationRoomService,
+        IWorkspaceMeetingPolicy workspaceMeetingPolicy,
+        ILanguagePolicy languagePolicy,
         ILogger<TranslationRoomSeriesService> logger,
         Func<DateTime>? utcNow = null)
     {
         _unitOfWork = unitOfWork;
         _seriesRepository = unitOfWork.TranslationRoomSeriesRepository;
         _translationRoomService = translationRoomService;
+        _workspaceMeetingPolicy = workspaceMeetingPolicy;
+        _languagePolicy = languagePolicy;
         _logger = logger;
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
@@ -266,15 +273,30 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
 
         var now = _utcNow();
 
+        // WT-707: the booking's languages are validated BEFORE anything is assigned or saved.
+        //
+        // This used to write whatever the request carried straight onto the template and then
+        // let each occurrence's own update refuse it - refusals that were only logged, so the
+        // PATCH answered 200 while the template kept e.g. ["es"] outside the workspace whitelist,
+        // or []. Every later sweep then failed to create the next occurrence from that template,
+        // left the watermark where it was, and retried forever without anyone being told. The
+        // same rules a one-off room edit applies (platform support, then the workspace
+        // whitelist) are applied here, to the template, and a refusal leaves the booking as it was.
+        var languages = await ValidateSeriesLanguagesAsync(series, request, ct);
+        if (!languages.IsSuccess)
+            return Result.Failure<UpdateSeriesResult>(languages.Error!, languages.ErrorCode);
+
+        var (normSourceLang, normTargetLangs) = languages.Value;
+
         // The template first, so occurrences the worker has not created yet are stamped from the
         // edited booking. Null means "leave it alone" on every field — a client that knows about
         // one of them cannot blank the rest.
         if (request.Title is { Length: > 0 }) series.Title = request.Title;
         if (request.Description is not null) series.Description = request.Description;
         if (request.MaxParticipants is > 0) series.MaxParticipants = request.MaxParticipants.Value;
-        if (request.SourceLanguage is { Length: > 0 }) series.SourceLanguage = request.SourceLanguage;
-        if (request.TargetLanguages is not null)
-            series.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+        if (normSourceLang is not null) series.SourceLanguage = normSourceLang;
+        if (normTargetLangs is not null)
+            series.TargetLanguages = LanguageHelper.SerializeTargetLanguages(normTargetLangs);
         if (request.Settings is not null) series.Settings = JsonSerializer.Serialize(request.Settings);
         if (request.InvitedEmails is not null) series.InvitedEmails = JsonSerializer.Serialize(request.InvitedEmails);
 
@@ -306,8 +328,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
                     ScheduledAt: null,
                     InvitedEmails: request.InvitedEmails,
                     Settings: request.Settings,
-                    SourceLanguage: request.SourceLanguage,
-                    TargetLanguages: request.TargetLanguages),
+                    SourceLanguage: normSourceLang,
+                    TargetLanguages: normTargetLangs),
                 ct);
 
             if (result.IsSuccess)
@@ -329,6 +351,68 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             seriesId, hostId, updated);
 
         return Result.Success(new UpdateSeriesResult(seriesId, updated));
+    }
+
+    /// <summary>
+    /// WT-707: normalises and validates the languages a series edit asks for, without touching
+    /// the series. Null in either slot of the result means "the request did not change it".
+    /// </summary>
+    private async Task<Result<(string? Source, List<string>? Targets)>> ValidateSeriesLanguagesAsync(
+        TranslationRoomSeries series,
+        UpdateSeriesRequest request,
+        CancellationToken ct)
+    {
+        string? normSourceLang = null;
+        if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
+        {
+            normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
+            if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
+                return Result.Failure<(string?, List<string>?)>(
+                    TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
+        }
+
+        List<string>? normTargetLangs = null;
+        if (request.TargetLanguages is not null)
+        {
+            normTargetLangs = request.TargetLanguages
+                .Select(LanguageHelper.NormalizeLanguageCode)
+                .Where(lang => lang.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // An explicit empty list is not "leave it alone" - null is. A booking with no target
+            // language is one no occurrence can ever be created from.
+            if (normTargetLangs.Count == 0)
+                return Result.Failure<(string?, List<string>?)>(
+                    TranslationRoomConstants.ValidationTargetLanguagesRequired, ErrorCodes.ValidationError);
+
+            foreach (var lang in normTargetLangs)
+            {
+                if (!await _languagePolicy.IsSupportedAsync(lang))
+                    return Result.Failure<(string?, List<string>?)>(
+                        string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang),
+                        ErrorCodes.ValidationError);
+            }
+        }
+
+        // The whitelist is judged against the languages the booking will END UP with, so an edit
+        // that changes only one side is checked alongside the side it keeps. Guid.Empty: a series
+        // outside any workspace has no whitelist to apply.
+        if ((normSourceLang is not null || normTargetLangs is not null) && series.WorkspaceId != Guid.Empty)
+        {
+            var policy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                series.WorkspaceId,
+                normSourceLang ?? LanguageHelper.NormalizeLanguageCode(series.SourceLanguage),
+                normTargetLangs ?? LanguageHelper.ParseTargetLanguages(series.TargetLanguages),
+                ct);
+
+            if (!policy.IsSuccess)
+                return Result.Failure<(string?, List<string>?)>(
+                    policy.Error ?? "The workspace does not allow one of the requested languages.",
+                    policy.ErrorCode);
+        }
+
+        return Result.Success<(string?, List<string>?)>((normSourceLang, normTargetLangs));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -519,6 +603,29 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
                 await _unitOfWork.SaveChangesAsync(ct);
             }
             return 0;
+        }
+
+        // WT-707: a template the workspace no longer allows cannot produce a single occurrence -
+        // every create below would be refused the same way. Checked once, up front, so the pass
+        // neither attempts N doomed creates nor pretends the failure is about one date. The
+        // watermark stays where it is and the dates are NOT skipped: skipping would silently
+        // delete meetings the host booked, while waiting means they appear as soon as the booking
+        // is edited back inside the policy or the policy widens.
+        if (series.WorkspaceId != Guid.Empty)
+        {
+            var policy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                series.WorkspaceId,
+                LanguageHelper.NormalizeLanguageCode(series.SourceLanguage),
+                LanguageHelper.ParseTargetLanguages(series.TargetLanguages),
+                ct);
+
+            if (!policy.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "WT-707: series {SeriesId} template languages refused ({Code}: {Error}); not materialising, will retry after the booking or policy changes",
+                    series.Id, policy.ErrorCode, policy.Error);
+                return 0;
+            }
         }
 
         var plan = new RecurrencePlan(

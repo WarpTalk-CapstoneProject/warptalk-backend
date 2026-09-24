@@ -114,6 +114,102 @@ public class WorkspaceMeetingPolicyGrpcClientTests
         Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
     }
 
+    /// <summary>
+    /// Rooms store primary subtags ("vi") while a workspace may have stored a regional code
+    /// ("vi-VN"). Comparing the raw strings refused a language the owner had allowed.
+    /// </summary>
+    [Fact]
+    public async Task RoomLanguages_Allowed_WhenWhitelistStoresARegionalCode()
+    {
+        var sut = CreateWithSettings(Settings(allowed: new[] { "vi-VN", "en" }));
+
+        var result = await sut.ValidateRoomLanguagesAsync(WorkspaceId, "en", new[] { "vi" });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task RoomLanguages_Refused_WhenTargetIsOutsideTheWhitelist()
+    {
+        var sut = CreateWithSettings(Settings(allowed: new[] { "vi-VN", "en" }));
+
+        var result = await sut.ValidateRoomLanguagesAsync(WorkspaceId, "en", new[] { "ja" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains("'ja'", result.Error);
+    }
+
+    /// <summary>The quota counts DISTINCT normalized codes, so duplicates do not use it up.</summary>
+    [Fact]
+    public async Task RoomLanguages_Allowed_WhenDuplicatesStayWithinThePlanQuota()
+    {
+        var sut = CreateWithSettings(Settings(maxLanguages: 2));
+
+        var result = await sut.ValidateRoomLanguagesAsync(WorkspaceId, null, new[] { "en", "en-US", "vi" });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    /// <summary>An empty whitelist means "no whitelist", not "no quota".</summary>
+    [Fact]
+    public async Task RoomLanguages_Refused_WhenOverThePlanQuota_EvenWithoutAWhitelist()
+    {
+        var sut = CreateWithSettings(Settings(maxLanguages: 2));
+
+        var result = await sut.ValidateRoomLanguagesAsync(WorkspaceId, null, new[] { "en", "vi", "ja" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal("Your plan allows 2 target language(s) per meeting; 3 were requested.", result.Error);
+    }
+
+    [Fact]
+    public async Task RoomLanguages_Unlimited_WhenThePlanSetsNoQuota()
+    {
+        var sut = CreateWithSettings(Settings(maxLanguages: 0));
+
+        var result = await sut.ValidateRoomLanguagesAsync(
+            WorkspaceId, null, new[] { "en", "vi", "ja", "ko", "fr", "de" });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task RoomLanguages_FailClosed_WhenWorkspaceServiceIsUnreachable()
+    {
+        var client = new Mock<WorkspaceService.WorkspaceServiceClient>();
+        client.Setup(c => c.GetWorkspaceSettingsAsync(
+                It.IsAny<GetWorkspaceSettingsRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Throws(new RpcException(new Status(StatusCode.Unavailable, "down")));
+
+        var sut = new WorkspaceMeetingPolicyGrpcClient(
+            client.Object, NullLogger<WorkspaceMeetingPolicyGrpcClient>.Instance);
+
+        var result = await sut.ValidateRoomLanguagesAsync(WorkspaceId, null, new[] { "vi" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
+    }
+
+    private static GetWorkspaceSettingsResponse Settings(string[]? allowed = null, int maxLanguages = 0)
+    {
+        var settings = new GetWorkspaceSettingsResponse { MaxLanguages = maxLanguages };
+        settings.AllowedTargetLanguages.AddRange(allowed ?? Array.Empty<string>());
+        return settings;
+    }
+
+    private static WorkspaceMeetingPolicyGrpcClient CreateWithSettings(GetWorkspaceSettingsResponse response)
+    {
+        var client = new Mock<WorkspaceService.WorkspaceServiceClient>();
+        client.Setup(c => c.GetWorkspaceSettingsAsync(
+                It.IsAny<GetWorkspaceSettingsRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Returns(AsyncUnary(response));
+
+        return new WorkspaceMeetingPolicyGrpcClient(
+            client.Object, NullLogger<WorkspaceMeetingPolicyGrpcClient>.Instance);
+    }
+
     private static GetWorkspacePreflightResponse Preflight(bool isActive) => new()
     {
         IsActive = isActive,
