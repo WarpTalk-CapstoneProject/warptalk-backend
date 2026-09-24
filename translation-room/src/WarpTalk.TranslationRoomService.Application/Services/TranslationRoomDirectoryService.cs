@@ -9,6 +9,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
+using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -28,6 +29,13 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     /// rejected tab its notice, never the reject itself.
     /// </summary>
     private readonly IRedisStateRepository? _redisStateRepository;
+
+    /// <summary>
+    /// WT-704: resolves the room's generatable artifact languages for callers that opt in.
+    /// Optional so existing test construction keeps compiling; DI always supplies it.
+    /// </summary>
+    private readonly IRoomArtifactLanguagePolicy? _artifactLanguagePolicy;
+
     private readonly ILogger<TranslationRoomDirectoryService>? _logger;
 
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
@@ -38,18 +46,27 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         ITranslationRoomParticipantRepository participantRepository,
         IUnitOfWork unitOfWork,
         IRedisStateRepository? redisStateRepository = null,
+        IRoomArtifactLanguagePolicy? artifactLanguagePolicy = null,
         ILogger<TranslationRoomDirectoryService>? logger = null)
     {
         _translationRoomRepository = translationRoomRepository;
         _participantRepository = participantRepository;
         _unitOfWork = unitOfWork;
         _redisStateRepository = redisStateRepository;
+        _artifactLanguagePolicy = artifactLanguagePolicy;
         _logger = logger;
     }
 
     /// <inheritdoc />
+    public Task<Result<TranslationRoomDto>> GetRoomAsync(
+        Guid translationRoomId,
+        CancellationToken ct = default)
+        => GetRoomAsync(translationRoomId, includeArtifactLanguages: false, ct);
+
+    /// <inheritdoc />
     public async Task<Result<TranslationRoomDto>> GetRoomAsync(
         Guid translationRoomId,
+        bool includeArtifactLanguages,
         CancellationToken ct = default)
     {
         var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
@@ -61,9 +78,41 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         // added its guard, so the mesh sees no behaviour change at all — including the seat count,
         // which GetTranslationRoomById does not read today but which keeps the two DTOs identical
         // rather than subtly divergent.
-        return Result.Success(room.ToResponseDto(
+        var dto = room.ToResponseDto(
             await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct),
-            await _participantRepository.CountEverJoinedAsync(room.Id, ct)));
+            await _participantRepository.CountEverJoinedAsync(room.Id, ct));
+
+        if (includeArtifactLanguages)
+            dto = dto with { ArtifactLanguages = await ResolveArtifactLanguagesAsync(room, ct) };
+
+        return Result.Success(dto);
+    }
+
+    /// <summary>
+    /// WT-704: the generatable artifact languages, or <c>null</c> when they could not be computed.
+    ///
+    /// Mirrors <c>TranslationRoomService.ResolveArtifactLanguagesAsync</c> except that it does not
+    /// gate on a terminal status — the caller opted in, so it needs the answer whatever state the
+    /// room is in. A failure degrades to <c>null</c> ("not resolved") rather than failing the read:
+    /// the caller then falls back to the room's own declared set, which never widens past L2.
+    /// </summary>
+    private async Task<RoomArtifactLanguagesDto?> ResolveArtifactLanguagesAsync(
+        TranslationRoom room,
+        CancellationToken ct)
+    {
+        if (_artifactLanguagePolicy is null)
+            return null;
+
+        try
+        {
+            return new RoomArtifactLanguagesDto(
+                await _artifactLanguagePolicy.GetGeneratableLanguagesAsync(room, ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Could not resolve generatable artifact languages for room {RoomId}", room.Id);
+            return null;
+        }
     }
 
     public async Task<Result<IReadOnlyList<TranslationRoomParticipantSummaryDto>>> GetParticipantsAsync(
