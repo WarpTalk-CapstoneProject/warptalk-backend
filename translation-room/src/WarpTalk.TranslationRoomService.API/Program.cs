@@ -177,6 +177,11 @@ builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
 // WT-14: reminds the host/participants at T-10min and T-1min before a SCHEDULED room's start.
 builder.Services.AddHostedService<ReminderNotificationWorker>();
+// WT-612 / WT-714: and the booking's own clock — at T-0 it opens itself (SCHEDULED to OPEN, so
+// nobody has to press Start for a meeting whose time has come), and two hours later, if nobody
+// ever came, the same sweep marks it EXPIRED instead of leaving it standing open for good. It
+// never starts the meeting; the first arrival does.
+builder.Services.AddHostedService<ScheduledRoomLifecycleWorker>();
 // WT-327: rolls each recurring booking's horizon forward. Polling, not a Redis subscriber —
 // "a day passed" is a clock fact, and an unguarded SubscribeAsync takes down the host process.
 builder.Services.AddHostedService<RecurringSeriesMaterializationWorker>();
