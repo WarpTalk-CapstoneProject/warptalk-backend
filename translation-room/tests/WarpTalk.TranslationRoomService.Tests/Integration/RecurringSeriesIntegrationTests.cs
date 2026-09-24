@@ -16,6 +16,7 @@ using Testcontainers.PostgreSql;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -76,6 +77,12 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
                         It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
                     .ReturnsAsync(Result.Success());
 
+                // WT-707: the series service applies the workspace whitelist to an edit and to
+                // every materialisation pass; this test's workspace allows every language.
+                meetingPolicy.Setup(p => p.ValidateRoomLanguagesAsync(
+                        It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Result.Success());
+
                 // ...and the tenant itself is live unless a test suspends it.
                 meetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
                         It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -95,6 +102,8 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
                 services.AddScoped<ITranslationRoomSeriesService>(sp => new TranslationRoomSeriesService(
                     sp.GetRequiredService<IUnitOfWork>(),
                     sp.GetRequiredService<ITranslationRoomService>(),
+                    sp.GetRequiredService<IWorkspaceMeetingPolicy>(),
+                    sp.GetRequiredService<ILanguagePolicy>(),
                     sp.GetRequiredService<ILogger<TranslationRoomSeriesService>>(),
                     () => _now));
 

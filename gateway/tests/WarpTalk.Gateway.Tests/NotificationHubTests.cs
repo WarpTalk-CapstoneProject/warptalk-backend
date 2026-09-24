@@ -13,6 +13,8 @@ public class NotificationHubTests
 {
     private readonly Mock<IConnectionManager> _mockConnectionManager;
     private readonly Mock<IPresenceNotifier> _mockPresenceNotifier;
+    private readonly Mock<IPresenceQueryService> _mockPresenceQuery;
+    private readonly Dictionary<object, object?> _connectionItems = new();
     private readonly Mock<ILogger<NotificationHub>> _mockLogger;
     private readonly Mock<NotificationGrpcService.NotificationGrpcServiceClient> _mockGrpcClient;
     private readonly Mock<IHubCallerClients> _mockClients;
@@ -28,6 +30,7 @@ public class NotificationHubTests
     {
         _mockConnectionManager = new Mock<IConnectionManager>();
         _mockPresenceNotifier = new Mock<IPresenceNotifier>();
+        _mockPresenceQuery = new Mock<IPresenceQueryService>();
         _mockLogger = new Mock<ILogger<NotificationHub>>();
 
         // Mock gRPC Client
@@ -46,6 +49,7 @@ public class NotificationHubTests
 
         _mockContext.Setup(c => c.User).Returns(claimsPrincipal);
         _mockContext.Setup(c => c.ConnectionId).Returns(_connectionId);
+        _mockContext.Setup(c => c.Items).Returns(_connectionItems);
 
         // Setup Clients
         _mockClients.Setup(c => c.Group(It.IsAny<string>())).Returns(_mockClientProxy.Object);
@@ -54,6 +58,7 @@ public class NotificationHubTests
         _hub = new NotificationHub(
             _mockConnectionManager.Object,
             _mockPresenceNotifier.Object,
+            _mockPresenceQuery.Object,
             _mockLogger.Object,
             _mockGrpcClient.Object)
         {
@@ -180,5 +185,85 @@ public class NotificationHubTests
         _mockSingleClientProxy.Verify(
             p => p.SendCoreAsync("NotificationError", new object[] { "An error occurred while marking all as read." }, default),
             Times.Once);
+    }
+
+    // ── QueryPresence: the presence snapshot over the hub ──────────────────
+
+    [Fact]
+    public async Task QueryPresence_AnswersFromTheSharedPresenceQuery_AsTheCaller()
+    {
+        var ids = new[] { Guid.NewGuid().ToString(), Guid.NewGuid().ToString() };
+        var expected = new PresenceQueryResponse(new Dictionary<string, string>
+        {
+            [ids[0]] = "Online",
+            [ids[1]] = "Offline",
+        });
+        _mockPresenceQuery
+            .Setup(q => q.QueryAsync(_userId.ToString(), ids, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(expected);
+
+        var result = await _hub.QueryPresence(ids);
+
+        // The caller identity comes from the connection's token, never from the arguments: the
+        // WT-335 workspace filter is only as good as the id it filters for.
+        Assert.Same(expected, result);
+        _mockPresenceQuery.Verify(
+            q => q.QueryAsync(_userId.ToString(), ids, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task QueryPresence_RepliesOnlyToTheCaller_AndNeverReadsReplicaLocalState()
+    {
+        _mockPresenceQuery
+            .Setup(q => q.QueryAsync(It.IsAny<string?>(), It.IsAny<IEnumerable<string?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PresenceQueryResponse(new Dictionary<string, string>()));
+
+        await _hub.QueryPresence([Guid.NewGuid().ToString()]);
+
+        // Multi-replica safety: the snapshot is the invocation's return value, so it goes back on
+        // the caller's own socket — no group send that would need the backplane or a relay leader,
+        // and no read of the in-memory connection table, which only knows this pod's half.
+        _mockClients.VerifyNoOtherCalls();
+        _mockConnectionManager.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task QueryPresence_IsThrottledPerConnection_BecauseHubCallsBypassTheHttpLimiter()
+    {
+        _mockPresenceQuery
+            .Setup(q => q.QueryAsync(It.IsAny<string?>(), It.IsAny<IEnumerable<string?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PresenceQueryResponse(new Dictionary<string, string>()));
+
+        for (var i = 0; i < PresenceQueryThrottle.MaxCallsPerWindow; i++)
+        {
+            await _hub.QueryPresence(["a"]);
+        }
+
+        var refused = await Assert.ThrowsAsync<HubException>(() => _hub.QueryPresence(["a"]));
+        Assert.Contains("rate limit", refused.Message, StringComparison.OrdinalIgnoreCase);
+
+        // The refused call never reached WorkspaceService or Redis.
+        _mockPresenceQuery.Verify(
+            q => q.QueryAsync(It.IsAny<string?>(), It.IsAny<IEnumerable<string?>?>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(PresenceQueryThrottle.MaxCallsPerWindow));
+    }
+
+    [Fact]
+    public async Task QueryPresence_ThrottleBelongsToTheConnection_NotTheUser()
+    {
+        _mockPresenceQuery
+            .Setup(q => q.QueryAsync(It.IsAny<string?>(), It.IsAny<IEnumerable<string?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PresenceQueryResponse(new Dictionary<string, string>()));
+
+        for (var i = 0; i < PresenceQueryThrottle.MaxCallsPerWindow; i++)
+        {
+            await _hub.QueryPresence(["a"]);
+        }
+
+        // A second tab of the same user is a second connection with its own Items.
+        _connectionItems.Clear();
+
+        await _hub.QueryPresence(["a"]);
     }
 }

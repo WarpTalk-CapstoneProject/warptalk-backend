@@ -10,6 +10,7 @@ using Moq;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -107,9 +108,19 @@ public class SeriesMaterialisationSkipsExistingTests
 
         var roomService = new Mock<ITranslationRoomService>();
 
+        var meetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        meetingPolicy
+            .Setup(p => p.ValidateRoomLanguagesAsync(
+                It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        var languagePolicy = new Mock<ILanguagePolicy>();
+        languagePolicy.Setup(p => p.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
+
         var service = new TranslationRoomSeriesService(
             unitOfWork.Object,
             roomService.Object,
+            meetingPolicy.Object,
+            languagePolicy.Object,
             NullLogger<TranslationRoomSeriesService>.Instance,
             () => Now);
 
