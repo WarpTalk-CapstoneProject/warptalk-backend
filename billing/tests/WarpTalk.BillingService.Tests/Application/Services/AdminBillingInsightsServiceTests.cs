@@ -158,6 +158,36 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         dto.ActiveWorkspacesByMonth!.Select(m => m.ActiveWorkspaces).Should().Equal(0, 0, 0, 0, 0, 2);
     }
 
+    /// <summary>
+    /// Profit and loss over the same seeded September: the same revenue and AI cost as the Insights cards
+    /// (no fx_rates rows, so the configured 25,000 converts), from the half-hour slot queries.
+    /// </summary>
+    [DockerFact]
+    public async Task ProfitAndLoss_AgreesWithTheInsightsFigures()
+    {
+        var result = await _service.GetProfitAndLossAsync(new AdminInsightsQuery
+        {
+            From = Utc(9, 1), To = Utc(10, 1), Compare = "previousMonth", Tz = "UTC",
+        });
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var pnl = result.Value!;
+        AdminInsightMetric P(string id) => pnl.Metrics.Single(m => m.Id == id);
+
+        P("revenue").Value.Should().Be(4_150_000m);
+        P("aiProviderCost").Value.Should().Be(30_000m);
+        P("grossMargin").Value.Should().Be(4_120_000m);
+        P("creditsConsumed").Value.Should().Be(61_450m);
+        P("activeWorkspaces").Value.Should().Be(3, "W1 and W2 consumed, W8 paid");
+        P("arpa").Value.Should().Be(1_383_333m);
+        pnl.Days.Should().HaveCount(30);
+        pnl.Days.Sum(d => d.Credits).Should().Be(61_450);
+        pnl.Months.Select(m => m.Key).Should().EndWith("2026-09");
+        pnl.TopWorkspaces.First().WorkspaceId.Should().Be(_w2);
+        pnl.TopWorkspaces.First().Days.Sum().Should().Be(61_000);
+        pnl.Plans.Should().NotBeEmpty();
+        pnl.Providers.Should().NotBeEmpty();
+    }
+
     [DockerFact]
     public async Task EchoesRangeAndPreviousMonthRange()
     {

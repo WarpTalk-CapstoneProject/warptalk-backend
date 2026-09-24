@@ -249,6 +249,157 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
             .Distinct()
             .CountAsync(cancellationToken);
 
+    // ── Profit and loss (2026-09-24) ─────────────────────────────────────────
+    //
+    // Half-hour UTC slots rather than days: the report buckets on the LOCAL days of the request's
+    // time zone (Vietnam's day starts at 17:00Z), which a UTC date_trunc('day') cannot do, and a
+    // half hour still splits a +05:30 zone exactly. Anonymous projections only; the records are
+    // built in memory.
+
+    public async Task<IReadOnlyList<ConsumptionSlotRow>> GetConsumptionSlotsAsync(
+        DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var grouped = await ConsumptionSlotsQuery(from, to).ToListAsync(cancellationToken);
+
+        return grouped
+            .Select(x => new ConsumptionSlotRow(
+                SlotStart(x.Day, x.Hour, x.Half),
+                x.Type,
+                AiProviderCatalog.Resolve(x.Provider, x.Type),
+                x.PlanId,
+                x.Credits,
+                x.Transactions,
+                x.CoveredCredits,
+                x.CoveredTransactions,
+                x.CostUsd ?? 0m,
+                x.Overage))
+            // Two card providers can resolve to one name ("OpenAI" / "openai"): merge them.
+            .GroupBy(x => (x.SlotStart, x.ChargeType, x.Provider, x.PlanId))
+            .Select(g => g.Count() == 1
+                ? g.First()
+                : new ConsumptionSlotRow(
+                    g.Key.SlotStart, g.Key.ChargeType, g.Key.Provider, g.Key.PlanId,
+                    g.Sum(x => x.Credits), g.Sum(x => x.Transactions), g.Sum(x => x.CoveredCredits),
+                    g.Sum(x => x.CoveredTransactions), g.Sum(x => x.CostUsd), g.Sum(x => x.OverageCredits)))
+            .OrderBy(x => x.SlotStart)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<WorkspaceSlotRow>> GetWorkspaceSlotsAsync(
+        DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var grouped = await WorkspaceSlotsQuery(from, to).ToListAsync(cancellationToken);
+        return grouped
+            .Select(x => new WorkspaceSlotRow(SlotStart(x.Day, x.Hour, x.Half), x.WorkspaceId, x.PlanId, x.Credits))
+            .OrderBy(x => x.SlotStart)
+            .ToList();
+    }
+
+    /// <summary>The slot query, exposed so a test can check that PostgreSQL can be asked it (ToQueryString) without a database.</summary>
+    public IQueryable<ConsumptionSlotGroup> ConsumptionSlotsQuery(DateTime from, DateTime to)
+    {
+        var rows =
+            from t in ConsumeIn(@from, to)
+            join u in _context.UsageRecords.IgnoreQueryFilters() on t.UsageRecordId equals (Guid?)u.Id into usage
+            from u in usage.DefaultIfEmpty()
+            join r in _context.UsageRateCards on t.PricingRateCardId equals (Guid?)r.Id into cards
+            from r in cards.DefaultIfEmpty()
+            join s in _context.Subscriptions.IgnoreQueryFilters() on t.SubscriptionId equals s.Id into subscriptions
+            from s in subscriptions.DefaultIfEmpty()
+            select new
+            {
+                // Same type key and coverage rule as GetConsumptionTotalsAsync.
+                Type = t.ChargeType != null && t.ChargeType != "" ? t.ChargeType : (u != null ? u.UsageType : "UNKNOWN"),
+                Provider = r != null ? r.Provider : null,
+                PlanId = s != null ? (Guid?)s.PlanId : null,
+                Day = t.CreatedAt.Date,
+                Hour = t.CreatedAt.Hour,
+                Half = t.CreatedAt.Minute >= 30 ? 1 : 0,
+                Credits = -t.Amount,
+                Overage = Math.Max(0, -t.BalanceAfter) - Math.Max(0, t.Amount - t.BalanceAfter),
+                Covered = u != null && r != null && r.ProviderUnitCost != null && (r.Unit == null || r.Unit == u.Unit),
+                CostUsd = (decimal?)u!.Quantity * r!.ProviderUnitCost,
+            };
+
+        return rows
+            .GroupBy(x => new { x.Day, x.Hour, x.Half, x.Type, x.Provider, x.PlanId })
+            .Select(g => new ConsumptionSlotGroup
+            {
+                Day = g.Key.Day,
+                Hour = g.Key.Hour,
+                Half = g.Key.Half,
+                Type = g.Key.Type,
+                Provider = g.Key.Provider,
+                PlanId = g.Key.PlanId,
+                Credits = g.Sum(x => (long)x.Credits),
+                Transactions = g.Count(),
+                CoveredCredits = g.Sum(x => x.Covered ? (long)x.Credits : 0L),
+                CoveredTransactions = g.Count(x => x.Covered),
+                CostUsd = g.Sum(x => x.Covered ? x.CostUsd : 0m),
+                Overage = g.Sum(x => (long)x.Overage),
+            });
+    }
+
+    /// <summary>The workspace slot query, exposed for the same translation test.</summary>
+    public IQueryable<WorkspaceSlotGroup> WorkspaceSlotsQuery(DateTime from, DateTime to)
+    {
+        var rows =
+            from t in ConsumeIn(@from, to)
+            join s in _context.Subscriptions.IgnoreQueryFilters() on t.SubscriptionId equals s.Id into subscriptions
+            from s in subscriptions.DefaultIfEmpty()
+            select new
+            {
+                t.WorkspaceId,
+                PlanId = s != null ? (Guid?)s.PlanId : null,
+                Day = t.CreatedAt.Date,
+                Hour = t.CreatedAt.Hour,
+                Half = t.CreatedAt.Minute >= 30 ? 1 : 0,
+                Credits = -t.Amount,
+            };
+
+        return rows
+            .GroupBy(x => new { x.Day, x.Hour, x.Half, x.WorkspaceId, x.PlanId })
+            .Select(g => new WorkspaceSlotGroup
+            {
+                Day = g.Key.Day,
+                Hour = g.Key.Hour,
+                Half = g.Key.Half,
+                WorkspaceId = g.Key.WorkspaceId,
+                PlanId = g.Key.PlanId,
+                Credits = g.Sum(x => (long)x.Credits),
+            });
+    }
+
+    private static DateTime SlotStart(DateTime day, int hour, int half)
+        => DateTime.SpecifyKind(day.Date, DateTimeKind.Utc).AddHours(hour).AddMinutes(half * 30);
+
+    /// <summary>Settable-property shape (not a positional record), so EF can project into it.</summary>
+    public sealed class ConsumptionSlotGroup
+    {
+        public DateTime Day { get; init; }
+        public int Hour { get; init; }
+        public int Half { get; init; }
+        public string Type { get; init; } = string.Empty;
+        public string? Provider { get; init; }
+        public Guid? PlanId { get; init; }
+        public long Credits { get; init; }
+        public int Transactions { get; init; }
+        public long CoveredCredits { get; init; }
+        public int CoveredTransactions { get; init; }
+        public decimal? CostUsd { get; init; }
+        public long Overage { get; init; }
+    }
+
+    public sealed class WorkspaceSlotGroup
+    {
+        public DateTime Day { get; init; }
+        public int Hour { get; init; }
+        public int Half { get; init; }
+        public Guid WorkspaceId { get; init; }
+        public Guid? PlanId { get; init; }
+        public long Credits { get; init; }
+    }
+
     private IQueryable<CreditTransaction> ConsumeIn(DateTime from, DateTime to)
         => _dbSet.IgnoreQueryFilters().AsNoTracking().Where(t =>
             t.Type == TransactionConstants.TransactionTypes.Consume

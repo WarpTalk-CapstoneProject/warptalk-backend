@@ -223,6 +223,8 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // Measured Cartesia credits for admin Insights' dubbing cost. Disabled (logged once) when no
     // Cartesia:AdminApiKey (CARTESIA_ADMIN_API_KEY) is configured.
     builder.Services.AddHostedService<CartesiaUsageSyncWorker>();
+    // Stripe's USD→VND rate once per UTC day, for every VND report. Billing:Fx:CheckIntervalMinutes = 0 disables it.
+    builder.Services.AddHostedService<FxRateRefreshWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>

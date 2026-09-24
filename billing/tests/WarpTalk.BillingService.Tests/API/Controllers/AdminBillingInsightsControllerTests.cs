@@ -32,6 +32,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
 {
     private const string Insights = "/api/v1/admin/billing/insights";
     private const string Snapshot = "/api/v1/admin/billing/insights/snapshot";
+    private const string Pnl = "/api/v1/admin/billing/insights/pnl";
 
     private readonly Mock<IAdminBillingInsightsService> _service = new();
     private WebApplication _app = null!;
@@ -76,6 +77,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     [Theory]
     [InlineData(Insights + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z")]
     [InlineData(Snapshot)]
+    [InlineData(Pnl + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z")]
     public async Task Anonymous_Is401(string url)
     {
         (await _client.GetAsync(url)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -87,6 +89,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     [InlineData(Insights + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z", "Admin")]
     [InlineData(Snapshot, "Owner")]
     [InlineData(Snapshot, "Admin")]
+    [InlineData(Pnl + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z", "Admin")]
     public async Task NonSystemAdmin_Is403(string url, string role)
     {
         // "Admin" (capital A) is the WORKSPACE administrator role; only lowercase "admin" is the platform one.
@@ -104,6 +107,19 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
         _useRealService = true;
 
         var response = await Send(Insights + queryString, SystemAdminAuthorization.RoleName);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain(ErrorCodes.ValidationError);
+    }
+
+    [Theory]
+    [InlineData("?from=2026-09-17T00:00:00Z&to=2026-09-01T00:00:00Z")]
+    [InlineData("?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z&tz=Asia/Atlantis")]
+    public async Task Pnl_InvalidRange_Is400(string queryString)
+    {
+        _useRealService = true;
+
+        var response = await Send(Pnl + queryString, SystemAdminAuthorization.RoleName);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain(ErrorCodes.ValidationError);
