@@ -52,8 +52,17 @@ public class McpConfirmationTokenService : IMcpConfirmationTokenService
         if (payload.ExpiresAt <= now)
             return Result.Failure("Confirmation token expired. Confirm this action again.", PluginConstants.ErrorCodes.ConfirmationRequired);
 
-        if (!McpConfirmationTokenPayloadMatcher.Matches(payload, userId, pluginId, request))
+        if (!McpConfirmationTokenPayloadMatcher.MatchesAction(payload, userId, pluginId, request))
             return Result.Failure("Confirmation token does not match this plugin action.", PluginConstants.ErrorCodes.PermissionDenied);
+
+        // Same tool, different arguments: the call is not the one the user confirmed, so it must
+        // not run — but it is a new action to confirm rather than an attempt to slip past the
+        // gate. Asking again is the only way out; permission_denied here was a dead end, and the
+        // assistant reaches it by itself whenever it re-sends a title it had to invent.
+        if (!McpConfirmationTokenPayloadMatcher.MatchesArguments(payload, request))
+            return Result.Failure(
+                "This is not the action you confirmed. Confirm the new one before WarpBot runs it.",
+                PluginConstants.ErrorCodes.ConfirmationRequired);
 
         var consumed = await _unitOfWork.PluginConfirmationTokenRepository.TryConsumeAsync(payload.TokenId, now, ct);
         if (!consumed)
