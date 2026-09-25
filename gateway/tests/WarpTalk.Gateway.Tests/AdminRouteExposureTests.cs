@@ -37,6 +37,9 @@ public sealed class AdminRouteExposureTests
         "/api/v1/admin/platform-health/{**catch-all}",
         // The Providers page, served by billing. GET only: usage, cost, call outcomes and uptime of
         // OpenAI, Cartesia, LiveKit and Stripe; configuration as set / not set, never a secret.
+        // Bare + catch-all for the same reason as meetings: GET /api/v1/admin/providers is the
+        // overview the page loads first, and the catch-all alone never matched it.
+        "/api/v1/admin/providers",
         "/api/v1/admin/providers/{**catch-all}",
         // Product feedback, served by translation-room. Read-only and aggregated; comments come
         // back without the person who wrote them.
