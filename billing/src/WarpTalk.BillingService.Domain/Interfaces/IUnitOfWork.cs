@@ -34,6 +34,11 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Incidents from each provider's public status page (admin Providers page).</summary>
     IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
 
+    /// <summary>G12: operating expense categories, expenses and monthly budgets.</summary>
+    IExpenseCategoryRepository ExpenseCategories { get; }
+    IOperatingExpenseRepository OperatingExpenses { get; }
+    IExpenseBudgetRepository ExpenseBudgets { get; }
+
     // This interface deliberately exposes no way to reach the raw database
     // connection. Doing so pulled a data-provider dependency into the Domain layer
     // and let any caller bypass the repositories with hand-written SQL. The two

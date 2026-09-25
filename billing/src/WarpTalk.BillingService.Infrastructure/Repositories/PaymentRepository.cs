@@ -232,4 +232,16 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
                 && (c.PaidAt ?? c.UpdatedAt) >= (p.PaidAt ?? p.UpdatedAt).AddHours(-1)
                 && (c.PaidAt ?? c.UpdatedAt) <= (p.PaidAt ?? p.UpdatedAt).AddHours(1))));
     }
+
+    public async Task<IReadOnlyList<InboxPaymentRow>> GetDisputedSinceAsync(DateTime since, int take, CancellationToken cancellationToken = default)
+    {
+        var rows = await _dbSet.AsNoTracking()
+            .Where(p => p.Status == PaymentConstants.PaymentStatuses.Disputed && p.UpdatedAt >= since)
+            .OrderByDescending(p => p.UpdatedAt)
+            .Take(take)
+            .Select(p => new { p.Id, p.Subscription.WorkspaceId, p.TotalAmount, p.Currency, p.Provider, p.UpdatedAt })
+            .ToListAsync(cancellationToken);
+
+        return rows.Select(r => new InboxPaymentRow(r.Id, r.WorkspaceId, r.TotalAmount, r.Currency, r.Provider, r.UpdatedAt)).ToList();
+    }
 }

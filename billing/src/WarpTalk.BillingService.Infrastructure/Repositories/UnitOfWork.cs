@@ -31,6 +31,9 @@ public class UnitOfWork : IUnitOfWork
         FxRates = new FxRateRepository(db);
         ProviderCallStats = new ProviderCallStatRepository(db);
         ProviderStatusIncidents = new ProviderStatusIncidentRepository(db);
+        ExpenseCategories = new ExpenseCategoryRepository(db);
+        OperatingExpenses = new OperatingExpenseRepository(db);
+        ExpenseBudgets = new ExpenseBudgetRepository(db);
     }
 
     public IPlanRepository Plans { get; }
@@ -50,6 +53,9 @@ public class UnitOfWork : IUnitOfWork
     public IFxRateRepository FxRates { get; }
     public IProviderCallStatRepository ProviderCallStats { get; }
     public IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
+    public IExpenseCategoryRepository ExpenseCategories { get; }
+    public IOperatingExpenseRepository OperatingExpenses { get; }
+    public IExpenseBudgetRepository ExpenseBudgets { get; }
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 

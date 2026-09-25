@@ -59,6 +59,12 @@ public static class AdminPermissions
 
     public const string WarpBotUse = "warpbot.use";
 
+    public const string FinanceExpensesRead = "finance.expenses_read";
+    public const string FinanceExpensesManage = "finance.expenses_manage";
+
+    public const string InboxRead = "inbox.read";
+    public const string InboxManage = "inbox.manage";
+
     /// <summary>Areas, in the order the permission matrix shows them.</summary>
     public static class Areas
     {
@@ -74,11 +80,13 @@ public static class AdminPermissions
         public const string Audit = "audit";
         public const string Staff = "staff";
         public const string Assistant = "assistant";
+        public const string Finance = "finance";
+        public const string Inbox = "inbox";
 
         public static readonly string[] Ordered =
         [
-            Workspaces, Accounts, Meetings, Billing, Plugins, Content, Glossary, Settings,
-            Operations, Audit, Staff, Assistant,
+            Workspaces, Accounts, Meetings, Billing, Finance, Plugins, Content, Glossary, Settings,
+            Operations, Inbox, Audit, Staff, Assistant,
         ];
     }
 
@@ -130,6 +138,12 @@ public static class AdminPermissions
         new(StaffManage, Areas.Staff, "Invite staff, change their role, suspend or remove them, and edit roles.", false),
 
         new(WarpBotUse, Areas.Assistant, "Use the platform WarpBot assistant.", false),
+
+        new(FinanceExpensesRead, Areas.Finance, "View operating expenses, budgets, expense reports and the profit and loss with expenses.", true),
+        new(FinanceExpensesManage, Areas.Finance, "Record, edit, import and delete operating expenses, receipts, categories and budgets.", false),
+
+        new(InboxRead, Areas.Inbox, "View the pending-work inbox (each item only from the areas the member can view).", true),
+        new(InboxManage, Areas.Inbox, "Assign, snooze, annotate and close items in the pending-work inbox.", false),
     ];
 
     public static readonly IReadOnlyList<string> All = Definitions.Select(d => d.Code).ToArray();
@@ -176,6 +190,8 @@ public static class BuiltInStaffRoles
                 AdminPermissions.BillingLeadsManage, AdminPermissions.WorkspacesRead,
                 AdminPermissions.AccountsRead, AdminPermissions.ProvidersRead,
                 AdminPermissions.SettingsRead, AdminPermissions.AuditRead, AdminPermissions.WarpBotUse,
+                AdminPermissions.FinanceExpensesRead, AdminPermissions.FinanceExpensesManage,
+                AdminPermissions.InboxRead, AdminPermissions.InboxManage,
             ]),
         new(Support, "Support",
             "Helps customers: workspaces, accounts and meetings, with read access to billing.",
@@ -185,6 +201,7 @@ public static class BuiltInStaffRoles
                 AdminPermissions.MeetingsRead, AdminPermissions.BillingRead,
                 AdminPermissions.PluginsRead, AdminPermissions.GlossaryRead,
                 AdminPermissions.SettingsRead, AdminPermissions.AuditRead, AdminPermissions.WarpBotUse,
+                AdminPermissions.InboxRead, AdminPermissions.InboxManage,
             ]),
         new(ContentMarketing, "Content / Marketing",
             "Announcements, email templates and the platform glossary.",
@@ -193,6 +210,7 @@ public static class BuiltInStaffRoles
                 AdminPermissions.GlossaryRead, AdminPermissions.GlossaryManage,
                 AdminPermissions.WorkspacesRead, AdminPermissions.MeetingsRead,
                 AdminPermissions.SettingsRead, AdminPermissions.WarpBotUse,
+                AdminPermissions.InboxRead, AdminPermissions.InboxManage,
             ]),
         new(OperationsSre, "Operations / SRE",
             "System health, providers, the plugin catalog and platform settings.",
@@ -203,6 +221,7 @@ public static class BuiltInStaffRoles
                 AdminPermissions.SettingsManage, AdminPermissions.WorkspacesRead,
                 AdminPermissions.AccountsRead, AdminPermissions.MeetingsRead,
                 AdminPermissions.AuditRead, AdminPermissions.WarpBotUse,
+                AdminPermissions.InboxRead, AdminPermissions.InboxManage,
             ]),
         new(ReadOnlyAuditor, "Read-only Auditor",
             "Sees everything, changes nothing. Can export the audit log.",

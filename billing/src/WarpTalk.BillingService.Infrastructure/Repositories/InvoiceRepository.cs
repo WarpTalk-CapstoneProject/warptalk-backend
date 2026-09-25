@@ -150,6 +150,29 @@ public class InvoiceRepository : GenericRepository<Invoice>, IInvoiceRepository
     public Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default)
         => ReadOutstandingAsync(_dbSet.AsNoTracking(), cancellationToken);
 
+    public async Task<IReadOnlyList<InboxInvoiceRow>> GetOutstandingForInboxAsync(int take, CancellationToken cancellationToken = default)
+    {
+        var rows = await _dbSet.AsNoTracking()
+            .Where(i =>
+                i.Status != InvoiceConstants.InvoiceStatuses.Paid
+                && i.Status != InvoiceConstants.InvoiceStatuses.Void
+                && i.Status != InvoiceConstants.InvoiceStatuses.Uncollectible
+                && i.Status != InvoiceConstants.InvoiceStatuses.Draft
+                && i.Payment.Status != PaymentConstants.PaymentStatuses.Paid)
+            .OrderBy(i => i.DueAt ?? i.IssuedAt)
+            .Take(take)
+            .Select(i => new
+            {
+                i.Id, i.InvoiceNumber, i.Payment.Subscription.WorkspaceId, i.Total, i.Currency, i.IssuedAt, i.DueAt,
+                i.Payment.Provider,
+            })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(r => new InboxInvoiceRow(r.Id, r.InvoiceNumber, r.WorkspaceId, r.Total, r.Currency, r.IssuedAt, r.DueAt, r.Provider))
+            .ToList();
+    }
+
     public Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingForWorkspaceAsync(
         Guid workspaceId, CancellationToken cancellationToken = default)
         => ReadOutstandingAsync(

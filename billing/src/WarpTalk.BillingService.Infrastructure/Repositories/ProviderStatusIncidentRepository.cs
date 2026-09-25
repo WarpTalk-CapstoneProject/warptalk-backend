@@ -51,6 +51,13 @@ public class ProviderStatusIncidentRepository : GenericRepository<ProviderStatus
             .OrderByDescending(i => i.StartedAt)
             .ToListAsync(ct);
 
+    public async Task<IReadOnlyList<ProviderStatusIncident>> GetUnresolvedSinceAsync(DateTime since, CancellationToken ct = default)
+        => await _db.ProviderStatusIncidents
+            .AsNoTracking()
+            .Where(i => i.ResolvedAt == null && i.StartedAt >= since)
+            .OrderByDescending(i => i.StartedAt)
+            .ToListAsync(ct);
+
     public async Task<DateTime?> GetOldestStartedAtAsync(string provider, CancellationToken ct = default)
         => await _db.ProviderStatusIncidents
             .AsNoTracking()

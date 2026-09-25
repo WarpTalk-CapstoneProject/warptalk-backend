@@ -54,6 +54,13 @@ public static class AdminAuditEntityTypes
     /// <summary>Staff access offered to an address with no account yet (G10).</summary>
     public const string StaffInvitation = "staff_invitation";
 
+    /// <summary>An operating expense (G12, /admin/finance/expenses). Entity id = the expense's id.</summary>
+    public const string OperatingExpense = "operating_expense";
+    /// <summary>An operating expense category (G12). Entity id = the category's id.</summary>
+    public const string ExpenseCategory = "expense_category";
+    /// <summary>A monthly budget of an expense category (G12). Entity id = the budget row's id.</summary>
+    public const string ExpenseBudget = "expense_budget";
+
     /// <summary>An in-app announcement (admin → Announcements). Entity id = the announcement's id.</summary>
     public const string Announcement = "announcement";
     /// <summary>One transactional email in one locale. Entity id = the content variant's id.</summary>
@@ -74,6 +81,7 @@ public static class AdminAuditEntityTypes
         BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
         Announcement, EmailTemplate, EmailBlock, EmailSampleData,
         StaffMember, StaffRole, StaffInvitation,
+        OperatingExpense, ExpenseCategory, ExpenseBudget,
     ];
 }
 
@@ -138,6 +146,30 @@ public static class AdminAuditBillingActions
         PricingConfigUpdated, BillingPolicyUpdated, ContractCreated, ContractTermsUpdated,
         SubscriptionCancelled, SubscriptionReactivated, SubscriptionResumed, SalesLeadStatusChanged,
         PaymentRecorded, FxRateRefreshed, FxRateOverridden, FxRateOverrideCleared,
+    ];
+}
+
+/// <summary>
+/// Verbs for operating expenses (G12, billing service, /admin/finance/expenses). Every value is at
+/// most 30 characters: <c>workspace_admin_actions.action</c> is varchar(30).
+/// </summary>
+public static class AdminAuditExpenseActions
+{
+    public const string Created = "expense.created";
+    public const string Updated = "expense.updated";
+    public const string Deleted = "expense.deleted";
+    public const string MarkedPaid = "expense.marked_paid";
+    public const string Imported = "expense.imported";
+    public const string ReceiptAttached = "expense.receipt_attached";
+    public const string ReceiptRemoved = "expense.receipt_removed";
+    public const string CategoryCreated = "expense_category.created";
+    public const string CategoryUpdated = "expense_category.updated";
+    public const string BudgetsSet = "expense_budget.set";
+
+    public static readonly string[] All =
+    [
+        Created, Updated, Deleted, MarkedPaid, Imported, ReceiptAttached, ReceiptRemoved,
+        CategoryCreated, CategoryUpdated, BudgetsSet,
     ];
 }
 
