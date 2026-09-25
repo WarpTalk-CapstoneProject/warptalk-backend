@@ -26,7 +26,6 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/workspaces/{workspaceId:guid}")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminWorkspaceBillingController : ControllerBase
 {
     private readonly IAdminWorkspaceBillingService _service;
@@ -37,31 +36,37 @@ public class AdminWorkspaceBillingController : ControllerBase
     }
 
     [HttpGet("overview")]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetOverview(Guid workspaceId, [FromQuery] AdminDateRange range, CancellationToken ct)
         => ToActionResult(await _service.GetOverviewAsync(workspaceId, range, ct));
 
     [HttpPost("credits/adjust")]
+    [RequirePermission(AdminPermissions.BillingAdjustCredit)]
     public Task<IActionResult> AdjustCredits(
         Guid workspaceId, [FromBody] AdminAdjustWorkspaceCreditsRequest request, CancellationToken ct)
         => ActAsync(actor => _service.AdjustCreditsAsync(workspaceId, request, actor, ct));
 
     [HttpPost("subscription/change-plan")]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public Task<IActionResult> ChangePlan(
         Guid workspaceId, [FromBody] AdminWorkspaceChangePlanRequest request, CancellationToken ct)
         => ActAsync(actor => _service.ChangePlanAsync(workspaceId, request, actor, ct));
 
     [HttpPost("subscription/extend-trial")]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public Task<IActionResult> ExtendTrial(
         Guid workspaceId, [FromBody] AdminExtendTrialRequest request, CancellationToken ct)
         => ActAsync(actor => _service.ExtendTrialAsync(workspaceId, request, actor, ct));
 
     [HttpPost("subscription/comp")]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public Task<IActionResult> CompPeriod(
         Guid workspaceId, [FromBody] AdminCompPeriodRequest request, CancellationToken ct)
         => ActAsync(actor => _service.CompPeriodAsync(workspaceId, request, actor, ct));
 
     /// <summary>PUT: the body is the set of keys to change; keys it does not name are kept.</summary>
     [HttpPut("subscription/entitlements")]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public Task<IActionResult> SetEntitlementOverrides(
         Guid workspaceId, [FromBody] AdminEntitlementOverridesRequest request, CancellationToken ct)
         => ActAsync(actor => _service.SetEntitlementOverridesAsync(workspaceId, request, actor, ct));
@@ -71,6 +76,7 @@ public class AdminWorkspaceBillingController : ControllerBase
     /// <c>POST /invoices/{id}/mark-paid</c> runs), scoped to this workspace and carrying a reason.
     /// </summary>
     [HttpPost("invoices/{invoiceId:guid}/mark-paid")]
+    [RequirePermission(AdminPermissions.BillingPaymentsManage)]
     public Task<IActionResult> MarkInvoicePaid(
         Guid workspaceId, Guid invoiceId, [FromBody] AdminMarkInvoicePaidRequest request, CancellationToken ct)
         => ActAsync(actor => _service.MarkInvoicePaidAsync(workspaceId, invoiceId, request, actor, ct));

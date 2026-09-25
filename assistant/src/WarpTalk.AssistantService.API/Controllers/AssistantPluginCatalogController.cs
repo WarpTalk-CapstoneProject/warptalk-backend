@@ -51,7 +51,6 @@ namespace WarpTalk.AssistantService.API.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/v1/assistant/plugins/catalog")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AssistantPluginCatalogController : ControllerBase
 {
     private readonly IPluginCatalogAdminService _catalogAdminService;
@@ -72,6 +71,7 @@ public class AssistantPluginCatalogController : ControllerBase
     /// </remarks>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<PluginCatalogAdminListItemDto>), StatusCodes.Status200OK)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> List(CancellationToken ct)
     {
         var result = await _catalogAdminService.ListAsync(ct);
@@ -82,6 +82,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [HttpGet("{pluginKey}")]
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> Get(string pluginKey, CancellationToken ct)
     {
         var result = await _catalogAdminService.GetAsync(pluginKey, ct);
@@ -99,6 +100,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> Update(
         string pluginKey,
         [FromBody] UpdatePluginCatalogRequest request,
@@ -121,6 +123,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> SetOAuthClient(
         string pluginKey,
         [FromBody] SetPluginOAuthClientRequest request,
@@ -142,6 +145,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> ReplaceTools(
         string pluginKey,
         [FromBody] ReplacePluginToolsRequest request,
@@ -164,6 +168,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> Rediscover(string pluginKey, CancellationToken ct)
     {
         var result = await _catalogAdminService.RediscoverAsync(pluginKey, CurrentUserId, ct);
@@ -190,6 +195,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogDeleteResultDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> Delete(
         string pluginKey,
         [FromQuery] bool hard,
@@ -219,6 +225,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [HttpGet("{pluginKey}/audits")]
     [ProducesResponseType(typeof(PluginToolAuditPageDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> ListAudits(
         string pluginKey,
         [FromQuery] Guid? userId,

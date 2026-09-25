@@ -9,6 +9,7 @@ using WarpTalk.AuthService.Application.Helpers;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Mappers;
 using WarpTalk.AuthService.Domain.Constants;
+using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.Domain.Enums;
 using WarpTalk.AuthService.Domain.Interfaces;
@@ -31,13 +32,18 @@ public class ProfileService : IProfileService
     /// </summary>
     private readonly IVoiceSampleStorage _storage;
 
+    // G10: the profile echoes the token's roles, so it must say "admin" exactly when the token does.
+    private readonly IStaffAccessService? _staffAccess;
+
     public ProfileService(
         IUnitOfWork unitOfWork,
         IPasswordHasher passwordHasher,
         IOptions<AuthSettings> authSettings,
         ILogger<ProfileService> logger,
-        IVoiceSampleStorage storage)
+        IVoiceSampleStorage storage,
+        IStaffAccessService? staffAccess = null)
     {
+        _staffAccess = staffAccess;
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
         _storage = storage;
@@ -45,6 +51,16 @@ public class ProfileService : IProfileService
         _logger = logger;
         _userRepository = _unitOfWork.UserRepository;
         _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
+    }
+
+    private async Task<UserDto> ToDtoAsync(User user, CancellationToken ct)
+    {
+        var roles = user.GetRoles(_authSettings.DefaultRole);
+        var staffRole = _staffAccess is null
+            ? await new StaffAccessService(_unitOfWork, Microsoft.Extensions.Logging.Abstractions.NullLogger<StaffAccessService>.Instance).ActiveRoleSlugAsync(user.Id, ct)
+            : await _staffAccess.ActiveRoleSlugAsync(user.Id, ct);
+        if (staffRole is not null) roles.Add(WarpTalk.Shared.Authorization.StaffClaims.StaffRoleHint);
+        return UserMapper.ToDto(user, roles);
     }
 
     public async Task<Result<UserDto>> GetProfileAsync(Guid userId, CancellationToken ct = default)
@@ -59,7 +75,7 @@ public class ProfileService : IProfileService
             if (status is AccountStatus.DISABLED or AccountStatus.LOCKED)
                 return UserStatusHelper.CheckUserStatus<UserDto>(user)!;
 
-            return Result.Success(UserMapper.ToDto(user, _authSettings.DefaultRole));
+            return Result.Success(await ToDtoAsync(user, ct));
         }
         catch (Exception ex)
         {
@@ -124,7 +140,7 @@ public class ProfileService : IProfileService
             _userRepository.Update(user);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(UserMapper.ToDto(user, _authSettings.DefaultRole));
+            return Result.Success(await ToDtoAsync(user, ct));
         }
         catch (Exception ex)
         {
@@ -177,7 +193,7 @@ public class ProfileService : IProfileService
             _userRepository.Update(user);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(UserMapper.ToDto(user, _authSettings.DefaultRole));
+            return Result.Success(await ToDtoAsync(user, ct));
         }
         catch (Exception ex)
         {

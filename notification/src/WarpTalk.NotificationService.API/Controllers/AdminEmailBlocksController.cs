@@ -12,7 +12,7 @@ namespace WarpTalk.NotificationService.API.Controllers;
 /// <summary>Email layouts and reusable blocks — the design, managed apart from each email's wording.</summary>
 [ApiController]
 [Route("api/v1/admin/notifications/email-blocks")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.ContentEmailTemplates)]
 public sealed class AdminEmailBlocksController : CmsControllerBase
 {
     private readonly IEmailBlockService _blocks;

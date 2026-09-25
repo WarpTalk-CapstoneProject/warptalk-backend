@@ -21,7 +21,6 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/audit-log")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminAuditLogController : ControllerBase
 {
     private readonly IAdminAuditLogService _adminAuditLogService;
@@ -37,16 +36,19 @@ public class AdminAuditLogController : ControllerBase
     /// page's <c>nextCursor</c>.
     /// </summary>
     [HttpGet]
+    [RequirePermission(AdminPermissions.AuditRead)]
     public async Task<IActionResult> Query([FromQuery] AdminAuditLogQuery query, CancellationToken ct)
         => ToActionResult(await _adminAuditLogService.SearchAsync(query, ct));
 
     /// <summary>The values present in the store for each filter, with counts and actor names.</summary>
     [HttpGet("facets")]
+    [RequirePermission(AdminPermissions.AuditRead)]
     public async Task<IActionResult> Facets(CancellationToken ct)
         => ToActionResult(await _adminAuditLogService.GetFacetsAsync(ct));
 
     /// <summary>The filtered log as CSV (same filters as the list, no cursor), at most 10,000 rows.</summary>
     [HttpGet("export")]
+    [RequirePermission(AdminPermissions.AuditExport)]
     public async Task<IActionResult> Export([FromQuery] AdminAuditLogQuery query, CancellationToken ct)
     {
         if (!AdminActorContext.TryResolve(User, HttpContext, out var actor))
@@ -62,6 +64,7 @@ public class AdminAuditLogController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [RequirePermission(AdminPermissions.AuditRead)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
         => ToActionResult(await _adminAuditLogService.GetAsync(id, ct));
 

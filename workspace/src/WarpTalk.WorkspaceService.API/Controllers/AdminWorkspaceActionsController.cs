@@ -20,7 +20,6 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/workspaces/{id:guid}")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminWorkspaceActionsController : ControllerBase
 {
     private readonly IAdminWorkspaceActionService _service;
@@ -31,23 +30,28 @@ public class AdminWorkspaceActionsController : ControllerBase
     }
 
     [HttpPost("transfer-ownership")]
+    [RequirePermission(AdminPermissions.WorkspacesLifecycle)]
     public Task<IActionResult> TransferOwnership(Guid id, [FromBody] AdminTransferOwnershipRequest request, CancellationToken ct)
         => ActAsync(actor => _service.TransferOwnershipAsync(id, request, actor.ActorId, actor.CorrelationId, ct));
 
     [HttpPost("notices")]
+    [RequirePermission(AdminPermissions.WorkspacesWrite)]
     public Task<IActionResult> SendNotice(Guid id, [FromBody] AdminWorkspaceNoticeRequest request, CancellationToken ct)
         => ActAsync(actor => _service.SendNoticeAsync(id, request, actor.ActorId, actor.CorrelationId, ct));
 
     [HttpPost("notes")]
+    [RequirePermission(AdminPermissions.WorkspacesWrite)]
     public Task<IActionResult> AddNote(Guid id, [FromBody] AdminAddWorkspaceNoteRequest request, CancellationToken ct)
         => ActAsync(actor => _service.AddNoteAsync(id, request, actor.ActorId, actor.CorrelationId, ct));
 
     [HttpGet("timeline")]
+    [RequirePermission(AdminPermissions.WorkspacesRead)]
     public async Task<IActionResult> GetTimeline(Guid id, [FromQuery] int? limit, CancellationToken ct)
         => ToActionResult(await _service.GetTimelineAsync(id, limit, ct));
 
     /// <summary>POST, not GET: an export carries a reason and is itself an audited action.</summary>
     [HttpPost("export")]
+    [RequirePermission(AdminPermissions.WorkspacesWrite)]
     public Task<IActionResult> Export(Guid id, [FromBody] AdminWorkspaceExportRequest request, CancellationToken ct)
         => ActAsync(actor => _service.ExportAsync(id, request, actor.ActorId, actor.CorrelationId, ct));
 

@@ -16,7 +16,7 @@ namespace WarpTalk.NotificationService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/notifications/announcements")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.ContentAnnouncements)]
 public sealed class AdminAnnouncementsController : CmsControllerBase
 {
     private readonly IAnnouncementService _announcements;

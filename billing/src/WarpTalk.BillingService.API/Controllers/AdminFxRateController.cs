@@ -19,7 +19,6 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/fx")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminFxRateController : ControllerBase
 {
     private readonly IFxRateService _fx;
@@ -31,24 +30,28 @@ public class AdminFxRateController : ControllerBase
 
     /// <summary>Today's rate, its source and as-of time, staleness, and the recorded history.</summary>
     [HttpGet]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<AdminFxRateStatusDto>> Get(CancellationToken ct)
         => Ok(await _fx.GetStatusAsync(ct));
 
     /// <summary>Asks Stripe now. 200 with <c>error</c> set when Stripe gave nothing — the status still answers.</summary>
     [HttpPost("refresh")]
     [AdminAudited(AdminAuditBillingActions.FxRateRefreshed, AdminAuditEntityTypes.FxRate, typeof(FxRate), typeof(BillingPricingConfig), Aggregate = true)]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<ActionResult<AdminFxRefreshResultDto>> Refresh(CancellationToken ct)
         => Ok(await _fx.RefreshAsync(force: true, ct));
 
     /// <summary>Use this rate instead of Stripe's, from today until the override is removed. 400 on a non-positive rate.</summary>
     [HttpPut("override")]
     [AdminAudited(AdminAuditBillingActions.FxRateOverridden, AdminAuditEntityTypes.FxRate, typeof(FxRate), typeof(BillingPricingConfig))]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<IActionResult> SetOverride([FromBody] SetFxOverrideRequest request, CancellationToken ct)
         => ToActionResult(await _fx.SetOverrideAsync(request.Rate, ct));
 
     /// <summary>Back to Stripe's rate from today. Days the override covered keep it.</summary>
     [HttpDelete("override")]
     [AdminAudited(AdminAuditBillingActions.FxRateOverrideCleared, AdminAuditEntityTypes.FxRate, typeof(FxRate), typeof(BillingPricingConfig))]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<IActionResult> ClearOverride(CancellationToken ct)
         => ToActionResult(await _fx.ClearOverrideAsync(ct));
 

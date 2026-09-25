@@ -16,7 +16,7 @@ namespace WarpTalk.NotificationService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/notifications/email-templates")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.ContentEmailTemplates)]
 public sealed class AdminEmailTemplatesController : CmsControllerBase
 {
     private readonly IEmailContentService _emails;

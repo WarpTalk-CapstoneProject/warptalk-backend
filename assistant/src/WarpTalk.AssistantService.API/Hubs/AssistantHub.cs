@@ -41,15 +41,16 @@ public class AssistantHub : Hub
 
     /// <summary>
     /// A platform-scope conversation streams through the same group, but joining it needs the
-    /// system-admin policy AS WELL AS ownership — the same gate its REST controller has. Evaluated
-    /// with the real policy rather than a role string, so the hub and the controller cannot drift
-    /// into two different ideas of who an admin is.
+    /// warpbot.use staff permission AS WELL AS ownership — the same gate its REST controller has.
+    /// Evaluated with the real requirement rather than a role string, so the hub and the
+    /// controller cannot drift into two different ideas of who may use it.
     /// </summary>
     private async Task<bool> CanJoinPlatformConversationAsync(Guid conversationId, Guid userId)
     {
         if (Context.User is null) return false;
-        var isSystemAdmin = await _authorizationService.AuthorizeAsync(Context.User, SystemAdminAuthorization.PolicyName);
-        if (!isSystemAdmin.Succeeded) return false;
+        var mayUse = await _authorizationService.AuthorizeAsync(
+            Context.User, resource: null, new PermissionRequirement(AdminPermissions.WarpBotUse));
+        if (!mayUse.Succeeded) return false;
 
         var access = await _platformConversationService.AuthorizeConversationAccessAsync(
             conversationId, userId, Context.ConnectionAborted);

@@ -258,9 +258,9 @@ try
         options.AddPolicy("default", policy => policy.RequireAuthenticatedUser());
     });
 
-    // POST /plugins/catalog writes the global catalog, so it takes the platform system-admin gate
-    // shared with auth/billing/notification (role 'admin'), not the workspace 'Admin' role.
-    builder.Services.AddWarpTalkSystemAdminAuthorization();
+    // The plugin catalog and platform WarpBot are staff surfaces: plugins.read/plugins.manage and
+    // warpbot.use (G10), resolved by the auth service — never the workspace 'Admin' role.
+    builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
     // Multi-replica: AssistantChatResultConsumerService hands each stream entry to ONE pod
     // (consumer group) and AssistantNotifier sends from there; without the Redis backplane only

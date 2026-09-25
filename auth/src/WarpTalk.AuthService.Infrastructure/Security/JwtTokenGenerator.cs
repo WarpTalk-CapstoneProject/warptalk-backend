@@ -17,7 +17,7 @@ public class JwtTokenGenerator : IJwtTokenGenerator
     public int AccessTokenExpiryMinutes => _config.GetValue("Jwt:AccessTokenExpiryMinutes", 30);
     public int RefreshTokenExpiryDays => _config.GetValue("Jwt:RefreshTokenExpiryDays", 7);
 
-    public string GenerateAccessToken(Guid userId, string email, bool emailVerified, IEnumerable<string> roles)
+    public string GenerateAccessToken(Guid userId, string email, bool emailVerified, IEnumerable<string> roles, string? staffRole = null)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(
             _config["Jwt:Secret"] ?? throw new InvalidOperationException("JWT Secret not configured")));
@@ -30,6 +30,10 @@ public class JwtTokenGenerator : IJwtTokenGenerator
             new("email_verified", emailVerified.ToString().ToLowerInvariant())
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
+        if (!string.IsNullOrWhiteSpace(staffRole))
+        {
+            claims.Add(new Claim(WarpTalk.Shared.Authorization.StaffClaims.StaffRole, staffRole));
+        }
 
         var token = new JwtSecurityToken(
             issuer: _config["Jwt:Issuer"],

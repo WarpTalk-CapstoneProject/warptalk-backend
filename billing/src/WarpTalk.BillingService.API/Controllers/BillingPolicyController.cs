@@ -6,10 +6,10 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Events;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
-[Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
 [ApiController]
 [Route("api/v1/billing-policy")]
 public class BillingPolicyController : ControllerBase
@@ -22,6 +22,7 @@ public class BillingPolicyController : ControllerBase
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.SettingsRead)]
     public async Task<ActionResult<BillingPolicyDto>> GetBillingPolicy(CancellationToken cancellationToken)
     {
         var policy = await _billingPolicyService.GetPolicyAsync(cancellationToken);
@@ -30,6 +31,7 @@ public class BillingPolicyController : ControllerBase
 
     [HttpPut]
     [AdminAudited(AdminAuditBillingActions.BillingPolicyUpdated, AdminAuditEntityTypes.BillingPolicy, typeof(BillingPolicyConfig))]
+    [RequirePermission(AdminPermissions.SettingsManage)]
     public async Task<ActionResult<BillingPolicyDto>> UpdateBillingPolicy(
         [FromBody] UpdateBillingPolicyRequest request,
         CancellationToken cancellationToken)

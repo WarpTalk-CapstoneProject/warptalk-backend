@@ -17,6 +17,7 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Events;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -30,17 +31,20 @@ public class PaymentsController : ControllerBase
     private readonly IPaymentAppService _paymentAppService;
     private readonly IStripeWebhookService _stripeWebhookService;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IStaffAccessResolver? _staffAccess;
 
     public PaymentsController(
         IPaymentService paymentService,
         IPaymentAppService paymentAppService,
         IStripeWebhookService stripeWebhookService,
-        IWorkspaceClient workspaceClient)
+        IWorkspaceClient workspaceClient,
+        IStaffAccessResolver? staffAccess = null)
     {
         _paymentService = paymentService;
         _paymentAppService = paymentAppService;
         _stripeWebhookService = stripeWebhookService;
         _workspaceClient = workspaceClient;
+        _staffAccess = staffAccess;
     }
 
     /// <summary>
@@ -73,8 +77,8 @@ public class PaymentsController : ControllerBase
     /// is correct here. Dropping "Owner" takes nothing away: it was never a token claim.
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     [AdminAudited(AdminAuditBillingActions.PaymentRecorded, AdminAuditEntityTypes.Payment, typeof(Payment))]
+    [RequirePermission(AdminPermissions.BillingPaymentsManage)]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
@@ -141,9 +145,10 @@ public class PaymentsController : ControllerBase
 
         try
         {
-            var isSystemAdmin =
-                User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
-                User.IsInRole(WorkspaceRoleConstants.Admin);
+            // G10: staff who can read billing may look at (and settle) somebody else's session;
+            // the old "any admin-ish role" test would now admit every staff role.
+            var isSystemAdmin = _staffAccess is not null
+                && await _staffAccess.StaffOverrideAllowsAsync(User, AdminPermissions.BillingRead, HttpContext.RequestAborted);
 
             var result = await _paymentAppService.GetAndProcessCheckoutSessionAsync(sessionId, userId.Value, isSystemAdmin);
             

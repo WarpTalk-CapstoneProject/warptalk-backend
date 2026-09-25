@@ -20,6 +20,7 @@ public static class EmailTemplateCatalog
 
     public const string AuthVerifyEmail = "auth.verify-email";
     public const string AuthPasswordReset = "auth.password-reset";
+    public const string AuthStaffInvitation = "auth.staff-invitation";
     public const string WorkspaceInvitation = "workspace.invitation";
     public const string WorkspaceJoinRequestApproved = "workspace.join-request-approved";
     public const string MeetingInvitation = "meeting.invitation";
@@ -72,6 +73,31 @@ public static class EmailTemplateCatalog
                 LinkBox("{{ResetUrl}}") +
                 "<p style=\"margin: 0; font-size: 13px; color: #71717A;\">This link expires soon and can only be used once.</p>" +
                 Disclaimer("This email was sent to you by WarpTalk. If you did not initiate this request, please contact support."))),
+
+        new(
+            AuthStaffInvitation,
+            "Staff access",
+            "Tells someone they have been given access to the WarpTalk admin portal.",
+            "Auth service",
+            ProviderResend,
+            "Someone with staff.manage adds a person on /admin/staff.",
+            IsLive: true,
+            DormantReason: null,
+            [
+                new("InviterName", "Who gave the access.", "Minh Tran"),
+                new("RoleName", "The staff role granted.", "Support"),
+                new("SignInUrl", "Where to sign in. The access activates on the first sign-in with this verified address.", "https://app.warptalk.vn/login?redirect=%2Fadmin", Required: true),
+                new("ExpiresIn", "How long an invitation to a new address stays open.", "7 days"),
+            ],
+            new EmailTemplateContent(
+                "You've been given access to the WarpTalk admin portal",
+                "You've been given staff access",
+                Paragraph("Hello,", bottom: 16) +
+                Paragraph("<strong style=\"color: #18181B; font-weight: 600;\">{{InviterName}}</strong> has given you access to the WarpTalk admin portal as " + Badge("{{RoleName}}") + ".", bottom: 20) +
+                "<p style=\"margin: 0 0 28px 0; font-size: 14px; line-height: 1.6; color: #71717A;\">Sign in with this email address. If you do not have a WarpTalk account yet, create one with this address and verify it: the access activates the first time you sign in, within {{ExpiresIn}}.</p>" +
+                Button("{{SignInUrl}}", "Open the admin portal &rarr;") +
+                LinkBox("{{SignInUrl}}") +
+                Disclaimer("If you were not expecting this, you can ignore this email. Nothing changes until someone signs in with this address."))),
 
         new(
             WorkspaceInvitation,
