@@ -63,6 +63,13 @@ public static class AdminAuditEntityTypes
     /// <summary>A named sample-data set for an email's preview. Entity id = the set's id.</summary>
     public const string EmailSampleData = "email_sample_data";
 
+    /// <summary>G11: a one-off credit pack (billing <c>credit_packs</c>). Entity id = the pack's id.</summary>
+    public const string CreditPack = "credit_pack";
+    /// <summary>G11: a recurring add-on on top of a plan (billing <c>addons</c>).</summary>
+    public const string Addon = "addon";
+    /// <summary>G11: a discount coupon or auto-apply campaign (billing <c>coupons</c>).</summary>
+    public const string Coupon = "coupon";
+
     /// <summary>
     /// Every value above, so the audit screen's entity filter and the web's label table have one
     /// list to agree with.
@@ -74,6 +81,7 @@ public static class AdminAuditEntityTypes
         BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
         Announcement, EmailTemplate, EmailBlock, EmailSampleData,
         StaffMember, StaffRole, StaffInvitation,
+        CreditPack, Addon, Coupon,
     ];
 }
 
@@ -138,6 +146,42 @@ public static class AdminAuditBillingActions
         PricingConfigUpdated, BillingPolicyUpdated, ContractCreated, ContractTermsUpdated,
         SubscriptionCancelled, SubscriptionReactivated, SubscriptionResumed, SalesLeadStatusChanged,
         PaymentRecorded, FxRateRefreshed, FxRateOverridden, FxRateOverrideCleared,
+    ];
+}
+
+/// <summary>
+/// G11 — verbs for /admin/packages: credit packs, add-ons and coupons. One set of verbs, prefixed
+/// by the entity, so the audit screen reads "credit_pack.archived" / "coupon.stripe_synced".
+/// Every value fits <see cref="AdminAuditWorkspaceActions.MaxLength"/>.
+/// </summary>
+public static class AdminAuditPackageActions
+{
+    public const string CreditPackCreated = "credit_pack.created";
+    public const string CreditPackUpdated = "credit_pack.updated";
+    public const string CreditPackDuplicated = "credit_pack.duplicated";
+    public const string CreditPackArchived = "credit_pack.archived";
+    public const string CreditPackUnarchived = "credit_pack.unarchived";
+    public const string CreditPackStripeSynced = "credit_pack.stripe_synced";
+
+    public const string AddonCreated = "addon.created";
+    public const string AddonUpdated = "addon.updated";
+    public const string AddonDuplicated = "addon.duplicated";
+    public const string AddonArchived = "addon.archived";
+    public const string AddonUnarchived = "addon.unarchived";
+    public const string AddonStripeSynced = "addon.stripe_synced";
+
+    public const string CouponCreated = "coupon.created";
+    public const string CouponUpdated = "coupon.updated";
+    public const string CouponDuplicated = "coupon.duplicated";
+    public const string CouponArchived = "coupon.archived";
+    public const string CouponUnarchived = "coupon.unarchived";
+    public const string CouponStripeSynced = "coupon.stripe_synced";
+
+    public static readonly string[] All =
+    [
+        CreditPackCreated, CreditPackUpdated, CreditPackDuplicated, CreditPackArchived, CreditPackUnarchived, CreditPackStripeSynced,
+        AddonCreated, AddonUpdated, AddonDuplicated, AddonArchived, AddonUnarchived, AddonStripeSynced,
+        CouponCreated, CouponUpdated, CouponDuplicated, CouponArchived, CouponUnarchived, CouponStripeSynced,
     ];
 }
 

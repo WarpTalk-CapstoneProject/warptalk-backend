@@ -36,6 +36,9 @@ public partial class BillingDbContext
 
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // G11: the sellable catalog beyond plans, in its own partial file.
+        ConfigurePackageCatalog(modelBuilder);
+
         // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
         // a re-scaffold cannot drop them.
         modelBuilder.Entity<Plan>(entity =>

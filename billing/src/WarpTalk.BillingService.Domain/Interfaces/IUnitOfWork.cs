@@ -34,6 +34,14 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Incidents from each provider's public status page (admin Providers page).</summary>
     IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
 
+    // G11 — the sellable catalog beyond plans (/admin/packages) and what has been bought from it.
+    ICreditPackRepository CreditPacks { get; }
+    IAddonRepository Addons { get; }
+    IWorkspaceAddonRepository WorkspaceAddons { get; }
+    ICouponRepository Coupons { get; }
+    ICouponRedemptionRepository CouponRedemptions { get; }
+    ICreditPackPurchaseRepository CreditPackPurchases { get; }
+
     // This interface deliberately exposes no way to reach the raw database
     // connection. Doing so pulled a data-provider dependency into the Domain layer
     // and let any caller bypass the repositories with hand-written SQL. The two

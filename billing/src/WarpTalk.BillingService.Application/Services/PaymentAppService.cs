@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Entitlements;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
@@ -18,6 +19,8 @@ public class PaymentAppService : IPaymentAppService
     private readonly IReadOnlyList<IPaymentEventHandler> _paymentEventHandlers;
     private readonly IWorkspaceClient _workspaceClient;
     private readonly IUsageRateCardRepository _rateCards;
+    private readonly ICustomerCatalogService? _catalog;
+    private readonly IEntitlementChangePublisher? _entitlements;
 
     /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
     private const string CreditValueConfigKey = "credit_value_vnd";
@@ -35,9 +38,13 @@ public class PaymentAppService : IPaymentAppService
         IBillingMessagePublisher messagePublisher,
         IEnumerable<IPaymentEventHandler> paymentEventHandlers,
         IWorkspaceClient workspaceClient,
-        IUsageRateCardRepository rateCards)
+        IUsageRateCardRepository rateCards,
+        ICustomerCatalogService? catalog = null,
+        IEntitlementChangePublisher? entitlements = null)
     {
         _rateCards = rateCards;
+        _catalog = catalog;
+        _entitlements = entitlements;
         _stripePaymentService = stripePaymentService;
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -55,6 +62,58 @@ public class PaymentAppService : IPaymentAppService
                 return Result.Failure<string>(
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
+            }
+
+            // G11: a catalog checkout — credit pack, add-on, or a plan with a coupon — is priced by
+            // the catalog, server-side, from the item the request names. Whatever Amount the
+            // client sent is discarded, exactly as for a top-up below.
+            var isCatalogType =
+                string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.CreditPack, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.AddOn, StringComparison.OrdinalIgnoreCase);
+            if (isCatalogType || !string.IsNullOrWhiteSpace(request.CouponCode)
+                || string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.Subscription, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_catalog is null)
+                {
+                    if (isCatalogType || !string.IsNullOrWhiteSpace(request.CouponCode))
+                    {
+                        return Result.Failure<string>(PackageCatalogConstants.Errors.NotAvailable, ErrorCodes.ValidationError);
+                    }
+                }
+                else
+                {
+                    var prepared = await _catalog.PrepareCheckoutAsync(request);
+                    if (!prepared.IsSuccess)
+                    {
+                        return Result.Failure<string>(prepared.Error!, prepared.ErrorCode ?? ErrorCodes.ValidationError);
+                    }
+
+                    var (pricedRequest, extras) = prepared.Value;
+                    if (extras.Line is not null || extras.StripeCouponId is not null || extras.StripePromotionCodeId is not null)
+                    {
+                        var catalogResult = await _stripePaymentService.CreateCatalogCheckoutSessionAsync(pricedRequest, extras);
+                        if (!catalogResult.IsSuccess)
+                        {
+                            _logger.LogError(
+                                "{Message}. WorkspaceId: {WorkspaceId}, PaymentType: {PaymentType}, Package: {PackageId}, Amount: {Amount} {Currency}, Reason: {Reason} ({ErrorCode})",
+                                BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession,
+                                pricedRequest.WorkspaceId,
+                                pricedRequest.PaymentType,
+                                pricedRequest.PackageId,
+                                pricedRequest.Amount,
+                                pricedRequest.Currency,
+                                catalogResult.Error,
+                                catalogResult.ErrorCode);
+                            return Result.Failure<string>(
+                                catalogResult.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                                ErrorCodes.InternalServerError);
+                        }
+
+                        return Result.Success(catalogResult.Value!);
+                    }
+
+                    request = pricedRequest;
+                }
             }
 
             // WT-429: a top-up is priced HERE, from the credit count, against the admin-editable
@@ -228,8 +287,9 @@ public class PaymentAppService : IPaymentAppService
                     session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.Credits, string.Empty),
                     System.Globalization.NumberStyles.Integer,
                     System.Globalization.CultureInfo.InvariantCulture,
-                    out var sessionCredits) ? sessionCredits : 0
-            ));
+                    out var sessionCredits) ? sessionCredits : 0,
+                StripeSubscriptionId: session.SubscriptionId ?? string.Empty
+            ).WithCatalogMetadata(session.Metadata));
             
             if (!processResult.IsSuccess)
             {
@@ -313,8 +373,10 @@ public class PaymentAppService : IPaymentAppService
 
             await PersistPaymentRecordAsync(context);
             await CreateInvoiceForPaidPaymentAsync(context);
+            await RecordCouponRedemptionAsync(context);
             await _unitOfWork.SaveChangesAsync();
             await PublishSubscriptionUpdateAsync(context);
+            await PublishEntitlementsAsync(context);
 
             return Result.Success();
         }
@@ -495,6 +557,75 @@ public class PaymentAppService : IPaymentAppService
             PdfUrl: context.Request.InvoicePdf));
 
         await _unitOfWork.InvoiceRepository.AddAsync(invoice);
+    }
+
+    /// <summary>
+    /// G11: a paid checkout that used a coupon is one redemption — written in the same save as the
+    /// payment, once per Stripe session, so the coupon's limits count money that actually moved.
+    /// </summary>
+    private async Task RecordCouponRedemptionAsync(PaymentEventContext context)
+    {
+        if (context.ParsedPaymentStatus != PaymentConstants.PaymentStatuses.Paid
+            || !Guid.TryParse(context.Request.CouponId, out var couponId)
+            || string.IsNullOrWhiteSpace(context.Request.StripeSessionId)
+            || _unitOfWork.CouponRedemptions is null
+            || await _unitOfWork.CouponRedemptions.ExistsForSessionAsync(context.Request.StripeSessionId))
+        {
+            return;
+        }
+
+        var itemType = context.Request.PaymentType switch
+        {
+            PaymentConstants.PaymentTypes.CreditPack => PackageCatalogConstants.ItemTypes.CreditPack,
+            PaymentConstants.PaymentTypes.AddOn => PackageCatalogConstants.ItemTypes.Addon,
+            _ => PackageCatalogConstants.ItemTypes.Plan,
+        };
+
+        Guid? itemId = Guid.TryParse(context.Request.PackageId, out var packageId) ? packageId : null;
+        if (itemId is null && itemType == PackageCatalogConstants.ItemTypes.Plan && !string.IsNullOrWhiteSpace(context.Request.PlanSlug))
+        {
+            var slug = context.Request.PlanSlug.ToLower();
+            itemId = (await _unitOfWork.Plans.FirstOrDefaultAsync(p => p.Slug.ToLower() == slug))?.Id;
+        }
+
+        var listPrice = context.Request.ListPrice > 0 ? context.Request.ListPrice : context.Request.Amount;
+        await _unitOfWork.CouponRedemptions.AddAsync(new CouponRedemption
+        {
+            Id = Guid.NewGuid(),
+            CouponId = couponId,
+            WorkspaceId = context.WorkspaceId,
+            UserId = context.UserId,
+            ItemType = itemType,
+            ItemId = itemId,
+            StripeSessionId = context.Request.StripeSessionId,
+            PaymentId = context.ExistingPayment?.Id ?? context.PaymentId,
+            Currency = (context.Request.Currency ?? string.Empty).ToLowerInvariant(),
+            DiscountAmount = Math.Max(0, listPrice - context.Request.Amount),
+            RedeemedAt = DateTime.UtcNow,
+        });
+    }
+
+    /// <summary>
+    /// G11: republish the entitlement snapshot after an add-on change. After the commit on
+    /// purpose — the resolver reads committed rows. A failure here is logged, not raised: the
+    /// payment is already recorded, and the hourly reconcile republishes every workspace anyway.
+    /// </summary>
+    private async Task PublishEntitlementsAsync(PaymentEventContext context)
+    {
+        if (!context.EntitlementsChanged || _entitlements is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _entitlements.EnqueueAsync(context.WorkspaceId, EntitlementConstants.Reasons.AddonChanged);
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "addon_entitlements_publish_failed: WorkspaceId={WorkspaceId}; the hourly reconcile will republish.", context.WorkspaceId);
+        }
     }
 
     private async Task PublishSubscriptionUpdateAsync(PaymentEventContext context)

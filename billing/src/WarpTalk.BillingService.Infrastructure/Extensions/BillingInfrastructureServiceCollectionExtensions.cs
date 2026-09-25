@@ -85,6 +85,8 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IUsageRateCardResolverService, UsageRateCardResolverService>();
         services.AddScoped<IUsageSettlementRepository, UsageSettlementRepository>();
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
+        // G11: pushes credit packs, add-ons and coupons to Stripe Products/Prices/Coupons (admin only).
+        services.AddScoped<IStripeCatalogSync, StripeCatalogSyncService>();
         // Stripe's USD→VND rate, recorded daily (FxRateRefreshWorker) and read by every VND report.
         services.AddSingleton<IStripeFxClient, StripeFxClient>();
         services.AddScoped<IFxRateService, WarpTalk.BillingService.Application.Services.FxRateService>();
