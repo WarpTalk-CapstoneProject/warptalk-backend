@@ -21,6 +21,9 @@ public class UnitOfWork : IUnitOfWork
     private IEmailCmsVersionRepository? _emailCmsVersionRepository;
     private IEmailSampleDataSetRepository? _emailSampleDataSetRepository;
     private IEmailDeliveryStatRepository? _emailDeliveryStatRepository;
+    private IEmailCustomTemplateRepository? _emailCustomTemplateRepository;
+    private IEmailCampaignRepository? _emailCampaignRepository;
+    private IEmailCampaignRecipientRepository? _emailCampaignRecipientRepository;
 
     public UnitOfWork(NotificationDbContext context)
     {
@@ -71,6 +74,15 @@ public class UnitOfWork : IUnitOfWork
 
     public IEmailDeliveryStatRepository EmailDeliveryStatRepository =>
         _emailDeliveryStatRepository ??= new EmailDeliveryStatRepository(_context);
+
+    public IEmailCustomTemplateRepository EmailCustomTemplateRepository =>
+        _emailCustomTemplateRepository ??= new EmailCustomTemplateRepository(_context);
+
+    public IEmailCampaignRepository EmailCampaignRepository =>
+        _emailCampaignRepository ??= new EmailCampaignRepository(_context);
+
+    public IEmailCampaignRecipientRepository EmailCampaignRecipientRepository =>
+        _emailCampaignRecipientRepository ??= new EmailCampaignRecipientRepository(_context);
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 

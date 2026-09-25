@@ -49,6 +49,7 @@ public sealed class StaffRbacDatabaseTests : IAsyncLifetime
         "20260925090000_add_platform_staff_rbac.sql",
         "20260925170000_add_billing_packages_manage_permission.sql",
         "20260925180000_add_internal_management_permissions.sql",
+        "20260926090000_add_content_email_send_permission.sql",
     ];
 
     private PostgreSqlContainer? _container;

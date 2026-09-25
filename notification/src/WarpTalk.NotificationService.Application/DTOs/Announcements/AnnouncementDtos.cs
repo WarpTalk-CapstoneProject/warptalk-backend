@@ -37,7 +37,14 @@ public sealed record AdminAnnouncementDto(
     Guid CreatedBy,
     Guid? UpdatedBy,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt)
+{
+    /// <summary>The custom email template sent to the same audience when it goes live, if any.</summary>
+    public string? EmailTemplateKey { get; init; }
+
+    /// <summary>The audience send that email channel created (see the template's Sends tab).</summary>
+    public Guid? EmailCampaignId { get; init; }
+}
 
 public sealed record AdminAnnouncementPageDto(
     IReadOnlyList<AdminAnnouncementDto> Items,
@@ -87,7 +94,9 @@ public sealed record UpsertAnnouncementRequest(
     IReadOnlyList<string>? TargetLocales = null,
     int? NewUsersWithinDays = null,
     string? SecondaryCtaLabel = null,
-    string? SecondaryCtaUrl = null);
+    string? SecondaryCtaUrl = null,
+    // Optional email channel: a custom email template sent to the same audience when it goes live.
+    string? EmailTemplateKey = null);
 
 /// <summary>Publish body. <see cref="StartsAt"/> null means "now"; a future instant schedules it.</summary>
 public sealed record PublishAnnouncementRequest(DateTime? StartsAt = null);
