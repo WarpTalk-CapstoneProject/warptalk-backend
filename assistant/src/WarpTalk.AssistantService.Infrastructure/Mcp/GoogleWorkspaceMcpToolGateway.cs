@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -19,10 +18,6 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
     private readonly HttpClient _httpClient;
     private readonly IPluginCredentialProtector _credentialProtector;
     private readonly GoogleWorkspaceApiOptions _options;
-    private readonly TimeProvider _timeProvider;
-
-    private const string DefaultMeetSummary = "Google Meet meeting";
-    private static readonly TimeSpan DefaultMeetDuration = TimeSpan.FromMinutes(30);
 
     /// <summary>
     /// Google's tools are authored by us in the catalog, not discovered: there is no official
@@ -38,15 +33,11 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
     public GoogleWorkspaceMcpToolGateway(
         HttpClient httpClient,
         IPluginCredentialProtector credentialProtector,
-        IOptions<GoogleWorkspaceApiOptions> options,
-        TimeProvider? timeProvider = null)
+        IOptions<GoogleWorkspaceApiOptions> options)
     {
         _httpClient = httpClient;
         _credentialProtector = credentialProtector;
         _options = options.Value;
-        // Optional so the typed-HttpClient registration keeps activating this without a
-        // TimeProvider in the container; tests pass a fixed clock.
-        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<McpToolExecutionResult> ExecuteAsync(
@@ -213,53 +204,13 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         JsonObject? arguments,
         CancellationToken ct)
     {
-        // Every field is optional: "create a meeting with Google Meet" should just produce a link,
-        // not an interrogation about times. No start means right now; no end means half an hour.
         var summary = GetString(arguments, "summary");
-        if (string.IsNullOrWhiteSpace(summary))
-            summary = DefaultMeetSummary;
-
         var start = GetString(arguments, "start");
         var end = GetString(arguments, "end");
-        DateTimeOffset? startInstant = null;
-        if (string.IsNullOrWhiteSpace(start))
-        {
-            var now = _timeProvider.GetUtcNow();
-            startInstant = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, TimeSpan.Zero);
-            start = FormatRfc3339(startInstant.Value);
-        }
+        if (string.IsNullOrWhiteSpace(summary) || string.IsNullOrWhiteSpace(start) || string.IsNullOrWhiteSpace(end))
+            return Failure(PluginConstants.ErrorCodes.UnknownTool, "Google Meet event requires summary, start, and end.");
 
-        if (string.IsNullOrWhiteSpace(end))
-        {
-            if (startInstant != null)
-            {
-                end = FormatRfc3339(startInstant.Value + DefaultMeetDuration);
-            }
-            else if (!DateTime.TryParse(start, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsedLocal)
-                || !DateTimeOffset.TryParse(start, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsedStart))
-            {
-                return Failure(PluginConstants.ErrorCodes.UnknownTool, "Google Meet event start must be an RFC3339 date-time when end is omitted.");
-            }
-            else if (parsedLocal.Kind == DateTimeKind.Unspecified)
-            {
-                // No offset: Google reads it in the given timeZone, so the end must not gain the
-                // server's offset either.
-                end = (parsedLocal + DefaultMeetDuration).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
-            }
-            else
-            {
-                end = FormatRfc3339(parsedStart + DefaultMeetDuration);
-            }
-        }
-
-        // Google rejects a date-time with neither an offset nor a timeZone ("Missing time zone
-        // definition"), and a model told today's date in Vietnam sends exactly that: a bare
-        // "2026-09-24T10:00:00". The workspace's own zone is the one the user meant, and it is
-        // also the zone WarpBot's confirmation card prints, so the two cannot disagree.
         var timeZone = GetString(arguments, "timeZone");
-        if (string.IsNullOrWhiteSpace(timeZone) && (NeedsTimeZone(start) || NeedsTimeZone(end)))
-            timeZone = _options.DefaultTimeZone;
-
         var payload = new JsonObject
         {
             ["summary"] = summary,
@@ -295,8 +246,6 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         var json = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct)
             ?? new JsonObject();
         var eventId = json["id"]?.GetValue<string>();
-        json = await WaitForConferenceAsync(accessToken, eventId, json, ct);
-
         var meetLink = ExtractMeetLink(json);
         var data = new JsonObject
         {
@@ -306,94 +255,12 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
             ["start"] = json["start"]?["dateTime"]?.DeepClone(),
             ["end"] = json["end"]?["dateTime"]?.DeepClone(),
             ["meetLink"] = meetLink,
-            ["meetingCode"] = ExtractMeetingCode(json, meetLink),
             ["calendarEventLink"] = json["htmlLink"]?.DeepClone(),
             ["meetLinkStatus"] = string.IsNullOrWhiteSpace(meetLink) ? "pending" : "success",
             ["event"] = json.DeepClone(),
         };
 
-        if (!string.IsNullOrWhiteSpace(timeZone))
-            data["timeZone"] = timeZone;
-
         return Success(data, eventId);
-    }
-
-    /// <summary>
-    /// Google creates the Meet conference asynchronously. When the insert comes back with the
-    /// create request still pending (or simply without a link), re-read the event a few times so
-    /// the user gets a joinable link in the same reply. A failed re-read keeps the last event we
-    /// have: the event itself was created, so this must not turn into a tool failure.
-    /// </summary>
-    private async Task<JsonObject> WaitForConferenceAsync(
-        string accessToken,
-        string? eventId,
-        JsonObject created,
-        CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(eventId))
-            return created;
-
-        var current = created;
-        for (var attempt = 0; attempt < _options.MeetConferencePollAttempts && IsConferencePending(current); attempt++)
-        {
-            if (_options.MeetConferencePollDelayMilliseconds > 0)
-                await Task.Delay(TimeSpan.FromMilliseconds(_options.MeetConferencePollDelayMilliseconds), _timeProvider, ct);
-
-            var url = $"{CalendarEventsEndpoint("primary")}/{Uri.EscapeDataString(eventId)}?conferenceDataVersion=1";
-            try
-            {
-                using var request = AuthorizedRequest(HttpMethod.Get, url, accessToken);
-                using var response = await _httpClient.SendAsync(request, ct);
-                if (!response.IsSuccessStatusCode)
-                    return current;
-
-                var refreshed = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct);
-                if (refreshed != null)
-                    current = refreshed;
-            }
-            catch (Exception exception)
-                when (exception is HttpRequestException or JsonException or TaskCanceledException
-                    && !ct.IsCancellationRequested)
-            {
-                // The meeting was created; only the re-read failed. Throwing here would report a
-                // failed tool call for a booking that exists, and the user would make a second one.
-                return current;
-            }
-        }
-
-        return current;
-    }
-
-    private static bool IsConferencePending(JsonObject json)
-    {
-        var statusCode = json["conferenceData"]?["createRequest"]?["status"]?["statusCode"]?.GetValue<string>();
-        if (string.Equals(statusCode, "pending", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // A "failure" status will not turn into a link by waiting.
-        return !string.Equals(statusCode, "failure", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(ExtractMeetLink(json));
-    }
-
-    private static string? ExtractMeetingCode(JsonObject json, string? meetLink)
-    {
-        var conferenceId = json["conferenceData"]?["conferenceId"]?.GetValue<string>();
-        if (!string.IsNullOrWhiteSpace(conferenceId))
-            return conferenceId;
-
-        if (string.IsNullOrWhiteSpace(meetLink) || !Uri.TryCreate(meetLink, UriKind.Absolute, out var uri))
-            return null;
-
-        // https://meet.google.com/abc-defg-hij?authuser=0 -> abc-defg-hij
-        var code = uri.AbsolutePath.Trim('/');
-        return string.IsNullOrWhiteSpace(code) ? null : code;
-    }
-
-    private static string FormatRfc3339(DateTimeOffset value)
-    {
-        return value.Offset == TimeSpan.Zero
-            ? value.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)
-            : value.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
     }
 
     private static HttpRequestMessage AuthorizedRequest(HttpMethod method, string url, string accessToken)
@@ -467,20 +334,6 @@ public class GoogleWorkspaceMcpToolGateway : IMcpToolGateway
         var endpoint = CalendarEventsEndpoint(calendarId);
         var querySeparator = endpoint.Contains('?', StringComparison.Ordinal) ? "&" : "?";
         return $"{endpoint}{querySeparator}conferenceDataVersion=1";
-    }
-
-    /// <summary>
-    /// Whether Google would refuse this date-time for having no zone: no trailing offset and no
-    /// "Z". "2026-09-24T10:00:00" is what a model sends when it was told the local date.
-    /// </summary>
-    private static bool NeedsTimeZone(string? dateTime)
-    {
-        if (string.IsNullOrWhiteSpace(dateTime))
-            return false;
-
-        return !DateTimeOffset.TryParse(dateTime, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _)
-            || (DateTime.TryParse(dateTime, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var local)
-                && local.Kind == DateTimeKind.Unspecified);
     }
 
     private static JsonObject CalendarEventDateTime(string dateTime, string? timeZone)

@@ -551,6 +551,57 @@ public class TranslationRoomServiceTests
         result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
     }
 
+    /// <summary>
+    /// THE LEAK. A workspace whose subscription expired on 23 Sep started translation on 24 Sep: the
+    /// Redis flags above describe a subscription that exists and cannot pay, and an expired one wrote
+    /// none. Start now asks the replicated entitlement snapshot — WT-515's own answer — and refuses
+    /// when it positively says there is no live subscription, before any session is opened.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_IsRefused_WhenTheWorkspaceHasNoActiveSubscription()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockWorkspaceMeetingPolicy
+            .Setup(p => p.HasActiveSubscriptionAsync(room.WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        result.Error.Should().Contain("subscription has expired");
+        _mockUow.Verify(u => u.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Unknown is not "no": the snapshot has not landed yet (seconds after a payment), or
+    /// WorkspaceService could not be asked. Billing still refuses every charge of a workspace with
+    /// no live subscription, which stops the room — so the source gate must not lock out a customer
+    /// who has just paid. And once the renewal lands the snapshot says true, and Start goes through.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(true)]
+    public async Task ResumeTranslationRoomAsync_Starts_WhenTheSubscriptionIsLiveOrUnknown(bool? hasActiveSubscription)
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockWorkspaceMeetingPolicy
+            .Setup(p => p.HasActiveSubscriptionAsync(room.WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(hasActiveSubscription);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
     [Fact]
     public async Task ResumeTranslationRoomAsync_StillStarts_WhenTheSuspendedFlagSaysFalse()
     {

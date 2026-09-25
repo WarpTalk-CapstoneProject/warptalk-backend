@@ -308,7 +308,9 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             // WT-707: 0 on the wire means no quota applies.
             MaxLanguages = settings.MaxLanguages is > 0 ? settings.MaxLanguages.Value : 0,
             // Empty on the wire means no plan: a plugin's plan rule never matches it.
-            PlanSlug = settings.PlanSlug ?? string.Empty
+            PlanSlug = settings.PlanSlug ?? string.Empty,
+            SubscriptionKnown = settings.SubscriptionKnown,
+            HasActiveSubscription = settings.HasActiveSubscription
         };
         response.AllowedTargetLanguages.AddRange(settings.AllowedTargetLanguages);
         return response;

@@ -62,6 +62,9 @@ public class EntitlementReconcileWorker : BackgroundService
     /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
     public const string LockResource = "billing:entitlement-reconcile";
 
+    /// <summary>How long after a subscription ended its workspace is still republished.</summary>
+    public const int LapsedLookbackDays = 45;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (_options.EntitlementReconcileIntervalMinutes <= 0)
@@ -125,9 +128,23 @@ public class EntitlementReconcileWorker : BackgroundService
 
         var subscriptions = await unitOfWork.SubscriptionRepository.GetActiveSubscriptionsAsync(ct);
 
+        // LAPSED WORKSPACES TOO. This swept active rows only, and expiring a subscription is exactly
+        // what removes a row from that set — so the one change the paywall most needed to hear about
+        // was the one this sweep could never repair. A workspace that expired on 23 Sep kept a
+        // snapshot saying has_active_subscription = true, and WT-515 let it keep creating rooms.
+        // Rows that ended within the lookback are republished (to has_active_subscription = false)
+        // until they age out; older ones were settled by earlier sweeps.
+        var lapsedSince = DateTime.UtcNow.AddDays(-LapsedLookbackDays);
+        var lapsed = await unitOfWork.SubscriptionRepository.FindAsync(
+            subscription => !subscription.IsActive
+                && subscription.DeletedAt == null
+                && subscription.UpdatedAt >= lapsedSince,
+            ct) ?? Array.Empty<Domain.Entities.Subscription>();
+
         // Distinct: a workspace with more than one subscription row must not be enqueued twice, and
         // the resolver answers per workspace regardless of which row prompted it.
         var workspaceIds = subscriptions
+            .Concat(lapsed)
             .Select(subscription => subscription.WorkspaceId)
             .Where(id => id != Guid.Empty)
             .Distinct()

@@ -720,6 +720,39 @@ public class WorkspaceDirectoryServiceTests
         Assert.Null(result.Value!.MaxLanguages);
     }
 
+    /// <summary>
+    /// Start Translation (translation-room) reads these to refuse a lapsed workspace — the same
+    /// IsKnown rule the WT-515 creation gate applies: only a snapshot that exists may say "no".
+    /// </summary>
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task GetSettingsAsync_CarriesTheSnapshotsSubscriptionState(bool hasActiveSubscription, bool expected)
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{}" });
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")), hasActiveSubscription);
+
+        var result = await _service.GetSettingsAsync(workspaceId);
+
+        Assert.True(result.Value!.SubscriptionKnown);
+        Assert.Equal(expected, result.Value.HasActiveSubscription);
+    }
+
+    [Fact]
+    public async Task GetSettingsAsync_ReportsTheSubscriptionAsUnknown_WhenNoSnapshotExists()
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{}" });
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+
+        var result = await _service.GetSettingsAsync(workspaceId);
+
+        Assert.False(result.Value!.SubscriptionKnown);
+    }
+
     [Fact]
     public async Task GetSettingsAsync_Fails_WhenWorkspaceDoesNotExist()
     {

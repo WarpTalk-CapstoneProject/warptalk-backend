@@ -41,6 +41,20 @@ public class CreditsController : ControllerBase
         return this.ToActionResult(result);
     }
 
+    /// <summary>
+    /// Credits the workspace kept from a subscription that ended — "X credits kept, renew to use
+    /// them" on the billing page. Same audience as the balance: every internal member spends these
+    /// credits once the plan is renewed. Answers 200 with zero when nothing is frozen, and for a
+    /// workspace with no live subscription, which the balance endpoint above cannot.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId}/frozen")]
+    [RequireInternalWorkspaceMember]
+    public async Task<ActionResult<FrozenCreditsDto>> GetFrozenCredits(Guid workspaceId, CancellationToken cancellationToken)
+    {
+        var result = await _creditService.GetFrozenCreditsAsync(workspaceId, cancellationToken);
+        return this.ToActionResult(result);
+    }
+
     // Manual credit adjustment moved to POST ~/api/v1/admin/billing/workspaces/{id}/credits/adjust
     // (AdminWorkspaceBillingController): system-admin POLICY rather than Roles = "Admin, admin"
     // (which admits the global Admin row), a bounded amount, and an entry in the platform audit log

@@ -179,7 +179,22 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
             return Result.Failure<AdminWorkspaceBillingActionResultDto>(staged.Error!, NormalizeCode(staged.ErrorCode));
         }
 
-        var (subscription, entry, balanceBefore) = staged.Value!;
+        var (subscription, entry, balanceBefore, frozenBefore) = staged.Value!;
+        var before = new Dictionary<string, string?> { ["credits_remaining"] = Invariant(balanceBefore) };
+        var after = new Dictionary<string, string?>
+        {
+            ["credits_remaining"] = Invariant(subscription.CreditsRemaining),
+            ["amount"] = Invariant(request.Amount),
+            ["subscription_id"] = subscription.Id.ToString(),
+        };
+        if (frozenBefore is { } frozen)
+        {
+            // The workspace had no live subscription, so the adjustment went to the credits it
+            // kept from the one that ended. Audited as such: the spendable balance did not move.
+            before["frozen_credits"] = Invariant(frozen);
+            after["frozen_credits"] = Invariant(subscription.FrozenCredits);
+        }
+
         return await RecordThenSaveAsync(
             workspaceId,
             actor,
@@ -187,13 +202,8 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
             AdminAuditEntityTypes.CreditAdjustment,
             entry.Id,
             reason,
-            new Dictionary<string, string?> { ["credits_remaining"] = Invariant(balanceBefore) },
-            new Dictionary<string, string?>
-            {
-                ["credits_remaining"] = Invariant(subscription.CreditsRemaining),
-                ["amount"] = Invariant(request.Amount),
-                ["subscription_id"] = subscription.Id.ToString(),
-            },
+            before,
+            after,
             afterSave: () => Task.FromResult(new AdminWorkspaceBillingActionResultDto(
                 AdminAuditWorkspaceActions.CreditAdjusted,
                 ToSummary(subscription, subscription.Plan, Now()),
@@ -735,7 +745,10 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
         subscription.AutoRenew,
         subscription.CreditsRemaining,
         subscription.CreditsUsedThisCycle,
-        subscription.CreditsPerCycleOverride ?? plan?.CreditsPerCycle ?? 0);
+        subscription.CreditsPerCycleOverride ?? plan?.CreditsPerCycle ?? 0,
+        subscription.FrozenCredits,
+        subscription.CreditsFrozenAt,
+        subscription.FrozenCreditsDormantAt);
 
     private static AdminCreditTransactionDto ToLedgerDto(CreditTransaction tx) => new(
         tx.Id, tx.CreatedAt, tx.Type, tx.Description, tx.ReferenceId, tx.ReferenceType, tx.Amount, tx.BalanceAfter, tx.Currency, tx.Status);

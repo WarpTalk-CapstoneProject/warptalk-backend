@@ -207,6 +207,13 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
+            // 20260926090000_freeze_credits_on_subscription_expiry. Hand-mapped like every other
+            // column here: a property without HasColumnName fails every SELECT over the table.
+            entity.Property(e => e.FrozenCredits)
+                .HasDefaultValue(0)
+                .HasColumnName("frozen_credits");
+            entity.Property(e => e.CreditsFrozenAt).HasColumnName("credits_frozen_at");
+            entity.Property(e => e.FrozenCreditsDormantAt).HasColumnName("frozen_credits_dormant_at");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");

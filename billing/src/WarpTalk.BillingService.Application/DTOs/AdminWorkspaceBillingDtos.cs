@@ -35,7 +35,12 @@ public sealed record AdminWorkspaceSubscriptionSummaryDto(
     bool AutoRenew,
     int CreditsRemaining,
     int CreditsUsedThisCycle,
-    int CreditsPerCycle);
+    int CreditsPerCycle,
+    // Credits kept from this subscription after it ended (CreditFreezeService): not spendable,
+    // restored on renewal, never deleted. Zero on a live subscription.
+    int FrozenCredits = 0,
+    DateTime? CreditsFrozenAt = null,
+    DateTime? FrozenCreditsDormantAt = null);
 
 public sealed record AdminWorkspaceInvoiceSummaryDto(
     int Open,

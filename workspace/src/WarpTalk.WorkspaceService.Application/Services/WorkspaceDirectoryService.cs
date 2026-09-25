@@ -483,7 +483,11 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             maxLanguages is > 0
                 ? (int)Math.Clamp(maxLanguages.Value, int.MinValue, int.MaxValue)
                 : null,
-            snapshot?.PlanSlug));
+            snapshot?.PlanSlug,
+            // Start Translation (translation-room) applies the WT-515 rule with these: only a
+            // snapshot that positively reports no live subscription refuses.
+            SubscriptionKnown: entitlements.IsKnown,
+            HasActiveSubscription: entitlements.HasActiveSubscription));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(

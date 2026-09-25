@@ -235,4 +235,40 @@ public class RoomArtifactLanguagePolicyTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
     }
+
+    /// <summary>
+    /// A summary rewrite or variant is an LLM call on the room. A lapsed workspace may not start
+    /// one — as spoken or in any language — while unknown (no snapshot, WorkspaceService down)
+    /// still allows, the same rule Start Translation applies.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("vi")]
+    public async Task EnsureCanGenerate_Refuses_AWorkspaceWithNoActiveSubscription(string? language)
+    {
+        var room = Room("en", new List<string> { "vi" });
+        _mockWorkspaceMeetingPolicy
+            .Setup(policy => policy.HasActiveSubscriptionAsync(room.WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _policy.EnsureCanGenerateAsync(room, language);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Contains("subscription has expired", result.Error);
+    }
+
+    [Fact]
+    public async Task EnsureCanGenerate_Allows_WhenTheSubscriptionIsUnknown()
+    {
+        var room = Room("en", new List<string> { "vi" });
+        _mockWorkspaceMeetingPolicy
+            .Setup(policy => policy.HasActiveSubscriptionAsync(room.WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((bool?)null);
+
+        var result = await _policy.EnsureCanGenerateAsync(room, null);
+
+        Assert.True(result.IsSuccess);
+    }
 }
+

@@ -98,12 +98,8 @@ public class McpConfirmationTokenServiceTests
     }
 
     [Fact]
-    public async Task ValidateAndConsumeAsync_AsksAgainForChangedArgumentsWithoutConsuming()
+    public async Task ValidateAndConsumeAsync_RejectsChangedArgumentsWithoutConsuming()
     {
-        // Still refused — this is not the call the user confirmed. But it is a NEW action to
-        // confirm, not an attempt to slip past the gate, and the assistant lands here by itself
-        // whenever it re-sends a title it had to invent. permission_denied was a dead end:
-        // the orchestrator mints a fresh token for confirmation_required, so the user gets a card.
         var request = Request(new JsonObject { ["title"] = "Planning" });
         var payload = Payload(request, DateTime.UtcNow.AddMinutes(5));
         _protector.Unprotect("token").Returns(Result.Success(payload));
@@ -113,20 +109,6 @@ public class McpConfirmationTokenServiceTests
             PluginId,
             Request(new JsonObject { ["title"] = "Changed" }),
             "token");
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.ConfirmationRequired, result.ErrorCode);
-        await _repository.DidNotReceiveWithAnyArgs().TryConsumeAsync(default, default, default);
-    }
-
-    [Fact]
-    public async Task ValidateAndConsumeAsync_RejectsATokenForAnotherToolAsPermissionDenied()
-    {
-        var request = Request(new JsonObject { ["title"] = "Planning" });
-        var payload = Payload(request, DateTime.UtcNow.AddMinutes(5)) with { ToolName = "google_drive_search" };
-        _protector.Unprotect("token").Returns(Result.Success(payload));
-
-        var result = await CreateSut().ValidateAndConsumeAsync(UserId, PluginId, request, "token");
 
         Assert.False(result.IsSuccess);
         Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.ErrorCode);

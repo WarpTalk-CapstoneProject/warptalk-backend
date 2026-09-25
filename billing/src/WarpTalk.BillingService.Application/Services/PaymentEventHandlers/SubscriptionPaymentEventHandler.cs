@@ -15,13 +15,16 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubscriptionPaymentEventHandler> _logger;
+    private readonly ICreditFreezeService? _creditFreeze;
 
     public SubscriptionPaymentEventHandler(
         IUnitOfWork unitOfWork,
-        ILogger<SubscriptionPaymentEventHandler> logger)
+        ILogger<SubscriptionPaymentEventHandler> logger,
+        ICreditFreezeService? creditFreeze = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _creditFreeze = creditFreeze;
     }
 
     public bool CanHandle(PaymentEventContext context)
@@ -55,6 +58,16 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
                 context.PaymentId));
 
         await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken);
+
+        // Renewing brings back what the workspace kept when its last subscription ended — in the
+        // same commit as the payment, so there is no moment where the plan is live and the credits
+        // it was promised are still frozen. A checkout after expiry creates a NEW row, which is
+        // why this cannot be left to the old row's own state.
+        if (_creditFreeze is not null)
+        {
+            await _creditFreeze.StageReleaseIntoAsync(subscription, DateTime.UtcNow, cancellationToken);
+        }
+
         context.Subscription = subscription;
         context.SubscriptionChanged = true;
 

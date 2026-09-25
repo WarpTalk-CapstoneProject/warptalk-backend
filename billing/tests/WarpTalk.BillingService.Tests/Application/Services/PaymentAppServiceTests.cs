@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Application.Entitlements;
 using System.Linq.Expressions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -200,6 +201,67 @@ public class PaymentAppServiceTests
             c => c.VerifyWorkspaceRolesAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string[]>()),
             Times.Never);
+    }
+
+    // ── Renewal after expiry re-enables the workspace, immediately ────────────────────────────
+
+    /// <summary>A handler standing in for SubscriptionPaymentEventHandler's renewal outcome.</summary>
+    private sealed class RenewingHandler(Subscription renewed) : IPaymentEventHandler
+    {
+        public bool CanHandle(PaymentEventContext context) => true;
+
+        public Task<Result> HandleAsync(PaymentEventContext context, CancellationToken cancellationToken = default)
+        {
+            context.Subscription = renewed;
+            context.SubscriptionChanged = true;
+            return Task.FromResult(Result.Success());
+        }
+    }
+
+    /// <summary>
+    /// A plan bought through checkout set only SubscriptionChanged, and entitlements were published
+    /// for add-ons alone — so a workspace renewing after expiry kept a snapshot saying "no active
+    /// subscription" and the WT-515 paywall refused the customer who had just paid, until the hourly
+    /// reconcile. And the Redis 'subscription_expired' mark the expiry sweep wrote kept Start
+    /// Translation refused for up to its 24h TTL. Both are cleared by the payment itself now.
+    /// </summary>
+    [Fact]
+    public async Task ProcessPaymentEventAsync_Renewal_RepublishesEntitlementsAndLiftsTheAiSuspension()
+    {
+        var workspaceId = Guid.NewGuid();
+        var renewed = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            IsActive = true,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            ServiceState = SubscriptionConstants.ServiceStates.Healthy,
+        };
+        var entitlements = new Mock<IEntitlementChangePublisher>();
+        var aiState = new Mock<IAiServiceStateStore>();
+        aiState
+            .Setup(s => s.SetAiServiceStateAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        var service = new PaymentAppService(
+            _stripePaymentService.Object,
+            _unitOfWork.Object,
+            Mock.Of<ILogger<PaymentAppService>>(),
+            _messagePublisher.Object,
+            new IPaymentEventHandler[] { new RenewingHandler(renewed) },
+            new Mock<IWorkspaceClient>().Object,
+            Mock.Of<IUsageRateCardRepository>(),
+            entitlements: entitlements.Object,
+            aiServiceStateStore: aiState.Object);
+
+        var request = CreateEvent(PaymentConstants.PaymentTypes.Subscription) with { WorkspaceIdStr = workspaceId.ToString() };
+        var result = await service.ProcessPaymentEventAsync(request);
+
+        Assert.True(result.IsSuccess, result.Error);
+        entitlements.Verify(p => p.EnqueueAsync(
+            workspaceId, EntitlementConstants.Reasons.SubscriptionChanged, It.IsAny<CancellationToken>()), Times.Once);
+        aiState.Verify(s => s.SetAiServiceStateAsync(
+            workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private PaymentAppService CreateService(params IPaymentEventHandler[] handlers)

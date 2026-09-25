@@ -53,6 +53,8 @@ public static class PlatformSettingsCatalog
     // ── Billing ─────────────────────────────────────────────────────────────────────────────
     public const string TrialDays = "billing.trial.days";
     public const string TrialCredits = "billing.trial.credits";
+    public const string FrozenCreditGraceDays = "billing.frozen_credits.grace_days";
+    public const string FrozenCreditPolicyEffectiveAt = "billing.frozen_credits.policy_effective_at";
 
     // ── Notifications & email ───────────────────────────────────────────────────────────────
     public const string EmailFromName = "notifications.email.from_name";
@@ -275,6 +277,27 @@ public static class PlatformSettingsCatalog
             Min = 0, Max = 1_000_000, Unit = "credits",
             Label = "Trial credits",
             Description = "Credits a new trial starts with. Running trials keep their balance.",
+        },
+        new()
+        {
+            // Read by BillingService's SubscriptionExpirationWorker (dormancy sweep) and
+            // CreditService.GetFrozenCreditsAsync (the date shown to the owner).
+            Key = FrozenCreditGraceDays, Category = SettingCategories.Billing, Type = SettingValueType.Integer,
+            Default = Json(30), OwningService = SettingOwners.Billing,
+            Min = 0, Max = 3650, Unit = "days",
+            Label = "Frozen credit grace window",
+            Description = "Days an ended subscription's kept credits wait for a renewal before they are marked dormant. Dormant credits are never deleted and still come back on renewal.",
+        },
+        new()
+        {
+            // Read by BillingService's SubscriptionExpirationWorker. Empty = the moment migration
+            // 20260926090000 ran (recorded in subscription.billing_policy_config), which is the
+            // owner's rule: a subscription that ended before the policy shipped is grandfathered.
+            Key = FrozenCreditPolicyEffectiveAt, Category = SettingCategories.Billing, Type = SettingValueType.String,
+            Default = Json(""), OwningService = SettingOwners.Billing, Risky = true,
+            MaxLength = 20, Pattern = @"^$|^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+            Label = "Credit forfeit policy effective from (UTC)",
+            Description = "Subscriptions that ended before this instant keep their WHOLE balance frozen (grandfathered); only those ending at or after it forfeit plan credits above the rollover cap. Empty means the moment the policy was deployed. Format 2026-09-26T09:00:00Z.",
         },
 
         // Notifications & email

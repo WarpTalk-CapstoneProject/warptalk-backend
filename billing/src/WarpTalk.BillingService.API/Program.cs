@@ -109,6 +109,9 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<IPackageCatalogService, PackageCatalogService>();
     builder.Services.AddScoped<ICustomerCatalogService, CustomerCatalogService>();
     builder.Services.AddScoped<ICreditPackExpiryService, CreditPackExpiryService>();
+    // Frozen credits: what an ended subscription's balance becomes (SubscriptionExpirationWorker,
+    // SubscriptionPaymentEventHandler). See CreditFreezeService for the policy.
+    builder.Services.AddScoped<ICreditFreezeService, CreditFreezeService>();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();

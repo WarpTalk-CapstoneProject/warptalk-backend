@@ -16,6 +16,25 @@ public record CreditBalanceDto(
     DateTime CurrentPeriodEnd
 );
 
+/// <summary>
+/// Credits a workspace kept from a subscription that ended (CreditFreezeService). Shown on the
+/// billing page as "X credits kept — renew to use them". Zero when nothing is frozen.
+/// </summary>
+/// <param name="FrozenCredits">Kept and not spendable until the workspace renews.</param>
+/// <param name="FrozenAt">When the ended subscription's balance was frozen.</param>
+/// <param name="EndedAt">When that subscription stopped being usable.</param>
+/// <param name="DormantSince">Set once the grace window passed without a renewal. Still kept.</param>
+/// <param name="GraceEndsAt">When frozen credits become dormant, if they are not dormant yet.</param>
+/// <param name="HasActiveSubscription">Whether the workspace has a live plan right now.</param>
+public record FrozenCreditsDto(
+    Guid WorkspaceId,
+    int FrozenCredits,
+    DateTime? FrozenAt,
+    DateTime? EndedAt,
+    DateTime? DormantSince,
+    DateTime? GraceEndsAt,
+    bool HasActiveSubscription);
+
 public record ConsumeCreditsRequest(
     [Required]
     Guid WorkspaceId,

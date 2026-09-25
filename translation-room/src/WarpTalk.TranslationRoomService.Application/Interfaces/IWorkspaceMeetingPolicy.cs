@@ -88,4 +88,18 @@ public interface IWorkspaceMeetingPolicy
     Task<Result> EnsureWorkspaceCanHostMeetingsAsync(
         Guid workspaceId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether the workspace has a live subscription, from WorkspaceService's replicated
+    /// entitlement snapshot — the same answer the WT-515 paywall gives at room creation.
+    /// </summary>
+    /// <returns>
+    /// True or false when the snapshot knows; NULL when it does not (no snapshot yet, an older
+    /// WorkspaceService, or the call failed). Null must be read as "allow": it is the seconds after
+    /// a payment before the snapshot lands, or an outage — and billing still refuses every charge
+    /// for a workspace without a live subscription, which stops the room.
+    /// </returns>
+    Task<bool?> HasActiveSubscriptionAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
 }
