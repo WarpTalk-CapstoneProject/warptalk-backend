@@ -159,7 +159,7 @@ public sealed class ProviderMetricsCalculatorTests
     }
 
     [Fact]
-    public void Stripe_counts_paid_and_failed_payments_and_has_no_cost()
+    public void Stripe_counts_paid_and_failed_payments_and_its_cost_is_unknown_until_a_fee_is_read()
     {
         var input = Inputs(ProviderCatalog.Stripe, payments:
         [
@@ -173,7 +173,7 @@ public sealed class ProviderMetricsCalculatorTests
         figures.FailedPayments.Should().Be(1);
         figures.VolumeVnd.Should().Be(750_000m);
         figures.CostUsd.Should().BeNull();
-        NoteOf(input, figures, Metrics.CostUsd).Should().Contain("fees are not synced");
+        NoteOf(input, figures, Metrics.CostUsd).Should().Contain("none has been read");
     }
 
     [Theory]

@@ -32,14 +32,17 @@ public class PaymentsController : ControllerBase
     private readonly IStripeWebhookService _stripeWebhookService;
     private readonly IWorkspaceClient _workspaceClient;
     private readonly IStaffAccessResolver? _staffAccess;
+    private readonly IProviderCallRecorder? _calls;
 
     public PaymentsController(
         IPaymentService paymentService,
         IPaymentAppService paymentAppService,
         IStripeWebhookService stripeWebhookService,
         IWorkspaceClient workspaceClient,
-        IStaffAccessResolver? staffAccess = null)
+        IStaffAccessResolver? staffAccess = null,
+        IProviderCallRecorder? calls = null)
     {
+        _calls = calls;
         _paymentService = paymentService;
         _paymentAppService = paymentAppService;
         _stripeWebhookService = stripeWebhookService;
@@ -184,9 +187,20 @@ public class PaymentsController : ControllerBase
         var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
         var stripeSignature = Request.Headers[BillingMessageConstants.Webhook.StripeSignatureHeader].ToString();
 
+        // Admin Providers page: every delivery counted as received and, by outcome, verified and
+        // handled (ok), refused for its signature (auth) or failed in our handler (error). Inbound
+        // deliveries are shown apart from our calls and never move Stripe's own success rate.
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        void Count(string outcome) => _calls?.Record(
+            WarpTalk.BillingService.Domain.Constants.ProviderCatalog.Stripe,
+            WarpTalk.BillingService.Application.Services.ProviderMetricsCalculator.WebhookOperation,
+            outcome,
+            (long)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+
         try
         {
             var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
+            Count(result.IsSuccess ? "ok" : "error");
             if (!result.IsSuccess)
             {
                 // 500, not 400. WT-370: the service only reports a failure here when a
@@ -203,10 +217,12 @@ public class PaymentsController : ControllerBase
         }
         catch (Stripe.StripeException ex)
         {
+            Count("auth");
             return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
         }
         catch (Exception ex)
         {
+            Count("error");
             return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse(ex.Message, ErrorCodes.InternalServerError));
         }
     }

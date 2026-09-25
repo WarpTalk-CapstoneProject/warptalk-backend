@@ -15,4 +15,10 @@ public sealed class ProviderStatusOptions
 
     /// <summary>Provider-call copy interval (Redis → Postgres); 0 switches it off.</summary>
     public int CallStatsSyncIntervalMinutes { get; set; } = 2;
+
+    /// <summary>Stripe fee read interval (StripeFeeSyncWorker); 0 switches it off.</summary>
+    public int StripeFeeSyncIntervalMinutes { get; set; } = 10;
+
+    /// <summary>Payments read per tick — bounds the 90-day backfill against Stripe's rate limit.</summary>
+    public int StripeFeeBatchSize { get; set; } = 25;
 }

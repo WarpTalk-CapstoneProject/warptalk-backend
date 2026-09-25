@@ -169,9 +169,17 @@ public sealed class AdminProvidersService : IAdminProvidersService
         {
             note = string.Create(Invariant, $"{rate:0.##}% of our calls failed in the last 2 h");
         }
-        else if (fromCalls is null && input.Provider is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia)
+        else if (fromCalls is null && HasCallMetrics(input.Provider))
         {
             note = "too few calls in the last 2 h to judge from our own traffic";
+        }
+
+        if (input.Provider == ProviderCatalog.Stripe)
+        {
+            // Checked 2026-09-25: status.stripe.com is not a statuspage.io page, and its legacy
+            // /current JSON still answers but stopped updating in February 2024.
+            note = (note is null ? string.Empty : note + "; ")
+                + "Stripe publishes no live machine-readable status, so this is judged from WarpTalk's own Stripe calls only";
         }
 
         return (status is null || Rank(status) < 0 ? Unknown : status, source, note);
@@ -187,8 +195,9 @@ public sealed class AdminProvidersService : IAdminProvidersService
         {
             case ProviderCatalog.OpenAi:
             case ProviderCatalog.Cartesia:
+            case ProviderCatalog.Stripe:
             {
-                // The AI workers hold the API key, not billing: whether it WORKS is what we can see.
+                // Whether the key WORKS is what the page can see; its value never leaves config.
                 var ok = (last24.Calls ?? 0) - (last24.Failures ?? 0) - (last24.ClientErrors ?? 0);
                 var auth = last24.FailuresByClass.GetValueOrDefault("auth");
                 items.Add(auth > 0 && ok == 0
@@ -202,7 +211,19 @@ public sealed class AdminProvidersService : IAdminProvidersService
                     input.CallsTrackedSince is { } since ? "since " + since.ToString("yyyy-MM-dd HH:mm 'UTC'", Invariant) : "no call recorded yet", input.CallsTrackedSince is null ? "no" : "yes"));
                 var models = input.Calls.Where(c => c.Provider == provider && c.HourStart >= _time.GetUtcNow().UtcDateTime.AddHours(-24) && c.Model != "-")
                     .Select(c => c.Model).Distinct(StringComparer.Ordinal).OrderBy(m => m, StringComparer.Ordinal).ToList();
-                if (models.Count > 0) items.Add(Item("models", "Models called (24 h)", string.Join(", ", models), "info"));
+                if (models.Count > 0 && provider != ProviderCatalog.Stripe) items.Add(Item("models", "Models called (24 h)", string.Join(", ", models), "info"));
+                if (provider == ProviderCatalog.Stripe)
+                {
+                    items.Add(Item("secretKey", "Secret key", _options.StripeSecretKeyConfigured ? "configured" : "not configured", _options.StripeSecretKeyConfigured ? "yes" : "no"));
+                    items.Add(Item("webhookSecret", "Webhook secret", _options.StripeWebhookSecretConfigured ? "configured" : "not configured", _options.StripeWebhookSecretConfigured ? "yes" : "no"));
+                    items.Add(Item("webhooks", "Webhooks received (24 h)",
+                        last24.Webhooks == 0 ? "none" : $"{last24.Webhooks} ({last24.WebhookFailures} refused or failed)",
+                        last24.WebhookFailures > 0 ? "no" : "info"));
+                    items.Add(Item("fees", "Processing fees",
+                        last24.PaidPayments == 0 ? "read per paid payment (balance transaction)" : $"read for {last24.FeesRead} of {last24.PaidPayments} payments in 24 h",
+                        last24.PaidPayments > 0 && last24.FeesRead < last24.PaidPayments ? "info" : "yes"));
+                }
+
                 if (provider == ProviderCatalog.Cartesia)
                 {
                     var sync = _cartesiaSync is null ? null : await _cartesiaSync.GetAsync(ct);
@@ -221,15 +242,10 @@ public sealed class AdminProvidersService : IAdminProvidersService
                     input.LiveKitUsdPerParticipantMinute is { } price ? price.ToString("0.######", Invariant) : "not configured",
                     input.LiveKitUsdPerParticipantMinute is null ? "no" : "yes"));
                 break;
-            case ProviderCatalog.Stripe:
-                items.Add(Item("secretKey", "Secret key", _options.StripeSecretKeyConfigured ? "configured" : "not configured", _options.StripeSecretKeyConfigured ? "yes" : "no"));
-                items.Add(Item("webhookSecret", "Webhook secret", _options.StripeWebhookSecretConfigured ? "configured" : "not configured", _options.StripeWebhookSecretConfigured ? "yes" : "no"));
-                items.Add(Item("fees", "Processing fees", "not synced", "info"));
-                break;
         }
 
         items.Add(page is null
-            ? Item("statusPage", "Status page", provider == ProviderCatalog.Stripe ? "no statuspage.io API" : "not configured", "no")
+            ? Item("statusPage", "Status page", provider == ProviderCatalog.Stripe ? "no live API (status judged from our calls)" : "not configured", provider == ProviderCatalog.Stripe ? "info" : "no")
             : Item("statusPage", "Status page", page.Url, page.Error is null ? "yes" : "info"));
         return items;
     }
@@ -291,7 +307,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
             var totals = selected
                 .Select(o => new AdminProviderTotalDto(o.Key, o.Unit, ValueOf(total, o.Key), NoteOf(input, total, o.Key)))
                 .ToList();
-            if (info.Key is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia)
+            if (HasCallMetrics(info.Key))
             {
                 totals.Add(new AdminProviderTotalDto("successRate", Units.Percent, total.SuccessRate, null));
                 totals.Add(new AdminProviderTotalDto("p99Ms", Units.Ms, total.P99Ms, null));
@@ -506,7 +522,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
 
     private async Task<Slices> ByCallsAsync(string provider, DateTime from, DateTime to, Func<ProviderCallStat, string> key, CancellationToken ct)
     {
-        if (provider is not (ProviderCatalog.OpenAi or ProviderCatalog.Cartesia))
+        if (!HasCallMetrics(provider))
         {
             return Unavailable(Units.Count, "WarpTalk does not record calls to this provider");
         }
@@ -542,9 +558,12 @@ public sealed class AdminProvidersService : IAdminProvidersService
             ("network_error", Sum(r => r.NetworkError)),
             ("error", Sum(r => r.Error)),
             ("client_error", Sum(r => r.ClientError)),
+            ("declined", Sum(r => r.Declined)),
         };
         var items = counts.Select(c => new AdminProviderBreakdownItemDto(c.Key, c.Key, c.Count, null, null, null, c.Count, null)).ToList();
-        var note = counts.All(c => c.Count == 0) ? "no failed call in the period" : "client_error is a request WarpTalk got wrong and does not count against the provider";
+        var note = counts.All(c => c.Count == 0)
+            ? "no failed call in the period"
+            : "client_error is a request WarpTalk got wrong and declined a card the issuer refused; neither counts against the provider";
         return new Slices(Units.Count, true, items, note);
     }
 
@@ -578,17 +597,17 @@ public sealed class AdminProvidersService : IAdminProvidersService
             var coveredFrom = await StatusPageCoveredFromAsync(info.Key, ct);
             var uptime = Uptime(input, atoms, localDays, incidents, coveredFrom);
 
+            var hasPage = _options.StatusPages.ContainsKey(info.Key);
+            var earlier = hasPage ? "earlier days show only the provider's own status page" : "earlier days are not tracked (no status page to fall back on)";
             string? note = null;
             if (input.CallsTrackedSince is { } since && since > from)
             {
-                note = "our calls are tracked since " + TimeZoneInfo.ConvertTimeFromUtc(since, timeZone).ToString("yyyy-MM-dd", Invariant)
-                    + "; earlier days show only the provider's own status page";
+                note = "our calls are tracked since " + TimeZoneInfo.ConvertTimeFromUtc(since, timeZone).ToString("yyyy-MM-dd", Invariant) + "; " + earlier;
             }
             else if (input.CallsTrackedSince is null)
             {
-                note = info.Key is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia
-                    ? "no call to this provider has been recorded yet; days show only the provider's own status page"
-                    : "WarpTalk does not record its calls to this provider; days show only the provider's own status page";
+                note = (HasCallMetrics(info.Key) ? "no call to this provider has been recorded yet" : "WarpTalk does not record its calls to this provider")
+                    + (hasPage ? "; days show only the provider's own status page" : "; with no status page either, uptime is not tracked");
             }
 
             return Result.Success(new AdminProviderUptimeDto(
@@ -630,6 +649,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
         string? mediaError = null;
         decimal? livekitPrice = null;
         IReadOnlyList<ProviderPaymentRow> payments = [];
+        IReadOnlyList<PaymentFeeRow> fees = [];
         DateTime? trackedSince = null;
 
         switch (provider)
@@ -656,10 +676,11 @@ public sealed class AdminProvidersService : IAdminProvidersService
                 break;
             case ProviderCatalog.Stripe:
                 payments = await _unitOfWork.PaymentRepository.GetProviderPaymentsAsync(ProviderCatalog.Stripe, from, to, ct);
+                fees = await _unitOfWork.PaymentProviderFees.GetPaidInAsync(ProviderCatalog.Stripe, from, to, ct);
                 break;
         }
 
-        if (provider is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia)
+        if (HasCallMetrics(provider))
         {
             trackedSince = await _unitOfWork.ProviderCallStats.GetFirstHourAsync(provider, ct) is { } first
                 ? DateTime.SpecifyKind(first, DateTimeKind.Utc)
@@ -668,7 +689,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
 
         return new ProviderInputs(
             provider, now, shared.Fx, shared.Slots, cartesia, usdPerCredit,
-            shared.Calls, trackedSince, media, mediaError, livekitPrice, payments);
+            shared.Calls, trackedSince, media, mediaError, livekitPrice, payments, fees);
     }
 
     private async Task<decimal?> LiveKitPriceAsync(CancellationToken ct)

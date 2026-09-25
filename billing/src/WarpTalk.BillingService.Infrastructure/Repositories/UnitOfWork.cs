@@ -31,6 +31,7 @@ public class UnitOfWork : IUnitOfWork
         FxRates = new FxRateRepository(db);
         ProviderCallStats = new ProviderCallStatRepository(db);
         ProviderStatusIncidents = new ProviderStatusIncidentRepository(db);
+        PaymentProviderFees = new PaymentProviderFeeRepository(db);
         ExpenseCategories = new ExpenseCategoryRepository(db);
         OperatingExpenses = new OperatingExpenseRepository(db);
         ExpenseBudgets = new ExpenseBudgetRepository(db);
@@ -59,6 +60,7 @@ public class UnitOfWork : IUnitOfWork
     public IFxRateRepository FxRates { get; }
     public IProviderCallStatRepository ProviderCallStats { get; }
     public IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
+    public IPaymentProviderFeeRepository PaymentProviderFees { get; }
     public IExpenseCategoryRepository ExpenseCategories { get; }
     public IOperatingExpenseRepository OperatingExpenses { get; }
     public IExpenseBudgetRepository ExpenseBudgets { get; }

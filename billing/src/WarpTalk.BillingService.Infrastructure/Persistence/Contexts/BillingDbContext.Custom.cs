@@ -34,6 +34,9 @@ public partial class BillingDbContext
     /// <summary>Incidents from providers' public status pages (migration 20260925090000, admin Providers page).</summary>
     public DbSet<ProviderStatusIncident> ProviderStatusIncidents => Set<ProviderStatusIncident>();
 
+    /// <summary>Provider processing fees per paid payment (migration 20260925200000).</summary>
+    public DbSet<PaymentProviderFee> PaymentProviderFees => Set<PaymentProviderFee>();
+
     /// <summary>G12 operating expenses (migration 20260925180000, /admin/finance/expenses).</summary>
     public DbSet<ExpenseCategory> ExpenseCategories => Set<ExpenseCategory>();
     public DbSet<OperatingExpense> OperatingExpenses => Set<OperatingExpense>();
@@ -144,10 +147,33 @@ public partial class BillingDbContext
             entity.Property(e => e.Timeout).HasColumnName("timeout");
             entity.Property(e => e.NetworkError).HasColumnName("network_error");
             entity.Property(e => e.Error).HasColumnName("error");
+            entity.Property(e => e.Declined).HasColumnName("declined");
             entity.Property(e => e.LatencyCount).HasColumnName("latency_count");
             entity.Property(e => e.LatencySumMs).HasColumnName("latency_sum_ms");
             entity.Property(e => e.LatencyBuckets).HasColumnName("latency_buckets").HasColumnType("jsonb");
             entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        modelBuilder.Entity<PaymentProviderFee>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("payment_provider_fees_pkey");
+            entity.ToTable("payment_provider_fees", "subscription");
+            entity.HasIndex(e => e.PaymentId).IsUnique().HasDatabaseName("ux_payment_provider_fees_payment");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.Status).HasColumnName("status").HasMaxLength(20);
+            entity.Property(e => e.BalanceTransactionId).HasColumnName("balance_transaction_id").HasMaxLength(255);
+            entity.Property(e => e.ChargeId).HasColumnName("charge_id").HasMaxLength(255);
+            entity.Property(e => e.Currency).HasColumnName("currency").HasMaxLength(3);
+            entity.Property(e => e.Amount).HasColumnName("amount").HasPrecision(18, 4);
+            entity.Property(e => e.Fee).HasColumnName("fee").HasPrecision(18, 4);
+            entity.Property(e => e.Net).HasColumnName("net").HasPrecision(18, 4);
+            entity.Property(e => e.ExchangeRate).HasColumnName("exchange_rate").HasPrecision(24, 10);
+            entity.Property(e => e.OccurredAt).HasColumnName("occurred_at");
+            entity.Property(e => e.Error).HasColumnName("error").HasMaxLength(500);
+            entity.Property(e => e.FetchedAt).HasColumnName("fetched_at");
         });
 
         modelBuilder.Entity<ProviderStatusIncident>(entity =>

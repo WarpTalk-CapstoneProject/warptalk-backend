@@ -88,7 +88,13 @@ public static class BillingInfrastructureServiceCollectionExtensions
         // G11: pushes credit packs, add-ons and coupons to Stripe Products/Prices/Coupons (admin only).
         services.AddScoped<IStripeCatalogSync, StripeCatalogSyncService>();
         // Stripe's USD→VND rate, recorded daily (FxRateRefreshWorker) and read by every VND report.
-        services.AddSingleton<IStripeFxClient, StripeFxClient>();
+        // Every Stripe call is counted for the admin Providers page (StripeCallObserver); the FX
+        // client builds its own StripeClient, so it is handed the observed HTTP client too.
+        services.AddSingleton<IProviderCallRecorder, RedisProviderCallRecorder>();
+        services.AddSingleton<IStripeFxClient>(sp => new StripeFxClient(
+            configuration["Stripe:SecretKey"],
+            configuration["Stripe:FxQuotesApiVersion"],
+            StripeCallObserver.CreateStripeHttpClient(sp.GetRequiredService<IProviderCallRecorder>())));
         services.AddScoped<IFxRateService, WarpTalk.BillingService.Application.Services.FxRateService>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 
