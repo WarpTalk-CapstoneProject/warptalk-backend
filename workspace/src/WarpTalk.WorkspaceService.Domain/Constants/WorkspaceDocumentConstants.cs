@@ -2,6 +2,18 @@ namespace WarpTalk.WorkspaceService.Domain.Constants;
 
 public static class WorkspaceDocumentConstants
 {
+    /// <summary>
+    /// The upload size when platform setting limits.document_upload_mb is not set. The live limit
+    /// is that setting (per workspace, per plan, platform), read on every upload.
+    /// </summary>
+    public const int DefaultMaxUploadMb = 10;
+
+    /// <summary>
+    /// The request-level ceiling: the setting's maximum (100 MB) plus multipart framing. The
+    /// per-workspace limit is enforced below it by the service, which can say which limit applied.
+    /// </summary>
+    public const long MaxUploadRequestBytes = 101L * 1024 * 1024;
+
     public const string SensitiveConfidentialityLevel = "restricted";
     public const string NonSensitiveConfidentialityLevel = "public_internal";
     public const string RetentionStateActive = "active";
