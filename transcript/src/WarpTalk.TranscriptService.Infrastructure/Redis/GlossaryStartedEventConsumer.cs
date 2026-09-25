@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -396,6 +397,24 @@ public class GlossaryStartedEventConsumer : BackgroundService
     }
 
     /// <summary>
+    /// Both switches over the platform glossary: the deploy-time kill switch (GlobalGlossary:Enabled)
+    /// and the platform feature flag flags.global_glossary from /admin/settings, evaluated for this
+    /// workspace (kill switch, deny/allow lists, rollout) at every meeting start. The flag can only
+    /// narrow the deploy switch, never widen it.
+    /// </summary>
+    public async Task<bool> GlobalGlossaryEnabledAsync(IServiceScope scope, Guid workspaceId, CancellationToken ct)
+    {
+        if (!_configuration.GetValue("GlobalGlossary:Enabled", true))
+        {
+            return false;
+        }
+
+        var settings = scope.ServiceProvider.GetService<IPlatformSettings>();
+        return settings is null
+            || await settings.IsEnabledAsync(PlatformSettingsCatalog.FlagGlobalGlossary, new SettingContext(workspaceId), ct: ct);
+    }
+
+    /// <summary>
     /// The system-managed global glossary (published rows of transcript.global_glossary_terms)
     /// — gated by both a process-wide kill switch (GlobalGlossary:Enabled, default true; flips
     /// off instantly without a DB change or redeploy if a bad term is discovered) and a
@@ -404,10 +423,9 @@ public class GlossaryStartedEventConsumer : BackgroundService
     /// uses for AllowExternalLlm). Fails OPEN on gRPC error (defaults to included) — same
     /// "opt-out, unset ⇒ allowed" convention as everywhere else this policy is resolved.
     /// </summary>
-    private async Task<List<PromptTerm>> LoadGlobalTermsAsync(IServiceScope scope, Guid workspaceId, CancellationToken ct)
+    internal async Task<List<PromptTerm>> LoadGlobalTermsAsync(IServiceScope scope, Guid workspaceId, CancellationToken ct)
     {
-        var killSwitchEnabled = _configuration.GetValue("GlobalGlossary:Enabled", true);
-        if (!killSwitchEnabled)
+        if (!await GlobalGlossaryEnabledAsync(scope, workspaceId, ct))
         {
             return new List<PromptTerm>();
         }

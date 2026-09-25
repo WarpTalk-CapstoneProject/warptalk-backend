@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
@@ -29,6 +30,11 @@ public class MeetingRoomService : IMeetingRoomService
     // Gateway process that owns TranslationRoomHub.
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
+    private readonly IPlatformSettings? _platformSettings;
+
+    /// <summary>User-facing refusal when meetings.recording.enabled is off.</summary>
+    public const string RecordingDisabledMessage = "Recording is turned off on this platform right now.";
+
     public MeetingRoomService(
         ILiveKitTokenService tokenService,
         ITranslationRoomGrpcService grpcService,
@@ -36,8 +42,10 @@ public class MeetingRoomService : IMeetingRoomService
         IRedisService redisService,
         ILiveKitEgressService egressService,
         ILiveKitRoomAdminService roomAdminService,
-        ILogger<MeetingRoomService> logger)
+        ILogger<MeetingRoomService> logger,
+        IPlatformSettings? platformSettings = null)
     {
+        _platformSettings = platformSettings;
         _tokenService = tokenService;
         _grpcService = grpcService;
         _unitOfWork = unitOfWork;
@@ -1081,6 +1089,12 @@ public class MeetingRoomService : IMeetingRoomService
         {
             if (!string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
                 return Result.Failure<RecordingStateDto>("Recording is already in progress.", ErrorCodes.InvalidState);
+
+            // The platform kill switch (meetings.recording.enabled), read on every start: off refuses
+            // new recordings; one already running is stopped the normal way below.
+            if (_platformSettings is not null
+                && !await _platformSettings.GetBooleanAsync(PlatformSettingsCatalog.RecordingEnabled))
+                return Result.Failure<RecordingStateDto>(RecordingDisabledMessage, ErrorCodes.Forbidden);
 
             var startResult = await _egressService.StartRoomCompositeEgressAsync(meetingRoom.ProviderRoomName);
             if (!startResult.IsSuccess || string.IsNullOrEmpty(startResult.Value))

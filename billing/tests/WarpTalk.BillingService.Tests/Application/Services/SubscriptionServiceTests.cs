@@ -693,6 +693,41 @@ public class SubscriptionServiceTests
             s.OwnerEmailDomain == "acme.com"), default), Times.Once);
     }
 
+    /// <summary>
+    /// billing.trial.days / billing.trial.credits from /admin/settings are read for each new trial:
+    /// the same service instance grants the new values as soon as they are published.
+    /// </summary>
+    [Fact]
+    public async Task CreateTrialSubscriptionAsync_Uses_The_Live_Trial_Settings()
+    {
+        var source = new WarpTalk.Shared.PlatformSettings.InMemoryPlatformSettingsSource();
+        var reader = new WarpTalk.Shared.PlatformSettings.PlatformSettingsReader(
+            source, Microsoft.Extensions.Logging.Abstractions.NullLogger<WarpTalk.Shared.PlatformSettings.PlatformSettingsReader>.Instance,
+            cacheTtl: TimeSpan.Zero);
+        var service = new SubscriptionService(
+            _mockUnitOfWork.Object,
+            new Mock<ILogger<SubscriptionService>>().Object,
+            _mockMessagePublisher.Object,
+            _mockStripePaymentService.Object,
+            CreatePricingConfigService(),
+            new Mock<IWorkspaceClient>().Object,
+            _mockAiServiceStateStore.Object,
+            platformSettings: reader);
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, Slug = "enterprise", IsActive = true };
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+
+        source.Set(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.TrialDays, 30)
+              .Set(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.TrialCredits, 50_000);
+        var first = await service.CreateTrialSubscriptionAsync(new TrialSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), "ceo@one.example"));
+        first.Value!.CreditsRemaining.Should().Be(50_000);
+        (first.Value.TrialEndsAt!.Value - DateTime.UtcNow).TotalDays.Should().BeApproximately(30, 0.1);
+
+        source.Set(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.TrialDays, 7);
+        var second = await service.CreateTrialSubscriptionAsync(new TrialSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), "ceo@two.example"));
+        (second.Value!.TrialEndsAt!.Value - DateTime.UtcNow).TotalDays.Should().BeApproximately(7, 0.1);
+    }
+
     [Fact]
     public async Task CreateTrialSubscriptionAsync_Should_Block_Duplicate_Domain()
     {

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Security.Cryptography;
 using System.Threading;
@@ -31,6 +32,7 @@ public class AuthService : IAuthService
     private readonly AuthSettings _authSettings;
     private readonly ILogger<AuthService> _logger;
     private readonly TimeSpan _lockoutDuration;
+    private readonly IPlatformSettings? _platformSettings;
     private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
     private readonly IAuthEmailSender _authEmailSender;
 
@@ -46,9 +48,11 @@ public class AuthService : IAuthService
         ILogger<AuthService> logger,
         IWorkspaceInvitationClient workspaceInvitationClient,
         IAuthEmailSender authEmailSender,
-        IStaffAccessService? staffAccess = null)
+        IStaffAccessService? staffAccess = null,
+        IPlatformSettings? platformSettings = null)
     {
         _staffAccess = staffAccess;
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
         _jwtGenerator = jwtGenerator;
@@ -60,6 +64,18 @@ public class AuthService : IAuthService
         _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
         _workspaceInvitationClient = workspaceInvitationClient;
         _authEmailSender = authEmailSender;
+    }
+
+    /// <summary>
+    /// Failed attempts before a lockout and how long it lasts: live from /admin/settings
+    /// (security.lockout.*), with AuthSettings as the deploy-time fallback. Read on each failure.
+    /// </summary>
+    public async Task<(int MaxAttempts, TimeSpan Duration)> LockoutPolicyAsync(CancellationToken ct = default)
+    {
+        if (_platformSettings is null) return (_authSettings.MaxFailedAttempts, _lockoutDuration);
+        var attempts = await _platformSettings.GetInt32Async(PlatformSettingsCatalog.LockoutMaxFailedAttempts, _authSettings.MaxFailedAttempts, ct: ct);
+        var minutes = await _platformSettings.GetInt32Async(PlatformSettingsCatalog.LockoutDurationMinutes, _authSettings.LockoutDurationMinutes, ct: ct);
+        return (attempts, TimeSpan.FromMinutes(minutes));
     }
 
     public async Task<Result<RegisterResponse>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
@@ -173,10 +189,11 @@ public class AuthService : IAuthService
             if (user.PasswordHash is null || !_passwordHasher.Verify(request.Password, user.PasswordHash))
             {
                 user.FailedLoginAttempts++;
-                if (user.FailedLoginAttempts >= _authSettings.MaxFailedAttempts)
+                var (maxAttempts, lockoutDuration) = await LockoutPolicyAsync(ct);
+                if (user.FailedLoginAttempts >= maxAttempts)
                 {
                     user.IsLocked = true;
-                    user.LockedUntil = DateTime.UtcNow.Add(_lockoutDuration);
+                    user.LockedUntil = DateTime.UtcNow.Add(lockoutDuration);
                 }
                 _userRepository.Update(user);
                 await _unitOfWork.SaveChangesAsync(ct);

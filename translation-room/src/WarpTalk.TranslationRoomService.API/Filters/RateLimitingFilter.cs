@@ -6,6 +6,7 @@ using System;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.Shared;
+using WarpTalk.Shared.PlatformSettings;
 
 namespace WarpTalk.TranslationRoomService.API.Filters;
 
@@ -13,12 +14,16 @@ public class RateLimitingFilter : IAsyncActionFilter
 {
     private readonly ILogger<RateLimitingFilter> _logger;
     private readonly IConnectionMultiplexer _redis;
-    private const int MaxRequestsPerMinute = 5;
+    private readonly IPlatformSettings? _settings;
 
-    public RateLimitingFilter(ILogger<RateLimitingFilter> logger, IConnectionMultiplexer redis)
+    /// <summary>The limit when platform setting limits.meeting_create_per_minute is not set.</summary>
+    public const int DefaultMaxRequestsPerMinute = 5;
+
+    public RateLimitingFilter(ILogger<RateLimitingFilter> logger, IConnectionMultiplexer redis, IPlatformSettings? settings = null)
     {
         _logger = logger;
         _redis = redis;
+        _settings = settings;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
@@ -36,10 +41,19 @@ public class RateLimitingFilter : IAsyncActionFilter
                 await db.KeyExpireAsync(rateLimitKey, TimeSpan.FromMinutes(1));
             }
 
-            if (currentCount > MaxRequestsPerMinute)
+            // Live from /admin/settings, per workspace when an override exists — read on each
+            // creation so a raised limit for a bulk-scheduling workspace applies at once.
+            var maxPerMinute = _settings is null
+                ? DefaultMaxRequestsPerMinute
+                : await _settings.GetInt32Async(
+                    PlatformSettingsCatalog.MeetingCreatePerMinute,
+                    DefaultMaxRequestsPerMinute,
+                    new SettingContext(request.WorkspaceId));
+
+            if (currentCount > maxPerMinute)
             {
                 _logger.LogWarning("Rate limit exceeded for workspace {WorkspaceId}. Cannot create room.", workspaceId);
-                context.Result = new ObjectResult(new ApiErrorResponse("Rate limit exceeded. Maximum 5 meetings per minute.", ErrorCodes.RateLimitExceeded))
+                context.Result = new ObjectResult(new ApiErrorResponse($"Rate limit exceeded. Maximum {maxPerMinute} meetings per minute.", ErrorCodes.RateLimitExceeded))
                 {
                     StatusCode = 429
                 };

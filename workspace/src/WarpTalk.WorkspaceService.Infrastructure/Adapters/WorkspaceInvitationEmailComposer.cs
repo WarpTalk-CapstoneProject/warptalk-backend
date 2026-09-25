@@ -95,18 +95,13 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
     private async Task<SendEmailResponse> SendAsync(string to, RenderedEmail email, CancellationToken ct)
     {
         var response = await _resendClient.SendEmailAsync(
-            new SendEmailRequest(From(), to, email.Subject, email.HtmlBody, email.TextBody),
+            // No explicit sender: the Resend client composes it from /admin/settings
+            // (notifications.email.*), falling back to the Resend configuration.
+            new SendEmailRequest(string.Empty, to, email.Subject, email.HtmlBody, email.TextBody),
             ct);
         await _deliveries.RecordAsync(email, response.IsSuccess, ct);
         return response;
     }
 
     private string AppBaseUrl() => _configuration["AppBaseUrl"]?.TrimEnd('/') ?? "http://localhost:3000";
-
-    private string From()
-    {
-        var fromEmail = _configuration["Resend:FromEmail"] ?? "no-reply@warptalk.vn";
-        var fromName = _configuration["Resend:FromName"] ?? "WarpTalk";
-        return $"{fromName} <{fromEmail}>";
-    }
 }

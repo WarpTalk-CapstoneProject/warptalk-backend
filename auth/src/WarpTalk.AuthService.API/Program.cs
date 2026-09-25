@@ -24,6 +24,7 @@ using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Email;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.PlatformSettings;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.RequirePublicBaseUrl(builder.Environment, "AppBaseUrl");
@@ -104,6 +105,19 @@ else
     builder.Services.AddHostedService<VoiceCarryOverConsumerWorker>();
     builder.Services.AddScoped<IVoicePreviewQueue, RedisVoicePreviewQueue>();
 }
+// Platform settings (/admin/settings): session lifetimes, password floor, lockout and the Google
+// switch are read live. Without Redis every reader keeps the configuration above.
+builder.Services.AddWarpTalkPlatformSettings();
+builder.Services.AddWarpTalkIntegrationStatus("auth", sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    return IntegrationStatusServiceCollectionExtensions.Snapshot(
+        (IntegrationKeys.GoogleOAuth, IntegrationReport.FromConfiguration(configuration, "sign-in", "Authentication:Google:ClientId")),
+        (IntegrationKeys.Resend, new IntegrationReport(
+            IntegrationReport.FromConfiguration(configuration, null, "Resend:ApiKey").Configured
+            || IntegrationReport.FromConfiguration(configuration, null, "RESEND_API_KEY").Configured, "auth e-mail")),
+        (IntegrationKeys.ObjectStorage, IntegrationReport.ObjectStorage(configuration, "voice samples")));
+});
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAuthEmailSender, ResendAuthEmailSender>();

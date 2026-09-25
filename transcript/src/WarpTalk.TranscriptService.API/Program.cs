@@ -90,6 +90,9 @@ var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
+// Platform settings (/admin/settings): flags.global_glossary is read at every meeting start.
+WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(builder.Services);
+
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
 

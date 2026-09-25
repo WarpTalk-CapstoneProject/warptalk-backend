@@ -13,6 +13,7 @@ public static class AuthConstants
     public const string ErrorUserNotFound = "User not found";
     public const string ErrorInvalidPassword = "Invalid current password";
     public const string ErrorGoogleTokenInvalid = "Invalid Google token";
+    public const string ErrorGoogleSignInDisabled = "Sign in with Google is turned off. Sign in with your email and password.";
     public const string ErrorAccountPending = "Email not verified";
     public const string ErrorCooldownActive = "Too many requests. Please try again later.";
     public const string ErrorRateLimitExceeded = "Too many requests. Please try again later.";

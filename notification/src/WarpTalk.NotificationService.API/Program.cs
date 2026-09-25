@@ -177,6 +177,18 @@ builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
         ?? throw new InvalidOperationException("Redis:ConnectionString is not configured."))
         + ",abortConnect=false"));
 
+// Platform settings (/admin/settings): sender name, address and reply-to are read per e-mail.
+WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(builder.Services);
+WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.AddWarpTalkIntegrationStatus(builder.Services, "notification", sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    return WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.Snapshot(
+        (WarpTalk.Shared.PlatformSettings.IntegrationKeys.Resend, new WarpTalk.Shared.PlatformSettings.IntegrationReport(
+            WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, null, "Resend:ApiKey").Configured
+            || WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, null, "RESEND_API_KEY").Configured,
+            "notification e-mail")));
+});
+
 builder.Services.AddSingleton<WarpTalk.NotificationService.Domain.Interfaces.IMessagePublisher, WarpTalk.NotificationService.Infrastructure.Messaging.RedisMessagePublisher>();
 
 // Register Downstream Worker for Admin Notifications
