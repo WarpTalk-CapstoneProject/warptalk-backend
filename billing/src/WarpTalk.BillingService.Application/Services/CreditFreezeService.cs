@@ -26,6 +26,16 @@ public static class FrozenCreditDefaults
     public const string GraceDaysKey = WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.FrozenCreditGraceDays;
 
     public const int GraceDays = 30;
+
+    /// <summary>
+    /// When the forfeit half of the policy took effect. A platform setting (ISO-8601 UTC) that
+    /// defaults to empty, meaning <see cref="PolicyEffectiveEpochKey"/>: the instant migration
+    /// 20260926090000 ran, recorded in subscription.billing_policy_config.
+    /// </summary>
+    public const string PolicyEffectiveAtKey = WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.FrozenCreditPolicyEffectiveAt;
+
+    /// <summary>billing_policy_config key holding the migration's apply time, in Unix seconds.</summary>
+    public const string PolicyEffectiveEpochKey = "frozen_credit_policy_effective_epoch";
 }
 
 public interface ICreditFreezeService
@@ -34,7 +44,12 @@ public interface ICreditFreezeService
     /// Freezes (and, above the rollover cap, forfeits) the balance of every subscription that has
     /// ended and not been split yet. Saves per subscription. Returns how many were split.
     /// </summary>
-    Task<int> SplitEndedSubscriptionsAsync(DateTime nowUtc, CancellationToken ct = default);
+    /// <param name="policyEffectiveAt">
+    /// Subscriptions that ended BEFORE this instant are grandfathered: their whole balance is
+    /// frozen and nothing is forfeited. Null means the boundary is unknown, and every row is
+    /// grandfathered — the reading that can never destroy credit by mistake.
+    /// </param>
+    Task<int> SplitEndedSubscriptionsAsync(DateTime nowUtc, DateTime? policyEffectiveAt, CancellationToken ct = default);
 
     /// <summary>
     /// Moves every frozen balance whose workspace has a live subscription again into that
@@ -69,6 +84,10 @@ public interface ICreditFreezeService
 ///     SubscriptionDomainService.RenewCycle applies at every cycle close: up to
 ///     plans.rollover_cap_credits carries over, the rest is forfeited. Here "carries over" means
 ///     frozen with the rest, and the forfeit is a ledger row, not a silent overwrite.
+///   * GRANDFATHERED (owner, 2026-09-25): a subscription that ended BEFORE the policy took effect
+///     (platform setting billing.frozen_credits.policy_effective_at; empty = when migration
+///     20260926090000 ran) forfeits nothing — its whole balance is frozen, and the freeze row says
+///     so (reference_type credit_freeze_grandfathered).
 ///   * After the grace window (platform setting billing.frozen_credits.grace_days, default 30) without a
 ///     renewal, frozen credits are marked DORMANT — still kept, still shown, still released by a
 ///     renewal. Nothing here ever deletes paid credit; an admin can adjust it through the audited
@@ -117,7 +136,19 @@ public sealed class CreditFreezeService : ICreditFreezeService
         return new CreditExpirySplit(balance, purchasedKept, planKept, planPart - planKept);
     }
 
-    public async Task<int> SplitEndedSubscriptionsAsync(DateTime nowUtc, CancellationToken ct = default)
+    /// <summary>A grandfathered row: the whole positive balance is kept, nothing is forfeited.</summary>
+    public static CreditExpirySplit GrandfatheredSplit(int balance, long purchasedCredits)
+    {
+        if (balance <= 0)
+        {
+            return new CreditExpirySplit(balance, 0, 0, 0);
+        }
+
+        var purchasedKept = (int)Math.Clamp(purchasedCredits, 0L, balance);
+        return new CreditExpirySplit(balance, purchasedKept, balance - purchasedKept, 0);
+    }
+
+    public async Task<int> SplitEndedSubscriptionsAsync(DateTime nowUtc, DateTime? policyEffectiveAt, CancellationToken ct = default)
     {
         var ended = await _unitOfWork.SubscriptionRepository.FindAsync(
             s => !s.IsActive
@@ -131,7 +162,8 @@ public sealed class CreditFreezeService : ICreditFreezeService
         foreach (var subscription in ended.OrderBy(s => s.CurrentPeriodEnd).Take(BatchSize))
         {
             ct.ThrowIfCancellationRequested();
-            await SplitOneAsync(subscription, nowUtc, ct);
+            var grandfathered = policyEffectiveAt is not { } effective || EndedAt(subscription) < effective;
+            await SplitOneAsync(subscription, nowUtc, grandfathered, ct);
             await _unitOfWork.SaveChangesAsync(ct);
             split++;
         }
@@ -139,13 +171,18 @@ public sealed class CreditFreezeService : ICreditFreezeService
         return split;
     }
 
-    private async Task SplitOneAsync(Subscription subscription, DateTime nowUtc, CancellationToken ct)
+    private async Task SplitOneAsync(Subscription subscription, DateTime nowUtc, bool grandfathered, CancellationToken ct)
     {
         var balance = subscription.CreditsRemaining;
         var plan = await _unitOfWork.Plans.GetByIdAsync(subscription.PlanId, ct);
         var rolloverCap = plan?.RolloverCapCredits ?? 0;
         var purchased = balance > 0 ? await PurchasedCreditsAsync(subscription.Id, ct) : 0L;
-        var result = Split(balance, purchased, rolloverCap);
+        // GRANDFATHERED (owner, 2026-09-25): a subscription that ended before this policy shipped
+        // was never told plan credits would be forfeited, so its whole balance is kept. The split
+        // still names the purchased part, so the ledger line says what the balance was made of.
+        var result = grandfathered
+            ? GrandfatheredSplit(balance, purchased)
+            : Split(balance, purchased, rolloverCap);
 
         if (result.Forfeited > 0)
         {
@@ -180,10 +217,15 @@ public sealed class CreditFreezeService : ICreditFreezeService
                 UserId = subscription.UserId,
                 Amount = -result.Frozen,
                 Type = TransactionConstants.TransactionTypes.CreditFreeze,
-                Description = string.Create(CultureInfo.InvariantCulture,
-                    $"{result.Frozen:N0} credits frozen: subscription ended ({result.PurchasedKept:N0} purchased or granted, {result.PlanKept:N0} plan rollover). Renew to use them."),
+                Description = grandfathered
+                    ? string.Create(CultureInfo.InvariantCulture,
+                        $"{result.Frozen:N0} credits frozen whole (grandfathered: ended before the forfeit policy took effect). Renew to use them.")
+                    : string.Create(CultureInfo.InvariantCulture,
+                        $"{result.Frozen:N0} credits frozen: subscription ended ({result.PurchasedKept:N0} purchased or granted, {result.PlanKept:N0} plan rollover). Renew to use them."),
                 ReferenceId = subscription.Id,
-                ReferenceType = TransactionConstants.ReferenceTypes.SubscriptionExpiry,
+                ReferenceType = grandfathered
+                    ? TransactionConstants.ReferenceTypes.CreditFreezeGrandfathered
+                    : TransactionConstants.ReferenceTypes.SubscriptionExpiry,
                 BalanceAfter = subscription.CreditsRemaining,
                 IdempotencyKey = $"credit_freeze:{subscription.Id}",
                 CreatedAt = nowUtc,
@@ -196,8 +238,8 @@ public sealed class CreditFreezeService : ICreditFreezeService
 
         _logger.LogInformation(
             "subscription_credits_split WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} Balance={Balance} "
-            + "PurchasedKept={PurchasedKept} PlanKept={PlanKept} Forfeited={Forfeited} RolloverCap={RolloverCap}",
-            subscription.WorkspaceId, subscription.Id, balance, result.PurchasedKept, result.PlanKept, result.Forfeited, rolloverCap);
+            + "PurchasedKept={PurchasedKept} PlanKept={PlanKept} Forfeited={Forfeited} RolloverCap={RolloverCap} Grandfathered={Grandfathered}",
+            subscription.WorkspaceId, subscription.Id, balance, result.PurchasedKept, result.PlanKept, result.Forfeited, rolloverCap, grandfathered);
     }
 
     /// <summary>

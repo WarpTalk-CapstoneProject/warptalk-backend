@@ -191,9 +191,52 @@ public class SubscriptionExpirationWorkerTests
             EntitlementConstants.Reasons.SubscriptionExpired,
             It.IsAny<CancellationToken>()), Times.Once);
         // Then the ended balance is frozen / forfeited, released and aged, in that order.
-        freezer.Verify(f => f.SplitEndedSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        freezer.Verify(f => f.SplitEndedSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Once);
         freezer.Verify(f => f.ReleaseFrozenCreditsAsync(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
         // The grace window is the live platform setting, not a constant.
         freezer.Verify(f => f.MarkDormantAsync(It.IsAny<DateTime>(), 7, It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    /// <summary>
+    /// The grandfathering boundary: an operator's platform setting wins; otherwise the instant the
+    /// migration recorded; with neither, null — which grandfathers everything.
+    /// </summary>
+    [Theory]
+    [InlineData("2026-10-01T00:00:00Z", 1_790_000_000.0, "2026-10-01T00:00:00Z")]
+    [InlineData("", 1_790_000_000.0, "2026-09-21T14:13:20Z")]
+    [InlineData("", -1.0, null)]
+    public async Task The_policy_boundary_is_the_setting_then_the_migration_time_then_unknown(
+        string configured, double recordedEpoch, string? expected)
+    {
+        var settings = new Mock<WarpTalk.Shared.PlatformSettings.IPlatformSettings>();
+        settings
+            .Setup(p => p.GetStringAsync(
+                "billing.frozen_credits.policy_effective_at",
+                It.IsAny<string?>(),
+                It.IsAny<WarpTalk.Shared.PlatformSettings.SettingContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configured);
+        var policy = new Mock<IBillingPolicyRepository>();
+        policy
+            .Setup(p => p.ReadPolicyValueAsync("frozen_credit_policy_effective_epoch", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((decimal)recordedEpoch);
+        var services = new ServiceCollection()
+            .AddSingleton(settings.Object)
+            .AddSingleton(policy.Object)
+            .BuildServiceProvider();
+
+        var boundary = await SubscriptionExpirationWorker.ResolvePolicyEffectiveAtAsync(services, CancellationToken.None);
+
+        if (expected is null)
+        {
+            boundary.Should().BeNull();
+        }
+        else
+        {
+            boundary.Should().Be(DateTime.Parse(expected, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal));
+            boundary!.Value.Kind.Should().Be(DateTimeKind.Utc);
+        }
+    }
 }
+

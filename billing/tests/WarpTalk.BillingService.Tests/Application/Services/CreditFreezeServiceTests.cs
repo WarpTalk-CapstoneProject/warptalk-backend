@@ -24,6 +24,9 @@ public class CreditFreezeServiceTests
 {
     private static readonly DateTime Now = new(2026, 9, 26, 9, 0, 0, DateTimeKind.Utc);
 
+    /// <summary>The forfeit policy took effect well before the fixtures' subscriptions ended.</summary>
+    private static readonly DateTime PolicyInForce = Now.AddDays(-30);
+
     private readonly List<Subscription> _subscriptions = new();
     private readonly List<CreditTransaction> _ledger = new();
     private readonly List<Plan> _plans = new();
@@ -137,7 +140,7 @@ public class CreditFreezeServiceTests
         Grant(expired, 200, TransactionConstants.TransactionTypes.TopUp, PackageCatalogConstants.ReferenceTypes.CreditPackPurchase,
             "Credit pack 'S': 200 credits");
 
-        var split = await _service.SplitEndedSubscriptionsAsync(Now);
+        var split = await _service.SplitEndedSubscriptionsAsync(Now, PolicyInForce);
 
         split.Should().Be(1);
         expired.CreditsRemaining.Should().Be(0, "nothing on an ended row stays spendable");
@@ -161,9 +164,9 @@ public class CreditFreezeServiceTests
         var plan = AddPlan(rolloverCap: 0);
         AddSubscription(plan, balance: 500);
 
-        await _service.SplitEndedSubscriptionsAsync(Now);
+        await _service.SplitEndedSubscriptionsAsync(Now, PolicyInForce);
         var rowsAfterFirst = _ledger.Count;
-        var second = await _service.SplitEndedSubscriptionsAsync(Now.AddHours(1));
+        var second = await _service.SplitEndedSubscriptionsAsync(Now.AddHours(1), PolicyInForce);
 
         second.Should().Be(0);
         _ledger.Should().HaveCount(rowsAfterFirst);
@@ -175,7 +178,7 @@ public class CreditFreezeServiceTests
         var plan = AddPlan(rolloverCap: 0);
         var live = AddSubscription(plan, balance: 500, active: true);
 
-        await _service.SplitEndedSubscriptionsAsync(Now);
+        await _service.SplitEndedSubscriptionsAsync(Now, PolicyInForce);
 
         live.CreditsRemaining.Should().Be(500);
         live.CreditsFrozenAt.Should().BeNull();
@@ -188,7 +191,7 @@ public class CreditFreezeServiceTests
         var plan = AddPlan(rolloverCap: 1_000);
         var overdrawn = AddSubscription(plan, balance: -10);
 
-        await _service.SplitEndedSubscriptionsAsync(Now);
+        await _service.SplitEndedSubscriptionsAsync(Now, PolicyInForce);
 
         overdrawn.CreditsRemaining.Should().Be(-10);
         overdrawn.FrozenCredits.Should().Be(0);
@@ -274,4 +277,69 @@ public class CreditFreezeServiceTests
         recent.FrozenCreditsDormantAt.Should().BeNull();
         _ledger.Should().BeEmpty();
     }
+
+    // ── Grandfathering (owner, 2026-09-25) ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Both sides of the boundary in one sweep. A subscription that ended before the policy took
+    /// effect was never told plan credits would be forfeited: its WHOLE balance is frozen. One that
+    /// ended at or after the boundary follows the policy: rollover cap kept, the rest forfeited.
+    /// </summary>
+    [Fact]
+    public async Task A_subscription_that_ended_before_the_policy_is_frozen_whole_and_one_after_it_forfeits()
+    {
+        var effective = Now.AddDays(-2);
+        var plan = AddPlan(rolloverCap: 100);
+        var before = AddSubscription(plan, balance: 1_000);
+        before.CurrentPeriodEnd = effective.AddSeconds(-1);
+        var atBoundary = AddSubscription(plan, balance: 1_000);
+        atBoundary.CurrentPeriodEnd = effective;
+
+        await _service.SplitEndedSubscriptionsAsync(Now, effective);
+
+        before.FrozenCredits.Should().Be(1_000, "grandfathered: nothing forfeited");
+        before.CreditsRemaining.Should().Be(0);
+        _ledger.Should().NotContain(t => t.SubscriptionId == before.Id && t.Type == TransactionConstants.TransactionTypes.CreditForfeit);
+        var grandfathered = _ledger.Single(t => t.SubscriptionId == before.Id);
+        grandfathered.Type.Should().Be(TransactionConstants.TransactionTypes.CreditFreeze);
+        grandfathered.ReferenceType.Should().Be(TransactionConstants.ReferenceTypes.CreditFreezeGrandfathered);
+        grandfathered.Amount.Should().Be(-1_000);
+        grandfathered.IdempotencyKey.Should().Be($"credit_freeze:{before.Id}");
+
+        atBoundary.FrozenCredits.Should().Be(100, "the policy applies from the boundary on");
+        _ledger.Single(t => t.SubscriptionId == atBoundary.Id && t.Type == TransactionConstants.TransactionTypes.CreditForfeit)
+            .Amount.Should().Be(-900);
+        _ledger.Single(t => t.SubscriptionId == atBoundary.Id && t.Type == TransactionConstants.TransactionTypes.CreditFreeze)
+            .ReferenceType.Should().Be(TransactionConstants.ReferenceTypes.SubscriptionExpiry);
+    }
+
+    [Fact]
+    public async Task An_unknown_boundary_grandfathers_everything_rather_than_forfeit_by_mistake()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 700);
+
+        await _service.SplitEndedSubscriptionsAsync(Now, policyEffectiveAt: null);
+
+        ended.FrozenCredits.Should().Be(700);
+        _ledger.Should().NotContain(t => t.Type == TransactionConstants.TransactionTypes.CreditForfeit);
+    }
+
+    [Fact]
+    public async Task A_dormant_grandfathered_balance_still_comes_back_on_renewal()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 2_500;
+        ended.CreditsFrozenAt = Now.AddDays(-60);
+        ended.FrozenCreditsDormantAt = Now.AddDays(-30);
+        var renewed = AddSubscription(plan, balance: 1_000, active: true);
+
+        await _service.StageReleaseIntoAsync(renewed, Now);
+
+        renewed.CreditsRemaining.Should().Be(3_500);
+        ended.FrozenCredits.Should().Be(0);
+        ended.FrozenCreditsDormantAt.Should().BeNull();
+    }
 }
+

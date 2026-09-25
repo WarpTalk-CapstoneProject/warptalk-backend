@@ -20,7 +20,8 @@
 --      read as a refusal — since WT-699 that stopped the room on every redelivered event.
 --      Signature and result shape are unchanged, so CREATE OR REPLACE is enough (no DROP).
 --
---   2. Frozen credits. When a subscription ends without renewal its remaining balance is split:
+--   2. Frozen credits. When a subscription ends without renewal its remaining balance is split
+--      (a subscription that ended BEFORE this migration ran is grandfathered: frozen whole):
 --        * purchased (top-ups, unexpired credit packs) and admin-granted credits -> FROZEN
 --        * plan-included credits up to the plan's rollover_cap_credits          -> FROZEN
 --        * plan-included credits above the rollover cap                          -> FORFEITED
@@ -61,6 +62,14 @@ $$;
 CREATE INDEX IF NOT EXISTS ix_subscriptions_workspace_frozen
     ON subscription.subscriptions (workspace_id)
     WHERE frozen_credits > 0;
+
+-- GRANDFATHERING (owner, 2026-09-25). The instant this migration runs is when the forfeit half of
+-- the policy takes effect: a subscription that ended BEFORE it is frozen whole and forfeits
+-- nothing. Recorded once (ON CONFLICT DO NOTHING keeps the first apply time on a re-run), in Unix
+-- seconds. The platform setting billing.frozen_credits.policy_effective_at overrides it.
+INSERT INTO subscription.billing_policy_config (key, value)
+VALUES ('frozen_credit_policy_effective_epoch', extract(epoch FROM now()))
+ON CONFLICT (key) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS ix_subscriptions_ended_unsplit
     ON subscription.subscriptions (current_period_end)

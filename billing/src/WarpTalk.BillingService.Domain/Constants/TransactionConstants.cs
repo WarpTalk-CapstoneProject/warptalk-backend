@@ -22,6 +22,12 @@ public static class TransactionConstants
         /// <summary>A freeze or forfeit at the end of the subscription the row belongs to.</summary>
         public const string SubscriptionExpiry = "subscription_expiry";
 
+        /// <summary>
+        /// A freeze of the WHOLE balance of a subscription that ended before the forfeit policy took
+        /// effect (grandfathered: nothing forfeited). The type is still credit_freeze.
+        /// </summary>
+        public const string CreditFreezeGrandfathered = "credit_freeze_grandfathered";
+
         /// <summary>Frozen credits moved into a live subscription; ReferenceId is the row they came from.</summary>
         public const string FrozenCreditRelease = "frozen_credit_release";
 

@@ -194,6 +194,42 @@ public class SubscriptionExpirationWorker : BackgroundService
     }
 
     /// <summary>
+    /// The instant the forfeit half of the frozen-credit policy took effect. Subscriptions that
+    /// ended before it are grandfathered (frozen whole). The platform setting wins when an operator
+    /// set one; otherwise it is the moment migration 20260926090000 ran, which recorded itself in
+    /// billing_policy_config. Neither available means null, and null grandfathers everything — the
+    /// only reading that cannot forfeit credit by mistake.
+    /// </summary>
+    public static async Task<DateTime?> ResolvePolicyEffectiveAtAsync(IServiceProvider services, CancellationToken cancellationToken)
+    {
+        var settings = services.GetService<IPlatformSettings>();
+        if (settings is not null)
+        {
+            var configured = await settings.GetStringAsync(FrozenCreditDefaults.PolicyEffectiveAtKey, string.Empty, ct: cancellationToken);
+            if (!string.IsNullOrWhiteSpace(configured)
+                && DateTime.TryParse(
+                    configured,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
+                    out var parsed))
+            {
+                return DateTime.SpecifyKind(parsed, DateTimeKind.Utc);
+            }
+        }
+
+        var policy = services.GetService<IBillingPolicyRepository>();
+        if (policy is null)
+        {
+            return null;
+        }
+
+        var epoch = await policy.ReadPolicyValueAsync(FrozenCreditDefaults.PolicyEffectiveEpochKey, -1m, cancellationToken);
+        return epoch > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds((long)Math.Round(epoch * 1000m, MidpointRounding.AwayFromZero)).UtcDateTime
+            : null;
+    }
+
+    /// <summary>
     /// Freezes the credits of subscriptions that ended, releases frozen credits into renewed ones,
     /// and marks old frozen credits dormant. See CreditFreezeService for the policy.
     /// </summary>
@@ -207,7 +243,8 @@ public class SubscriptionExpirationWorker : BackgroundService
 
         try
         {
-            var split = await freezer.SplitEndedSubscriptionsAsync(now, cancellationToken);
+            var policyEffectiveAt = await ResolvePolicyEffectiveAtAsync(services, cancellationToken);
+            var split = await freezer.SplitEndedSubscriptionsAsync(now, policyEffectiveAt, cancellationToken);
             var released = await freezer.ReleaseFrozenCreditsAsync(now, cancellationToken);
 
             var settings = services.GetService<IPlatformSettings>();
