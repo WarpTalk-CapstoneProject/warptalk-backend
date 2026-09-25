@@ -56,6 +56,12 @@ public sealed class AdminRouteExposureTests
         // same reason as meetings: GET /api/v1/admin/staff is the list the screen calls.
         "/api/v1/admin/staff",
         "/api/v1/admin/staff/{**catch-all}",
+        // G12 pending-work inbox, served by workspace. It reads each owning service's inbox-items
+        // endpoint with the caller's own token, so it can never show more than the caller's role
+        // already could; its writes are triage only (assign, snooze, notes, done), each audited.
+        // Bare + catch-all: GET /api/v1/admin/inbox is the list the page calls.
+        "/api/v1/admin/inbox",
+        "/api/v1/admin/inbox/{**catch-all}",
     ];
 
     private static JsonElement Routes()

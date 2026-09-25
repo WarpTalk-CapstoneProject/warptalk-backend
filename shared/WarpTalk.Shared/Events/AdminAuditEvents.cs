@@ -60,6 +60,8 @@ public static class AdminAuditEntityTypes
     public const string ExpenseCategory = "expense_category";
     /// <summary>A monthly budget of an expense category (G12). Entity id = the budget row's id.</summary>
     public const string ExpenseBudget = "expense_budget";
+    /// <summary>A pending-work inbox item (G12). Entity key = the item's key; no entity id.</summary>
+    public const string InboxItem = "inbox_item";
 
     /// <summary>An in-app announcement (admin → Announcements). Entity id = the announcement's id.</summary>
     public const string Announcement = "announcement";
@@ -81,7 +83,7 @@ public static class AdminAuditEntityTypes
         BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
         Announcement, EmailTemplate, EmailBlock, EmailSampleData,
         StaffMember, StaffRole, StaffInvitation,
-        OperatingExpense, ExpenseCategory, ExpenseBudget,
+        OperatingExpense, ExpenseCategory, ExpenseBudget, InboxItem,
     ];
 }
 
@@ -171,6 +173,18 @@ public static class AdminAuditExpenseActions
         Created, Updated, Deleted, MarkedPaid, Imported, ReceiptAttached, ReceiptRemoved,
         CategoryCreated, CategoryUpdated, BudgetsSet,
     ];
+}
+
+/// <summary>Verbs for pending-work inbox triage (G12, workspace service, /admin/inbox). At most 30 characters.</summary>
+public static class AdminAuditInboxActions
+{
+    public const string Assigned = "inbox.assigned";
+    public const string Snoozed = "inbox.snoozed";
+    public const string Done = "inbox.done";
+    public const string Reopened = "inbox.reopened";
+    public const string NoteAdded = "inbox.note_added";
+
+    public static readonly string[] All = [Assigned, Snoozed, Done, Reopened, NoteAdded];
 }
 
 /// <summary>Verbs for the platform-wide glossary (transcript service, /admin/global-glossary).</summary>

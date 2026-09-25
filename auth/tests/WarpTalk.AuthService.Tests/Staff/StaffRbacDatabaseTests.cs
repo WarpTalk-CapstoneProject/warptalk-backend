@@ -40,7 +40,15 @@ namespace WarpTalk.AuthService.Tests.Staff;
 /// </summary>
 public sealed class StaffRbacDatabaseTests : IAsyncLifetime
 {
-    private const string MigrationFile = "20260925090000_add_platform_staff_rbac.sql";
+    /// <summary>
+    /// The staff catalog's migrations, in the order they apply: G10 created it, and an applied file is
+    /// immutable, so every later permission (G12's finance and inbox codes) arrives in a file of its own.
+    /// </summary>
+    private static readonly string[] MigrationFiles =
+    [
+        "20260925090000_add_platform_staff_rbac.sql",
+        "20260925160000_add_internal_management_permissions.sql",
+    ];
 
     private PostgreSqlContainer? _container;
     private string _adminConnection = null!;
@@ -146,22 +154,26 @@ public sealed class StaffRbacDatabaseTests : IAsyncLifetime
 
     private async Task RunMigrationAsync()
     {
-        var sql = await File.ReadAllTextAsync(FindMigration());
-        await _context.Database.ExecuteSqlRawAsync(sql);
+        foreach (var file in MigrationFiles)
+        {
+            var sql = await File.ReadAllTextAsync(FindMigration(file));
+            await _context.Database.ExecuteSqlRawAsync(sql);
+        }
+
         _context.ChangeTracker.Clear();
     }
 
-    private static string FindMigration()
+    private static string FindMigration(string file)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            var candidate = Path.Combine(directory.FullName, "auth", "database", "migrations", MigrationFile);
+            var candidate = Path.Combine(directory.FullName, "auth", "database", "migrations", file);
             if (File.Exists(candidate)) return candidate;
             directory = directory.Parent;
         }
 
-        throw new FileNotFoundException(MigrationFile);
+        throw new FileNotFoundException(file);
     }
 
     private async Task<User> AddUserAsync(string email, bool verified = true, bool legacyAdmin = false, bool legacyRevoked = false)

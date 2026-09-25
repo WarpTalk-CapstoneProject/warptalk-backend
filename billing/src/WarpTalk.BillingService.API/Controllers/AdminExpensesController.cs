@@ -23,7 +23,7 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// salaries, marketing. Under ~/api/v1/admin/billing, which the gateway's admin-billing route already
 /// forwards here.
 ///
-/// Reads need finance.expenses_read, every write finance.expenses_manage — not billing.read: salaries sit
+/// Reads need finance.read, every write finance.manage — not billing.read: salaries sit
 /// in here, and the Support role reads billing.
 /// </summary>
 [ApiController]
@@ -43,35 +43,35 @@ public sealed class AdminExpensesController : ControllerBase
 
     /// <summary>Every expense dated in [from, to] (default: the last 12 months), with VND totals.</summary>
     [HttpGet]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetExpenses([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
         => ToActionResult(await _expenses.GetExpensesAsync(from, to, ct));
 
     [HttpGet("{id:guid}")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetExpense(Guid id, CancellationToken ct)
         => ToActionResult(await _expenses.GetExpenseAsync(id, ct));
 
     [HttpPost]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.Created, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense))]
     public async Task<IActionResult> CreateExpense([FromBody] SaveOperatingExpenseRequest request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.CreateExpenseAsync(request, actor, ct));
 
     [HttpPut("{id:guid}")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.Updated, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense), EntityRouteKey = "id")]
     public async Task<IActionResult> UpdateExpense(Guid id, [FromBody] SaveOperatingExpenseRequest request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.UpdateExpenseAsync(id, request, actor, ct));
 
     [HttpPost("{id:guid}/mark-paid")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.MarkedPaid, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense), EntityRouteKey = "id")]
     public async Task<IActionResult> MarkPaid(Guid id, [FromBody] MarkExpensePaidRequest? request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.MarkPaidAsync(id, request ?? new MarkExpensePaidRequest(null, null, null), actor, ct));
 
     [HttpDelete("{id:guid}")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.Deleted, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense), EntityRouteKey = "id")]
     public async Task<IActionResult> DeleteExpense(Guid id, CancellationToken ct)
     {
@@ -86,7 +86,7 @@ public sealed class AdminExpensesController : ControllerBase
     /// <summary>Multipart field <c>file</c>: PDF, PNG, JPEG, WebP or HEIC, at most 10 MB. Replaces an earlier receipt.</summary>
     [HttpPost("{id:guid}/receipt")]
     [RequestSizeLimit(OperatingExpenseConstants.MaxReceiptBytes + 64 * 1024)]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.ReceiptAttached, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense), EntityRouteKey = "id")]
     public async Task<IActionResult> AttachReceipt(Guid id, IFormFile? file, CancellationToken ct)
     {
@@ -96,7 +96,7 @@ public sealed class AdminExpensesController : ControllerBase
     }
 
     [HttpGet("{id:guid}/receipt")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> DownloadReceipt(Guid id, CancellationToken ct)
     {
         var result = await _expenses.OpenReceiptAsync(id, ct);
@@ -106,7 +106,7 @@ public sealed class AdminExpensesController : ControllerBase
     }
 
     [HttpDelete("{id:guid}/receipt")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.ReceiptRemoved, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense), EntityRouteKey = "id")]
     public async Task<IActionResult> RemoveReceipt(Guid id, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.RemoveReceiptAsync(id, actor, ct));
@@ -114,18 +114,18 @@ public sealed class AdminExpensesController : ControllerBase
     // ── Categories ────────────────────────────────────────────────────────────────────────────
 
     [HttpGet("categories")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetCategories(CancellationToken ct)
         => ToActionResult(await _expenses.GetCategoriesAsync(ct));
 
     [HttpPost("categories")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.CategoryCreated, AdminAuditEntityTypes.ExpenseCategory, typeof(ExpenseCategory))]
     public async Task<IActionResult> CreateCategory([FromBody] SaveExpenseCategoryRequest request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.CreateCategoryAsync(request, actor, ct));
 
     [HttpPut("categories/{id:guid}")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.CategoryUpdated, AdminAuditEntityTypes.ExpenseCategory, typeof(ExpenseCategory), EntityRouteKey = "id")]
     public async Task<IActionResult> UpdateCategory(Guid id, [FromBody] SaveExpenseCategoryRequest request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.UpdateCategoryAsync(id, request, actor, ct));
@@ -134,13 +134,13 @@ public sealed class AdminExpensesController : ControllerBase
 
     /// <summary><c>?from=yyyy-MM&amp;to=yyyy-MM</c> (default: the last 12 months).</summary>
     [HttpGet("budgets")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetBudgets([FromQuery] string? from, [FromQuery] string? to, CancellationToken ct)
         => ToActionResult(await _expenses.GetBudgetsAsync(from, to, ct));
 
     /// <summary>Sets or clears (amountVnd null) budget cells.</summary>
     [HttpPut("budgets")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.BudgetsSet, AdminAuditEntityTypes.ExpenseBudget, typeof(ExpenseBudget), Aggregate = true)]
     public async Task<IActionResult> SaveBudgets([FromBody] SaveExpenseBudgetsRequest request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.SaveBudgetsAsync(request, actor, ct));
@@ -149,7 +149,7 @@ public sealed class AdminExpensesController : ControllerBase
 
     /// <summary><c>?from=yyyy-MM&amp;to=yyyy-MM</c>, at most 24 months (default: the last 12).</summary>
     [HttpGet("report")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetReport([FromQuery] string? from, [FromQuery] string? to, CancellationToken ct)
         => ToActionResult(await _expenses.GetReportAsync(from, to, ct));
 
@@ -158,7 +158,7 @@ public sealed class AdminExpensesController : ControllerBase
     /// <c>?from=yyyy-MM&amp;to=yyyy-MM&amp;tz</c>, at most 12 months (default: the last 6).
     /// </summary>
     [HttpGet("pnl")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetProfitAndLoss([FromQuery] string? from, [FromQuery] string? to, [FromQuery] string? tz, CancellationToken ct)
         => ToActionResult(await _expenses.GetProfitAndLossAsync(from, to, tz, ct));
 
@@ -166,13 +166,13 @@ public sealed class AdminExpensesController : ControllerBase
 
     /// <summary>Validates a CSV and shows what would be imported. Writes nothing.</summary>
     [HttpPost("import/preview")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     public async Task<IActionResult> PreviewImport([FromBody] ExpenseImportRequest request, CancellationToken ct)
         => ToActionResult(await _expenses.PreviewImportAsync(request, ct));
 
     /// <summary>Imports the CSV in one transaction. With errors, refuses unless <c>skipInvalid</c>.</summary>
     [HttpPost("import")]
-    [RequirePermission(AdminPermissions.FinanceExpensesManage)]
+    [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.Imported, AdminAuditEntityTypes.OperatingExpense, typeof(OperatingExpense), Aggregate = true)]
     public async Task<IActionResult> Import([FromBody] ExpenseImportRequest request, CancellationToken ct)
         => await WithActorAsync(actor => _expenses.ImportAsync(request, actor, ct));
@@ -181,7 +181,7 @@ public sealed class AdminExpensesController : ControllerBase
 
     /// <summary>The pending-work inbox source: planned expenses due within 7 days or overdue.</summary>
     [HttpGet("inbox-items")]
-    [RequirePermission(AdminPermissions.FinanceExpensesRead)]
+    [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<ActionResult<AdminInboxSourceResponse>> GetInboxItems(CancellationToken ct)
         => Ok(await _inbox.GetExpenseItemsAsync(ct));
 

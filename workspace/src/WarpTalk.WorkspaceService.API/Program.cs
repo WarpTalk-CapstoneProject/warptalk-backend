@@ -40,6 +40,8 @@ builder.Services.AddScoped<IAdminWorkspaceActionService, WarpTalk.WorkspaceServi
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
 builder.Services.AddScoped<IWorkspaceAuditLogService, WarpTalk.WorkspaceService.Application.Services.WorkspaceAuditLogService>();
 builder.Services.AddScoped<IAdminPlatformHealthService, WarpTalk.WorkspaceService.Application.Services.AdminPlatformHealthService>();
+// G12 pending-work inbox.
+builder.Services.AddScoped<WarpTalk.WorkspaceService.Application.Services.IAdminInboxService, WarpTalk.WorkspaceService.Application.Services.AdminInboxService>();
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
 // WT-335: backs the presence query's membership intersection in the Gateway.
 builder.Services.AddScoped<IWorkspaceCoMembershipService, WarpTalk.WorkspaceService.Application.Services.WorkspaceCoMembershipService>();

@@ -59,8 +59,8 @@ public static class AdminPermissions
 
     public const string WarpBotUse = "warpbot.use";
 
-    public const string FinanceExpensesRead = "finance.expenses_read";
-    public const string FinanceExpensesManage = "finance.expenses_manage";
+    public const string FinanceRead = "finance.read";
+    public const string FinanceManage = "finance.manage";
 
     public const string InboxRead = "inbox.read";
     public const string InboxManage = "inbox.manage";
@@ -139,8 +139,8 @@ public static class AdminPermissions
 
         new(WarpBotUse, Areas.Assistant, "Use the platform WarpBot assistant.", false),
 
-        new(FinanceExpensesRead, Areas.Finance, "View operating expenses, budgets, expense reports and the profit and loss with expenses.", true),
-        new(FinanceExpensesManage, Areas.Finance, "Record, edit, import and delete operating expenses, receipts, categories and budgets.", false),
+        new(FinanceRead, Areas.Finance, "View operating expenses, budgets, expense reports and the profit and loss with expenses.", true),
+        new(FinanceManage, Areas.Finance, "Record, edit, import and delete operating expenses, receipts, categories and budgets.", false),
 
         new(InboxRead, Areas.Inbox, "View the pending-work inbox (each item only from the areas the member can view).", true),
         new(InboxManage, Areas.Inbox, "Assign, snooze, annotate and close items in the pending-work inbox.", false),
@@ -190,7 +190,7 @@ public static class BuiltInStaffRoles
                 AdminPermissions.BillingLeadsManage, AdminPermissions.WorkspacesRead,
                 AdminPermissions.AccountsRead, AdminPermissions.ProvidersRead,
                 AdminPermissions.SettingsRead, AdminPermissions.AuditRead, AdminPermissions.WarpBotUse,
-                AdminPermissions.FinanceExpensesRead, AdminPermissions.FinanceExpensesManage,
+                AdminPermissions.FinanceRead, AdminPermissions.FinanceManage,
                 AdminPermissions.InboxRead, AdminPermissions.InboxManage,
             ]),
         new(Support, "Support",
