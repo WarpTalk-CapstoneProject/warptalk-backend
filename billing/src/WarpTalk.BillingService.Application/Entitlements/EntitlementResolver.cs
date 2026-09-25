@@ -34,6 +34,7 @@ public interface IEntitlementResolver
 /// Resolution order, lowest precedence first:
 ///   1. platform default   — what a workspace gets when nobody has an opinion
 ///   2. plan               — the catalog row the workspace is on, IF the subscription is live
+///   2b. add-ons (G11)     — purchased extras raising the plan's value, only on top of a live plan
 ///   3. contract override  — negotiated per-subscription terms; may loosen or tighten
 ///   4. workspace override — the owner's own setting; may ONLY tighten
 ///
@@ -121,7 +122,31 @@ public sealed class EntitlementResolver : IEntitlementResolver
             plan,
             hasActiveSubscription,
             ReadContractOverrides(subscription),
-            overrides.ToDictionary(o => o.EntitlementKey, o => o.Value, StringComparer.Ordinal));
+            overrides.ToDictionary(o => o.EntitlementKey, o => o.Value, StringComparer.Ordinal),
+            hasActiveSubscription ? await ReadAddonGrantsAsync(workspaceId, nowUtc, ct) : []);
+    }
+
+    /// <summary>
+    /// G11: the add-ons still granting — active, or cancelled but inside the period already paid
+    /// for. Only read when a plan is in force, because an add-on raises the PLAN's limit.
+    /// </summary>
+    private async Task<IReadOnlyList<AddonGrant>> ReadAddonGrantsAsync(Guid workspaceId, DateTime nowUtc, CancellationToken ct)
+    {
+        // Null only in unit tests that mock IUnitOfWork without the catalog repositories.
+        var repository = _unitOfWork.WorkspaceAddons;
+        if (repository is null)
+        {
+            return [];
+        }
+
+        var rows = await repository.GetGrantingForWorkspaceAsync(workspaceId, nowUtc, ct);
+        return rows
+            .Where(row => row.Addon is not null && row.GrantsAt(nowUtc))
+            .Select(row => new AddonGrant(
+                row.Addon!.EntitlementKey,
+                (long)row.Addon.UnitsPerQuantity * row.Quantity,
+                row.Addon.Slug))
+            .ToList();
     }
 
     /// <summary>
@@ -254,6 +279,32 @@ public sealed class EntitlementResolver : IEntitlementResolver
                 ? ResolvedEntitlement.Flag(EntitlementConstants.Keys.Glossary, inputs.Plan!.GlossaryEnabled, planSource)
                 : ResolvedEntitlement.Flag(EntitlementConstants.Keys.Glossary, EntitlementConstants.PlatformDefaults.Glossary, EntitlementConstants.Sources.PlatformDefault)
         };
+
+        // Layer 2b (G11). Purchased add-ons raise the plan's value: a numeric limit by the sum of
+        // what each add-on adds, a capability switched on by any add-on for it. Only on top of a
+        // plan in force — without one the platform defaults stand, as above.
+        if (usePlan && inputs.AddonGrants is { Count: > 0 } grants)
+        {
+            foreach (var group in grants
+                         .Where(grant => EntitlementConstants.Keys.All.Contains(grant.Key, StringComparer.Ordinal))
+                         .GroupBy(grant => grant.Key, StringComparer.Ordinal))
+            {
+                var key = group.Key;
+                var source = EntitlementConstants.Sources.Addon(group.OrderBy(grant => grant.AddonSlug, StringComparer.Ordinal).First().AddonSlug);
+                if (EntitlementConstants.Keys.IsNumericLimit(key))
+                {
+                    var added = group.Sum(grant => Math.Max(0, grant.Amount));
+                    if (added > 0)
+                    {
+                        ceiling[key] = ResolvedEntitlement.Number(key, ceiling[key].AsNumber() + added, source);
+                    }
+                }
+                else if (!ceiling[key].AsFlag())
+                {
+                    ceiling[key] = ResolvedEntitlement.Flag(key, true, source);
+                }
+            }
+        }
 
         // Layer 3. A contract may go either way: it is the negotiated agreement, so it outranks the
         // catalog row in both directions. It is applied even without an active subscription, because

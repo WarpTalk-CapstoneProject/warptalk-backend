@@ -30,6 +30,9 @@ public class GoogleAuthService : IGoogleAuthService
     private readonly ILogger<GoogleAuthService> _logger;
     private readonly IAuthEmailSender _authEmailSender;
 
+    // G10: optional so the many hand-built test instances keep compiling; DI always supplies it.
+    private readonly IStaffAccessService? _staffAccess;
+
     public GoogleAuthService(
         IUnitOfWork unitOfWork,
         IJwtTokenGenerator jwtGenerator,
@@ -37,8 +40,10 @@ public class GoogleAuthService : IGoogleAuthService
         IDistributedCache cache,
         IOptions<AuthSettings> authSettings,
         ILogger<GoogleAuthService> logger,
-        IAuthEmailSender authEmailSender)
+        IAuthEmailSender authEmailSender,
+        IStaffAccessService? staffAccess = null)
     {
+        _staffAccess = staffAccess;
         _unitOfWork = unitOfWork;
         _jwtGenerator = jwtGenerator;
         _googleTokenVerifier = googleTokenVerifier;
@@ -121,7 +126,7 @@ public class GoogleAuthService : IGoogleAuthService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(response);
         }
         catch (Exception ex)

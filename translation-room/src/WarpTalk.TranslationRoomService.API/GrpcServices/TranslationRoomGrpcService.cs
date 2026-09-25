@@ -14,10 +14,40 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
     // depends only on the interface whose contract is "no user to check against". Nothing here can
     // reach a method that was supposed to authorize someone and silently didn't.
     private readonly ITranslationRoomDirectoryService _directoryService;
+    private readonly IMediaUsageService? _mediaUsage;
 
-    public TranslationRoomGrpcService(ITranslationRoomDirectoryService directoryService)
+    public TranslationRoomGrpcService(ITranslationRoomDirectoryService directoryService, IMediaUsageService? mediaUsage = null)
     {
         _directoryService = directoryService;
+        _mediaUsage = mediaUsage;
+    }
+
+    /// <summary>LiveKit usage per UTC hour and workspace for the admin Providers page (billing-service).</summary>
+    public override async Task<GetMediaUsageResponse> GetMediaUsage(GetMediaUsageRequest request, ServerCallContext context)
+    {
+        if (_mediaUsage is null) throw new RpcException(new Status(StatusCode.Unimplemented, "media usage is not available"));
+
+        var from = DateTimeOffset.FromUnixTimeSeconds(request.FromUnix).UtcDateTime;
+        var to = DateTimeOffset.FromUnixTimeSeconds(request.ToUnix).UtcDateTime;
+        var result = await _mediaUsage.GetHourlyAsync(from, to, context.CancellationToken);
+        if (!result.IsSuccess) throw new RpcException(new Status(StatusCode.InvalidArgument, result.Error ?? "invalid window"));
+
+        var response = new GetMediaUsageResponse();
+        foreach (var row in result.Value!)
+        {
+            response.Hours.Add(new MediaUsageHour
+            {
+                HourStartUnix = new DateTimeOffset(row.HourStart, TimeSpan.Zero).ToUnixTimeSeconds(),
+                WorkspaceId = row.WorkspaceId.ToString(),
+                RoomSeconds = row.RoomSeconds,
+                ParticipantSeconds = row.ParticipantSeconds,
+                RoomsStarted = row.RoomsStarted,
+                Recordings = row.Recordings,
+                RecordingBytes = row.RecordingBytes,
+            });
+        }
+
+        return response;
     }
 
     public override async Task<GetTranslationRoomResponse> GetTranslationRoomById(GetTranslationRoomRequest request, ServerCallContext context)

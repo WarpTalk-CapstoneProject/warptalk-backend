@@ -200,6 +200,10 @@ public class NotificationValidatorTests
         """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
     [InlineData(NotificationConstants.TypeWorkspaceRoleChanged,
         """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","old_role":"Member","new_role":"Admin"}""")]
+    // The admin workspace page's notice to the owner — exactly the metadata
+    // AdminWorkspaceActionService.SendNoticeAsync sends.
+    [InlineData("WORKSPACE_ADMIN_NOTICE",
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
     public void Validate_WorkspaceMembershipPayload_IsAccepted(string type, string payload)
     {
         var result = NotificationValidator.Validate(type, "Title", "Content", "/warptalk-demo/members", payload);

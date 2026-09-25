@@ -25,12 +25,17 @@ public class TokenService : ITokenService
     private readonly AuthSettings _authSettings;
     private readonly ILogger<TokenService> _logger;
 
+    // G10: optional so the many hand-built test instances keep compiling; DI always supplies it.
+    private readonly IStaffAccessService? _staffAccess;
+
     public TokenService(
         IUnitOfWork unitOfWork,
         IJwtTokenGenerator jwtGenerator,
         IOptions<AuthSettings> authSettings,
-        ILogger<TokenService> logger)
+        ILogger<TokenService> logger,
+        IStaffAccessService? staffAccess = null)
     {
+        _staffAccess = staffAccess;
         _unitOfWork = unitOfWork;
         _jwtGenerator = jwtGenerator;
         _authSettings = authSettings.Value;
@@ -81,7 +86,7 @@ public class TokenService : ITokenService
             storedToken.RevokedAt = DateTime.UtcNow;
             _refreshTokenRepository.Update(storedToken);
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, storedToken.FamilyId);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, storedToken.FamilyId, staffAccess: _staffAccess);
             return Result.Success(response);
         }
         catch (Exception ex)

@@ -8,6 +8,7 @@ using WarpTalk.WorkspaceService.Application.DTOs;
 using WarpTalk.WorkspaceService.Application.Entitlements;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.ValueObjects;
 
@@ -63,6 +64,74 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
         IReadOnlyList<Guid> userIds = members.Select(m => m.UserId).Distinct().ToList();
         return Result.Success<IReadOnlyList<Guid>?>(userIds);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<UserWorkspaceAudienceDto>>> ListUserWorkspaceAudienceAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var memberships = (await _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUserAsync(userId, ct))
+            .GroupBy(member => member.WorkspaceId)
+            .Select(group => group.First())
+            .ToList();
+        var plans = await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetPlanSlugsAsync(memberships.Select(member => member.WorkspaceId).ToList(), ct);
+
+        // Role names live in auth; a person has few distinct roles, so this is one lookup per role.
+        var roleNames = new Dictionary<Guid, string?>();
+        foreach (var roleId in memberships.Select(member => member.RoleId).Distinct())
+        {
+            try
+            {
+                roleNames[roleId] = await _authIdentity.GetRoleNameByIdAsync(roleId, ct);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // Role targeting then simply does not match; plan and workspace targeting still work.
+                roleNames[roleId] = null;
+            }
+        }
+
+        IReadOnlyList<UserWorkspaceAudienceDto> items = memberships
+            .Select(member => new UserWorkspaceAudienceDto(
+                member.WorkspaceId, plans.GetValueOrDefault(member.WorkspaceId), roleNames.GetValueOrDefault(member.RoleId)))
+            .ToList();
+        return Result.Success(items);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<PlatformWorkspaceDto>>> ListPlatformWorkspacesAsync(CancellationToken ct = default)
+    {
+        var workspaces = await _unitOfWork.WorkspaceRepository.GetNotDeletedAsync(ct);
+        var ids = workspaces.Select(workspace => workspace.Id).ToList();
+        var plans = await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetPlanSlugsAsync(ids, ct);
+        var memberCounts = await _unitOfWork.WorkspaceMemberRepository.CountActiveMembersPerWorkspaceAsync(ct);
+
+        IReadOnlyList<PlatformWorkspaceDto> items = workspaces
+            .Select(workspace => new PlatformWorkspaceDto(
+                workspace.Id,
+                workspace.Name,
+                workspace.Slug,
+                workspace.IsActive ? WorkspaceLifecycleStatus.Active : WorkspaceLifecycleStatus.Suspended,
+                workspace.OwnerId,
+                plans.GetValueOrDefault(workspace.Id),
+                memberCounts.GetValueOrDefault(workspace.Id),
+                // The same reading GetSettingsAsync gives it, so the admin page and the guard
+                // cannot disagree about a workspace's legacy switch.
+                WorkspaceHelper.GetWorkspaceConfig(workspace).AllowAnyPlugins))
+            .ToList();
+        return Result.Success(items);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<(Guid UserId, Guid WorkspaceId)>>> ListActiveMembershipsForUsersAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken ct = default)
+    {
+        IReadOnlyList<(Guid UserId, Guid WorkspaceId)> pairs =
+            await _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUsersAsync(userIds, ct);
+        return Result.Success(pairs);
     }
 
     public async Task<Result<WorkspaceMemberDetailsDto?>> GetMemberDetailsAsync(
@@ -213,7 +282,9 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             }
         }
 
-        var planLanguageDenial = ValidatePlanLanguageQuota(entitlements, targetLanguages.Count);
+        // WT-707: the quota counts DISTINCT languages, so "en" and "en-US" are one language, the
+        // same way translation-room counts them when the room is edited later.
+        var planLanguageDenial = ValidatePlanLanguageQuota(entitlements, CountDistinctLanguages(targetLanguages));
         if (planLanguageDenial != null)
         {
             return Decision(planLanguageDenial);
@@ -240,6 +311,13 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
     /// is a denial; the workspace's own AllowedTargetLanguages policy governs those cases, exactly
     /// as it did before WT-262. See WorkspaceEntitlements for the cold-start reasoning.
     /// </summary>
+    private static int CountDistinctLanguages(IEnumerable<string> languages) =>
+        languages
+            .Select(lang => (lang ?? string.Empty).Trim().Split('-')[0].ToLowerInvariant())
+            .Where(lang => lang.Length > 0)
+            .Distinct()
+            .Count();
+
     private static MeetingCreationDecisionDto? ValidatePlanLanguageQuota(
         WorkspaceEntitlements entitlements,
         int requestedLanguageCount)
@@ -381,6 +459,16 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
 
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
+        // WT-707: translation-room enforces the plan's language quota on room edits, so it needs
+        // the same number ValidatePlanLanguageQuota applies at creation — `Limit`, from the same
+        // local snapshot. Null (cold start, no live subscription, unlimited) means no quota.
+        var snapshot = await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, ct);
+        var entitlements = snapshot == null
+            ? WorkspaceEntitlements.Unknown
+            : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+        var maxLanguages = entitlements.Limit(EntitlementKeys.MaxLanguages);
+
         return Result.Success(new WorkspaceSettingsSnapshotDto(
             config.ArtifactRetentionDays,
             config.AllowExternalCollaboration,
@@ -391,7 +479,11 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             config.AiUsagePolicy?.AllowExternalLlm ?? true,
             config.AiUsagePolicy?.UseGlobalGlossary ?? true,
             config.AllowedTargetLanguages?.ToArray() ?? Array.Empty<string>(),
-            config.AllowAnyPlugins));
+            config.AllowAnyPlugins,
+            maxLanguages is > 0
+                ? (int)Math.Clamp(maxLanguages.Value, int.MinValue, int.MaxValue)
+                : null,
+            snapshot?.PlanSlug));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(

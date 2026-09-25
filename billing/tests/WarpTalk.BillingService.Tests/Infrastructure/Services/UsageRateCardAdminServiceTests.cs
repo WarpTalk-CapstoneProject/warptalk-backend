@@ -335,6 +335,10 @@ public class UsageRateCardAdminServiceTests
         repository
             .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(0.00003m);
+        // The stored rate differs from the request's, so the request is an explicit override and is written.
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
 
         var result = await service.UpdatePricingConfigAsync(request);
 
@@ -373,6 +377,10 @@ public class UsageRateCardAdminServiceTests
         repository
             .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(0.00003m);
+        // The stored rate differs from the request's, so the request is an explicit override and is written.
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
 
         var result = await service.UpdatePricingConfigAsync(
             ValidPricingConfig() with { CreditValueVnd = null, MinimumPricePerCreditVnd = null });
@@ -401,6 +409,9 @@ public class UsageRateCardAdminServiceTests
     public async Task UpdatePricingConfigAsync_WithCartesiaPrice_WritesIt()
     {
         var (service, repository, _) = CreateService();
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
         var written = new Dictionary<string, decimal>();
         repository
             .Setup(r => r.UpsertPricingConfigValueAsync(
@@ -430,10 +441,43 @@ public class UsageRateCardAdminServiceTests
         calls.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The FX rate is Stripe's now. A client echoing the whole form back sends the rate it was shown;
+    /// that must not be read as an override (and must not write the key), or one unrelated save would
+    /// switch Stripe off for good.
+    /// </summary>
+    [Fact]
+    public async Task UpdatePricingConfigAsync_SameFxRateAsStored_IsNotAnOverride()
+    {
+        var (service, repository, _) = CreateService();
+        var written = new Dictionary<string, decimal>();
+        repository
+            .Setup(r => r.UpsertPricingConfigValueAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
+            .Returns(Task.CompletedTask);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(25_000m);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00003m);
+
+        var echoed = await service.UpdatePricingConfigAsync(ValidPricingConfig());
+        var omitted = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { FxRateUsdVnd = null });
+
+        echoed.IsSuccess.Should().BeTrue();
+        omitted.IsSuccess.Should().BeTrue();
+        written.Should().NotContainKey("fx_rate_usd_vnd");
+        omitted.Value!.FxRateUsdVnd.Should().Be(25_000m);
+    }
+
     [Fact]
     public async Task UpdatePricingConfigAsync_WriteThrowsMidway_RollsBackTheWholeBatch()
     {
         var (service, repository, calls) = CreateService();
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
         var request = ValidPricingConfig();
         var written = 0;
 

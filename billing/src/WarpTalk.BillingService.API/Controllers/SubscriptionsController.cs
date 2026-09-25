@@ -4,6 +4,10 @@ using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -20,7 +24,8 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPost("contract")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.ContractCreated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<ActionResult<SubscriptionDto>> CreateWorkspaceContractSubscription(
         [FromBody] CreateWorkspaceContractSubscriptionRequest request,
         CancellationToken cancellationToken)
@@ -60,7 +65,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptions(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
@@ -74,6 +79,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpDelete("workspace/{workspaceId}")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionCancelled, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
@@ -94,6 +100,7 @@ public class SubscriptionsController : ControllerBase
     /// instead, because that is a Checkout flow.
     /// </summary>
     [HttpPost("workspace/{workspaceId}/reactivate")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionReactivated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ReactivateSubscription(
         Guid workspaceId,
@@ -110,6 +117,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPost("workspace/{workspaceId}/resume")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionResumed, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
         Guid workspaceId,
@@ -125,7 +133,8 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPut("workspace/{workspaceId}/contract-terms")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.ContractTermsUpdated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<ActionResult<SubscriptionDto>> UpdateContractTerms(
         Guid workspaceId,
         [FromBody] UpdateSubscriptionContractTermsRequest request,

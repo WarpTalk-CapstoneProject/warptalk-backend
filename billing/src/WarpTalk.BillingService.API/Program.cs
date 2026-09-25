@@ -21,6 +21,7 @@ using WarpTalk.BillingService.Infrastructure.Clients;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Grpc;
 
 Log.Logger = new LoggerConfiguration()
@@ -80,6 +81,11 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
     builder.Services.AddScoped<IPaymentService, PaymentService>();
 
+    // G11 — FIRST, deliberately: PaymentAppService takes the first handler that claims an event,
+    // and CancellationPaymentEventHandler claims every Cancelled/Refunded one. An add-on's Stripe
+    // subscription ending, or a credit pack refunded, must reach these and never cancel the plan.
+    builder.Services.AddScoped<IPaymentEventHandler, CreditPackPaymentEventHandler>();
+    builder.Services.AddScoped<IPaymentEventHandler, AddOnPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
     // WT-429: without this, "CreditTopUp" matched no handler and the payment completed having
@@ -94,6 +100,15 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<WarpTalk.BillingService.Domain.Services.ISubscriptionDomainService, WarpTalk.BillingService.Domain.Services.SubscriptionDomainService>();
     builder.Services.AddScoped<IUsageSettlementService, WarpTalk.BillingService.Infrastructure.Services.PostgresUsageSettlementService>();
     builder.Services.AddScoped<ISalesInquiryService, SalesInquiryService>();
+    // G12 internal management: operating expenses (receipts in object storage) and billing's inbox sources.
+    builder.Services.AddScoped<IOperatingExpenseService, WarpTalk.BillingService.Application.Services.Expenses.OperatingExpenseService>();
+    builder.Services.AddScoped<IAdminInboxSourceService, AdminInboxSourceService>();
+    WarpTalk.BillingService.Infrastructure.Storage.ExpenseReceiptStorageServiceCollectionExtensions.AddExpenseReceiptStorage(
+        builder.Services, builder.Configuration, builder.Environment);
+    // G11 — the sellable catalog beyond plans: /admin/packages and the workspace billing page.
+    builder.Services.AddScoped<IPackageCatalogService, PackageCatalogService>();
+    builder.Services.AddScoped<ICustomerCatalogService, CustomerCatalogService>();
+    builder.Services.AddScoped<ICreditPackExpiryService, CreditPackExpiryService>();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
@@ -107,6 +122,21 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // --- Grpc Clients ---
     builder.Services.AddScoped<IAdminWorkspaceAnalyticsService, AdminWorkspaceAnalyticsService>();
     builder.Services.AddScoped<IAdminBillingInsightsService, AdminBillingInsightsService>();
+    // Admin Providers page. The option facts say whether a secret is SET, never what it is.
+    builder.Services.AddSingleton(new AdminProvidersOptions
+    {
+        StatusPages = (builder.Configuration.GetSection(WarpTalk.BillingService.Infrastructure.Options.ProviderStatusOptions.SectionName)
+                .Get<WarpTalk.BillingService.Infrastructure.Options.ProviderStatusOptions>()?.Pages
+            ?? new Dictionary<string, string>())
+            .Where(page => Uri.TryCreate(page.Value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+            .ToDictionary(page => page.Key.ToLowerInvariant(), page => page.Value.TrimEnd('/'), StringComparer.OrdinalIgnoreCase),
+        StripeSecretKeyConfigured = !string.IsNullOrWhiteSpace(builder.Configuration["Stripe:SecretKey"]),
+        StripeWebhookSecretConfigured = !string.IsNullOrWhiteSpace(builder.Configuration["Stripe:WebhookSecret"]),
+    });
+    builder.Services.AddScoped<IMediaUsageClient, WarpTalk.BillingService.Infrastructure.Clients.MediaUsageGrpcClient>();
+    builder.Services.AddScoped<IAdminProvidersService, AdminProvidersService>();
+    builder.Services.AddScoped<IAdminWorkspaceBillingService, AdminWorkspaceBillingService>();
+    builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.BillingService.Infrastructure.Clients.AdminAuditGrpcClient>();
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {
@@ -123,6 +153,34 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
         o.Address = new Uri(url);
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // LiveKit usage for the admin Providers page (translation-room GetMediaUsage).
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
+    {
+        var url = builder.Configuration["GrpcSettings:TranslationRoomServiceUrl"]
+            ?? builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]
+            ?? "http://localhost:50052";
+        o.Address = new Uri(url);
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // The platform audit log lives in the workspace service: same address as the workspace client
+    // above, a second contract on it. Synchronous so an admin action that cannot be recorded is
+    // refused rather than committed unaudited (see IAdminAuditRecorder).
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
+    {
+        var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"]
+            ?? builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
+            ?? "http://localhost:50056";
+        o.Address = new Uri(url);
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // Platform writes that predate the admin workspace page — plans, rate cards, pricing, VAT,
+    // contracts, the /admin/subscriptions buttons, the legacy mark-paid, sales leads — are audited
+    // by [AdminAudited] on their routes: each save is recorded before it commits, over the client
+    // above, and refused if it cannot be.
+    builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.BillingService);
 
     builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
     builder.Services.Configure<Grpc.AspNetCore.Server.GrpcServiceOptions>(options =>
@@ -209,6 +267,18 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // Measured Cartesia credits for admin Insights' dubbing cost. Disabled (logged once) when no
     // Cartesia:AdminApiKey (CARTESIA_ADMIN_API_KEY) is configured.
     builder.Services.AddHostedService<CartesiaUsageSyncWorker>();
+    // Stripe's USD→VND rate once per UTC day, for every VND report. Billing:Fx:CheckIntervalMinutes = 0 disables it.
+    builder.Services.AddHostedService<FxRateRefreshWorker>();
+    // G11: removes the unspent part of credit packs whose validity ended. Billing:CreditPacks:ExpiryIntervalMinutes = 0 disables it.
+    builder.Services.AddHostedService<CreditPackExpiryWorker>();
+    // Admin Providers page: our provider calls (Redis → Postgres) and the providers' public status pages.
+    // ProviderStatus:CallStatsSyncIntervalMinutes / PollIntervalMinutes = 0 disable them; no pages = no polling.
+    builder.Services.AddHostedService<ProviderCallStatsSyncWorker>();
+    builder.Services.AddHostedService<ProviderStatusPollWorker>();
+    // Stripe's fee per paid payment (balance transaction) — the Stripe cost on the Providers page.
+    builder.Services.AddHostedService<StripeFeeSyncWorker>();
+    // G12: writes each next occurrence of a recurring operating expense a week before it is due.
+    builder.Services.AddHostedService<ExpenseRecurrenceWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>
@@ -216,9 +286,9 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
             options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         });
 
-    // Shared system-admin gate for every ~/api/v1/admin/* endpoint (WT-205). Distinct from the
-    // "BillingAdmin" policy above, which guards operational tooling such as outbox replay.
-    builder.Services.AddWarpTalkSystemAdminAuthorization();
+    // Staff permissions for every admin endpoint (G10, replacing the WT-205 system-admin gate):
+    // [RequirePermission] asks the auth service who is staff, through a short cache.
+    builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
     var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
     builder.Services.AddCors(options =>
@@ -234,6 +304,18 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddOpenApi();
 
     var app = builder.Build();
+
+    // Admin Providers page: one StripeClient for the whole service, over an HTTP handler that counts
+    // every call by outcome and latency (StripeCallObserver). Services created with `new XService()`
+    // read StripeConfiguration.StripeClient, so this covers all of them. No key, no client: the
+    // SDK's own lazy client would refuse to call Stripe anyway.
+    var observedStripeKey = builder.Configuration["Stripe:SecretKey"];
+    if (!string.IsNullOrWhiteSpace(observedStripeKey))
+    {
+        Stripe.StripeConfiguration.StripeClient = new Stripe.StripeClient(
+            apiKey: observedStripeKey,
+            httpClient: StripeCallObserver.CreateStripeHttpClient(app.Services.GetRequiredService<IProviderCallRecorder>()));
+    }
 
     if (!app.Environment.IsDevelopment())
     {

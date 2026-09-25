@@ -67,10 +67,14 @@ try
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
+    builder.Services.AddScoped<IPlatformAssistantConversationService, PlatformAssistantConversationService>();
     builder.Services.AddScoped<IPluginInstallationService, PluginInstallationService>();
     // The operator-side lifecycle of a catalog row. Separate from the installation service because
     // it writes the global catalog rather than one user's own rows, and is gated accordingly.
     builder.Services.AddScoped<IPluginCatalogAdminService, PluginCatalogAdminService>();
+    // Which workspaces a marketplace plugin reaches: default, plan rule and per-workspace overrides.
+    // Writes only; the guard enforces what it writes.
+    builder.Services.AddScoped<IPluginWorkspaceAccessAdminService, PluginWorkspaceAccessAdminService>();
     builder.Services.AddScoped<IMcpConfirmationTokenService, McpConfirmationTokenService>();
     builder.Services.AddScoped<PluginConnectionService>();
     builder.Services.AddScoped<IPluginConnectionService>(sp => sp.GetRequiredService<PluginConnectionService>());
@@ -88,6 +92,7 @@ try
     // members asking the Owner for more. Notifies through the notification service's gRPC.
     builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();
     builder.Services.AddScoped<IWorkspaceDirectoryClient, WorkspaceDirectoryGrpcClient>();
+    builder.Services.AddScoped<IWorkspacePluginMemberService, WorkspacePluginMemberService>();
     builder.Services.AddScoped<IUserNotificationClient, UserNotificationGrpcClient>();
     // Gateways and OAuth clients are resolved per plugin *kind*, not per plugin key, so a real MCP
     // server needs a catalog row rather than a new class. Google keeps a bespoke pair because it
@@ -152,6 +157,22 @@ try
             "http://localhost:50056");
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+    // The platform audit log lives in the workspace service, and this service has no bus - the same
+    // situation, and the same synchronous transport, as auth's and translation-room's admin actions.
+    // Same address as the workspace client above: one workspace service, two contracts on it. Every
+    // marketplace change an admin makes is recorded through it before it is committed.
+    builder.Services.AddGrpcClient<AdminAuditService.AdminAuditServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:WorkspaceServiceUrl",
+            "http://localhost:50056");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    // The recorder reads the admin's e-mail, address and user agent from the request it serves.
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
 
     // Plugin request notifications (member asks the Owner; the Owner decides). Required outside
     // Development like every other gRPC address: GetRequiredServiceUri throws when it is missing, and
@@ -237,9 +258,9 @@ try
         options.AddPolicy("default", policy => policy.RequireAuthenticatedUser());
     });
 
-    // POST /plugins/catalog writes the global catalog, so it takes the platform system-admin gate
-    // shared with auth/billing/notification (role 'admin'), not the workspace 'Admin' role.
-    builder.Services.AddWarpTalkSystemAdminAuthorization();
+    // The plugin catalog and platform WarpBot are staff surfaces: plugins.read/plugins.manage and
+    // warpbot.use (G10), resolved by the auth service — never the workspace 'Admin' role.
+    builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
     // Multi-replica: AssistantChatResultConsumerService hands each stream entry to ONE pod
     // (consumer group) and AssistantNotifier sends from there; without the Redis backplane only

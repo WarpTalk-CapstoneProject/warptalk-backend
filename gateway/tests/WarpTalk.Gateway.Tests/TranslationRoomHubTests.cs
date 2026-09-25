@@ -326,6 +326,124 @@ public class TranslationRoomHubTests
         Assert.Contains(speakSide ? "\"listenLanguage\":null" : "\"speakLanguage\":null", payload);
     }
 
+    // ── SetExternalMeetingLanguage ─────────────────────────────────────────────────────────
+
+    private const string StandInId = "00000000-0000-0000-0000-00000000b21d";
+
+    private static IRoomHostAuthority BridgeHost(bool allowed)
+    {
+        var mock = new Mock<IRoomHostAuthority>();
+        mock.Setup(a => a.CanSetExternalMeetingLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(allowed);
+        return mock.Object;
+    }
+
+    /// <summary>
+    /// The far side's language is set on the STAND-IN's id, in all three places a participant's
+    /// own change lands: STT's Redis hashes, the room broadcast, and the stream event that makes
+    /// TranslationRoomService persist the row and rebuild the mesh.
+    /// </summary>
+    [Fact]
+    public async Task SetExternalMeetingLanguage_MovesTheStandIn_ThroughTheSamePathAsAnyLanguageChange()
+    {
+        var (hub, dbMock, clientsMock, _, _, groupProxyMock) = CreateHub(hostAuthority: BridgeHost(true));
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(hostId, "conn-bridge-host");
+
+        var published = new List<(RedisKey Stream, NameValueEntry[] Entries)>();
+        dbMock
+            .Setup(db => db.StreamAddAsync(
+                It.IsAny<RedisKey>(), It.IsAny<NameValueEntry[]>(), It.IsAny<RedisValue?>(),
+                It.IsAny<long?>(), It.IsAny<bool>(), It.IsAny<long?>(),
+                It.IsAny<StreamTrimMode>(), It.IsAny<CommandFlags>()))
+            .Callback<RedisKey, NameValueEntry[], RedisValue?, long?, bool, long?, StreamTrimMode, CommandFlags>(
+                (stream, entries, _, _, _, _, _, _) => published.Add((stream, entries)))
+            .ReturnsAsync(new RedisValue("1-0"));
+
+        await hub.SetExternalMeetingLanguage(roomId, "en-US");
+
+        dbMock.Verify(db => db.HashSetAsync($"translationRoom:{roomId}:speak_languages", StandInId, "en", When.Always, CommandFlags.None), Times.Once);
+        dbMock.Verify(db => db.HashSetAsync($"translationRoom:{roomId}:languages", StandInId, "en", When.Always, CommandFlags.None), Times.Once);
+        // Never the caller's own entry: the host did not change language.
+        dbMock.Verify(db => db.HashSetAsync(It.IsAny<RedisKey>(), hostId, It.IsAny<RedisValue>(), It.IsAny<When>(), It.IsAny<CommandFlags>()), Times.Never);
+
+        // The whole group, so the host's own main window (which picks the outbound dub by the
+        // stand-in's speak language) hears it too.
+        clientsMock.Verify(c => c.Group($"translationRoom:{roomId}"), Times.AtLeastOnce);
+        groupProxyMock.Verify(p => p.SendCoreAsync(
+            "ParticipantSpeakLanguageChanged",
+            It.Is<object[]>(args => (string)args[0] == StandInId && (string)args[1] == "en"),
+            default), Times.Once);
+        groupProxyMock.Verify(p => p.SendCoreAsync(
+            "ParticipantLanguageChanged",
+            It.Is<object[]>(args => (string)args[0] == StandInId && (string)args[1] == "en"),
+            default), Times.Once);
+
+        var systemEvent = Assert.Single(published, p => p.Stream == "translationRoom:system_events");
+        string Field(string name) => systemEvent.Entries.Single(e => e.Name == name).Value.ToString();
+        Assert.Equal("participant_language_changed", Field("event_type"));
+        var payload = Field("payload");
+        Assert.Contains(StandInId, payload);
+        Assert.DoesNotContain(hostId, payload);
+        Assert.Contains("\"speakLanguage\":\"en\"", payload);
+        Assert.Contains("\"listenLanguage\":\"en\"", payload);
+    }
+
+    [Fact]
+    public async Task SetExternalMeetingLanguage_IsRefused_ForAnyoneTheAuthorityRefuses_AndWritesNothing()
+    {
+        var (hub, dbMock, _, _, _, groupProxyMock) = CreateHub(hostAuthority: BridgeHost(false));
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-not-host");
+
+        await Assert.ThrowsAsync<HubException>(() => hub.SetExternalMeetingLanguage(Guid.NewGuid(), "en"));
+
+        dbMock.Verify(db => db.HashSetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<When>(), It.IsAny<CommandFlags>()), Times.Never);
+        dbMock.Verify(db => db.StreamAddAsync(
+            It.IsAny<RedisKey>(), It.IsAny<NameValueEntry[]>(), It.IsAny<RedisValue?>(),
+            It.IsAny<long?>(), It.IsAny<bool>(), It.IsAny<long?>(),
+            It.IsAny<StreamTrimMode>(), It.IsAny<CommandFlags>()), Times.Never);
+        groupProxyMock.Verify(p => p.SendCoreAsync(It.IsAny<string>(), It.IsAny<object[]>(), default), Times.Never);
+    }
+
+    [Fact]
+    public async Task SetExternalMeetingLanguage_AsksAboutTheCallersOwnIdentity()
+    {
+        var callerId = Guid.NewGuid().ToString();
+        var roomId = Guid.NewGuid();
+        var authority = new Mock<IRoomHostAuthority>();
+        authority.Setup(a => a.CanSetExternalMeetingLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var (hub, _, _, _, _, _) = CreateHub(hostAuthority: authority.Object);
+        hub.Context = CreateContext(callerId, "conn-self-bridge");
+
+        await hub.SetExternalMeetingLanguage(roomId, "ja");
+
+        authority.Verify(a => a.CanSetExternalMeetingLanguageAsync(roomId, callerId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SetExternalMeetingLanguage_HonoursTheWorkspaceLanguagePolicy()
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub(hostAuthority: BridgeHost(true), languagePolicy: NoLanguage());
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-bridge-policy");
+
+        await Assert.ThrowsAsync<HubException>(() => hub.SetExternalMeetingLanguage(Guid.NewGuid(), "ko"));
+
+        dbMock.Verify(db => db.HashSetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<When>(), It.IsAny<CommandFlags>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("auto")]
+    public async Task SetExternalMeetingLanguage_RefusesANonLanguage(string language)
+    {
+        var (hub, _, _, _, _, _) = CreateHub(hostAuthority: BridgeHost(true));
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-bridge-blank");
+
+        await Assert.ThrowsAsync<HubException>(() => hub.SetExternalMeetingLanguage(Guid.NewGuid(), language));
+    }
+
     [Fact]
     public async Task SetSpeakLanguage_ShouldThrow_WhenLanguageIsMissing()
     {
@@ -605,7 +723,8 @@ public class TranslationRoomHubTests
     /// </param>
     private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock, Mock<IClientProxy> GroupClientProxyMock) CreateHub(
         IRoomHostAuthority? hostAuthority = null,
-        IRoomLanguagePolicy? languagePolicy = null)
+        IRoomLanguagePolicy? languagePolicy = null,
+        IPresenceNotifier? presence = null)
     {
         var connectionManagerMock = new Mock<IConnectionManager>();
         var redisMock = new Mock<IConnectionMultiplexer>();
@@ -622,7 +741,7 @@ public class TranslationRoomHubTests
 
         var hub = new TranslationRoomHub(
             connectionManagerMock.Object,
-            Mock.Of<IPresenceNotifier>(),
+            presence ?? Mock.Of<IPresenceNotifier>(),
             streamService,
             translationRoomRegistry,
             redisMock.Object,
@@ -699,6 +818,91 @@ public class TranslationRoomHubTests
                 It.IsAny<RedisValue>(),
                 It.IsAny<When>(),
                 It.IsAny<CommandFlags>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// WT-707. JoinTranslationRoom writes the speak and listen languages into Redis, which STT,
+    /// translation and dub read — so a guest, a stale tab or a console call could enter a vi/en-only
+    /// workspace's meeting speaking or listening in ja. The join is refused outright, before it
+    /// leaves any trace: no hash, no group, no presence, no ParticipantJoined.
+    /// </summary>
+    [Theory]
+    [InlineData("ja", "vi")]
+    [InlineData("vi", "ja")]
+    public async Task JoinTranslationRoom_ShouldRefuse_WhenWorkspacePolicyExcludesALanguage(string speak, string listen)
+    {
+        var policy = new Mock<IRoomLanguagePolicy>();
+        policy.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid _, string language, CancellationToken _) => language != "ja");
+        var presence = new Mock<IPresenceNotifier>();
+        var (hub, dbMock, _, clientProxyMock, groupsMock, _) = CreateHub(languagePolicy: policy.Object, presence: presence.Object);
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-join-refused");
+        var roomId = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<HubException>(() => hub.JoinTranslationRoom(roomId, "Guest", speak, listen));
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                It.IsAny<RedisKey>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<When>(),
+                It.IsAny<CommandFlags>()),
+            Times.Never);
+        groupsMock.Verify(
+            g => g.AddToGroupAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        presence.Verify(
+            p => p.UserEnteredMeetingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        clientProxyMock.Verify(
+            c => c.SendCoreAsync("ParticipantJoined", It.IsAny<object?[]>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoom_ShouldProceed_WhenWorkspacePolicyPermitsBothLanguages()
+    {
+        var policy = new Mock<IRoomLanguagePolicy>();
+        policy.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var presence = new Mock<IPresenceNotifier>();
+        var (hub, _, _, clientProxyMock, groupsMock, _) = CreateHub(languagePolicy: policy.Object, presence: presence.Object);
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-join-allowed");
+        var roomId = Guid.NewGuid();
+
+        await hub.JoinTranslationRoom(roomId, "Member", "vi", "en");
+
+        policy.Verify(p => p.IsLanguageAllowedAsync(roomId, "vi", It.IsAny<CancellationToken>()), Times.Once);
+        policy.Verify(p => p.IsLanguageAllowedAsync(roomId, "en", It.IsAny<CancellationToken>()), Times.Once);
+        groupsMock.Verify(
+            g => g.AddToGroupAsync("conn-join-allowed", $"translationRoom:{roomId}", It.IsAny<CancellationToken>()),
+            Times.Once);
+        presence.Verify(p => p.UserEnteredMeetingAsync(userId, It.IsAny<CancellationToken>()), Times.Once);
+        clientProxyMock.Verify(
+            c => c.SendCoreAsync("ParticipantJoined", It.IsAny<object?[]>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// Speak and listen are usually the same on a reconnect; one lookup is enough (normalized, so
+    /// "en-US" / "en" is still one).
+    /// </summary>
+    [Fact]
+    public async Task JoinTranslationRoom_ShouldCheckPolicyOnce_WhenSpeakAndListenAreTheSameLanguage()
+    {
+        var policy = new Mock<IRoomLanguagePolicy>();
+        policy.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var (hub, _, _, _, _, _) = CreateHub(languagePolicy: policy.Object);
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-join-same");
+
+        await hub.JoinTranslationRoom(Guid.NewGuid(), "Member", "en-US", "en");
+
+        policy.Verify(
+            p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 

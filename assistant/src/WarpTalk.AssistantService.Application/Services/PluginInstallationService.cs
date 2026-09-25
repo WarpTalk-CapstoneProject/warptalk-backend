@@ -7,6 +7,7 @@ using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AssistantService.Application.Services;
 
@@ -18,14 +19,18 @@ public class PluginInstallationService : IPluginInstallationService
 
     private readonly IWorkspacePluginGuard _workspacePluginGuard;
 
+    private readonly IAdminAuditRecorder _auditRecorder;
+
     public PluginInstallationService(
         IUnitOfWork unitOfWork,
         IPluginCredentialProtector credentialProtector,
-        IWorkspacePluginGuard workspacePluginGuard)
+        IWorkspacePluginGuard workspacePluginGuard,
+        IAdminAuditRecorder auditRecorder)
     {
         _unitOfWork = unitOfWork;
         _credentialProtector = credentialProtector;
         _workspacePluginGuard = workspacePluginGuard;
+        _auditRecorder = auditRecorder;
     }
 
     public async Task<Result<IReadOnlyList<PluginCatalogItemDto>>> ListCatalogAsync(
@@ -78,9 +83,13 @@ public class PluginInstallationService : IPluginInstallationService
                 var blockReason = workspaceRefusal
                     ?? (workspaceAvailability is null || WorkspacePluginConstants.Availability.IsUsable(workspaceAvailability)
                         ? null
-                        : plugin.OwnerWorkspaceId is null
-                            ? WorkspacePluginConstants.Messages.NotAdded
-                            : WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace);
+                        : plugin.OwnerWorkspaceId is not null
+                            ? WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace
+                            : workspaceAvailability == WorkspacePluginConstants.Availability.DisabledByPlatform
+                                // Says the connection is kept: the row is here only so it can be
+                                // seen and, if the member wants, disconnected.
+                                ? PluginWorkspaceAccessConstants.Messages.DisabledByPlatform
+                                : WorkspacePluginConstants.Messages.NotAdded);
 
                 // The Owner browsing their own member page: a marketplace plugin their workspace has
                 // not added is theirs to add, not something to ask themselves for (gap 9).
@@ -107,7 +116,8 @@ public class PluginInstallationService : IPluginInstallationService
     }
 
     /// <summary>
-    /// Every marketplace row; a private row only inside the workspace that owns it.
+    /// Every marketplace row the platform lets this workspace have; a private row only inside the
+    /// workspace that owns it.
     /// </summary>
     /// <remarks>
     /// The one exception is a private plugin the caller has installed, which stays listed wherever
@@ -120,7 +130,16 @@ public class PluginInstallationService : IPluginInstallationService
         WorkspacePluginAvailability? availability,
         IReadOnlyList<PluginInstallation> installations)
     {
-        if (plugin.OwnerWorkspaceId is null) return true;
+        if (plugin.OwnerWorkspaceId is null)
+        {
+            // Turned off for this workspace by the platform: hidden, like another workspace's
+            // private plugin - except from a member who already installed it, who has to be able
+            // to see that it is off here and to disconnect it.
+            return availability is null
+                || availability.Of(plugin) != WorkspacePluginConstants.Availability.DisabledByPlatform
+                || installations.Any(i => i.PluginId == plugin.Id);
+        }
+
         if (availability is not null && plugin.OwnerWorkspaceId == availability.WorkspaceId) return true;
         return installations.Any(i => i.PluginId == plugin.Id);
     }
@@ -310,6 +329,12 @@ public class PluginInstallationService : IPluginInstallationService
             if (!string.IsNullOrWhiteSpace(oauth.ClientSecret))
                 plugin.OAuthClientSecretEncrypted = _credentialProtector.Protect(oauth.ClientSecret);
         }
+
+        // Recorded in the platform audit log before it is committed, and not created if it cannot
+        // be: a marketplace row reaches every workspace Owner the moment it exists.
+        var recorded = await _auditRecorder.RecordPluginActionAsync(
+            AdminAuditPluginActions.Created, plugin.Id, userId, beforeSummary: null, PluginAuditSummary.Of(plugin), ct);
+        if (!recorded.IsSuccess) return Result.Failure<PluginCatalogItemDto>(recorded.Error!, recorded.ErrorCode);
 
         await _unitOfWork.PluginRepository.AddAsync(plugin, ct);
         await _unitOfWork.SaveChangesAsync(ct);

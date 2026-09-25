@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
@@ -36,6 +37,78 @@ public class WorkspaceGrpcServiceTests
         _coMembership = Substitute.For<IWorkspaceCoMembershipService>();
         _service = new WorkspaceGrpcService(_workspaceDirectory, _coMembership);
         _context = new TestServerCallContext(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ListUserWorkspaceAudience_SendsAnEmptyPlanForAWorkspaceWithoutOne_AndNothingForABadId()
+    {
+        var userId = Guid.NewGuid();
+        var onPro = Guid.NewGuid();
+        var noPlan = Guid.NewGuid();
+        _workspaceDirectory
+            .ListUserWorkspaceAudienceAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success<IReadOnlyList<UserWorkspaceAudienceDto>>(new List<UserWorkspaceAudienceDto>
+            {
+                new(onPro, "pro", "Owner"),
+                new(noPlan, null, null),
+            }));
+
+        var response = await _service.ListUserWorkspaceAudience(
+            new ListUserWorkspaceAudienceRequest { UserId = userId.ToString() }, _context);
+        var bad = await _service.ListUserWorkspaceAudience(
+            new ListUserWorkspaceAudienceRequest { UserId = "not-a-guid" }, _context);
+
+        Assert.Equal(
+            new[] { (onPro.ToString(), "pro", "Owner"), (noPlan.ToString(), string.Empty, string.Empty) },
+            response.Workspaces.Select(item => (item.WorkspaceId, item.PlanSlug, item.RoleName)));
+        Assert.Empty(bad.Workspaces);
+    }
+
+    [Fact]
+    public async Task ListPlatformWorkspaces_CarriesPlanOwnerAndPluginSwitch_WithEmptyForNoPlan()
+    {
+        var owner = Guid.NewGuid();
+        var biz = Guid.NewGuid();
+        var trial = Guid.NewGuid();
+        _workspaceDirectory
+            .ListPlatformWorkspacesAsync(Arg.Any<CancellationToken>())
+            .Returns(Result.Success<IReadOnlyList<PlatformWorkspaceDto>>(new List<PlatformWorkspaceDto>
+            {
+                new(biz, "Biz Co", "biz-co", "active", owner, "business", 12, true),
+                new(trial, "Trial", "trial", "suspended", owner, null, 1, false),
+            }));
+
+        var response = await _service.ListPlatformWorkspaces(new ListPlatformWorkspacesRequest(), _context);
+
+        Assert.Equal(2, response.Workspaces.Count);
+        var first = response.Workspaces[0];
+        Assert.Equal((biz.ToString(), "Biz Co", "business", 12, true, owner.ToString()),
+            (first.WorkspaceId, first.Name, first.PlanSlug, first.MemberCount, first.AllowAnyPlugins, first.OwnerUserId));
+        Assert.Equal((string.Empty, "suspended", false),
+            (response.Workspaces[1].PlanSlug, response.Workspaces[1].Status, response.Workspaces[1].AllowAnyPlugins));
+    }
+
+    [Fact]
+    public async Task ListActiveWorkspaceMemberships_DropsBadIds_AndSkipsTheCallWhenNoneAreLeft()
+    {
+        var user = Guid.NewGuid();
+        var workspace = Guid.NewGuid();
+        _workspaceDirectory
+            .ListActiveMembershipsForUsersAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success<IReadOnlyList<(Guid UserId, Guid WorkspaceId)>>(new List<(Guid, Guid)> { (user, workspace) }));
+
+        var request = new ListActiveWorkspaceMembershipsRequest();
+        request.UserIds.AddRange([user.ToString(), "not-a-guid"]);
+        var response = await _service.ListActiveWorkspaceMemberships(request, _context);
+        var empty = new ListActiveWorkspaceMembershipsRequest();
+        empty.UserIds.Add("nope");
+        var none = await _service.ListActiveWorkspaceMemberships(empty, _context);
+
+        var pair = Assert.Single(response.Memberships);
+        Assert.Equal((user.ToString(), workspace.ToString()), (pair.UserId, pair.WorkspaceId));
+        Assert.Empty(none.Memberships);
+        await _workspaceDirectory.Received(1).ListActiveMembershipsForUsersAsync(
+            Arg.Is<IReadOnlyCollection<Guid>>(ids => ids.Count == 1 && ids.Contains(user)), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -198,6 +271,45 @@ public class WorkspaceGrpcServiceTests
             _context);
 
         Assert.Equal(allowAnyPlugins, response.AllowAnyPlugins);
+    }
+
+    /// <summary>
+    /// The assistant's plugin plan rule reads this. Empty means no plan, which no rule matches.
+    /// </summary>
+    [Theory]
+    [InlineData("business", "business")]
+    [InlineData(null, "")]
+    public async Task GetWorkspaceSettings_CarriesThePlanSlug(string? plan, string onTheWire)
+    {
+        _workspaceDirectory
+            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
+                15, true, false, true, true, new[] { "vi" }, PlanSlug: plan)));
+
+        var response = await _service.GetWorkspaceSettings(
+            new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
+            _context);
+
+        Assert.Equal(onTheWire, response.PlanSlug);
+    }
+
+    /// <summary>WT-707: the plan's language limit travels on the wire; 0 means no quota.</summary>
+    [Theory]
+    [InlineData(2, 2)]
+    [InlineData(null, 0)]
+    public async Task GetWorkspaceSettings_CarriesMaxLanguages(int? maxLanguages, int expected)
+    {
+        _workspaceDirectory
+            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(
+                15, true, false, true, true, new[] { "vi" },
+                MaxLanguages: maxLanguages)));
+
+        var response = await _service.GetWorkspaceSettings(
+            new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
+            _context);
+
+        Assert.Equal(expected, response.MaxLanguages);
     }
 
     [Fact]

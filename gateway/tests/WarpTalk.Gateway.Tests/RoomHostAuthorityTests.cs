@@ -217,6 +217,88 @@ public class RoomHostAuthorityTests
         Assert.Equal(RoomAdmission.Refused, await sut.GetRoomAdmissionAsync(RoomId, Guid.NewGuid().ToString()));
     }
 
+    // ── SetExternalMeetingLanguage: who may say what the far side speaks ─────────────────────
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_IsAllowed_ForTheHostOfALiveBridgeRoom()
+    {
+        var hostId = Guid.NewGuid();
+        var sut = Create(BridgeRoom(hostId), new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.True(await sut.CanSetExternalMeetingLanguageAsync(RoomId, hostId.ToString()));
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_IsRefused_InAnOrdinaryRoom_EvenForItsHost()
+    {
+        // No stand-in exists there, and the id this method writes for would be a ghost.
+        var hostId = Guid.NewGuid();
+        var sut = Create(RoomResponse(hostId), new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, hostId.ToString()));
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_IsRefused_ForAnyoneButTheHost_IncludingAWorkspaceOwner()
+    {
+        // Narrower than HasHostAuthorityAsync on purpose: the same host-only gate as the bridge
+        // token, because it acts on the identity that token mints.
+        var workspace = WorkspaceClient(new GetWorkspaceMemberResponse { IsMember = true, IsActive = true, RoleName = "Owner" });
+        var sut = Create(BridgeRoom(Guid.NewGuid()), workspace);
+
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, Guid.NewGuid().ToString()));
+        workspace.Verify(
+            c => c.GetWorkspaceMemberDetailsAsync(
+                It.IsAny<GetWorkspaceMemberRequest>(), null, null, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData("ENDED")]
+    [InlineData("CANCELLED")]
+    [InlineData("EXPIRED")]
+    public async Task ExternalMeetingLanguage_IsRefused_OnceTheRoomIsOver(string status)
+    {
+        var hostId = Guid.NewGuid();
+        var room = BridgeRoom(hostId);
+        room.Status = status;
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, hostId.ToString()));
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_IsRefused_WhenTheRoomTypeIsMissing()
+    {
+        // A response from a server older than translation_room_type must read as "not a bridge".
+        var hostId = Guid.NewGuid();
+        var room = BridgeRoom(hostId);
+        room.TranslationRoomType = string.Empty;
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, hostId.ToString()));
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_FailsClosed_WhenTheRoomLookupFails()
+    {
+        var room = new Mock<Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
+        room.Setup(c => c.GetTranslationRoomByIdAsync(
+                It.IsAny<GetTranslationRoomRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Throws(new RpcException(new Status(StatusCode.Unavailable, "down")));
+        var sut = new RoomHostAuthority(
+            room.Object, new Mock<WorkspaceService.WorkspaceServiceClient>().Object, new NullLogger<RoomHostAuthority>());
+
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, Guid.NewGuid().ToString()));
+    }
+
+    private static GetTranslationRoomResponse BridgeRoom(Guid hostId)
+    {
+        var room = RoomResponse(hostId);
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        return room;
+    }
+
     private static RoomHostAuthority CreateWithRoster(GetTranslationRoomResponse room, params Participant[] roster)
     {
         var roomClient = new Mock<Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();

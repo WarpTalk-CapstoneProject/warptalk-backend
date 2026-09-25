@@ -32,6 +32,10 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
         bool callerIsOwner,
         CancellationToken ct)
     {
+        // The platform layer first: what a platform admin decided for this workspace, and its plan
+        // when a plan rule needs one. See PluginWorkspaceAccess for the order the layers apply in.
+        var (overrides, planSlug) = await ReadPlatformLayerAsync(workspaceId, ct);
+
         var curation = await _unitOfWork.WorkspacePluginCurationRepository.GetByIdAsync(workspaceId, ct);
         if (curation is not null)
         {
@@ -39,21 +43,47 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
             return new WorkspacePluginAvailability(
                 workspaceId,
                 isCurated: true,
-                legacyAllowsEveryPlugin: false,
                 rows.Select(row => row.PluginId).ToHashSet(),
-                callerIsOwner);
+                callerIsOwner,
+                overrides,
+                planSlug);
         }
 
-        // Not curated yet: still the pre-marketplace switch. The policy client answers false when
-        // the workspace service cannot be reached, so an outage reads as "no plugins", never as
-        // "every plugin".
-        var allowsAll = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+        // Not curated yet: what the workspace carries over - the plugins its members already use
+        // here, while the pre-marketplace switch is on. The policy client answers false when the
+        // workspace service cannot be reached, so an outage reads as "no plugins", never as "some".
+        var allowsPlugins = await _policyClient.AllowsPluginUsageAsync(workspaceId, ct);
+        var used = allowsPlugins
+            ? await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedInWorkspaceAsync(workspaceId, ct)
+            : new HashSet<Guid>();
         return new WorkspacePluginAvailability(
             workspaceId,
             isCurated: false,
-            legacyAllowsEveryPlugin: allowsAll,
-            new HashSet<Guid>(),
-            callerIsOwner);
+            WorkspacePluginAvailability.CarriedOver(allowsPlugins, used),
+            callerIsOwner,
+            overrides,
+            planSlug);
+    }
+
+    /// <summary>
+    /// The workspace's overrides, and its plan - read only when some marketplace plugin has a plan
+    /// rule, so the common case (no plan rules anywhere) costs no workspace-service call.
+    /// </summary>
+    private async Task<(IReadOnlyDictionary<Guid, WorkspacePluginOverride> Overrides, string? PlanSlug)> ReadPlatformLayerAsync(
+        Guid workspaceId,
+        CancellationToken ct)
+    {
+        var overrides = (await _unitOfWork.WorkspacePluginOverrideRepository.FindAsync(
+                row => row.WorkspaceId == workspaceId, ct: ct))
+            .GroupBy(row => row.PluginId)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        var anyPlanRule = await _unitOfWork.PluginRepository.AnyAsync(
+            plugin => plugin.OwnerWorkspaceId == null && plugin.IsActive && plugin.AllowedPlanSlugsJson != null,
+            ct);
+        var planSlug = anyPlanRule ? await _policyClient.ReadPlanSlugAsync(workspaceId, ct) : null;
+
+        return (overrides, planSlug);
     }
 
     public async Task<Result<WorkspacePluginAvailability>> GetAvailabilityForMemberAsync(
@@ -108,7 +138,7 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
         var availability = await GetAvailabilityAsync(workspaceId.Value, ct);
         return availability.IsUsable(plugin)
             ? Result.Success()
-            : Refuse(WorkspacePluginConstants.Messages.NotAdded);
+            : Refuse(RefusalFor(availability, plugin));
     }
 
     public async Task<Result> CanUsePluginInWorkspaceAsync(
@@ -123,9 +153,16 @@ public class WorkspacePluginGuard : IWorkspacePluginGuard
 
         return availability.Value!.IsUsable(plugin)
             ? Result.Success()
-            : Refuse(plugin.OwnerWorkspaceId is null
-                ? WorkspacePluginConstants.Messages.NotAdded
-                : WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace);
+            : Refuse(RefusalFor(availability.Value!, plugin));
+    }
+
+    /// <summary>Why a plugin is not usable here, in the words the member sees.</summary>
+    private static string RefusalFor(WorkspacePluginAvailability availability, Plugin plugin)
+    {
+        if (plugin.OwnerWorkspaceId is not null) return WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace;
+        return availability.Of(plugin) == WorkspacePluginConstants.Availability.DisabledByPlatform
+            ? PluginWorkspaceAccessConstants.Messages.DisabledByPlatform
+            : WorkspacePluginConstants.Messages.NotAdded;
     }
 
     private async Task<bool> IsActiveMemberAsync(Guid workspaceId, Guid userId, CancellationToken ct)

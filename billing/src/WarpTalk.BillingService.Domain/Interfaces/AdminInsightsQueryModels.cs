@@ -15,7 +15,7 @@ public sealed record PaymentCurrencyTotal(string Currency, int Payments, decimal
 /// instant), its upper-cased currency and total. The insights series bucket these on the local
 /// days/months of the request's time zone, which SQL grouping by UTC date cannot do.
 /// </summary>
-public sealed record PaidAmountRow(DateTime At, string Currency, decimal Total);
+public sealed record PaidAmountRow(DateTime At, string Currency, decimal Total, Guid? WorkspaceId = null, Guid? PlanId = null);
 
 /// <summary>One payment as the "recent payments" list shows it. WorkspaceId is null when it has no subscription.</summary>
 public sealed record RecentPaymentRow(
@@ -106,9 +106,81 @@ public sealed record EndingSoonSubscriptionRow(
     string Status);
 
 /// <summary>An invoice that is issued and not yet paid.</summary>
+/// <summary>One ledger row of a workspace, for the burn chart: signed amount and the balance after it.</summary>
+public sealed record LedgerPoint(DateTime At, string Type, int Amount, int BalanceAfter);
+
 public sealed record OutstandingInvoiceRow(
     Guid InvoiceId,
     Guid WorkspaceId,
     decimal Total,
     string Currency,
     DateTime? DueAt);
+
+/// <summary>
+/// Consume rows in one UTC half-hour slot (<paramref name="SlotStart"/> is the slot's first instant),
+/// of one charge type, AI provider and plan — the grain the profit-and-loss report re-buckets onto the
+/// local days and months of the request's time zone (half hours, so a +05:30 zone still splits exactly).
+///
+/// <paramref name="Provider"/> is the lower-cased provider of the rate card the row was settled on,
+/// else the provider the charge type is served by (<c>AiProviderCatalog</c>), else <c>unknown</c>.
+/// Coverage and <paramref name="CostUsd"/> follow the rule of <see cref="ConsumptionTotals"/>.
+/// <paramref name="PlanId"/> is the plan of the subscription the credits were taken from.
+/// </summary>
+public sealed record ConsumptionSlotRow(
+    DateTime SlotStart,
+    string ChargeType,
+    string Provider,
+    Guid? PlanId,
+    long Credits,
+    int Transactions,
+    long CoveredCredits,
+    int CoveredTransactions,
+    decimal CostUsd,
+    long OverageCredits);
+
+/// <summary>Credits one workspace consumed in one UTC half-hour slot, and the plan they were taken under.</summary>
+public sealed record WorkspaceSlotRow(DateTime SlotStart, Guid WorkspaceId, Guid? PlanId, long Credits);
+
+/// <summary>A plan's display identity.</summary>
+public sealed record PlanLabel(Guid PlanId, string Slug, string Name);
+
+/// <summary>Consumed credits of one workspace on one AI provider and charge type, and their provider cost (USD) where covered.</summary>
+public sealed record ProviderWorkspaceConsumption(
+    Guid WorkspaceId,
+    string Provider,
+    string ChargeType,
+    long Credits,
+    long CoveredCredits,
+    decimal CostUsd);
+
+/// <summary>
+/// One payment attempt through a payment provider: when (paid_at, else updated_at), its status,
+/// currency, total and workspace. Admin Providers page (Stripe).
+/// </summary>
+public sealed record ProviderPaymentRow(DateTime At, string Status, string Currency, decimal Total, Guid? WorkspaceId);
+
+/// <summary>G12 inbox: an issued, unpaid invoice with what the inbox row shows.</summary>
+public sealed record InboxInvoiceRow(
+    Guid InvoiceId,
+    string InvoiceNumber,
+    Guid WorkspaceId,
+    decimal Total,
+    string Currency,
+    DateTime IssuedAt,
+    DateTime? DueAt,
+    string Provider);
+
+/// <summary>G12 inbox: a subscription whose trial ends soon or whose service is suspended.</summary>
+public sealed record InboxSubscriptionRow(
+    Guid SubscriptionId,
+    Guid WorkspaceId,
+    string PlanName,
+    DateTime? TrialEndsAt,
+    DateTime CurrentPeriodEnd,
+    bool AutoRenew,
+    string ServiceState,
+    string? SuspendedReason,
+    DateTime UpdatedAt);
+
+/// <summary>G12 inbox: a payment the provider reports as disputed (a chargeback someone has to answer).</summary>
+public sealed record InboxPaymentRow(Guid PaymentId, Guid WorkspaceId, decimal TotalAmount, string Currency, string Provider, DateTime UpdatedAt);

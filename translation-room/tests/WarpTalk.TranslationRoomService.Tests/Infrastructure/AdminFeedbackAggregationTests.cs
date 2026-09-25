@@ -292,6 +292,29 @@ public sealed class AdminFeedbackAggregationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Comment_search_matches_text_or_room_title_and_the_rating_range_narrows()
+    {
+        // Commented ratings in the window: 5 "The dub kept up…" on room A1, 5 "Good." on room B1.
+        var (byText, byTextTotal) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(Search: "DUB KEPT"));
+        byTextTotal.Should().Be(1);
+        byText[0].TranslationRoomId.Should().Be(_roomA1);
+
+        var roomB1Title = $"Room {_roomB1.ToString("N")[..4]}";
+        var (byTitle, _) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(Search: roomB1Title.ToLowerInvariant()));
+        byTitle.Should().ContainSingle().Which.TranslationRoomId.Should().Be(_roomB1);
+
+        var (_, unhappyTotal) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(MinRating: 1, MaxRating: 4));
+        unhappyTotal.Should().Be(0);
+
+        var (_, fiveTotal) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(MinRating: 5, MaxRating: 5));
+        fiveTotal.Should().Be(2);
+    }
+
+    [Fact]
     public async Task WT694_Lowest_rated_first_orders_by_overall_rating_then_newest()
     {
         // Seeded commented ratings in the window: 5 ("The dub kept up…", day 1) and 5 ("Good.",

@@ -13,6 +13,8 @@ public class UnitOfWork : IUnitOfWork
         AssistantConversationRepository = new AssistantConversationRepository(db);
         AssistantMessageRepository = new AssistantMessageRepository(db);
         AssistantToolCallRepository = new AssistantToolCallRepository(db);
+        PlatformConversationRepository = new PlatformConversationRepository(db);
+        PlatformMessageRepository = new PlatformMessageRepository(db);
         PluginRepository = new PluginRepository(db);
         PluginInstallationRepository = new PluginInstallationRepository(db);
         PluginConnectionRepository = new PluginConnectionRepository(db);
@@ -21,11 +23,14 @@ public class UnitOfWork : IUnitOfWork
         WorkspacePluginRepository = new WorkspacePluginRepository(db);
         WorkspacePluginCurationRepository = new WorkspacePluginCurationRepository(db);
         PluginRequestRepository = new PluginRequestRepository(db);
+        WorkspacePluginOverrideRepository = new WorkspacePluginOverrideRepository(db);
     }
 
     public IAssistantConversationRepository AssistantConversationRepository { get; }
     public IAssistantMessageRepository AssistantMessageRepository { get; }
     public IAssistantToolCallRepository AssistantToolCallRepository { get; }
+    public IPlatformConversationRepository PlatformConversationRepository { get; }
+    public IPlatformMessageRepository PlatformMessageRepository { get; }
     public IPluginRepository PluginRepository { get; }
     public IPluginInstallationRepository PluginInstallationRepository { get; }
     public IPluginConnectionRepository PluginConnectionRepository { get; }
@@ -34,6 +39,7 @@ public class UnitOfWork : IUnitOfWork
     public IWorkspacePluginRepository WorkspacePluginRepository { get; }
     public IWorkspacePluginCurationRepository WorkspacePluginCurationRepository { get; }
     public IPluginRequestRepository PluginRequestRepository { get; }
+    public IWorkspacePluginOverrideRepository WorkspacePluginOverrideRepository { get; }
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _db.SaveChangesAsync(ct);

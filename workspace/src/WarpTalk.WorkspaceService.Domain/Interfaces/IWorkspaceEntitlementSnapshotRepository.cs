@@ -10,4 +10,7 @@ namespace WarpTalk.WorkspaceService.Domain.Interfaces;
 public interface IWorkspaceEntitlementSnapshotRepository : IGenericRepository<WorkspaceEntitlementSnapshot>
 {
     Task<WorkspaceEntitlementSnapshot?> GetForWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>The plan slug of each workspace that has a snapshot with one.</summary>
+    Task<Dictionary<Guid, string>> GetPlanSlugsAsync(IReadOnlyCollection<Guid> workspaceIds, CancellationToken ct = default);
 }

@@ -58,6 +58,36 @@ public class WorkspaceDirectoryServiceTests
         Assert.Equal(new[] { alice, bob }, result.Value);
     }
 
+    // ── Announcement targeting: who the viewer is ────────────────────────────────────
+
+    [Fact]
+    public async Task ListUserWorkspaceAudienceAsync_PairsEachActiveWorkspaceWithItsPlanAndRole()
+    {
+        var userId = Guid.NewGuid();
+        var onPro = Guid.NewGuid();
+        var noPlan = Guid.NewGuid();
+        var ownerRole = Guid.NewGuid();
+        var memberRole = Guid.NewGuid();
+        _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUserAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new() { WorkspaceId = onPro, UserId = userId, RoleId = ownerRole },
+                new() { WorkspaceId = noPlan, UserId = userId, RoleId = memberRole },
+            });
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetPlanSlugsAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, string> { [onPro] = "pro" });
+        _authIdentity.GetRoleByIdAsync(ownerRole, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRole, Name = "Owner" });
+        _authIdentity.GetRoleByIdAsync(memberRole, Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRole, Name = "Member" });
+
+        var result = await _service.ListUserWorkspaceAudienceAsync(userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            new[] { (onPro, (string?)"pro", (string?)"Owner"), (noPlan, (string?)null, (string?)"Member") },
+            result.Value!.Select(item => (item.WorkspaceId, item.PlanSlug, item.RoleName)));
+    }
+
     [Fact]
     public async Task ListActiveMemberUserIdsAsync_AnswersNull_ForADeletedOrUnknownWorkspace()
     {
@@ -628,6 +658,66 @@ public class WorkspaceDirectoryServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(15, result.Value!.ArtifactRetentionDays);
         Assert.True(result.Value.AllowExternalCollaboration);
+    }
+
+    /// <summary>
+    /// WT-707: the quota counts DISTINCT normalized languages — "en" and "en-US" are one language,
+    /// so three codes naming two languages fit a limit of two.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldAllow_WhenRegionalVariantsCollapseWithinPlanQuota()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")));
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "en", "en-US", "vi" });
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldDeny_WhenDistinctLanguagesExceedPlanQuota()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")));
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "en", "vi", "ja" });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+    }
+
+    [Fact]
+    public async Task GetSettingsAsync_ReturnsPlanMaxLanguages_FromEntitlementSnapshot()
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{}" });
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")));
+
+        var result = await _service.GetSettingsAsync(workspaceId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, result.Value!.MaxLanguages);
+    }
+
+    [Fact]
+    public async Task GetSettingsAsync_ReturnsNullMaxLanguages_WhenNoEntitlementSnapshot()
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{}" });
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+
+        var result = await _service.GetSettingsAsync(workspaceId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value!.MaxLanguages);
     }
 
     [Fact]

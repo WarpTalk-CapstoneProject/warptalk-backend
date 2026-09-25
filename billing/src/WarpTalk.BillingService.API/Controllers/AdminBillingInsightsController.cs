@@ -18,7 +18,7 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/insights")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.BillingRead)]
 public class AdminBillingInsightsController : ControllerBase
 {
     private readonly IAdminBillingInsightsService _insights;
@@ -40,6 +40,11 @@ public class AdminBillingInsightsController : ControllerBase
     [HttpGet("snapshot")]
     public async Task<IActionResult> GetSnapshot([FromQuery(Name = "tz")] string? tz, CancellationToken ct)
         => ToActionResult(await _insights.GetSnapshotAsync(tz, ct));
+
+    /// <summary>Profit and loss: <c>?from&amp;to&amp;compare&amp;tz</c> as <see cref="GetInsights"/>. 400 on an invalid range or tz.</summary>
+    [HttpGet("pnl")]
+    public async Task<IActionResult> GetProfitAndLoss([FromQuery] AdminInsightsQuery query, CancellationToken ct)
+        => ToActionResult(await _insights.GetProfitAndLossAsync(query, ct));
 
     private IActionResult ToActionResult<T>(Result<T> result)
     {

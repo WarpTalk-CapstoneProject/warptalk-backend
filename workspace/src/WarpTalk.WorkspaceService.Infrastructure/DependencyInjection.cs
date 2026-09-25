@@ -57,6 +57,9 @@ public static class DependencyInjection
         services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
         services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
         services.AddScoped<IAdminAuditLogRepository, AdminAuditLogRepository>();
+        services.AddScoped<IWorkspaceAdminNoteRepository, WorkspaceAdminNoteRepository>();
+        services.AddScoped<IAdminInboxStateRepository, AdminInboxStateRepository>();
+        services.AddScoped<IAdminInboxNoteRepository, AdminInboxNoteRepository>();
 
         // 3. Object Storage Options & Adapters
         services.AddWarpTalkObjectStorageOptions(configuration);
@@ -151,6 +154,27 @@ public static class DependencyInjection
             // Short on purpose. An admin opening this screen while the monitoring host is wedged
             // should be told so in seconds, not hold a request thread for the default 100.
             client.Timeout = TimeSpan.FromSeconds(8);
+        });
+        // Firing alerts come from Alertmanager, the only place silences and inhibitions exist.
+        // Same "unconfigured is supported" rule: unreachable degrades to a warning on the screen.
+        var alertmanagerUrl = configuration["Monitoring:AlertmanagerUrl"];
+        services.AddHttpClient<IPlatformAlertSource, AlertmanagerAlertSource>(client =>
+        {
+            var configured = string.IsNullOrWhiteSpace(alertmanagerUrl)
+                ? "http://localhost:9093"
+                : alertmanagerUrl.TrimEnd('/');
+            client.BaseAddress = new Uri(configured + "/");
+            client.Timeout = TimeSpan.FromSeconds(8);
+        });
+        services.AddScoped<IOutboxDeadLetterReader, WorkspaceOutboxDeadLetterReader>();
+        // G12 pending-work inbox: the owning services' inbox-items endpoints, read directly with the
+        // caller's token. Unconfigured URLs default to the local development ports.
+        services.AddSingleton(AdminInboxOptions.From(configuration));
+        services.AddHttpClient(AdminInboxSourceClient.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15));
+        services.AddScoped<IAdminInboxSourceClient, AdminInboxSourceClient>();
+        services.AddSingleton(new PlatformHealthOptions
+        {
+            GrafanaEmbedPath = NormalizeEmbedPath(configuration["Monitoring:GrafanaEmbedPath"]),
         });
         services.AddScoped<IDocumentEmbeddingResultProcessor, DocumentEmbeddingResultProcessor>();
         services.AddScoped<WorkspaceOutboxWriter>();
@@ -260,5 +284,18 @@ public static class DependencyInjection
             throw new InvalidOperationException(
                 "CRITICAL SECURITY ERROR: non-placeholder Storage:S3 credentials are required outside Development.");
         }
+    }
+
+    /// <summary>
+    /// A same-origin path or nothing. An absolute URL here would put a cross-origin frame on the
+    /// admin page, which is exactly what the ForwardAuth design exists to avoid.
+    /// </summary>
+    public static string? NormalizeEmbedPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim().TrimEnd('/');
+        return trimmed.StartsWith('/') && !trimmed.StartsWith("//", StringComparison.Ordinal) && trimmed.Length > 1
+            ? trimmed
+            : null;
     }
 }

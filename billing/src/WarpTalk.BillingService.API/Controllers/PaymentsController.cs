@@ -14,6 +14,10 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -27,17 +31,23 @@ public class PaymentsController : ControllerBase
     private readonly IPaymentAppService _paymentAppService;
     private readonly IStripeWebhookService _stripeWebhookService;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IStaffAccessResolver? _staffAccess;
+    private readonly IProviderCallRecorder? _calls;
 
     public PaymentsController(
         IPaymentService paymentService,
         IPaymentAppService paymentAppService,
         IStripeWebhookService stripeWebhookService,
-        IWorkspaceClient workspaceClient)
+        IWorkspaceClient workspaceClient,
+        IStaffAccessResolver? staffAccess = null,
+        IProviderCallRecorder? calls = null)
     {
+        _calls = calls;
         _paymentService = paymentService;
         _paymentAppService = paymentAppService;
         _stripeWebhookService = stripeWebhookService;
         _workspaceClient = workspaceClient;
+        _staffAccess = staffAccess;
     }
 
     /// <summary>
@@ -70,7 +80,8 @@ public class PaymentsController : ControllerBase
     /// is correct here. Dropping "Owner" takes nothing away: it was never a token claim.
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.PaymentRecorded, AdminAuditEntityTypes.Payment, typeof(Payment))]
+    [RequirePermission(AdminPermissions.BillingPaymentsManage)]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
@@ -137,9 +148,10 @@ public class PaymentsController : ControllerBase
 
         try
         {
-            var isSystemAdmin =
-                User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
-                User.IsInRole(WorkspaceRoleConstants.Admin);
+            // G10: staff who can read billing may look at (and settle) somebody else's session;
+            // the old "any admin-ish role" test would now admit every staff role.
+            var isSystemAdmin = _staffAccess is not null
+                && await _staffAccess.StaffOverrideAllowsAsync(User, AdminPermissions.BillingRead, HttpContext.RequestAborted);
 
             var result = await _paymentAppService.GetAndProcessCheckoutSessionAsync(sessionId, userId.Value, isSystemAdmin);
             
@@ -175,9 +187,20 @@ public class PaymentsController : ControllerBase
         var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
         var stripeSignature = Request.Headers[BillingMessageConstants.Webhook.StripeSignatureHeader].ToString();
 
+        // Admin Providers page: every delivery counted as received and, by outcome, verified and
+        // handled (ok), refused for its signature (auth) or failed in our handler (error). Inbound
+        // deliveries are shown apart from our calls and never move Stripe's own success rate.
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        void Count(string outcome) => _calls?.Record(
+            WarpTalk.BillingService.Domain.Constants.ProviderCatalog.Stripe,
+            WarpTalk.BillingService.Application.Services.ProviderMetricsCalculator.WebhookOperation,
+            outcome,
+            (long)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+
         try
         {
             var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
+            Count(result.IsSuccess ? "ok" : "error");
             if (!result.IsSuccess)
             {
                 // 500, not 400. WT-370: the service only reports a failure here when a
@@ -194,10 +217,12 @@ public class PaymentsController : ControllerBase
         }
         catch (Stripe.StripeException ex)
         {
+            Count("auth");
             return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
         }
         catch (Exception ex)
         {
+            Count("error");
             return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse(ex.Message, ErrorCodes.InternalServerError));
         }
     }

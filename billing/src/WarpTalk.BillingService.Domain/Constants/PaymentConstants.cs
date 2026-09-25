@@ -25,6 +25,27 @@ public static class PaymentConstants
         /// </summary>
         public const string CreditTopUp = "CreditTopUp";
 
+        /// <summary>G11: a catalog credit pack (subscription.credit_packs), priced from the pack.</summary>
+        public const string CreditPack = "CreditPack";
+
+        /// <summary>
+        /// G11: a catalog add-on — its own Stripe subscription, never the plan's. The webhook maps
+        /// the add-on subscription's later events onto the three types below so that none of them
+        /// can reach the plan's handlers (a deleted add-on subscription must not cancel the plan).
+        /// </summary>
+        public const string AddOn = "AddOn";
+        public const string AddOnRenewal = "AddOnRenewal";
+        public const string AddOnUpdate = "AddOnUpdate";
+        public const string AddOnCancellation = "AddOnCancellation";
+
+        public static readonly IReadOnlySet<string> AddOnLifecycleTypes = new HashSet<string>
+        {
+            AddOn,
+            AddOnRenewal,
+            AddOnUpdate,
+            AddOnCancellation
+        };
+
         public static readonly IReadOnlySet<string> SubscriptionLifecycleTypes = new HashSet<string>
         {
             Subscription,

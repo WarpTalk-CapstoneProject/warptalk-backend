@@ -15,5 +15,12 @@ public interface IWorkspaceMemberService
     Task<Result<WorkspaceRoleChangePreviewDto>> PreviewMemberRoleChangeAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default);
     Task<Result<WorkspaceRoleChangeResultDto>> ApplyMemberRoleChangeAsync(Guid workspaceId, Guid memberUserId, ApplyWorkspaceRoleChangeRequest request, Guid executingUserId, CancellationToken ct = default);
     Task<Result> TransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, Guid executingUserId, CancellationToken ct = default);
+
+    /// <summary>
+    /// A platform administrator hands the workspace to another member. The owner's own transfer
+    /// rules, minus "you must be the owner", plus a mandatory reason and an audit row committed in
+    /// the same SaveChanges as the transfer.
+    /// </summary>
+    Task<Result> AdminTransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, Guid actorId, string reason, string? correlationId, CancellationToken ct = default);
     Task<Result> UpdateMemberAsync(Guid workspaceId, Guid memberUserId, UpdateWorkspaceMemberRequest request, Guid executingUserId, CancellationToken ct = default);
 }

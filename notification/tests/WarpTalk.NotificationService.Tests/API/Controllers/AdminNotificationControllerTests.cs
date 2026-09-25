@@ -21,6 +21,7 @@ using Moq;
 using StackExchange.Redis;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.NotificationService.Tests.API.Controllers;
 
@@ -59,6 +60,8 @@ public class AdminNotificationControllerTests : IClassFixture<WebApplicationFact
                 "test-only-internal-grpc-secret-32-characters");
             builder.ConfigureTestServices(services =>
             {
+                // G10: the "admin" token stands in for the auth service's answer (Super Admin).
+                services.UseTokenHintAsStaffAccessForTests();
                 services.RemoveAll<IHostedService>();
                 services.RemoveAll<IConnectionMultiplexer>();
                 services.RemoveAll<IAdminNotificationService>();

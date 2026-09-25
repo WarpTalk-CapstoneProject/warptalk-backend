@@ -4,7 +4,9 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Events;
@@ -25,36 +27,60 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
     private readonly AdminAuditService.AdminAuditServiceClient _client;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AdminAuditGrpcClient> _logger;
+    private readonly IHttpContextAccessor? _httpContextAccessor;
 
     public AdminAuditGrpcClient(
         AdminAuditService.AdminAuditServiceClient client,
         ILogger<AdminAuditGrpcClient> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IHttpContextAccessor? httpContextAccessor = null)
     {
         _client = client;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _httpContextAccessor = httpContextAccessor;
     }
 
-    public async Task<Result> RecordAsync(
+    public Task<Result> RecordAsync(
         string action,
         Guid entityId,
         Guid actorId,
         string reason,
         string correlationId,
+        Guid? workspaceId,
         IReadOnlyDictionary<string, string?>? beforeSummary = null,
         IReadOnlyDictionary<string, string?>? afterSummary = null,
         CancellationToken ct = default)
     {
-        var request = new RecordAdminActionRequest
+        var request = NewRequest(action, AdminAuditEntityTypes.User, entityId, actorId, reason, correlationId);
+        // Auth actions are not scoped to a workspace, except the sign-outs the admin workspace
+        // page makes, which name the workspace in their route so they appear on its timeline.
+        // Otherwise empty rather than something plausible: a wrong workspace id would file the
+        // entry under a tenant that had nothing to do with it.
+        request.WorkspaceId = workspaceId?.ToString() ?? string.Empty;
+        Fill(request.BeforeSummary, beforeSummary);
+        Fill(request.AfterSummary, afterSummary);
+        return SendAsync(request, action, entityId, ct);
+    }
+
+    public Task<Result> RecordSubjectAsync(AdminAuditSubjectRecord record, CancellationToken ct = default)
+    {
+        var request = NewRequest(
+            record.Action, record.EntityType, record.EntityId, record.ActorId, record.Reason, record.CorrelationId);
+        request.EntityLabel = record.EntityLabel ?? string.Empty;
+        Fill(request.BeforeSummary, record.BeforeSummary);
+        Fill(request.AfterSummary, record.AfterSummary);
+        return SendAsync(request, record.Action, record.EntityId ?? Guid.Empty, ct);
+    }
+
+    private RecordAdminActionRequest NewRequest(
+        string action, string entityType, Guid? entityId, Guid actorId, string reason, string correlationId) =>
+        new()
         {
             SourceService = AdminAuditSources.AuthService,
             Action = action,
-            EntityType = AdminAuditEntityTypes.User,
-            EntityId = entityId.ToString(),
-            // Auth actions are not scoped to a workspace. Left empty rather than filled with
-            // something plausible: a wrong workspace id would file the entry under a tenant that
-            // had nothing to do with it.
+            EntityType = entityType,
+            EntityId = entityId?.ToString() ?? string.Empty,
             WorkspaceId = string.Empty,
             ActorId = actorId.ToString(),
             Reason = reason,
@@ -63,8 +89,9 @@ public sealed class AdminAuditGrpcClient : IAdminAuditRecorder
             CorrelationId = correlationId,
         };
 
-        Fill(request.BeforeSummary, beforeSummary);
-        Fill(request.AfterSummary, afterSummary);
+    private async Task<Result> SendAsync(RecordAdminActionRequest request, string action, Guid entityId, CancellationToken ct)
+    {
+        AdminAuditRequestMetadata.FromHttpContext(_httpContextAccessor?.HttpContext).ApplyTo(request);
 
         try
         {

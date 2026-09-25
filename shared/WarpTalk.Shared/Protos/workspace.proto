@@ -14,6 +14,69 @@ service WorkspaceService {
   // WT-699 / TC4104: the audience of a SEGMENT admin announcement, where the segment is one
   // workspace. Active members only.
   rpc ListWorkspaceMemberUserIds (ListWorkspaceMemberUserIdsRequest) returns (ListWorkspaceMemberUserIdsResponse);
+  // The workspaces one person is an active member of, each with its plan: who a plan- or
+  // workspace-targeted announcement is shown to. Asked by the notification service on the
+  // person's own behalf.
+  rpc ListUserWorkspaceAudience (ListUserWorkspaceAudienceRequest) returns (ListUserWorkspaceAudienceResponse);
+  // Every workspace that is not deleted, each with its plan, Owner and plugin switch: the platform
+  // admin's per-workspace plugin controls list every workspace and resolve each one's effective
+  // state, and a call per workspace would be N round trips on one admin page. The caller authorized
+  // the platform admin before asking.
+  rpc ListPlatformWorkspaces (ListPlatformWorkspacesRequest) returns (ListPlatformWorkspacesResponse);
+  // Which active workspaces each of these users belongs to, in one call: "which workspaces have a
+  // member who connected this plugin", answered for a set of users rather than per workspace.
+  rpc ListActiveWorkspaceMemberships (ListActiveWorkspaceMembershipsRequest) returns (ListActiveWorkspaceMembershipsResponse);
+}
+
+message ListPlatformWorkspacesRequest {
+}
+
+message PlatformWorkspaceItem {
+  string workspace_id = 1;
+  string name = 2;
+  string slug = 3;
+  // active | suspended. Deleted workspaces are not listed.
+  string status = 4;
+  // Empty when unknown.
+  string owner_user_id = 5;
+  // From the replicated entitlement snapshot. Empty when the workspace has no plan.
+  string plan_slug = 6;
+  int32 member_count = 7;
+  // The legacy AllowAnyPlugins switch, as GetWorkspaceSettings reports it.
+  bool allow_any_plugins = 8;
+}
+
+message ListPlatformWorkspacesResponse {
+  repeated PlatformWorkspaceItem workspaces = 1;
+}
+
+message ListActiveWorkspaceMembershipsRequest {
+  repeated string user_ids = 1;
+}
+
+message ActiveWorkspaceMembership {
+  string user_id = 1;
+  string workspace_id = 2;
+}
+
+message ListActiveWorkspaceMembershipsResponse {
+  repeated ActiveWorkspaceMembership memberships = 1;
+}
+
+message ListUserWorkspaceAudienceRequest {
+  string user_id = 1;
+}
+
+message UserWorkspaceAudienceItem {
+  string workspace_id = 1;
+  // From the replicated entitlement snapshot. Empty when the workspace has no plan.
+  string plan_slug = 2;
+  // The person's role in this workspace (Owner, Admin, Member). Empty when it cannot be resolved.
+  string role_name = 3;
+}
+
+message ListUserWorkspaceAudienceResponse {
+  repeated UserWorkspaceAudienceItem workspaces = 1;
 }
 
 message ListWorkspaceMemberUserIdsRequest {
@@ -132,6 +195,21 @@ message GetWorkspaceSettingsResponse {
   // Plugin installations and OAuth tokens remain personal; this only gates usage in a
   // workspace-scoped chat.
   bool allow_any_plugins = 8;
+  // WT-707: the plan's effective max_languages limit
+  // (WorkspaceEntitlements.Limit(EntitlementKeys.MaxLanguages)), counted as DISTINCT normalized
+  // target languages per room.
+  //
+  // It exists so the EDIT path applies the same quota ValidateMeetingCreation applies at create,
+  // without borrowing the create gate: otherwise a room created with 2 languages could be edited
+  // to 6. Same reason allowed_target_languages lives here.
+  //
+  // 0 MEANS NO QUOTA APPLIES (no subscription snapshot / cold start), mirroring the create path.
+  // A caller must branch on 0 before comparing, or every such workspace is locked out of edits.
+  int32 max_languages = 9;
+  // The workspace's plan, from the replicated entitlement snapshot. Empty when the workspace has
+  // no plan (no snapshot yet, or never subscribed). The assistant service applies a plugin's
+  // plan rule with it; empty never matches a plan.
+  string plan_slug = 10;
 }
 
 message GetWorkspacePreflightRequest {

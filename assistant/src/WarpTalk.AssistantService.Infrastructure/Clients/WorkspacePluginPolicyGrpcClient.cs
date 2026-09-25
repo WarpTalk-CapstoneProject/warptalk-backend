@@ -25,6 +25,25 @@ public class WorkspacePluginPolicyGrpcClient : IWorkspacePluginPolicyClient
     public async Task<bool> AllowsPluginUsageAsync(Guid workspaceId, CancellationToken ct = default) =>
         await ReadAllowAnyPluginsAsync(workspaceId, ct) == WorkspacePluginPolicyAnswer.Allowed;
 
+    public async Task<string?> ReadPlanSlugAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _workspaceClient.GetWorkspaceSettingsAsync(
+                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            // Empty from a workspace with no plan, and from a workspace service older than the
+            // field: both match no plan rule.
+            return string.IsNullOrWhiteSpace(response.PlanSlug) ? null : response.PlanSlug.Trim();
+        }
+        catch (RpcException ex)
+        {
+            _logger.LogWarning(ex, "Could not read workspace {WorkspaceId}'s plan for a plugin plan rule.", workspaceId);
+            return null;
+        }
+    }
+
     public async Task<WorkspacePluginPolicyAnswer> ReadAllowAnyPluginsAsync(Guid workspaceId, CancellationToken ct = default)
     {
         try

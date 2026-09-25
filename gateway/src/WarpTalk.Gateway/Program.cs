@@ -8,11 +8,13 @@ using StackExchange.Redis;
 using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Configuration;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Monitoring;
 using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
@@ -63,6 +65,15 @@ builder.Services.AddWarpTalkJwtAuthentication(
                     context.Token = accessToken;
                 }
 
+                // The embedded Grafana's ForwardAuth call, and nothing else: an iframe cannot
+                // send an Authorization header, so the admin's access-token cookie stands in for
+                // it on that one path. See GrafanaForwardAuth.
+                if (string.IsNullOrEmpty(context.Token)
+                    && WarpTalk.Gateway.Monitoring.GrafanaForwardAuth.TryReadCookieToken(context.Request, out var cookieToken))
+                {
+                    context.Token = cookieToken;
+                }
+
                 return Task.CompletedTask;
             }
         };
@@ -72,15 +83,23 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
+// Staff authorization for the embedded Grafana's ForwardAuth endpoint (health.read) — the same
+// permission check every admin endpoint in the services makes, answered by the auth service.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
     ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
 
+// A cross-origin download can only name its file, or say it was cut short, through response
+// headers the browser is told it may read. The admin audit log's CSV export uses all three.
+string[] exposedHeaders = ["Content-Disposition", "X-Audit-Export-Rows", "X-Audit-Export-Truncated"];
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
+        policy.WithExposedHeaders(exposedHeaders);
         if (builder.Environment.IsDevelopment())
         {
             policy.SetIsOriginAllowed(origin => true) // Allow ngrok dynamic URLs
@@ -251,6 +270,9 @@ builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomLanguagePolicy, WarpTa
 // WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
 // singleton would also be the wrong lifetime for something that must never cache its answer.
 builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
+// The one presence snapshot both NotificationHub.QueryPresence and POST /api/v1/presence/query
+// answer from. Scoped because it composes the scoped visibility check above.
+builder.Services.AddScoped<IPresenceQueryService, PresenceQueryService>();
 
 var app = builder.Build();
 
@@ -295,6 +317,7 @@ app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
     .RequireAuthorization("RequireAuth");
 
 app.MapPresenceEndpoints();
+app.MapGrafanaForwardAuth();
 
 
 

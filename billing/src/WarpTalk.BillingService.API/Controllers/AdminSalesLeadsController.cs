@@ -9,6 +9,9 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -28,7 +31,6 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/billing/sales-leads")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminSalesLeadsController : ControllerBase
 {
     private readonly ISalesInquiryService _salesInquiryService;
@@ -42,23 +44,54 @@ public class AdminSalesLeadsController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>Every lead on the platform, newest first. Optional status and text filters.</summary>
+    /// <summary>
+    /// Every lead on the platform, newest first unless <paramref name="sort"/> says otherwise.
+    /// </summary>
+    /// <param name="page">1-based page number.</param>
+    /// <param name="pageSize">Rows per page, clamped by the service.</param>
+    /// <param name="status">new | reviewing | quoted | converted | closed; null lists every status.</param>
+    /// <param name="search">Matched against work email, company, first and last name.</param>
+    /// <param name="workspaceId">Only leads linked to this workspace.</param>
+    /// <param name="requestType">Exact request_type, case-insensitive.</param>
+    /// <param name="source">Exact source (e.g. landing_pricing), case-insensitive.</param>
+    /// <param name="createdFrom">Inclusive lower bound on created_at (UTC).</param>
+    /// <param name="createdTo">Exclusive upper bound on created_at (UTC); earlier than createdFrom is a 400.</param>
+    /// <param name="sort">created_desc (default) | created_asc | company_asc | company_desc; anything else is a 400.</param>
+    /// <param name="ct">Request cancellation.</param>
     [HttpGet]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetLeads(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] string? status = null,
         [FromQuery] string? search = null,
         [FromQuery] Guid? workspaceId = null,
+        [FromQuery] string? requestType = null,
+        [FromQuery] string? source = null,
+        [FromQuery] DateTime? createdFrom = null,
+        [FromQuery] DateTime? createdTo = null,
+        [FromQuery] string? sort = null,
         CancellationToken ct = default)
     {
         var result = await _salesInquiryService.GetSalesInquiriesAsync(
-            new SalesInquiryQuery(page, pageSize, status, search, workspaceId, NewestFirst: true),
+            new SalesInquiryQuery(
+                page,
+                pageSize,
+                status,
+                search,
+                workspaceId,
+                NewestFirst: true,
+                RequestType: requestType,
+                Source: source,
+                CreatedFrom: createdFrom,
+                CreatedTo: createdTo,
+                Sort: sort),
             ct);
         return ToActionResult(result);
     }
 
     [HttpGet("{id:guid}")]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetLead(Guid id, CancellationToken ct)
     {
         var result = await _salesInquiryService.GetSalesInquiryByIdAsync(id, ct);
@@ -67,6 +100,8 @@ public class AdminSalesLeadsController : ControllerBase
 
     /// <summary>Move a lead through new → reviewing → quoted → converted / closed.</summary>
     [HttpPatch("{id:guid}/status")]
+    [AdminAudited(AdminAuditBillingActions.SalesLeadStatusChanged, AdminAuditEntityTypes.SalesLead, typeof(SalesInquiry), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.BillingLeadsManage)]
     public async Task<IActionResult> UpdateStatus(
         Guid id,
         [FromBody] UpdateSalesInquiryStatusRequest request,

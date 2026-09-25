@@ -37,7 +37,25 @@ public interface ICreditService
         CancellationToken cancellationToken = default);
 
 
+    /// <summary>
+    /// Validates and applies an admin adjustment to the workspace's active subscription and ledger,
+    /// without saving. The caller records the action in the platform audit log and only then calls
+    /// SaveChangesAsync, so an adjustment that cannot be audited is never committed.
+    /// </summary>
+    Task<Result<StagedCreditAdjustment>> StageWorkspaceAdjustmentAsync(
+        Guid workspaceId,
+        int amount,
+        string reason,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(Guid workspaceId, CreditHistoryQuery query, CancellationToken cancellationToken = default);
-    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(CreditHistoryQuery query, CancellationToken cancellationToken = default);
+    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(GlobalCreditHistoryQuery query, CancellationToken cancellationToken = default);
 
 }
+
+/// <summary>An adjustment applied to tracked entities and not yet saved.</summary>
+public sealed record StagedCreditAdjustment(
+    WarpTalk.BillingService.Domain.Entities.Subscription Subscription,
+    WarpTalk.BillingService.Domain.Entities.CreditTransaction Transaction,
+    int BalanceBefore);

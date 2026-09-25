@@ -13,6 +13,7 @@ using FluentValidation;
 using WarpTalk.NotificationService.API.Validators;
 using WarpTalk.NotificationService.API.Consumers;
 using WarpTalk.NotificationService.API.HostedServices;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -47,8 +48,22 @@ builder.Services.AddControllers()
     });
 
 
-builder.Services.AddDbContext<NotificationDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddDbContext<NotificationDbContext>((provider, options) =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+        // [AdminAudited] announcement sends record their row before it commits.
+        .AddAdminAuditInterceptor(provider));
+
+// Announcements go into the platform audit log, hosted by the workspace service — the same
+// address the audience resolver below uses (production and compose supply it). Without it the
+// attribute stays inert and an announcement is recorded only in admin_notifications, as before:
+// a missing address must not take every other endpoint down with it.
+var adminAuditUrl = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"];
+if (!string.IsNullOrWhiteSpace(adminAuditUrl))
+{
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o => o.Address = new Uri(adminAuditUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.NotificationService);
+}
 builder.Services.AddWarpTalkServiceHealthChecks<NotificationDbContext>(
     "notification-database");
 
@@ -88,17 +103,43 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
 builder.Services.AddScoped<IAdminNotificationDeliveryService, AdminNotificationDeliveryService>();
 
+// The email CMS. This service owns the store: its own senders (and the GetEmailTemplate RPC every
+// other sender calls) read the published content through EmailPublishedResolver, and every send is
+// counted through DbEmailDeliveryRecorder (directly, or over RecordEmailDelivery).
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateSource, WarpTalk.NotificationService.Application.Services.EmailCms.EmailPublishedResolver>();
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateComposer, WarpTalk.Shared.Email.EmailTemplateComposer>();
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailDeliveryRecorder, WarpTalk.NotificationService.Application.Services.EmailCms.DbEmailDeliveryRecorder>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailContentService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailContentService>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailBlockService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailBlockService>();
+builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
+// G12: the pending-work inbox source for content.
+builder.Services.AddScoped<IContentInboxSourceService, ContentInboxSourceService>();
+
+
 // WT-699 / TC4104: BROADCAST and SEGMENT announcements resolve their audience through AuthService
 // and WorkspaceService. Optional configuration on purpose — without the two addresses those modes
 // are refused with a sentence saying so, and SPECIFIC_USERS keeps working exactly as before.
 var authServiceUrl = builder.Configuration["GrpcUrls:AuthServiceUrl"];
 var workspaceServiceUrl = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"];
-if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
+if (!string.IsNullOrWhiteSpace(workspaceServiceUrl))
 {
-    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.UserService.UserServiceClient>(o => o.Address = new Uri(authServiceUrl))
-        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o => o.Address = new Uri(workspaceServiceUrl))
         .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    // Plan- and workspace-targeted announcements ask the workspace service who the viewer is.
+    builder.Services.AddScoped<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcViewerAudienceResolver>();
+}
+else
+{
+    builder.Services.AddSingleton<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredViewerAudienceResolver>();
+}
+if (!string.IsNullOrWhiteSpace(authServiceUrl))
+{
+    // Also read by GrpcViewerAudienceResolver, for "new users" announcement targeting.
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.UserService.UserServiceClient>(o => o.Address = new Uri(authServiceUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+}
+if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
+{
     builder.Services.AddScoped<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcAdminAudienceResolver>();
 }
 else
@@ -109,7 +150,7 @@ builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationVali
 
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 // abortConnect=false: the notification read APIs are served from Postgres and must keep

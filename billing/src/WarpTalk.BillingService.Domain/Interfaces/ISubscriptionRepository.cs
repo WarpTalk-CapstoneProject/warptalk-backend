@@ -11,10 +11,22 @@ namespace WarpTalk.BillingService.Domain.Interfaces;
 /// it reaches here.
 /// </param>
 /// <param name="PlanSlug">A plan slug. Null lists every plan.</param>
+/// <param name="ServiceState">One of SubscriptionConstants.ServiceStates, or null. Validated before it reaches here.</param>
+/// <param name="BillingCycle">The plan's cycle, one of SubscriptionConstants.BillingCycles, or null.</param>
+/// <param name="AutoRenew">Matches subscriptions.auto_renew when set.</param>
+/// <param name="WorkspaceId">Only this workspace's subscriptions when set.</param>
+/// <param name="PeriodEndFrom">Inclusive lower bound on current_period_end, already UTC.</param>
+/// <param name="PeriodEndTo">Exclusive upper bound on current_period_end, already UTC.</param>
 public sealed record AdminSubscriptionFilter(
     string? Status = null,
     string? PlanSlug = null,
-    string Sort = "period_end_asc");
+    string Sort = "period_end_asc",
+    string? ServiceState = null,
+    string? BillingCycle = null,
+    bool? AutoRenew = null,
+    Guid? WorkspaceId = null,
+    DateTime? PeriodEndFrom = null,
+    DateTime? PeriodEndTo = null);
 
 /// <summary>
 /// One subscription as the directory lists it, already joined to its plan.
@@ -77,6 +89,12 @@ public interface ISubscriptionRepository : IGenericRepository<Subscription>
 
     /// <summary>Admin Insights: live subscriptions whose period ends in (now, until], soonest first.</summary>
     Task<IReadOnlyList<EndingSoonSubscriptionRow>> GetEndingSoonAsync(DateTime now, DateTime until, int take, CancellationToken ct = default);
+
+    /// <summary>
+    /// G12 inbox: live subscriptions whose trial ends in (now, until], whose period ends in (now, until] with
+    /// auto-renew off, or whose service is suspended.
+    /// </summary>
+    Task<IReadOnlyList<InboxSubscriptionRow>> GetNeedingAttentionAsync(DateTime now, DateTime until, int take, CancellationToken ct = default);
 
     Task DeactivateOtherActiveSubscriptionsAsync(Guid userId, Guid excludeSubscriptionId, CancellationToken cancellationToken);
     Task<PagedResult<Subscription>> GetPageAsync(PageRequest page, CancellationToken cancellationToken = default);

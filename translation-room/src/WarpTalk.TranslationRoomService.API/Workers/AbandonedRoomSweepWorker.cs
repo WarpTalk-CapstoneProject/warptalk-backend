@@ -1,3 +1,4 @@
+using WarpTalk.Shared;
 using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -29,8 +30,9 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 ///     as LIVE NOW. They never reach History, they keep claiming occupancy, and their transcript
 ///     and summary are never finalized — because finalization is queued by ending.
 ///
-///     ExpireTranslationRoomAsync looks like the cure and is not: it only moves SCHEDULED or
-///     WAITING rooms to EXPIRED, cannot touch IN_PROGRESS, and has no production callers.
+///     ExpireTranslationRoomAsync looks like the cure and is not: it only moves rooms nobody ever
+///     got into — SCHEDULED, WAITING or OPEN — to EXPIRED and cannot touch IN_PROGRESS. WT-714's
+///     booking sweep calls it for bookings nobody attended, which is the opposite population.
 ///
 /// HOW IT ENDS THEM
 ///     Through <see cref="ITranslationRoomService.EndTranslationRoomAsync"/> with the room's own
@@ -141,13 +143,25 @@ public class AbandonedRoomSweepWorker : BackgroundService
             "",
             ct);
 
-        if (live.Count == 0) return;
+        if (live.Count == 0)
+        {
+            MeetingLifecycleMetrics.RecordRoomSnapshot(0, 0, DateTimeOffset.UtcNow);
+            return;
+        }
 
         // People, not seats. An EXTERNAL_BRIDGE room's far-side stand-in holds a seat from creation
         // until End and has no socket that could ever release it, so counting seats here made
         // every bridge room look occupied forever — see RoomPresence.
         var occupancy = await unitOfWork.TranslationRoomParticipantRepository
             .CountPeopleInRoomsAsync(live.Select(room => room.Id).ToList(), ct);
+
+        // The live-rooms gauges on the Meetings dashboard. Taken here because this is the one
+        // place that already reads both halves every five minutes; see RecordRoomSnapshot for why
+        // only the lock holder's value is reported.
+        MeetingLifecycleMetrics.RecordRoomSnapshot(
+            live.Count,
+            live.Count(room => occupancy.GetValueOrDefault(room.Id) > 0),
+            DateTimeOffset.UtcNow);
 
         var db = _redis.GetDatabase();
         var ended = 0;
@@ -190,7 +204,13 @@ public class AbandonedRoomSweepWorker : BackgroundService
             // Ended through the service, with the room's own host, so this takes exactly the path
             // the host's own "End for everyone" takes — participants released, routes stopped,
             // artifact finalization queued.
-            var result = await roomService.EndTranslationRoomAsync(room.Id, room.HostId, ct);
+            // Marked as the sweep's ending, so the success rate can tell "everybody left and nobody
+            // pressed End" apart from a host ending the meeting.
+            Result result;
+            using (MeetingLifecycleMetrics.EndReasonScope(MeetingLifecycleMetrics.EndReasonAbandoned))
+            {
+                result = await roomService.EndTranslationRoomAsync(room.Id, room.HostId, ct);
+            }
             if (!result.IsSuccess)
             {
                 _logger.LogWarning(

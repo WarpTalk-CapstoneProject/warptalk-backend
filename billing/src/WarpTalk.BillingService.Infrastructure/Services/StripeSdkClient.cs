@@ -11,6 +11,16 @@ public sealed class StripeSdkClient : IStripeSdkClient
     private readonly PriceService _priceService = new();
     private readonly PaymentIntentService _paymentIntentService = new();
     private readonly Stripe.InvoiceService _invoiceService = new();
+    private readonly CouponService _couponService = new();
+    private readonly PromotionCodeService _promotionCodeService = new();
+    private readonly ChargeService _chargeService = new();
+    private readonly InvoicePaymentService _invoicePaymentService = new();
+
+    public Task<StripeList<Charge>> ListChargesAsync(ChargeListOptions options, CancellationToken cancellationToken = default)
+        => _chargeService.ListAsync(options, cancellationToken: cancellationToken);
+
+    public Task<StripeList<InvoicePayment>> ListInvoicePaymentsAsync(InvoicePaymentListOptions options, CancellationToken cancellationToken = default)
+        => _invoicePaymentService.ListAsync(options, cancellationToken: cancellationToken);
 
     public Task<Session> CreateCheckoutSessionAsync(SessionCreateOptions options, CancellationToken cancellationToken = default)
         => _sessionService.CreateAsync(options, cancellationToken: cancellationToken);
@@ -38,4 +48,37 @@ public sealed class StripeSdkClient : IStripeSdkClient
 
     public Task<Invoice> GetInvoiceAsync(string invoiceId, CancellationToken cancellationToken = default)
         => _invoiceService.GetAsync(invoiceId, cancellationToken: cancellationToken);
+
+    public Task<Product> GetProductAsync(string productId, CancellationToken cancellationToken = default)
+        => _productService.GetAsync(productId, cancellationToken: cancellationToken);
+
+    public Task<Product> UpdateProductAsync(string productId, ProductUpdateOptions options, CancellationToken cancellationToken = default)
+        => _productService.UpdateAsync(productId, options, cancellationToken: cancellationToken);
+
+    public Task<Price> GetPriceAsync(string priceId, CancellationToken cancellationToken = default)
+        => _priceService.GetAsync(priceId, cancellationToken: cancellationToken);
+
+    public Task<Price> UpdatePriceAsync(string priceId, PriceUpdateOptions options, CancellationToken cancellationToken = default)
+        => _priceService.UpdateAsync(priceId, options, cancellationToken: cancellationToken);
+
+    public Task<Coupon> CreateCouponAsync(CouponCreateOptions options, CancellationToken cancellationToken = default)
+        => _couponService.CreateAsync(options, cancellationToken: cancellationToken);
+
+    public Task<Coupon> GetCouponAsync(string couponId, CancellationToken cancellationToken = default)
+        => _couponService.GetAsync(couponId, cancellationToken: cancellationToken);
+
+    public Task<Coupon> UpdateCouponAsync(string couponId, CouponUpdateOptions options, CancellationToken cancellationToken = default)
+        => _couponService.UpdateAsync(couponId, options, cancellationToken: cancellationToken);
+
+    public Task<PromotionCode> CreatePromotionCodeAsync(PromotionCodeCreateOptions options, CancellationToken cancellationToken = default)
+        => _promotionCodeService.CreateAsync(options, cancellationToken: cancellationToken);
+
+    public Task<PromotionCode> GetPromotionCodeAsync(string promotionCodeId, CancellationToken cancellationToken = default)
+        => _promotionCodeService.GetAsync(promotionCodeId, cancellationToken: cancellationToken);
+
+    public Task<PromotionCode> UpdatePromotionCodeAsync(string promotionCodeId, PromotionCodeUpdateOptions options, CancellationToken cancellationToken = default)
+        => _promotionCodeService.UpdateAsync(promotionCodeId, options, cancellationToken: cancellationToken);
+
+    public Task<Stripe.Subscription> GetSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken = default)
+        => _subscriptionService.GetAsync(subscriptionId, cancellationToken: cancellationToken);
 }

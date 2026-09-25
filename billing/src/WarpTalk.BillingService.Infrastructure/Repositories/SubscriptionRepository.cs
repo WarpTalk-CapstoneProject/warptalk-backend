@@ -98,7 +98,11 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
         return rows;
     }
 
-    private static IQueryable<Subscription> ApplyAdminFilters(
+    /// <summary>
+    /// The directory's WHERE clause. Public so tests can run it over plain rows and ask Npgsql to
+    /// translate it (ToQueryString) without a database.
+    /// </summary>
+    public static IQueryable<Subscription> ApplyAdminFilters(
         IQueryable<Subscription> query,
         AdminSubscriptionFilter filter)
     {
@@ -118,16 +122,43 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             query = query.Where(s => s.Plan.Slug == slug);
         }
 
+        if (!string.IsNullOrWhiteSpace(filter.ServiceState))
+        {
+            var serviceState = filter.ServiceState;
+            query = query.Where(s => s.ServiceState == serviceState);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.BillingCycle))
+        {
+            var cycle = filter.BillingCycle;
+            query = query.Where(s => s.Plan.BillingCycle == cycle);
+        }
+
+        if (filter.AutoRenew is { } autoRenew)
+            query = query.Where(s => s.AutoRenew == autoRenew);
+
+        if (filter.WorkspaceId is { } workspaceId)
+            query = query.Where(s => s.WorkspaceId == workspaceId);
+
+        // Half-open: inclusive from, exclusive to.
+        if (filter.PeriodEndFrom is { } periodEndFrom)
+            query = query.Where(s => s.CurrentPeriodEnd >= periodEndFrom);
+
+        if (filter.PeriodEndTo is { } periodEndTo)
+            query = query.Where(s => s.CurrentPeriodEnd < periodEndTo);
+
         return query;
     }
 
-    private static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
+    /// <summary>The directory's ORDER BY. Public for the same reason as <see cref="ApplyAdminFilters"/>.</summary>
+    public static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
         => sort switch
         {
             "period_end_desc" => query.OrderByDescending(s => s.CurrentPeriodEnd),
             "created_desc" => query.OrderByDescending(s => s.CreatedAt),
             "created_asc" => query.OrderBy(s => s.CreatedAt),
             "credits_asc" => query.OrderBy(s => s.CreditsRemaining),
+            "credits_desc" => query.OrderByDescending(s => s.CreditsRemaining),
             // Soonest renewal first: the default, because the question this screen answers is
             // "what needs attention", and what needs attention is what runs out next.
             _ => query.OrderBy(s => s.CurrentPeriodEnd),
@@ -280,6 +311,30 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
 
         return rows
             .Select(r => new EndingSoonSubscriptionRow(r.WorkspaceId, r.PlanName, r.CurrentPeriodEnd, r.AutoRenew, r.Status))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<InboxSubscriptionRow>> GetNeedingAttentionAsync(
+        DateTime now, DateTime until, int take, CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s => s.IsActive && (
+                (s.TrialEndsAt != null && s.TrialEndsAt > now && s.TrialEndsAt <= until)
+                || (!s.AutoRenew && s.CurrentPeriodEnd > now && s.CurrentPeriodEnd <= until)
+                || s.ServiceState == SubscriptionConstants.ServiceStates.Suspended))
+            .OrderBy(s => s.TrialEndsAt ?? s.CurrentPeriodEnd)
+            .Take(take)
+            .Select(s => new
+            {
+                s.Id, s.WorkspaceId, PlanName = s.Plan.Name, s.TrialEndsAt, s.CurrentPeriodEnd, s.AutoRenew,
+                s.ServiceState, s.SuspendedReason, s.UpdatedAt,
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new InboxSubscriptionRow(
+                r.Id, r.WorkspaceId, r.PlanName, r.TrialEndsAt, r.CurrentPeriodEnd, r.AutoRenew, r.ServiceState, r.SuspendedReason, r.UpdatedAt))
             .ToList();
     }
 }

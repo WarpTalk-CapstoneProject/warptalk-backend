@@ -64,16 +64,22 @@ public class AssistantPluginsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("catalog")]
-    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> CreateMcpPlugin(
         [FromBody] CreateMcpPluginRequest request,
         CancellationToken ct)
     {
         var result = await _installationService.CreateMcpPluginAsync(request, CurrentUserId, ct);
         if (!result.IsSuccess)
-            return BadRequest(new { error = result.Error, errorCode = result.ErrorCode });
+        {
+            var body = new { error = result.Error, errorCode = result.ErrorCode };
+            // The platform audit log could not take the record, so the row was not created.
+            return result.ErrorCode == ErrorCodes.ServiceUnavailable
+                ? StatusCode(StatusCodes.Status503ServiceUnavailable, body)
+                : BadRequest(body);
+        }
 
         return CreatedAtAction(nameof(ListCatalog), new { }, result.Value);
     }

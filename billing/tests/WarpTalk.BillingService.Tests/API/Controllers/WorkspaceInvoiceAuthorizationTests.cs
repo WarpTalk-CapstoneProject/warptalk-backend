@@ -10,6 +10,7 @@ using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.API.Controllers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.Tests.API.Controllers;
 
@@ -106,7 +107,19 @@ public class WorkspaceInvoiceAuthorizationTests
     }
 
     private static RequireWorkspaceRoleFilter CreateFilterForAction(IWorkspaceClient workspaceClient) =>
-        new(workspaceClient, GetDeclaredRoles());
+        new(workspaceClient, new CachedStaffAccessResolver(
+                new DelegateStaffAccessSource(_ => StaffAccess.None),
+                new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+                new StaticOptionsMonitor(),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<CachedStaffAccessResolver>.Instance),
+            GetDeclaredRoles());
+
+    private sealed class StaticOptionsMonitor : Microsoft.Extensions.Options.IOptionsMonitor<StaffAuthorizationOptions>
+    {
+        public StaffAuthorizationOptions CurrentValue { get; } = new();
+        public StaffAuthorizationOptions Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<StaffAuthorizationOptions, string?> listener) => null;
+    }
 
     private static ActionExecutingContext CreateActionExecutingContext()
     {

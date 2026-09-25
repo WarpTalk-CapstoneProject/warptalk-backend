@@ -39,6 +39,17 @@ public static class SalesInquiryConstants
         public const string LandingPricing = "landing_pricing";
     }
 
+    /// <summary>Sort keys the platform lead inbox accepts.</summary>
+    public static class Sorts
+    {
+        public const string CreatedDesc = "created_desc";
+        public const string CreatedAsc = "created_asc";
+        public const string CompanyAsc = "company_asc";
+        public const string CompanyDesc = "company_desc";
+
+        public static readonly string[] All = [CreatedDesc, CreatedAsc, CompanyAsc, CompanyDesc];
+    }
+
     public static class Errors
     {
         public const string ConsentRequired = "Consent is required before submitting a pricing inquiry.";
@@ -48,6 +59,8 @@ public static class SalesInquiryConstants
         public const string RequestedMonthlyCreditsInvalid = "Requested monthly credits must be between 1 and 10000000.";
         public const string RequestedWorkspaceMembersInvalid = "Requested workspace members must be between 1 and 10000.";
         public const string StatusInvalid = "Sales inquiry status is invalid.";
+        public const string SortInvalid =
+            "Unknown sort. Expected one of: created_desc, created_asc, company_asc, company_desc.";
         public const string NotFound = "Sales inquiry was not found.";
         public const string WorkspaceIdRequired = "WorkspaceId is required.";
         public const string EnterprisePlanNotFound = "Enterprise plan template was not found.";

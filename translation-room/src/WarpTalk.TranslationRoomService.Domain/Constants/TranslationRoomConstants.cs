@@ -136,7 +136,10 @@ public static class TranslationRoomConstants
     // Lifecycle Transition Errors
     public const string ErrorInvalidTransitionToWaiting = "Room must be SCHEDULED to open waiting room.";
     public const string ErrorInvalidTransitionToInProgress = "Room must be WAITING or PAUSED to start or resume.";
-    public const string ErrorInvalidTransitionToStart = "Only scheduled or waiting rooms can be started.";
+    public const string ErrorInvalidTransitionToStart = "Only scheduled, open or waiting rooms can be started.";
+
+    /// <summary>WT-612: the clock only opens a booking that is still SCHEDULED.</summary>
+    public const string ErrorInvalidTransitionToOpen = "Room must be SCHEDULED to open at its scheduled time.";
     public const string ErrorInvalidTransitionToPaused = "Room must be IN_PROGRESS to pause.";
     public const string ErrorInvalidTransitionToEnded = "Room must be IN_PROGRESS or PAUSED to end.";
     public const string ErrorInvalidTransitionToCancelled = "Room must be SCHEDULED or WAITING to cancel.";
@@ -203,6 +206,7 @@ public static class TranslationRoomConstants
     public const string ValidationTranslationRoomCodeLength = "Translation room code must be exactly 12 characters.";
     public const string ValidationLanguageUnsupported = "Language '{0}' is not supported by the platform.";
     public const string ValidationArtifactAccessUnsupported = "Artifact access level '{0}' is not supported. Allowed values: {1}.";
+    public const string ValidationLanguageNotAllowedByWorkspace = "This workspace does not allow '{0}' in meetings.";
     public const string ValidationLanguageNotAllowedByPolicy = "{0} language '{1}' is not allowed by room policy. It must be the source language or one of the target languages.";
     public const string ValidationSourceLanguageUnsupported = "Source language is not supported.";
     public const string ValidationListenLanguageRequired = "Listen language is required.";
@@ -215,6 +219,7 @@ public static class TranslationRoomConstants
     public const string ValidationInvalidParticipantRole = "Role must be a valid TranslationRoomParticipantRole.";
     public const string ValidationInvalidSortBy = "SortBy must be one of: displayname, status, role, joinedat.";
     public const string ValidationExternalMeetingRequiresBridgeType = "External meeting metadata is only allowed for external bridge rooms.";
+    public const string ValidationExternalMeetingLanguageRequiresBridgeType = "The external meeting's language is only allowed for external bridge rooms.";
     public const string ValidationExternalProviderUnsupported = "Unsupported external meeting provider.";
     public const string ValidationExternalMeetingUrlInvalid = "External meeting URL must be an absolute HTTPS URL.";
     public const string ValidationGoogleMeetUrlInvalid = "Google Meet URL must use meet.google.com.";

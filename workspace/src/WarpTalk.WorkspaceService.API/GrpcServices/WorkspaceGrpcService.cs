@@ -65,6 +65,88 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         return response;
     }
 
+    /// <summary>
+    /// The notification service deciding which targeted announcements one person sees. Answers
+    /// with the person's active, non-deleted workspaces and each one's replicated plan.
+    /// </summary>
+    public override async Task<ListUserWorkspaceAudienceResponse> ListUserWorkspaceAudience(
+        ListUserWorkspaceAudienceRequest request,
+        ServerCallContext context)
+    {
+        var response = new ListUserWorkspaceAudienceResponse();
+        if (!Guid.TryParse(request.UserId, out var userId))
+            return response;
+
+        var result = await _workspaceDirectory.ListUserWorkspaceAudienceAsync(userId, context.CancellationToken);
+        if (!result.IsSuccess || result.Value is null)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list the user's workspaces."));
+
+        response.Workspaces.AddRange(result.Value.Select(item => new UserWorkspaceAudienceItem
+        {
+            WorkspaceId = item.WorkspaceId.ToString(),
+            PlanSlug = item.PlanSlug ?? string.Empty,
+            RoleName = item.RoleName ?? string.Empty,
+        }));
+        return response;
+    }
+
+    /// <summary>
+    /// The assistant service's platform-admin plugin controls: every workspace that is not deleted,
+    /// with the plan, Owner and legacy plugin switch each one's effective plugin state depends on.
+    /// A mesh call; the caller authorized the platform admin before asking.
+    /// </summary>
+    public override async Task<ListPlatformWorkspacesResponse> ListPlatformWorkspaces(
+        ListPlatformWorkspacesRequest request,
+        ServerCallContext context)
+    {
+        var result = await _workspaceDirectory.ListPlatformWorkspacesAsync(context.CancellationToken);
+        if (!result.IsSuccess || result.Value is null)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list workspaces."));
+
+        var response = new ListPlatformWorkspacesResponse();
+        response.Workspaces.AddRange(result.Value.Select(item => new PlatformWorkspaceItem
+        {
+            WorkspaceId = item.WorkspaceId.ToString(),
+            Name = item.Name,
+            Slug = item.Slug,
+            Status = item.Status,
+            OwnerUserId = item.OwnerUserId == Guid.Empty ? string.Empty : item.OwnerUserId.ToString(),
+            PlanSlug = item.PlanSlug ?? string.Empty,
+            MemberCount = item.MemberCount,
+            AllowAnyPlugins = item.AllowAnyPlugins,
+        }));
+        return response;
+    }
+
+    /// <summary>
+    /// Which active workspaces each of these users belongs to. Unparseable ids are dropped: the
+    /// answer is about the ids that name someone.
+    /// </summary>
+    public override async Task<ListActiveWorkspaceMembershipsResponse> ListActiveWorkspaceMemberships(
+        ListActiveWorkspaceMembershipsRequest request,
+        ServerCallContext context)
+    {
+        var userIds = request.UserIds
+            .Select(raw => Guid.TryParse(raw, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var response = new ListActiveWorkspaceMembershipsResponse();
+        if (userIds.Count == 0) return response;
+
+        var result = await _workspaceDirectory.ListActiveMembershipsForUsersAsync(userIds, context.CancellationToken);
+        if (!result.IsSuccess || result.Value is null)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list memberships."));
+
+        response.Memberships.AddRange(result.Value.Select(pair => new ActiveWorkspaceMembership
+        {
+            UserId = pair.UserId.ToString(),
+            WorkspaceId = pair.WorkspaceId.ToString(),
+        }));
+        return response;
+    }
+
     public override async Task<GetSharedWorkspaceMembersResponse> GetSharedWorkspaceMembers(
         GetSharedWorkspaceMembersRequest request,
         ServerCallContext context)
@@ -222,7 +304,11 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             IsProfanityFilterEnabled = settings.IsProfanityFilterEnabled,
             AllowExternalLlm = settings.AllowExternalLlm,
             UseGlobalGlossary = settings.UseGlobalGlossary,
-            AllowAnyPlugins = settings.AllowAnyPlugins
+            AllowAnyPlugins = settings.AllowAnyPlugins,
+            // WT-707: 0 on the wire means no quota applies.
+            MaxLanguages = settings.MaxLanguages is > 0 ? settings.MaxLanguages.Value : 0,
+            // Empty on the wire means no plan: a plugin's plan rule never matches it.
+            PlanSlug = settings.PlanSlug ?? string.Empty
         };
         response.AllowedTargetLanguages.AddRange(settings.AllowedTargetLanguages);
         return response;

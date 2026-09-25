@@ -11,6 +11,7 @@ using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Persistence;
 using WarpTalk.TranscriptService.Infrastructure.Persistence.Contexts;
 using WarpTalk.TranscriptService.Infrastructure.Repositories;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -40,8 +41,10 @@ builder.WebHost.ConfigureKestrel(options =>
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranscriptDb"));
 var dataSource = dataSourceBuilder.Build();
 
-builder.Services.AddDbContext<TranscriptDbContext>(options =>
-    options.UseNpgsql(dataSource));
+builder.Services.AddDbContext<TranscriptDbContext>((provider, options) =>
+    options.UseNpgsql(dataSource)
+        // [AdminAudited] global-glossary routes record each save before it commits.
+        .AddAdminAuditInterceptor(provider));
 builder.Services.AddWarpTalkServiceHealthChecks<TranscriptDbContext>(
     "transcript-database");
 
@@ -93,7 +96,7 @@ builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redi
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
@@ -125,6 +128,19 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+// The platform audit log is hosted by the workspace service, on the same address. The global
+// glossary is platform-wide reference data every workspace's translation reads, so an edit to it
+// is an admin action like a plan change: recorded before it commits, refused if it cannot be.
+builder.Services.AddGrpcClient<AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.TranscriptService);
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
