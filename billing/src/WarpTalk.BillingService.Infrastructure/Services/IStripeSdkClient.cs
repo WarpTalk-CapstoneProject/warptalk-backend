@@ -27,4 +27,8 @@ public interface IStripeSdkClient
     Task<PromotionCode> GetPromotionCodeAsync(string promotionCodeId, CancellationToken cancellationToken = default);
     Task<PromotionCode> UpdatePromotionCodeAsync(string promotionCodeId, PromotionCodeUpdateOptions options, CancellationToken cancellationToken = default);
     Task<Stripe.Subscription> GetSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken = default);
+
+    // Admin Providers page: the fee Stripe kept on a payment (StripeFeeSyncWorker). Read-only.
+    Task<StripeList<Charge>> ListChargesAsync(ChargeListOptions options, CancellationToken cancellationToken = default);
+    Task<StripeList<InvoicePayment>> ListInvoicePaymentsAsync(InvoicePaymentListOptions options, CancellationToken cancellationToken = default);
 }

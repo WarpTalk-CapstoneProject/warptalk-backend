@@ -35,6 +35,9 @@ public sealed class ProviderCallStat
     public long NetworkError { get; set; }
     public long Error { get; set; }
 
+    /// <summary>Stripe 402 card_error: the card was declined. Neither a success nor a provider failure.</summary>
+    public long Declined { get; set; }
+
     /// <summary>Calls with a latency observation, and Σ of it in ms.</summary>
     public long LatencyCount { get; set; }
     public long LatencySumMs { get; set; }

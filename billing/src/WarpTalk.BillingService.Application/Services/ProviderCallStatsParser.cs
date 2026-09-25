@@ -25,6 +25,38 @@ public static class ProviderCallStatsParser
 
     public static string KeyFor(DateOnly utcDay) => KeyPrefix + utcDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
+    /// <summary>The outcomes a field may carry — warptalk-ai PROVIDER_CALL_OUTCOMES plus Stripe's "declined".</summary>
+    public static readonly IReadOnlySet<string> Outcomes = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "ok", "quota", "rate_limited", "auth", "client_error", "server_error", "timeout", "network_error", "error", "declined",
+    };
+
+    /// <summary>warptalk-ai PROVIDER_LATENCY_BUCKETS_MS — the two writers must bucket alike.</summary>
+    public static readonly IReadOnlyList<int> LatencyBucketsMs = [100, 250, 500, 1000, 2000, 3000, 5000, 8000, 12000, 20000];
+
+    /// <summary>The (field, increment) pairs one call adds to its day's hash — the writer's half of <see cref="Parse"/>.</summary>
+    public static IReadOnlyList<(string Field, long Increment)> FieldsFor(
+        string provider, string operation, string? model, string outcome, long? latencyMs, DateTime atUtc)
+    {
+        static string Label(string? value)
+        {
+            var cleaned = System.Text.RegularExpressions.Regex.Replace((value ?? string.Empty).Trim(), @"[|\s]+", "-");
+            if (cleaned.Length > 80) cleaned = cleaned[..80];
+            return cleaned.Length == 0 ? "-" : cleaned;
+        }
+
+        var prefix = string.Join('|', Label(provider).ToLowerInvariant(), atUtc.Hour.ToString("00", CultureInfo.InvariantCulture), Label(operation), Label(model));
+        var fields = new List<(string, long)> { ($"{prefix}|{(Outcomes.Contains(outcome) ? outcome : "error")}", 1) };
+        if (latencyMs is { } ms && ms >= 0)
+        {
+            var edge = LatencyBucketsMs.FirstOrDefault(e => ms <= e);
+            fields.Add(($"{prefix}|lat:{(edge == 0 ? "+Inf" : edge.ToString(CultureInfo.InvariantCulture))}", 1));
+            fields.Add(($"{prefix}|lat_sum", ms));
+        }
+
+        return fields;
+    }
+
     public static IReadOnlyList<ProviderCallStat> Parse(DateOnly utcDay, IEnumerable<KeyValuePair<string, long>> fields)
     {
         var rows = new Dictionary<(string Provider, int Hour, string Operation, string Model), (ProviderCallStat Row, Dictionary<string, long> Buckets)>();
@@ -65,6 +97,7 @@ public static class ProviderCallStatsParser
                 case "timeout": row.Timeout += value; break;
                 case "network_error": row.NetworkError += value; break;
                 case "error": row.Error += value; break;
+                case "declined": row.Declined += value; break;
                 case "lat_sum": row.LatencySumMs += value; break;
                 default:
                     if (suffix.StartsWith("lat:", StringComparison.Ordinal) && suffix.Length > 4)

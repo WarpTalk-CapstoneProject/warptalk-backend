@@ -34,6 +34,9 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Incidents from each provider's public status page (admin Providers page).</summary>
     IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
 
+    /// <summary>Provider processing fees per paid payment (Stripe balance transactions).</summary>
+    IPaymentProviderFeeRepository PaymentProviderFees { get; }
+
     /// <summary>G12: operating expense categories, expenses and monthly budgets.</summary>
     IExpenseCategoryRepository ExpenseCategories { get; }
     IOperatingExpenseRepository OperatingExpenses { get; }

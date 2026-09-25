@@ -275,6 +275,8 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // ProviderStatus:CallStatsSyncIntervalMinutes / PollIntervalMinutes = 0 disable them; no pages = no polling.
     builder.Services.AddHostedService<ProviderCallStatsSyncWorker>();
     builder.Services.AddHostedService<ProviderStatusPollWorker>();
+    // Stripe's fee per paid payment (balance transaction) — the Stripe cost on the Providers page.
+    builder.Services.AddHostedService<StripeFeeSyncWorker>();
     // G12: writes each next occurrence of a recurring operating expense a week before it is due.
     builder.Services.AddHostedService<ExpenseRecurrenceWorker>();
 
@@ -302,6 +304,18 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddOpenApi();
 
     var app = builder.Build();
+
+    // Admin Providers page: one StripeClient for the whole service, over an HTTP handler that counts
+    // every call by outcome and latency (StripeCallObserver). Services created with `new XService()`
+    // read StripeConfiguration.StripeClient, so this covers all of them. No key, no client: the
+    // SDK's own lazy client would refuse to call Stripe anyway.
+    var observedStripeKey = builder.Configuration["Stripe:SecretKey"];
+    if (!string.IsNullOrWhiteSpace(observedStripeKey))
+    {
+        Stripe.StripeConfiguration.StripeClient = new Stripe.StripeClient(
+            apiKey: observedStripeKey,
+            httpClient: StripeCallObserver.CreateStripeHttpClient(app.Services.GetRequiredService<IProviderCallRecorder>()));
+    }
 
     if (!app.Environment.IsDevelopment())
     {

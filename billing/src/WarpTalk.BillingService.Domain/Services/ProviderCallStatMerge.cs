@@ -34,6 +34,7 @@ public static class ProviderCallStatMerge
         target.Timeout = Max(target.Timeout, reading.Timeout);
         target.NetworkError = Max(target.NetworkError, reading.NetworkError);
         target.Error = Max(target.Error, reading.Error);
+        target.Declined = Max(target.Declined, reading.Declined);
 
         // Latency moves as one reading: count, sum and buckets from the same snapshot, or the
         // average and percentiles would mix two of them.
@@ -64,6 +65,7 @@ public static class ProviderCallStatMerge
         Timeout = row.Timeout,
         NetworkError = row.NetworkError,
         Error = row.Error,
+        Declined = row.Declined,
         LatencyCount = row.LatencyCount,
         LatencySumMs = row.LatencySumMs,
         LatencyBuckets = row.LatencyBuckets,
@@ -74,8 +76,8 @@ public static class ProviderCallStatMerge
     public static long Failures(ProviderCallStat row)
         => row.Quota + row.RateLimited + row.Auth + row.ServerError + row.Timeout + row.NetworkError + row.Error;
 
-    /// <summary>Every call, including client errors.</summary>
-    public static long Calls(ProviderCallStat row) => row.Ok + row.ClientError + Failures(row);
+    /// <summary>Every call, including client errors and declined cards.</summary>
+    public static long Calls(ProviderCallStat row) => row.Ok + row.ClientError + row.Declined + Failures(row);
 
     /// <summary>Parses the stored histogram; a malformed value is an empty one, never an exception.</summary>
     public static IReadOnlyDictionary<string, long> ParseBuckets(string? json)

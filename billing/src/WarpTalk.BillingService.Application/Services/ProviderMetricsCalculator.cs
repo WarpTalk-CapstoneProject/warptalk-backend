@@ -24,7 +24,8 @@ public sealed record ProviderInputs(
     IReadOnlyList<MediaUsageHourRow>? Media,
     string? MediaError,
     decimal? LiveKitUsdPerParticipantMinute,
-    IReadOnlyList<ProviderPaymentRow> Payments);
+    IReadOnlyList<ProviderPaymentRow> Payments,
+    IReadOnlyList<PaymentFeeRow>? Fees = null);
 
 /// <summary>
 /// The definitions behind the admin Providers page. Pure; tested on plain values.
@@ -48,9 +49,12 @@ public sealed record ProviderInputs(
 ///              the rest. ALL Cartesia credits, including the non-dubbing ones Insights leaves out of
 ///              dubbing cost: this page is what Cartesia charged, not what dubbing cost.
 ///   LiveKit  — participant minutes × livekit_usd_per_participant_minute, only when that price is set.
-///   Stripe   — unavailable: Stripe's fees are not synced into WarpTalk.
+///   Stripe   — the fee Stripe kept on each paid payment (its balance transaction, read by
+///              StripeFeeSyncWorker), in the settlement currency and converted through the FX table.
 ///
-/// CALLS (OpenAI, Cartesia) — what the AI workers' own calls saw (provider_call_stats). A FAILURE is
+/// CALLS (OpenAI, Cartesia, Stripe) — what our own calls saw (provider_call_stats: the AI workers'
+/// OpenAI/Cartesia calls, billing's Stripe calls). A declined card (Stripe 402 card_error) is Stripe
+/// working and counts as a success; inbound webhooks are counted apart. A FAILURE is
 /// quota (402), rate limit (429), auth (401/403), 5xx, timeout, network or an unclassified exception;
 /// a client error (another 4xx) is a request we got wrong and does not count against the provider.
 /// SUCCESS RATE ("live rate") = ok ÷ (ok + failures). Hours before the first recorded call are gaps.
@@ -70,6 +74,13 @@ public static class ProviderMetricsCalculator
     public const string NoData = "no_data";
 
     public const int MinCallsForRate = 5;
+
+    /// <summary>
+    /// Inbound Stripe webhook deliveries, recorded by billing under this operation. Shown in the
+    /// breakdowns; never part of the success rate, latency or status, which describe the calls
+    /// WarpTalk makes (a delivery WE fail to handle is not Stripe being down).
+    /// </summary>
+    public const string WebhookOperation = "webhook";
 
     public static class Granularities
     {
@@ -136,6 +147,14 @@ public static class ProviderMetricsCalculator
         public int FailedPayments;
         public decimal VolumeVnd;
         public bool VolumeMissingRate;
+        public long Declined;
+        public long Webhooks;
+        public long WebhookFailures;
+        public decimal FeeUsd;
+        public decimal FeeVnd;
+        public int FeesRead;
+        public int FeesUnavailable;
+        public bool FeeOtherCurrency;
 
         public long Failures => FailuresByClass.Values.Sum();
     }
@@ -207,7 +226,15 @@ public static class ProviderMetricsCalculator
             if (!Inside(hour)) continue;
             var atom = At(hour);
             atom.HasCalls = true;
+            if (string.Equals(call.Operation, WebhookOperation, StringComparison.Ordinal))
+            {
+                atom.Webhooks += ProviderCallStatMerge.Calls(call);
+                atom.WebhookFailures += ProviderCallStatMerge.Failures(call) + call.ClientError;
+                continue;
+            }
+
             atom.Ok += call.Ok;
+            atom.Declined += call.Declined;
             atom.ClientErrors += call.ClientError;
             AddFailure(atom, "quota", call.Quota);
             AddFailure(atom, "rate_limited", call.RateLimited);
@@ -233,6 +260,26 @@ public static class ProviderMetricsCalculator
                 atom.ParticipantMinutes += (decimal)row.ParticipantSeconds / 60m;
                 atom.RoomMinutes += (decimal)row.RoomSeconds / 60m;
                 atom.Recordings += row.Recordings;
+            }
+        }
+
+        foreach (var fee in input.Fees ?? [])
+        {
+            var hour = HourOf(fee.PaidAt);
+            if (!Inside(hour)) continue;
+            var atom = At(hour);
+            if (fee.Status != PaymentProviderFee.StatusOk || fee.Fee is null)
+            {
+                atom.FeesUnavailable++;
+                continue;
+            }
+
+            atom.FeesRead++;
+            switch ((fee.Currency ?? string.Empty).ToUpperInvariant())
+            {
+                case FxRateConstants.Usd: atom.FeeUsd += fee.Fee.Value; break;
+                case FxRateConstants.Vnd: atom.FeeVnd += fee.Fee.Value; break;
+                default: atom.FeeOtherCurrency = true; break;
             }
         }
 
@@ -293,7 +340,14 @@ public static class ProviderMetricsCalculator
         decimal LedgerCredits,
         decimal LedgerCoveredCredits,
         int MeasuredHours,
-        int EstimatedHours);
+        int EstimatedHours,
+        long Declined = 0,
+        long Webhooks = 0,
+        long WebhookFailures = 0,
+        int PaidPayments = 0,
+        int FeesRead = 0,
+        int FeesUnavailable = 0,
+        bool FeeOtherCurrency = false);
 
     public static WindowFigures Window(ProviderInputs input, IReadOnlyDictionary<DateTime, Atom> atoms, DateTime start, DateTime end)
     {
@@ -304,6 +358,9 @@ public static class ProviderMetricsCalculator
         var latency = new Dictionary<string, long>(StringComparer.Ordinal);
         decimal participantMinutes = 0, roomMinutes = 0, volume = 0;
         int recordings = 0, payments = 0, failedPayments = 0, measured = 0, estimated = 0;
+        long declined = 0, webhooks = 0, webhookFailures = 0;
+        int feesRead = 0, feesUnavailable = 0;
+        bool feeOther = false;
 
         foreach (var (hour, atom) in atoms)
         {
@@ -335,12 +392,31 @@ public static class ProviderMetricsCalculator
                     break;
             }
 
-            costUsd += hourCost;
-            if (hourCost != 0)
+            if (input.Provider == ProviderCatalog.Stripe)
             {
-                if (input.Fx.Resolve(hour).Rate is { } rate) costVnd += hourCost * rate;
-                else vndMissing = true;
+                // Fees are kept in the settlement currency: each side converts through the day's rate.
+                var rate = input.Fx.Resolve(hour).Rate;
+                if (atom.FeeVnd != 0 && rate is null) vndMissing = true;
+                costUsd += atom.FeeUsd + (atom.FeeVnd != 0 && rate is { } toUsd ? atom.FeeVnd / toUsd : 0m);
+                if (atom.FeeUsd != 0 && rate is null) vndMissing = true;
+                costVnd += atom.FeeVnd + (rate is { } toVnd ? atom.FeeUsd * toVnd : 0m);
             }
+            else
+            {
+                costUsd += hourCost;
+                if (hourCost != 0)
+                {
+                    if (input.Fx.Resolve(hour).Rate is { } rate) costVnd += hourCost * rate;
+                    else vndMissing = true;
+                }
+            }
+
+            declined += atom.Declined;
+            webhooks += atom.Webhooks;
+            webhookFailures += atom.WebhookFailures;
+            feesRead += atom.FeesRead;
+            feesUnavailable += atom.FeesUnavailable;
+            feeOther |= atom.FeeOtherCurrency;
 
             if (atom.HasProviderCredits)
             {
@@ -372,7 +448,9 @@ public static class ProviderMetricsCalculator
         }
 
         var failed = failures.Values.Sum();
-        var attributable = ok + failed;
+        // A declined card is Stripe answering correctly: it counts as a success, not a failure.
+        var succeeded = ok + declined;
+        var attributable = succeeded + failed;
 
         decimal? usage = input.Provider switch
         {
@@ -387,19 +465,21 @@ public static class ProviderMetricsCalculator
         {
             ProviderCatalog.OpenAi or ProviderCatalog.Cartesia => Math.Round(costUsd, 6),
             ProviderCatalog.LiveKit => anyMedia && input.LiveKitUsdPerParticipantMinute is not null ? Math.Round(costUsd, 6) : null,
+            // No paid payment: nothing to pay fees on (0). Paid payments and not one fee read: unknown.
+            ProviderCatalog.Stripe => payments == 0 ? 0m : feesRead == 0 ? null : Math.Round(costUsd, 6),
             _ => null,
         };
 
-        var hasCallMetrics = input.Provider is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia;
+        var hasCallMetrics = HasCallMetrics(input.Provider);
         return new WindowFigures(
             usage,
             input.Provider is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia ? ledgerCredits : null,
             cost,
             cost is null || vndMissing ? null : Math.Round(costVnd, 0),
-            hasCallMetrics && anyCalls ? ok + failed + clientErrors : null,
+            hasCallMetrics && anyCalls ? succeeded + failed + clientErrors : null,
             hasCallMetrics && anyCalls ? failed : null,
             hasCallMetrics && anyCalls ? clientErrors : null,
-            hasCallMetrics && attributable > 0 ? Math.Round(ok * 100m / attributable, 2) : null,
+            hasCallMetrics && attributable > 0 ? Math.Round(succeeded * 100m / attributable, 2) : null,
             hasCallMetrics && attributable > 0 ? Math.Round(failed * 100m / attributable, 2) : null,
             Percentile(latency, 0.50),
             Percentile(latency, 0.95),
@@ -412,8 +492,19 @@ public static class ProviderMetricsCalculator
             ledgerCredits,
             covered,
             measured,
-            estimated);
+            estimated,
+            declined,
+            webhooks,
+            webhookFailures,
+            payments,
+            feesRead,
+            feesUnavailable,
+            feeOther);
     }
+
+    /// <summary>Providers whose calls WarpTalk counts (provider_call_stats).</summary>
+    public static bool HasCallMetrics(string provider)
+        => provider is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia or ProviderCatalog.Stripe;
 
     // ── latency ───────────────────────────────────────────────────────────────────────────────
 
@@ -632,7 +723,8 @@ public static class ProviderMetricsCalculator
         ProviderCatalog.Stripe =>
         [
             (Metrics.Usage, Units.Count), (Metrics.FailedPayments, Units.Count), (Metrics.VolumeVnd, Units.Vnd),
-            (Metrics.CostUsd, Units.Usd),
+            (Metrics.CostUsd, Units.Usd), (Metrics.CostVnd, Units.Vnd), (Metrics.Calls, Units.Count),
+            (Metrics.Failures, Units.Count), (Metrics.ErrorRate, Units.Percent), (Metrics.P50, Units.Ms), (Metrics.P95, Units.Ms),
         ],
         _ => [],
     };
@@ -663,8 +755,13 @@ public static class ProviderMetricsCalculator
             case Metrics.CostUsd or Metrics.CostVnd:
                 switch (input.Provider)
                 {
+                    case ProviderCatalog.Stripe when total.PaidPayments > 0 && total.FeesRead == 0:
+                        return "Stripe's fee is read per paid payment from its balance transaction; none has been read for this period yet";
+                    case ProviderCatalog.Stripe when total.FeesRead < total.PaidPayments || total.FeeOtherCurrency:
+                        return string.Create(Invariant,
+                            $"fees read for {total.FeesRead} of {total.PaidPayments} paid payments (balance transactions){(total.FeeOtherCurrency ? "; fees settled in a currency other than USD/VND are left out" : "")}");
                     case ProviderCatalog.Stripe:
-                        return "Stripe's processing fees are not synced into WarpTalk, so its cost is not known here";
+                        return "the fee Stripe kept on each paid payment (balance transaction), converted at the day's USD→VND rate";
                     case ProviderCatalog.LiveKit when input.LiveKitUsdPerParticipantMinute is null:
                         return "no LiveKit price is configured (billing_pricing_config livekit_usd_per_participant_minute)";
                     case ProviderCatalog.LiveKit when input.Media is null:
@@ -695,7 +792,19 @@ public static class ProviderMetricsCalculator
                     ? "estimated from each participant's last join→leave; dubbing/ingress bots and rejoins are not counted, so LiveKit's invoice will be higher"
                     : null;
             case Metrics.Calls or Metrics.Failures or Metrics.ErrorRate or Metrics.P50 or Metrics.P95:
-                if (input.CallsTrackedSince is null) return "no call to this provider has been recorded yet (AI workers record them since warptalk-ai provider_calls)";
+                if (input.CallsTrackedSince is null)
+                {
+                    return input.Provider == ProviderCatalog.Stripe
+                        ? "no Stripe call has been recorded yet (billing counts its Stripe calls since this release)"
+                        : "no call to this provider has been recorded yet (AI workers record them since warptalk-ai provider_calls)";
+                }
+
+                if (input.Provider == ProviderCatalog.Stripe && metric is Metrics.Calls or Metrics.Failures or Metrics.ErrorRate)
+                {
+                    return string.Create(Invariant,
+                        $"calls billing makes to Stripe; declined cards count as Stripe working ({total.Declined} in the period); {total.Webhooks} inbound webhook deliveries ({total.WebhookFailures} failed) are counted apart");
+                }
+
                 if (metric is Metrics.P50 or Metrics.P95 && input.Provider == ProviderCatalog.Cartesia)
                     return "dubbing latency is time to first audio over the websocket";
                 return null;

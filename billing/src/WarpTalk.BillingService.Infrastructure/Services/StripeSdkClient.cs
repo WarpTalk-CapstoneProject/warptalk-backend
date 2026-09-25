@@ -13,6 +13,14 @@ public sealed class StripeSdkClient : IStripeSdkClient
     private readonly Stripe.InvoiceService _invoiceService = new();
     private readonly CouponService _couponService = new();
     private readonly PromotionCodeService _promotionCodeService = new();
+    private readonly ChargeService _chargeService = new();
+    private readonly InvoicePaymentService _invoicePaymentService = new();
+
+    public Task<StripeList<Charge>> ListChargesAsync(ChargeListOptions options, CancellationToken cancellationToken = default)
+        => _chargeService.ListAsync(options, cancellationToken: cancellationToken);
+
+    public Task<StripeList<InvoicePayment>> ListInvoicePaymentsAsync(InvoicePaymentListOptions options, CancellationToken cancellationToken = default)
+        => _invoicePaymentService.ListAsync(options, cancellationToken: cancellationToken);
 
     public Task<Session> CreateCheckoutSessionAsync(SessionCreateOptions options, CancellationToken cancellationToken = default)
         => _sessionService.CreateAsync(options, cancellationToken: cancellationToken);
