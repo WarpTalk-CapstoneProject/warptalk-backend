@@ -41,13 +41,14 @@ namespace WarpTalk.AuthService.Tests.Staff;
 public sealed class StaffRbacDatabaseTests : IAsyncLifetime
 {
     /// <summary>
-    /// The staff catalog's migrations, in the order they apply: G10 created it, and an applied file is
-    /// immutable, so every later permission (G12's finance and inbox codes) arrives in a file of its own.
+    /// The RBAC migration and every permission migration after it, applied in order — what
+    /// production runs. The seeded catalog is held to AdminPermissions over all of them.
     /// </summary>
     private static readonly string[] MigrationFiles =
     [
         "20260925090000_add_platform_staff_rbac.sql",
-        "20260925160000_add_internal_management_permissions.sql",
+        "20260925170000_add_billing_packages_manage_permission.sql",
+        "20260925180000_add_internal_management_permissions.sql",
     ];
 
     private PostgreSqlContainer? _container;
@@ -163,17 +164,17 @@ public sealed class StaffRbacDatabaseTests : IAsyncLifetime
         _context.ChangeTracker.Clear();
     }
 
-    private static string FindMigration(string file)
+    private static string FindMigration(string migrationFile)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            var candidate = Path.Combine(directory.FullName, "auth", "database", "migrations", file);
+            var candidate = Path.Combine(directory.FullName, "auth", "database", "migrations", migrationFile);
             if (File.Exists(candidate)) return candidate;
             directory = directory.Parent;
         }
 
-        throw new FileNotFoundException(file);
+        throw new FileNotFoundException(migrationFile);
     }
 
     private async Task<User> AddUserAsync(string email, bool verified = true, bool legacyAdmin = false, bool legacyRevoked = false)

@@ -1,4 +1,4 @@
--- Migration: 20260925160000_add_admin_inbox_triage
+-- Migration: 20260925180000_add_admin_inbox_triage
 -- Ticket: G12 — internal management: the pending-work inbox (/admin/inbox)
 -- Created At: 2026-09-25
 -- Description:

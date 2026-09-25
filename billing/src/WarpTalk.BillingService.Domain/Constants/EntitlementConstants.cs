@@ -61,11 +61,19 @@ public static class EntitlementConstants
     {
         public const string PlatformDefault = "platform_default";
         public const string PlanPrefix = "plan:";
+
+        /// <summary>
+        /// G11: a value raised by a purchased add-on, <c>addon:&lt;slug&gt;</c>. When several
+        /// add-ons raise the same key, the source names the first and the value is their sum.
+        /// </summary>
+        public const string AddonPrefix = "addon:";
         public const string ContractOverride = "contract_override";
         public const string WorkspaceOverride = "workspace_override";
 
         public static string Plan(string? planSlug) =>
             PlanPrefix + (string.IsNullOrWhiteSpace(planSlug) ? "unknown" : planSlug);
+
+        public static string Addon(string addonSlug) => AddonPrefix + addonSlug;
     }
 
     /// <summary>
@@ -103,6 +111,7 @@ public static class EntitlementConstants
         public const string ContractOverrideChanged = "contract_override_changed";
         public const string WorkspaceOverrideChanged = "workspace_override_changed";
         public const string Backfill = "backfill";
+        public const string AddonChanged = "addon_changed";
     }
 
     public static class Errors

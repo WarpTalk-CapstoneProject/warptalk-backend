@@ -81,6 +81,11 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
     builder.Services.AddScoped<IPaymentService, PaymentService>();
 
+    // G11 — FIRST, deliberately: PaymentAppService takes the first handler that claims an event,
+    // and CancellationPaymentEventHandler claims every Cancelled/Refunded one. An add-on's Stripe
+    // subscription ending, or a credit pack refunded, must reach these and never cancel the plan.
+    builder.Services.AddScoped<IPaymentEventHandler, CreditPackPaymentEventHandler>();
+    builder.Services.AddScoped<IPaymentEventHandler, AddOnPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
     // WT-429: without this, "CreditTopUp" matched no handler and the payment completed having
@@ -100,6 +105,10 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<IAdminInboxSourceService, AdminInboxSourceService>();
     WarpTalk.BillingService.Infrastructure.Storage.ExpenseReceiptStorageServiceCollectionExtensions.AddExpenseReceiptStorage(
         builder.Services, builder.Configuration, builder.Environment);
+    // G11 — the sellable catalog beyond plans: /admin/packages and the workspace billing page.
+    builder.Services.AddScoped<IPackageCatalogService, PackageCatalogService>();
+    builder.Services.AddScoped<ICustomerCatalogService, CustomerCatalogService>();
+    builder.Services.AddScoped<ICreditPackExpiryService, CreditPackExpiryService>();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
@@ -260,6 +269,8 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddHostedService<CartesiaUsageSyncWorker>();
     // Stripe's USD→VND rate once per UTC day, for every VND report. Billing:Fx:CheckIntervalMinutes = 0 disables it.
     builder.Services.AddHostedService<FxRateRefreshWorker>();
+    // G11: removes the unspent part of credit packs whose validity ended. Billing:CreditPacks:ExpiryIntervalMinutes = 0 disables it.
+    builder.Services.AddHostedService<CreditPackExpiryWorker>();
     // Admin Providers page: our provider calls (Redis → Postgres) and the providers' public status pages.
     // ProviderStatus:CallStatsSyncIntervalMinutes / PollIntervalMinutes = 0 disable them; no pages = no polling.
     builder.Services.AddHostedService<ProviderCallStatsSyncWorker>();

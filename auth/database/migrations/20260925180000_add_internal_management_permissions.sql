@@ -1,4 +1,4 @@
--- Migration: 20260925160000_add_internal_management_permissions
+-- Migration: 20260925180000_add_internal_management_permissions
 -- Ticket: G12 — internal management: operating expenses (/admin/finance/expenses) and the
 --         pending-work inbox (/admin/inbox)
 -- Created At: 2026-09-25
@@ -20,7 +20,7 @@
 --
 --   20260925090000_add_platform_staff_rbac is applied and immutable, so the catalog grows here.
 --   Idempotent (ON CONFLICT), no BEGIN/COMMIT — the runner owns the transaction. The auth test
---   StaffRbacDatabaseTests runs both files and holds them equal to AdminPermissions and BuiltInStaffRoles.
+--   StaffRbacDatabaseTests runs every staff-catalog migration in order and holds them equal to AdminPermissions and BuiltInStaffRoles.
 
 INSERT INTO auth.permissions (code, description, group_name, is_active)
 VALUES

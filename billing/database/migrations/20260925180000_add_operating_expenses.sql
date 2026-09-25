@@ -1,4 +1,4 @@
--- Migration: 20260925160000_add_operating_expenses
+-- Migration: 20260925180000_add_operating_expenses
 -- Ticket: G12 — internal management: operating costs and expenses (/admin/finance/expenses)
 -- Created At: 2026-09-25
 -- Description:

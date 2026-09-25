@@ -14,7 +14,7 @@ public partial class WorkspaceDbContext
     /// <summary>Internal admin notes on a workspace (migration 20260924090000).</summary>
     public virtual DbSet<WorkspaceAdminNote> WorkspaceAdminNotes { get; set; } = null!;
 
-    /// <summary>G12 pending-work inbox triage (migration 20260925160000).</summary>
+    /// <summary>G12 pending-work inbox triage (migration 20260925180000).</summary>
     public virtual DbSet<AdminInboxItemState> AdminInboxItemStates { get; set; } = null!;
     public virtual DbSet<AdminInboxNote> AdminInboxNotes { get; set; } = null!;
 

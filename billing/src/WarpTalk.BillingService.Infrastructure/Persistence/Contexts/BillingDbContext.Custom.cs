@@ -34,13 +34,16 @@ public partial class BillingDbContext
     /// <summary>Incidents from providers' public status pages (migration 20260925090000, admin Providers page).</summary>
     public DbSet<ProviderStatusIncident> ProviderStatusIncidents => Set<ProviderStatusIncident>();
 
-    /// <summary>G12 operating expenses (migration 20260925160000, /admin/finance/expenses).</summary>
+    /// <summary>G12 operating expenses (migration 20260925180000, /admin/finance/expenses).</summary>
     public DbSet<ExpenseCategory> ExpenseCategories => Set<ExpenseCategory>();
     public DbSet<OperatingExpense> OperatingExpenses => Set<OperatingExpense>();
     public DbSet<ExpenseBudget> ExpenseBudgets => Set<ExpenseBudget>();
 
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // G11: the sellable catalog beyond plans, in its own partial file.
+        ConfigurePackageCatalog(modelBuilder);
+
         // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
         // a re-scaffold cannot drop them.
         modelBuilder.Entity<Plan>(entity =>

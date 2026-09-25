@@ -34,6 +34,8 @@ public static class AdminPermissions
     public const string BillingPlansManage = "billing.plans_manage";
     public const string BillingPricingManage = "billing.pricing_manage";
     public const string BillingLeadsManage = "billing.leads_manage";
+    /// <summary>G11: credit packs, add-ons and coupons (/admin/packages), including their Stripe sync.</summary>
+    public const string BillingPackagesManage = "billing.packages_manage";
 
     public const string PluginsRead = "plugins.read";
     public const string PluginsManage = "plugins.manage";
@@ -114,6 +116,7 @@ public static class AdminPermissions
         new(BillingPlansManage, Areas.Billing, "Create and edit sellable plans.", false),
         new(BillingPricingManage, Areas.Billing, "Edit rate cards, provider costs, the pricing configuration and the FX rate.", false),
         new(BillingLeadsManage, Areas.Billing, "Move enterprise sales leads through their statuses.", false),
+        new(BillingPackagesManage, Areas.Billing, "Create, edit, archive and sync to Stripe the credit packs, add-ons and coupons.", false),
 
         new(PluginsRead, Areas.Plugins, "View the plugin marketplace catalog and per-workspace availability.", true),
         new(PluginsManage, Areas.Plugins, "Add, edit, retire and delete plugins and set per-workspace availability.", false),
@@ -158,7 +161,8 @@ public static class AdminPermissions
 
 /// <summary>
 /// The roles every environment starts with. Seeded by
-/// <c>auth/database/migrations/20260925090000_add_platform_staff_rbac.sql</c>; this list is what
+/// <c>auth/database/migrations/20260925090000_add_platform_staff_rbac.sql</c> and the permission
+/// migrations after it (20260925170000_add_billing_packages_manage_permission.sql); this list is what
 /// the seed must agree with, and a test holds the two together.
 ///
 /// Built-in roles are read-only in the portal: they can be duplicated into a custom role, never
@@ -187,7 +191,8 @@ public static class BuiltInStaffRoles
                 AdminPermissions.BillingRead, AdminPermissions.BillingAdjustCredit,
                 AdminPermissions.BillingPaymentsManage, AdminPermissions.BillingSubscriptionsManage,
                 AdminPermissions.BillingPlansManage, AdminPermissions.BillingPricingManage,
-                AdminPermissions.BillingLeadsManage, AdminPermissions.WorkspacesRead,
+                AdminPermissions.BillingLeadsManage, AdminPermissions.BillingPackagesManage,
+                AdminPermissions.WorkspacesRead,
                 AdminPermissions.AccountsRead, AdminPermissions.ProvidersRead,
                 AdminPermissions.SettingsRead, AdminPermissions.AuditRead, AdminPermissions.WarpBotUse,
                 AdminPermissions.FinanceRead, AdminPermissions.FinanceManage,
