@@ -69,6 +69,12 @@ builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptPauseAccess,
     WarpTalk.TranscriptService.Application.Authorization.TranscriptPauseAccess>();
 
+// Glossaries carry a workspaceId supplied by the caller (route or body), and IGlossaryService
+// itself trusts it — GlossariesController is the only boundary that can ask whether the caller
+// actually belongs to that workspace before honoring the request.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Interfaces.IWorkspaceMembershipClient,
+    WarpTalk.TranscriptService.Infrastructure.Clients.WorkspaceMembershipGrpcClient>();
+
 // --- Application Services ---
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
 builder.Services.AddScoped<IGlossaryService, GlossaryService>();

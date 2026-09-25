@@ -1069,7 +1069,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             if (!roleName.IsOwnerOrAdmin())
             {
-                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite, ErrorCodes.Forbidden);
+                // Was WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite — a Member blocked from
+                // approving a document was told "Only Owner or Admin can invite members.", the
+                // wrong action entirely, copy-pasted from the invitation flow. The 403 itself was
+                // correct; only the message named the wrong operation.
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanApproveDocuments, ErrorCodes.Forbidden);
             }
 
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);

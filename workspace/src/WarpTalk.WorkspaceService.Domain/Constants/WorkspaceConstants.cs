@@ -140,6 +140,7 @@ public static class WorkspaceConstants
         public const string OnlyOwnerAdminCanViewInvitations = "Only Owner or Admin can view invitations.";
         public const string OnlyOwnerAdminCanViewAuditLog = "Only Owner or Admin can view the workspace audit log.";
         public const string OnlyOwnerAdminCanRevoke = "Only Owner or Admin can revoke invitations.";
+        public const string OnlyOwnerAdminCanApproveDocuments = "Only Owner or Admin can approve or reject documents.";
         public const string InvitationNotFound = "Invitation not found.";
         public const string OnlyPendingCanBeRevoked = "Only pending invitations can be revoked.";
         public const string InvalidOrExpiredToken = "Invalid or expired invitation token.";

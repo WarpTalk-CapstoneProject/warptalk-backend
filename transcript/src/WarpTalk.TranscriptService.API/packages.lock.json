@@ -529,6 +529,7 @@
         "dependencies": {
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.1, )",
           "StackExchange.Redis": "[3.0.17, )",
+          "WarpTalk.Shared": "[1.0.0, )",
           "WarpTalk.TranscriptService.Application": "[1.0.0, )",
           "WarpTalk.TranscriptService.Domain": "[1.0.0, )"
         }

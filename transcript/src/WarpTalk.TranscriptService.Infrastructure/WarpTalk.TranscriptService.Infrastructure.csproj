@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\WarpTalk.TranscriptService.Domain\WarpTalk.TranscriptService.Domain.csproj" />
     <ProjectReference Include="..\WarpTalk.TranscriptService.Application\WarpTalk.TranscriptService.Application.csproj" />
+    <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>
