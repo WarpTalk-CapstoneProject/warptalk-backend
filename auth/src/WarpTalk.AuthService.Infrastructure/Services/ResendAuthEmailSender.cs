@@ -24,7 +24,6 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
     private readonly IResendEmailClient _resend;
     private readonly IEmailTemplateComposer _templates;
     private readonly IEmailDeliveryRecorder _deliveries;
-    private readonly ResendSettings _settings;
     private readonly string _appBaseUrl;
 
     public ResendAuthEmailSender(
@@ -37,7 +36,10 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
         _resend = resend;
         _templates = templates;
         _deliveries = deliveries ?? NullEmailDeliveryRecorder.Instance;
-        _settings = settings.Value;
+        // The sender is no longer read here: the Resend client composes it per message from
+        // /admin/settings with these same ResendSettings as the fallback. Kept in the signature so
+        // the DI registration and its callers are unchanged.
+        _ = settings;
         _appBaseUrl = (configuration["AppBaseUrl"] ?? "http://localhost:3000").TrimEnd('/');
     }
 
@@ -106,7 +108,9 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
     {
         var result = await _resend.SendEmailAsync(
             new SendEmailRequest(
-                $"{_settings.FromName} <{_settings.FromEmail}>",
+                // Empty: the client composes the sender from /admin/settings
+                // (notifications.email.*), falling back to these same Resend settings.
+                string.Empty,
                 to,
                 email.Subject,
                 email.HtmlBody,

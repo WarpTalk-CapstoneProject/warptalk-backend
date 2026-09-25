@@ -1,6 +1,8 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,8 +14,8 @@ namespace WarpTalk.WorkspaceService.Tests.PlatformSettings;
 /// <summary>
 /// The shared registry (WarpTalk.Shared.PlatformSettings): the catalog's own integrity, value
 /// validation, feature-flag evaluation (with the bucket vectors warptalk-ai asserts too), the
-/// reader's resolution and failure behaviour. (The rule that every .NET-owned key is read by the
-/// service that owns it arrives with the per-service wiring, feat/platform-settings-wiring.)
+/// reader's resolution and failure behaviour, and — the rule the registry exists to enforce — that
+/// every .NET-owned key is actually read by the service that owns it.
 /// </summary>
 public sealed class PlatformSettingsRegistryTests
 {
@@ -72,6 +74,62 @@ public sealed class PlatformSettingsRegistryTests
             PlatformSettingsCatalog.All.Where(d => d.Type == SettingValueType.FeatureFlag),
             d => Assert.Equal(SettingScopes.Platform, d.Scopes));
     }
+
+    /// <summary>
+    /// "Fixes that were never wired": a key only belongs here if its owning service reads it. For
+    /// every .NET-owned key the owner's source must name the catalog constant; Python- and web-owned
+    /// keys are held by their own repos' tests (warptalk-ai tests/test_platform_settings*.py,
+    /// warptalk-web scripts/check-admin-platform-settings-contract.mjs).
+    /// </summary>
+    [Fact]
+    public void Every_dotnet_owned_key_is_read_by_its_owning_service()
+    {
+        var root = RepoRoot();
+        var serviceDirectories = new[]
+        {
+            (SettingOwners.Gateway, "gateway/src"), (SettingOwners.Auth, "auth/src"),
+            (SettingOwners.Workspace, "workspace/src"), (SettingOwners.TranslationRoom, "translation-room/src"),
+            (SettingOwners.Meeting, "meeting/src"), (SettingOwners.Billing, "billing/src"),
+            (SettingOwners.Notification, "notification/src"), (SettingOwners.Transcript, "transcript/src"),
+        }.ToDictionary(p => p.Item1, p => p.Item2);
+        var externallyOwned = new[]
+        {
+            SettingOwners.AiStt, SettingOwners.AiTranslation, SettingOwners.AiTts, SettingOwners.AiSuggest,
+            SettingOwners.AiAssistant, SettingOwners.Web,
+        };
+
+        var constants = typeof(PlatformSettingsCatalog).GetFields()
+            .Where(f => f.IsLiteral && f.FieldType == typeof(string))
+            .ToDictionary(f => (string)f.GetRawConstantValue()!, f => f.Name);
+
+        // A shared helper that reads the key counts when the owner calls it (the e-mail sender is
+        // resolved by EmailSenderSettings for every service that sends mail).
+        var sharedReaders = Directory.EnumerateFiles(Path.Combine(root, "shared", "WarpTalk.Shared"), "*.cs", SearchOption.AllDirectories)
+            .Where(path => !IsBuildOutput(path) && !path.EndsWith("PlatformSettingsCatalog.cs", StringComparison.Ordinal))
+            .Select(path => (Type: Path.GetFileNameWithoutExtension(path), Text: File.ReadAllText(path)))
+            .ToList();
+
+        foreach (var definition in PlatformSettingsCatalog.All)
+        {
+            if (externallyOwned.Contains(definition.OwningService)) continue;
+            Assert.True(serviceDirectories.TryGetValue(definition.OwningService, out var directory), definition.Key);
+            var constant = constants[definition.Key];
+            var reference = new Regex($@"PlatformSettingsCatalog\.{constant}\b");
+            var source = Directory.EnumerateFiles(Path.Combine(root, directory), "*.cs", SearchOption.AllDirectories)
+                .Where(path => !IsBuildOutput(path))
+                .Select(File.ReadAllText)
+                .ToList();
+            var viaHelpers = sharedReaders.Where(r => reference.IsMatch(r.Text)).Select(r => r.Type).ToList();
+            Assert.True(
+                source.Any(text => reference.IsMatch(text))
+                || viaHelpers.Any(helper => source.Any(text => text.Contains(helper + ".", StringComparison.Ordinal))),
+                $"{definition.Key} is owned by {definition.OwningService} but nothing in {directory} reads PlatformSettingsCatalog.{constant}.");
+        }
+    }
+
+    private static bool IsBuildOutput(string path)
+        => path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+           || path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
 
     // ── Validation ──────────────────────────────────────────────────────────────────────────
 
@@ -266,6 +324,14 @@ public sealed class PlatformSettingsRegistryTests
     {
         for (var i = 0; i < 200 && !condition(); i++) await Task.Delay(10);
         Assert.True(condition());
+    }
+
+    private static string RepoRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "warptalk-backend.slnx")))
+            directory = directory.Parent;
+        return directory?.FullName ?? throw new InvalidOperationException("Could not find the backend repository root.");
     }
 
     internal sealed class ManualClock : TimeProvider

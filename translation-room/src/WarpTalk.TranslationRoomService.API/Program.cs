@@ -34,6 +34,7 @@ using WarpTalk.TranslationRoomService.Infrastructure.Storage;
 using WarpTalk.TranslationRoomService.Infrastructure.Documents;
 using StackExchange.Redis;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.PlatformSettings;
 using WarpTalk.Shared.Grpc;
 
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
@@ -318,6 +319,8 @@ WarpTalk.Shared.Email.EmailTemplateServiceCollectionExtensions.AddWarpTalkEmailT
 builder.Services.AddControllers();
 builder.Services.AddCustomApiBehavior();
 
+// Platform settings (/admin/settings): the meeting-creation limit is read live, per workspace.
+builder.Services.AddWarpTalkPlatformSettings();
 builder.Services.AddScoped<WarpTalk.TranslationRoomService.API.Filters.RateLimitingFilter>();
 
 builder.Services.AddOpenApi();

@@ -53,6 +53,11 @@ public class GoogleAuthController : ControllerBase
                     new ApiErrorResponse(result.Error, result.ErrorCode));
             }
 
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(result.Error, result.ErrorCode));
+            }
+
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         var auth = result.Value!;

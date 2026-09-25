@@ -19,6 +19,7 @@ using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.PlatformSettings;
 using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -207,6 +208,22 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisStreamConnectionString + ",abortConnect=false"));
 
 builder.Services.AddSingleton<RedisStreamService>();
+
+// Platform settings (/admin/settings), read from the snapshot the workspace service publishes to
+// Redis: maintenance mode, the public status the web polls, and the live rate limits.
+builder.Services.AddWarpTalkPlatformSettings();
+// What the settings console's Integrations page shows for the gateway: whether Redis is set, and
+// the public CORS origins and rate-limit window (non-secret deploy-time configuration).
+builder.Services.AddWarpTalkIntegrationStatus("gateway", _ => new IntegrationStatusSnapshot(
+    new Dictionary<string, IntegrationReport>
+    {
+        [IntegrationKeys.Redis] = new(!string.IsNullOrWhiteSpace(redisStreamConnectionString), "realtime, rate limits, settings"),
+    },
+    [
+        new DeployConfigReport("cors.allowed_origins", "CORS allowed origins", allowedOrigins),
+        new DeployConfigReport("rate_limits.window_seconds", "Rate-limit window (seconds)",
+            [builder.Configuration["RateLimits:WindowSeconds"] ?? "60"]),
+    ]));
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 
 // Member presence. Registered after the multiplexer above because it is Redis-backed rather
@@ -294,6 +311,10 @@ app.Use(async (context, next) =>
 
 app.UseAuthentication();
 
+// Maintenance mode needs the caller's identity (the allowlist is by e-mail), so it runs after
+// authentication; and before the limiter and the proxy, so a blocked call costs neither.
+app.UseMiddleware<WarpTalk.Gateway.Platform.MaintenanceModeMiddleware>();
+
 // AFTER UseAuthentication, and this ordering is load-bearing. The global limiter partitions a
 // signed-in caller by user id so that everyone behind one NAT — an office, a venue, a defence
 // room — does not share a single budget. HttpContext.User is not populated until authentication
@@ -318,6 +339,7 @@ app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
 
 app.MapPresenceEndpoints();
 app.MapGrafanaForwardAuth();
+WarpTalk.Gateway.Platform.PlatformStatusEndpoints.MapPlatformStatus(app);
 
 
 

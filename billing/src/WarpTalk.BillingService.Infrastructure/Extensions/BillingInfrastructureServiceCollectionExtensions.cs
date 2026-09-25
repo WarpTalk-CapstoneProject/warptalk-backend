@@ -69,6 +69,20 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddSingleton<IConnectionMultiplexer>(_ =>
             ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
+        // Platform settings (/admin/settings): trial length and credits are read live.
+        WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(services);
+        WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.AddWarpTalkIntegrationStatus(services, "billing", sp =>
+        {
+            var config = sp.GetRequiredService<IConfiguration>();
+            return WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.Snapshot(
+                (WarpTalk.Shared.PlatformSettings.IntegrationKeys.Stripe,
+                    WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, "checkout and webhooks", "Stripe:SecretKey", "Stripe:WebhookSecret")),
+                (WarpTalk.Shared.PlatformSettings.IntegrationKeys.Cartesia,
+                    WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, "usage sync", "Cartesia:AdminApiKey")),
+                (WarpTalk.Shared.PlatformSettings.IntegrationKeys.ObjectStorage,
+                    WarpTalk.Shared.PlatformSettings.IntegrationReport.ObjectStorage(config, "expense receipts")));
+        });
+
         services.AddScoped<RedisBillingStore>();
         services.AddScoped<IRedisBillingStore>(sp => sp.GetRequiredService<RedisBillingStore>());
         services.AddScoped<IBillingUsageQueue>(sp => sp.GetRequiredService<RedisBillingStore>());

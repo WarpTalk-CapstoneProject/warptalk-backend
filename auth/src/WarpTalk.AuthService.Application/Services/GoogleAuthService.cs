@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,6 +34,12 @@ public class GoogleAuthService : IGoogleAuthService
     // G10: optional so the many hand-built test instances keep compiling; DI always supplies it.
     private readonly IStaffAccessService? _staffAccess;
 
+    private readonly IPlatformSettings? _platformSettings;
+
+    /// <summary>The operator's switch (security.oauth.google_enabled). Read per call, so off applies to the next attempt.</summary>
+    private async Task<bool> GoogleEnabledAsync(CancellationToken ct)
+        => _platformSettings is null || await _platformSettings.GetBooleanAsync(PlatformSettingsCatalog.GoogleSignInEnabled, ct: ct);
+
     public GoogleAuthService(
         IUnitOfWork unitOfWork,
         IJwtTokenGenerator jwtGenerator,
@@ -41,9 +48,11 @@ public class GoogleAuthService : IGoogleAuthService
         IOptions<AuthSettings> authSettings,
         ILogger<GoogleAuthService> logger,
         IAuthEmailSender authEmailSender,
-        IStaffAccessService? staffAccess = null)
+        IStaffAccessService? staffAccess = null,
+        IPlatformSettings? platformSettings = null)
     {
         _staffAccess = staffAccess;
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _jwtGenerator = jwtGenerator;
         _googleTokenVerifier = googleTokenVerifier;
@@ -59,6 +68,9 @@ public class GoogleAuthService : IGoogleAuthService
     {
         try
         {
+            if (!await GoogleEnabledAsync(ct))
+                return Result.Failure<AuthResponse>(AuthConstants.ErrorGoogleSignInDisabled, ErrorCodes.Forbidden);
+
             var payload = await _googleTokenVerifier.VerifyGoogleTokenAsync(request.IdToken, ct);
             if (payload is null)
                 return Result.Failure<AuthResponse>(AuthConstants.ErrorGoogleTokenInvalid, ErrorCodes.InvalidToken);
@@ -140,6 +152,9 @@ public class GoogleAuthService : IGoogleAuthService
     {
         try
         {
+            if (!await GoogleEnabledAsync(ct))
+                return Result.Failure(AuthConstants.ErrorGoogleSignInDisabled, ErrorCodes.Forbidden);
+
             var payload = await _googleTokenVerifier.VerifyGoogleTokenAsync(request.IdToken, ct);
             if (payload is null)
                 return Result.Failure(AuthConstants.ErrorGoogleTokenInvalid, ErrorCodes.InvalidToken);

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -11,11 +12,21 @@ namespace WarpTalk.AuthService.Infrastructure.Security;
 public class JwtTokenGenerator : IJwtTokenGenerator
 {
     private readonly IConfiguration _config;
+    private readonly IPlatformSettings? _settings;
 
-    public JwtTokenGenerator(IConfiguration config) => _config = config;
+    public JwtTokenGenerator(IConfiguration config, IPlatformSettings? settings = null)
+    {
+        _config = config;
+        _settings = settings;
+    }
 
-    public int AccessTokenExpiryMinutes => _config.GetValue("Jwt:AccessTokenExpiryMinutes", 30);
-    public int RefreshTokenExpiryDays => _config.GetValue("Jwt:RefreshTokenExpiryDays", 7);
+    // Live from /admin/settings (security.session.*), with the Jwt section as the deploy-time
+    // fallback. Read on every token issued, so a change applies to the next sign-in or refresh;
+    // tokens already issued keep the lifetime they were issued with.
+    public int AccessTokenExpiryMinutes => Live(PlatformSettingsCatalog.AccessTokenMinutes, _config.GetValue("Jwt:AccessTokenExpiryMinutes", 30));
+    public int RefreshTokenExpiryDays => Live(PlatformSettingsCatalog.RefreshTokenDays, _config.GetValue("Jwt:RefreshTokenExpiryDays", 7));
+
+    private int Live(string key, int configured) => _settings?.GetInt32(key, configured) ?? configured;
 
     public string GenerateAccessToken(Guid userId, string email, bool emailVerified, IEnumerable<string> roles, string? staffRole = null)
     {

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using FluentValidation;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Domain.Constants;
@@ -17,13 +18,23 @@ namespace WarpTalk.AuthService.API.Validators;
 public class ResetPasswordRequestValidator : AbstractValidator<ResetPasswordRequest>
 {
     public ResetPasswordRequestValidator()
+        : this(null)
     {
+    }
+
+    /// <param name="settings">
+    /// Live minimum length (security.password.min_length). Validators are created per request, so
+    /// the value read here is the one in force for this request.
+    /// </param>
+    public ResetPasswordRequestValidator(IPlatformSettings? settings)
+    {
+        var minLength = PasswordPolicy.MinLength(settings);
         RuleFor(x => x.Token)
             .NotEmpty().WithMessage("Token is required.");
 
         RuleFor(x => x.NewPassword)
             .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.NewPasswordRequired)
-            .MinimumLength(UserConstants.PasswordMinLength).WithMessage(ApiMessageConstants.ValidationMessages.NewPasswordMinLength)
+            .MinimumLength(minLength).WithMessage(PasswordPolicy.NewPasswordMessage(minLength))
             .MaximumLength(UserConstants.PasswordMaxLength).WithMessage(ApiMessageConstants.ValidationMessages.NewPasswordMaxLength);
     }
 }
