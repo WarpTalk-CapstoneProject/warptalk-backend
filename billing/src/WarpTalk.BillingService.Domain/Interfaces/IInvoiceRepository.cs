@@ -17,6 +17,9 @@ public interface IInvoiceRepository : IGenericRepository<Invoice>
     /// <summary>Admin Insights: every issued invoice (open or issued) whose payment is not paid.</summary>
     Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>G12 inbox: issued, unpaid invoices (same rule as <see cref="GetOutstandingAsync"/>), oldest due first.</summary>
+    Task<IReadOnlyList<InboxInvoiceRow>> GetOutstandingForInboxAsync(int take, CancellationToken cancellationToken = default);
+
     /// <summary><see cref="GetOutstandingAsync"/> for one workspace.</summary>
     Task<IReadOnlyList<OutstandingInvoiceRow>> GetOutstandingForWorkspaceAsync(
         Guid workspaceId, CancellationToken cancellationToken = default);

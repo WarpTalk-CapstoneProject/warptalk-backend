@@ -34,6 +34,10 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Incidents from each provider's public status page (admin Providers page).</summary>
     IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
 
+    /// <summary>G12: operating expense categories, expenses and monthly budgets.</summary>
+    IExpenseCategoryRepository ExpenseCategories { get; }
+    IOperatingExpenseRepository OperatingExpenses { get; }
+    IExpenseBudgetRepository ExpenseBudgets { get; }
     // G11 — the sellable catalog beyond plans (/admin/packages) and what has been bought from it.
     ICreditPackRepository CreditPacks { get; }
     IAddonRepository Addons { get; }

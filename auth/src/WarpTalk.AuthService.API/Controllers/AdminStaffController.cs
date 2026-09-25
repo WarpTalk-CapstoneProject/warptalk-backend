@@ -78,6 +78,16 @@ public class AdminStaffController : ControllerBase
     public async Task<IActionResult> ListInvitations(CancellationToken ct) =>
         ToActionResult(await _staff.ListInvitationsAsync(ct));
 
+    /// <summary>The pending-work inbox source (G12): open staff invitations. Read by the workspace service's inbox.</summary>
+    [HttpGet("inbox-items")]
+    [RequirePermission(AdminPermissions.StaffRead)]
+    public async Task<IActionResult> GetInboxItems(CancellationToken ct)
+    {
+        var result = await _staff.ListInvitationsAsync(ct);
+        if (!result.IsSuccess) return Error(result);
+        return Ok(WarpTalk.AuthService.Application.Services.StaffInboxItems.Build(result.Value!, DateTime.UtcNow));
+    }
+
     /// <summary>
     /// Invite by email. An address that already has an account is granted access at once
     /// (outcome "granted"); one that does not gets an invitation that activates on its first

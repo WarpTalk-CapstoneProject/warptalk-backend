@@ -58,6 +58,8 @@ public static class DependencyInjection
         services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
         services.AddScoped<IAdminAuditLogRepository, AdminAuditLogRepository>();
         services.AddScoped<IWorkspaceAdminNoteRepository, WorkspaceAdminNoteRepository>();
+        services.AddScoped<IAdminInboxStateRepository, AdminInboxStateRepository>();
+        services.AddScoped<IAdminInboxNoteRepository, AdminInboxNoteRepository>();
 
         // 3. Object Storage Options & Adapters
         services.AddWarpTalkObjectStorageOptions(configuration);
@@ -165,6 +167,11 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(8);
         });
         services.AddScoped<IOutboxDeadLetterReader, WorkspaceOutboxDeadLetterReader>();
+        // G12 pending-work inbox: the owning services' inbox-items endpoints, read directly with the
+        // caller's token. Unconfigured URLs default to the local development ports.
+        services.AddSingleton(AdminInboxOptions.From(configuration));
+        services.AddHttpClient(AdminInboxSourceClient.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15));
+        services.AddScoped<IAdminInboxSourceClient, AdminInboxSourceClient>();
         services.AddSingleton(new PlatformHealthOptions
         {
             GrafanaEmbedPath = NormalizeEmbedPath(configuration["Monitoring:GrafanaEmbedPath"]),

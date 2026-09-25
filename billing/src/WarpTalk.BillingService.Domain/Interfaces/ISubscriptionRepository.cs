@@ -90,6 +90,12 @@ public interface ISubscriptionRepository : IGenericRepository<Subscription>
     /// <summary>Admin Insights: live subscriptions whose period ends in (now, until], soonest first.</summary>
     Task<IReadOnlyList<EndingSoonSubscriptionRow>> GetEndingSoonAsync(DateTime now, DateTime until, int take, CancellationToken ct = default);
 
+    /// <summary>
+    /// G12 inbox: live subscriptions whose trial ends in (now, until], whose period ends in (now, until] with
+    /// auto-renew off, or whose service is suspended.
+    /// </summary>
+    Task<IReadOnlyList<InboxSubscriptionRow>> GetNeedingAttentionAsync(DateTime now, DateTime until, int take, CancellationToken ct = default);
+
     Task DeactivateOtherActiveSubscriptionsAsync(Guid userId, Guid excludeSubscriptionId, CancellationToken cancellationToken);
     Task<PagedResult<Subscription>> GetPageAsync(PageRequest page, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Subscription>> GetActiveSubscriptionsAsync(CancellationToken cancellationToken = default);

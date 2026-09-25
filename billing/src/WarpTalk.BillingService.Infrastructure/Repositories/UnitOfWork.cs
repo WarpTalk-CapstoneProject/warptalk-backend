@@ -31,6 +31,9 @@ public class UnitOfWork : IUnitOfWork
         FxRates = new FxRateRepository(db);
         ProviderCallStats = new ProviderCallStatRepository(db);
         ProviderStatusIncidents = new ProviderStatusIncidentRepository(db);
+        ExpenseCategories = new ExpenseCategoryRepository(db);
+        OperatingExpenses = new OperatingExpenseRepository(db);
+        ExpenseBudgets = new ExpenseBudgetRepository(db);
         CreditPacks = new CreditPackRepository(db);
         Addons = new AddonRepository(db);
         WorkspaceAddons = new WorkspaceAddonRepository(db);
@@ -56,6 +59,9 @@ public class UnitOfWork : IUnitOfWork
     public IFxRateRepository FxRates { get; }
     public IProviderCallStatRepository ProviderCallStats { get; }
     public IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
+    public IExpenseCategoryRepository ExpenseCategories { get; }
+    public IOperatingExpenseRepository OperatingExpenses { get; }
+    public IExpenseBudgetRepository ExpenseBudgets { get; }
     public ICreditPackRepository CreditPacks { get; }
     public IAddonRepository Addons { get; }
     public IWorkspaceAddonRepository WorkspaceAddons { get; }

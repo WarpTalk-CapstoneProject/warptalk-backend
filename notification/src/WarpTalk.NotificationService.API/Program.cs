@@ -112,6 +112,8 @@ builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailDeliveryRecorder, WarpTal
 builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailContentService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailContentService>();
 builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailBlockService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailBlockService>();
 builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
+// G12: the pending-work inbox source for content.
+builder.Services.AddScoped<IContentInboxSourceService, ContentInboxSourceService>();
 
 
 // WT-699 / TC4104: BROADCAST and SEGMENT announcements resolve their audience through AuthService

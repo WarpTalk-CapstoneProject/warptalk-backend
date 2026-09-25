@@ -14,8 +14,43 @@ public partial class WorkspaceDbContext
     /// <summary>Internal admin notes on a workspace (migration 20260924090000).</summary>
     public virtual DbSet<WorkspaceAdminNote> WorkspaceAdminNotes { get; set; } = null!;
 
+    /// <summary>G12 pending-work inbox triage (migration 20260925180000).</summary>
+    public virtual DbSet<AdminInboxItemState> AdminInboxItemStates { get; set; } = null!;
+    public virtual DbSet<AdminInboxNote> AdminInboxNotes { get; set; } = null!;
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // G12: every column mapped by name — this context has no naming convention.
+        modelBuilder.Entity<AdminInboxItemState>(entity =>
+        {
+            entity.HasKey(e => e.ItemKey).HasName("admin_inbox_item_states_pkey");
+            entity.ToTable("admin_inbox_item_states", "workspace");
+            entity.Property(e => e.ItemKey).HasColumnName("item_key").HasMaxLength(200);
+            entity.Property(e => e.ItemType).HasColumnName("item_type").HasMaxLength(60);
+            entity.Property(e => e.AssigneeId).HasColumnName("assignee_id");
+            entity.Property(e => e.AssignedBy).HasColumnName("assigned_by");
+            entity.Property(e => e.AssignedAt).HasColumnName("assigned_at");
+            entity.Property(e => e.SnoozedUntil).HasColumnName("snoozed_until");
+            entity.Property(e => e.SnoozedBy).HasColumnName("snoozed_by");
+            entity.Property(e => e.DoneAt).HasColumnName("done_at");
+            entity.Property(e => e.DoneBy).HasColumnName("done_by");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<AdminInboxNote>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("admin_inbox_notes_pkey");
+            entity.ToTable("admin_inbox_notes", "workspace");
+            entity.HasIndex(e => new { e.ItemKey, e.CreatedAt }, "idx_admin_inbox_notes_item");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.ItemKey).HasColumnName("item_key").HasMaxLength(200);
+            entity.Property(e => e.Body).HasColumnName("body");
+            entity.Property(e => e.AuthorId).HasColumnName("author_id");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+        });
+
         modelBuilder.Entity<WorkspaceAdminNote>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("workspace_admin_notes_pkey");

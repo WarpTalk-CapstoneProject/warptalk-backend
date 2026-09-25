@@ -100,6 +100,11 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<WarpTalk.BillingService.Domain.Services.ISubscriptionDomainService, WarpTalk.BillingService.Domain.Services.SubscriptionDomainService>();
     builder.Services.AddScoped<IUsageSettlementService, WarpTalk.BillingService.Infrastructure.Services.PostgresUsageSettlementService>();
     builder.Services.AddScoped<ISalesInquiryService, SalesInquiryService>();
+    // G12 internal management: operating expenses (receipts in object storage) and billing's inbox sources.
+    builder.Services.AddScoped<IOperatingExpenseService, WarpTalk.BillingService.Application.Services.Expenses.OperatingExpenseService>();
+    builder.Services.AddScoped<IAdminInboxSourceService, AdminInboxSourceService>();
+    WarpTalk.BillingService.Infrastructure.Storage.ExpenseReceiptStorageServiceCollectionExtensions.AddExpenseReceiptStorage(
+        builder.Services, builder.Configuration, builder.Environment);
     // G11 — the sellable catalog beyond plans: /admin/packages and the workspace billing page.
     builder.Services.AddScoped<IPackageCatalogService, PackageCatalogService>();
     builder.Services.AddScoped<ICustomerCatalogService, CustomerCatalogService>();
@@ -270,6 +275,8 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // ProviderStatus:CallStatsSyncIntervalMinutes / PollIntervalMinutes = 0 disable them; no pages = no polling.
     builder.Services.AddHostedService<ProviderCallStatsSyncWorker>();
     builder.Services.AddHostedService<ProviderStatusPollWorker>();
+    // G12: writes each next occurrence of a recurring operating expense a week before it is due.
+    builder.Services.AddHostedService<ExpenseRecurrenceWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>

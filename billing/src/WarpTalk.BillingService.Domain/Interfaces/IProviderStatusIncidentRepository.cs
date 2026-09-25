@@ -20,4 +20,7 @@ public interface IProviderStatusIncidentRepository : IGenericRepository<Provider
     /// contiguously, so everything since this instant is covered by the stored list.
     /// </summary>
     Task<DateTime?> GetOldestStartedAtAsync(string provider, CancellationToken ct = default);
+
+    /// <summary>G12 inbox: incidents of any provider not resolved yet that started after <paramref name="since"/>.</summary>
+    Task<IReadOnlyList<ProviderStatusIncident>> GetUnresolvedSinceAsync(DateTime since, CancellationToken ct = default);
 }

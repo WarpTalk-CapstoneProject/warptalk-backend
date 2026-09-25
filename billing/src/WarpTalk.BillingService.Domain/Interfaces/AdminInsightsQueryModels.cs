@@ -158,3 +158,29 @@ public sealed record ProviderWorkspaceConsumption(
 /// currency, total and workspace. Admin Providers page (Stripe).
 /// </summary>
 public sealed record ProviderPaymentRow(DateTime At, string Status, string Currency, decimal Total, Guid? WorkspaceId);
+
+/// <summary>G12 inbox: an issued, unpaid invoice with what the inbox row shows.</summary>
+public sealed record InboxInvoiceRow(
+    Guid InvoiceId,
+    string InvoiceNumber,
+    Guid WorkspaceId,
+    decimal Total,
+    string Currency,
+    DateTime IssuedAt,
+    DateTime? DueAt,
+    string Provider);
+
+/// <summary>G12 inbox: a subscription whose trial ends soon or whose service is suspended.</summary>
+public sealed record InboxSubscriptionRow(
+    Guid SubscriptionId,
+    Guid WorkspaceId,
+    string PlanName,
+    DateTime? TrialEndsAt,
+    DateTime CurrentPeriodEnd,
+    bool AutoRenew,
+    string ServiceState,
+    string? SuspendedReason,
+    DateTime UpdatedAt);
+
+/// <summary>G12 inbox: a payment the provider reports as disputed (a chargeback someone has to answer).</summary>
+public sealed record InboxPaymentRow(Guid PaymentId, Guid WorkspaceId, decimal TotalAmount, string Currency, string Provider, DateTime UpdatedAt);

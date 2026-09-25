@@ -35,6 +35,8 @@ public class AdminWriteAuditCoverageTests
     private static readonly HashSet<string> ReadOnlyPosts =
     [
         $"{nameof(UsagesController)}.{nameof(UsagesController.PreviewUsageRateCard)}",
+        // G12: validates an expense CSV and returns what an import would write; writes nothing.
+        $"{nameof(AdminExpensesController)}.{nameof(AdminExpensesController.PreviewImport)}",
     ];
 
     /// <summary>

@@ -34,6 +34,11 @@ public partial class BillingDbContext
     /// <summary>Incidents from providers' public status pages (migration 20260925090000, admin Providers page).</summary>
     public DbSet<ProviderStatusIncident> ProviderStatusIncidents => Set<ProviderStatusIncident>();
 
+    /// <summary>G12 operating expenses (migration 20260925180000, /admin/finance/expenses).</summary>
+    public DbSet<ExpenseCategory> ExpenseCategories => Set<ExpenseCategory>();
+    public DbSet<OperatingExpense> OperatingExpenses => Set<OperatingExpense>();
+    public DbSet<ExpenseBudget> ExpenseBudgets => Set<ExpenseBudget>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
         // G11: the sellable catalog beyond plans, in its own partial file.
@@ -163,6 +168,88 @@ public partial class BillingDbContext
             entity.Property(e => e.ResolvedAt).HasColumnName("resolved_at");
             entity.Property(e => e.Url).HasColumnName("url").HasMaxLength(500);
             entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        // G12: operating expenses. Every column mapped by name — this context has no naming convention.
+        modelBuilder.Entity<ExpenseCategory>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("expense_categories_pkey");
+            entity.ToTable("expense_categories", "subscription");
+            entity.HasIndex(e => e.Slug).IsUnique().HasDatabaseName("ux_expense_categories_slug");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Slug).HasColumnName("slug").HasMaxLength(60);
+            entity.Property(e => e.Name).HasColumnName("name").HasMaxLength(120);
+            entity.Property(e => e.Description).HasColumnName("description").HasMaxLength(500);
+            entity.Property(e => e.Color).HasColumnName("color").HasMaxLength(20);
+            entity.Property(e => e.SortOrder).HasColumnName("sort_order");
+            entity.Property(e => e.IsActive).HasColumnName("is_active");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<OperatingExpense>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("operating_expenses_pkey");
+            entity.ToTable("operating_expenses", "subscription");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.ExpenseDate).HasColumnName("expense_date");
+            entity.Property(e => e.Vendor).HasColumnName("vendor").HasMaxLength(200);
+            entity.Property(e => e.CategoryId).HasColumnName("category_id");
+            entity.Property(e => e.Description).HasColumnName("description").HasMaxLength(2000);
+            entity.Property(e => e.Amount).HasColumnName("amount").HasPrecision(18, 2);
+            entity.Property(e => e.Currency).HasColumnName("currency").HasMaxLength(3);
+            entity.Property(e => e.PaymentMethod).HasColumnName("payment_method").HasMaxLength(40);
+            entity.Property(e => e.Status).HasColumnName("status").HasMaxLength(20);
+            entity.Property(e => e.PaidAt).HasColumnName("paid_at");
+            entity.Property(e => e.PaidBy).HasColumnName("paid_by").HasMaxLength(200);
+            entity.Property(e => e.Tags).HasColumnName("tags").HasColumnType("text[]");
+            entity.Property(e => e.Recurrence).HasColumnName("recurrence").HasMaxLength(20);
+            entity.Property(e => e.NextDueDate).HasColumnName("next_due_date");
+            entity.Property(e => e.RecurrenceEndDate).HasColumnName("recurrence_end_date");
+            entity.Property(e => e.RecurringSourceId).HasColumnName("recurring_source_id");
+            entity.Property(e => e.ReceiptStorageKey).HasColumnName("receipt_storage_key").HasMaxLength(400);
+            entity.Property(e => e.ReceiptFileName).HasColumnName("receipt_file_name").HasMaxLength(255);
+            entity.Property(e => e.ReceiptContentType).HasColumnName("receipt_content_type").HasMaxLength(120);
+            entity.Property(e => e.ReceiptSizeBytes).HasColumnName("receipt_size_bytes");
+            entity.Property(e => e.ImportBatchId).HasColumnName("import_batch_id");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Ignore(e => e.IsSeries);
+
+            entity.HasOne(e => e.Category)
+                .WithMany()
+                .HasForeignKey(e => e.CategoryId)
+                .HasConstraintName("operating_expenses_category_id_fkey");
+            entity.HasOne<OperatingExpense>()
+                .WithMany()
+                .HasForeignKey(e => e.RecurringSourceId)
+                .HasConstraintName("operating_expenses_recurring_source_id_fkey");
+        });
+
+        modelBuilder.Entity<ExpenseBudget>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("expense_budgets_pkey");
+            entity.ToTable("expense_budgets", "subscription");
+            entity.HasIndex(e => new { e.CategoryId, e.Month }).IsUnique().HasDatabaseName("ux_expense_budgets_category_month");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.CategoryId).HasColumnName("category_id");
+            entity.Property(e => e.Month).HasColumnName("month");
+            entity.Property(e => e.AmountVnd).HasColumnName("amount_vnd").HasPrecision(18, 2);
+            entity.Property(e => e.Note).HasColumnName("note").HasMaxLength(500);
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.HasOne<ExpenseCategory>()
+                .WithMany()
+                .HasForeignKey(e => e.CategoryId)
+                .HasConstraintName("expense_budgets_category_id_fkey");
         });
 
         modelBuilder.Entity<FxRate>(entity =>

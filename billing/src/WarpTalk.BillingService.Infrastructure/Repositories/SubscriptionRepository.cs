@@ -313,4 +313,28 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             .Select(r => new EndingSoonSubscriptionRow(r.WorkspaceId, r.PlanName, r.CurrentPeriodEnd, r.AutoRenew, r.Status))
             .ToList();
     }
+
+    public async Task<IReadOnlyList<InboxSubscriptionRow>> GetNeedingAttentionAsync(
+        DateTime now, DateTime until, int take, CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s => s.IsActive && (
+                (s.TrialEndsAt != null && s.TrialEndsAt > now && s.TrialEndsAt <= until)
+                || (!s.AutoRenew && s.CurrentPeriodEnd > now && s.CurrentPeriodEnd <= until)
+                || s.ServiceState == SubscriptionConstants.ServiceStates.Suspended))
+            .OrderBy(s => s.TrialEndsAt ?? s.CurrentPeriodEnd)
+            .Take(take)
+            .Select(s => new
+            {
+                s.Id, s.WorkspaceId, PlanName = s.Plan.Name, s.TrialEndsAt, s.CurrentPeriodEnd, s.AutoRenew,
+                s.ServiceState, s.SuspendedReason, s.UpdatedAt,
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new InboxSubscriptionRow(
+                r.Id, r.WorkspaceId, r.PlanName, r.TrialEndsAt, r.CurrentPeriodEnd, r.AutoRenew, r.ServiceState, r.SuspendedReason, r.UpdatedAt))
+            .ToList();
+    }
 }
