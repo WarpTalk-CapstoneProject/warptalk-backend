@@ -20,10 +20,12 @@ namespace WarpTalk.NotificationService.API.Controllers;
 public sealed class AdminEmailTemplatesController : CmsControllerBase
 {
     private readonly IEmailContentService _emails;
+    private readonly IEmailCustomTemplateService _custom;
 
-    public AdminEmailTemplatesController(IEmailContentService emails)
+    public AdminEmailTemplatesController(IEmailContentService emails, IEmailCustomTemplateService custom)
     {
         _emails = emails;
+        _custom = custom;
     }
 
     [HttpGet]
@@ -31,6 +33,51 @@ public sealed class AdminEmailTemplatesController : CmsControllerBase
 
     [HttpGet("{key}")]
     public async Task<IActionResult> Get(string key, CancellationToken ct) => From(await _emails.GetAsync(key, ct));
+
+    /// <summary>
+    /// A stored email rendered as a recipient gets it, with the inbox envelope: the list's
+    /// thumbnails and the "as received" preview. Only reads.
+    /// </summary>
+    [HttpGet("{key}/render")]
+    public async Task<IActionResult> Render(
+        string key,
+        [FromQuery] string? locale,
+        [FromQuery] bool dark = false,
+        [FromQuery] Guid? sampleSetId = null,
+        [FromQuery] string? source = null,
+        CancellationToken ct = default)
+    {
+        Response.Headers.CacheControl = "private, max-age=30";
+        return From(await _emails.RenderAsync(key, new EmailRenderQuery(locale, dark, sampleSetId, source), ct));
+    }
+
+    // ── Custom templates ────────────────────────────────────────────────────────────────────
+
+    /// <summary>Creates a custom template; its content is saved as drafts.</summary>
+    [AdminAudited(AdminAuditCmsActions.EmailTemplateCreated, AdminAuditEntityTypes.EmailTemplate, typeof(EmailCustomTemplate))]
+    [HttpPost]
+    public Task<IActionResult> Create([FromBody] CreateCustomEmailTemplateRequest request, CancellationToken ct) =>
+        AsActor(actor => _custom.CreateAsync(actor, request, ct));
+
+    [AdminAudited(AdminAuditCmsActions.EmailTemplateUpdated, AdminAuditEntityTypes.EmailTemplate, typeof(EmailCustomTemplate), EntityRouteKey = "key")]
+    [HttpPut("{key}/details")]
+    public Task<IActionResult> UpdateDetails(string key, [FromBody] UpdateCustomEmailTemplateRequest request, CancellationToken ct) =>
+        AsActor(actor => _custom.UpdateAsync(actor, key, request, ct));
+
+    /// <summary>Whether deleting can be permanent (never sent) or only soft.</summary>
+    [HttpGet("{key}/deletion")]
+    public async Task<IActionResult> Deletion(string key, CancellationToken ct) => From(await _custom.CheckDeletionAsync(key, ct));
+
+    /// <summary>Soft-deletes a custom template with a reason, or removes one that never sent anything.</summary>
+    [AdminAudited(AdminAuditCmsActions.EmailTemplateDeleted, AdminAuditEntityTypes.EmailTemplate, typeof(EmailCustomTemplate), EntityRouteKey = "key")]
+    [HttpPost("{key}/delete")]
+    public Task<IActionResult> Delete(string key, [FromBody] DeleteCustomEmailTemplateRequest request, CancellationToken ct) =>
+        AsActor(actor => _custom.DeleteAsync(actor, key, request, ct));
+
+    [AdminAudited(AdminAuditCmsActions.EmailTemplateRestored, AdminAuditEntityTypes.EmailTemplate, typeof(EmailCustomTemplate), EntityRouteKey = "key")]
+    [HttpPost("{key}/restore")]
+    public Task<IActionResult> RestoreTemplate(string key, CancellationToken ct) =>
+        AsActor(actor => _custom.RestoreAsync(actor, key, ct));
 
     [HttpGet("{key}/stats")]
     public async Task<IActionResult> Stats(string key, [FromQuery] int days = 30, CancellationToken ct = default) =>

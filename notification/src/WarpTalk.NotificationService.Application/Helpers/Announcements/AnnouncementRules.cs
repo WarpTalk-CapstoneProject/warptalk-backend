@@ -52,6 +52,7 @@ public static partial class AnnouncementRules
             CtaUrl = ctaUrl,
             StartsAt = AsUtc(request.StartsAt),
             EndsAt = AsUtc(request.EndsAt),
+            EmailTemplateKey = string.IsNullOrWhiteSpace(request.EmailTemplateKey) ? null : request.EmailTemplateKey.Trim().ToLowerInvariant(),
             Placement = (request.Placement ?? string.Empty).Trim().ToUpperInvariant(),
             Variant = (request.Variant ?? string.Empty).Trim().ToUpperInvariant(),
             AccentColor = (request.AccentColor ?? string.Empty).Trim().ToUpperInvariant(),

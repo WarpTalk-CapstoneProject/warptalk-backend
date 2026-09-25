@@ -2,7 +2,17 @@ using WarpTalk.Shared.Email;
 
 namespace WarpTalk.NotificationService.Application.DTOs.EmailTemplates;
 
-public sealed record EmailTemplateVariableDto(string Name, string Description, string Sample, bool Required, bool Multiline);
+public sealed record EmailTemplateVariableDto(string Name, string Description, string Sample, bool Required, bool Multiline)
+{
+    /// <summary>TEXT, URL, DATE, NUMBER or MULTILINE: how the send form asks for a value.</summary>
+    public string Type { get; init; } = "TEXT";
+
+    /// <summary>A custom variable's human label; null for built-ins (Description says it).</summary>
+    public string? Label { get; init; }
+
+    /// <summary>Filled in by the sender (recipient name, announcement title) — never asked for.</summary>
+    public bool Implicit { get; init; }
+}
 
 /// <summary>The editable fields of one email in one locale (draft or published side).</summary>
 public sealed record EmailContentFieldsDto(
@@ -47,7 +57,32 @@ public sealed record EmailTemplateListItemDto(
     bool HasDraftChanges,
     DateTime? UpdatedAt,
     Guid? UpdatedBy,
-    EmailDeliveryTotalsDto Last30Days);
+    EmailDeliveryTotalsDto Last30Days)
+{
+    public const string CategoryBuiltIn = "BUILT_IN";
+
+    /// <summary>Created by an admin rather than defined in code.</summary>
+    public bool IsCustom { get; init; }
+
+    /// <summary>BUILT_IN, TRANSACTIONAL_CUSTOM, MARKETING or ANNOUNCEMENT.</summary>
+    public string Category { get; init; } = CategoryBuiltIn;
+
+    /// <summary>ACTIVE or DELETED (a soft-deleted custom template).</summary>
+    public string Status { get; init; } = "ACTIVE";
+
+    public DateTime? DeletedAt { get; init; }
+
+    public string? DeleteReason { get; init; }
+
+    /// <summary>The English subject with the default sample values filled in — what an admin reads.</summary>
+    public string RenderedSubject { get; init; } = string.Empty;
+
+    public string RenderedPreheader { get; init; } = string.Empty;
+
+    public DateTime? CreatedAt { get; init; }
+
+    public Guid? CreatedBy { get; init; }
+}
 
 public sealed record EmailVariantDto(
     Guid Id,
@@ -219,3 +254,23 @@ public sealed record EmailBlockPreviewRequest(
     bool Dark = false);
 
 public sealed record EmailBlockBulkRequest(string Action, IReadOnlyList<Guid> Ids);
+
+/// <summary>GET render: a stored email as a recipient gets it.</summary>
+/// <param name="Source">"sent" (default): what the senders would send now. "draft": the locale's draft.</param>
+public sealed record EmailRenderQuery(string? Locale, bool Dark = false, Guid? SampleSetId = null, string? Source = null);
+
+/// <summary>A rendered email with the envelope an inbox would show around it.</summary>
+/// <param name="SourceUsed">PUBLISHED, DRAFT or BUILT_IN.</param>
+public sealed record EmailRenderedDto(
+    string Subject,
+    string Preheader,
+    string Html,
+    string Text,
+    string LayoutName,
+    string LocaleUsed,
+    string SourceUsed,
+    int Version,
+    string FromName,
+    string FromAddress,
+    string ToName,
+    string ToAddress);

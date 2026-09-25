@@ -27,6 +27,7 @@ public interface IEmailContentService
     Task<Result<IReadOnlyList<EmailCmsVersionDto>>> ListVersionsAsync(string key, string locale, CancellationToken ct = default);
     Task<Result<EmailVariantDto>> RestoreVersionAsync(AdminActorContext actor, string key, string locale, int version, CancellationToken ct = default);
     Task<Result<EmailPreviewDto>> PreviewAsync(string key, EmailPreviewRequest request, CancellationToken ct = default);
+    Task<Result<EmailRenderedDto>> RenderAsync(string key, EmailRenderQuery query, CancellationToken ct = default);
     Task<Result<EmailTestSendDto>> SendTestAsync(AdminActorContext actor, string key, EmailTestSendRequest request, CancellationToken ct = default);
     Task<Result<EmailSampleDataSetDto>> SaveSampleSetAsync(AdminActorContext actor, string key, Guid? id, SaveSampleDataSetRequest request, CancellationToken ct = default);
     Task<Result> DeleteSampleSetAsync(AdminActorContext actor, string key, Guid id, CancellationToken ct = default);
@@ -49,6 +50,8 @@ public sealed class EmailContentService : IEmailContentService
     private const int StatsWindowDays = 30;
 
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IEmailDefinitionProvider _definitions;
+    private readonly EmailEnvelope _envelope;
     private readonly IEmailSender? _emailSender;
     private readonly TimeProvider _time;
     private readonly ILogger<EmailContentService> _logger;
@@ -57,9 +60,13 @@ public sealed class EmailContentService : IEmailContentService
         IUnitOfWork unitOfWork,
         ILogger<EmailContentService> logger,
         IEmailSender? emailSender = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEmailDefinitionProvider? definitions = null,
+        EmailEnvelope? envelope = null)
     {
+        _envelope = envelope ?? EmailEnvelope.Default;
         _unitOfWork = unitOfWork;
+        _definitions = definitions ?? new EmailDefinitionProvider(unitOfWork);
         _logger = logger;
         _emailSender = emailSender;
         _time = timeProvider ?? TimeProvider.System;
@@ -75,20 +82,22 @@ public sealed class EmailContentService : IEmailContentService
         var blocks = await _unitOfWork.EmailBlockRepository.ListAsync(EmailCmsConstants.KindLayout, ct);
         var stats = await _unitOfWork.EmailDeliveryStatRepository.ListSinceAsync(null, StatsSince(StatsWindowDays), ct);
 
-        IReadOnlyList<EmailTemplateListItemDto> items = EmailTemplateCatalog.All
-            .Select(definition => ListItem(
-                definition,
-                variants.Where(v => v.TemplateKey == definition.Key).ToList(),
+        var entries = await _definitions.ListAsync(includeDeleted: true, ct);
+        IReadOnlyList<EmailTemplateListItemDto> items = entries
+            .Select(entry => ListItem(
+                entry,
+                variants.Where(v => v.TemplateKey == entry.Definition.Key).ToList(),
                 blocks,
-                stats.Where(s => s.TemplateKey == definition.Key)))
+                stats.Where(s => s.TemplateKey == entry.Definition.Key)))
             .ToList();
         return Result.Success(items);
     }
 
     public async Task<Result<EmailTemplateDetailDto>> GetAsync(string key, CancellationToken ct = default)
     {
-        var definition = EmailTemplateCatalog.Find(key);
-        if (definition is null) return UnknownTemplate<EmailTemplateDetailDto>(key);
+        var entry = await _definitions.FindAsync(key, includeDeleted: true, ct);
+        if (entry is null) return UnknownTemplate<EmailTemplateDetailDto>(key);
+        var definition = entry.Definition;
 
         var variants = await _unitOfWork.EmailContentVariantRepository.ListAsync(key, ct);
         var blocks = await _unitOfWork.EmailBlockRepository.ListAsync(EmailCmsConstants.KindLayout, ct);
@@ -102,7 +111,7 @@ public sealed class EmailContentService : IEmailContentService
         sampleSets.AddRange(sets.Select(ToSampleDto));
 
         return Result.Success(new EmailTemplateDetailDto(
-            ListItem(definition, variants, blocks, stats),
+            ListItem(entry, variants, blocks, stats),
             FromDefault(definition.Default),
             variants.OrderBy(v => Array.IndexOf(EmailLocales.Supported, v.Locale)).Select(ToVariantDto).ToList(),
             sampleSets,
@@ -111,7 +120,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<IReadOnlyList<EmailCmsVersionDto>>> ListVersionsAsync(string key, string locale, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<IReadOnlyList<EmailCmsVersionDto>>(error.Value.Message, error.Value.Code);
 
         var variant = await _unitOfWork.EmailContentVariantRepository.GetAsync(definition!.Key, normalized!, ct);
@@ -124,7 +133,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<EmailStatsDto>> GetStatsAsync(string key, int days, CancellationToken ct = default)
     {
-        if (EmailTemplateCatalog.Find(key) is null) return UnknownTemplate<EmailStatsDto>(key);
+        if (await _definitions.FindAsync(key, includeDeleted: true, ct) is null) return UnknownTemplate<EmailStatsDto>(key);
         days = Math.Clamp(days, 1, 365);
 
         var since = StatsSince(days);
@@ -153,7 +162,7 @@ public sealed class EmailContentService : IEmailContentService
     public async Task<Result<EmailVariantDto>> SaveDraftAsync(
         AdminActorContext actor, string key, string locale, SaveEmailDraftRequest request, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
 
         var draft = Normalize(request.Subject, request.Preheader, request.Heading, request.BodyHtml, request.TextBody);
@@ -189,7 +198,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<EmailVariantDto?>> DiscardDraftAsync(AdminActorContext actor, string key, string locale, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto?>(error.Value.Message, error.Value.Code);
 
         var repository = _unitOfWork.EmailContentVariantRepository;
@@ -222,8 +231,12 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<EmailVariantDto>> ResetToDefaultAsync(AdminActorContext actor, string key, string locale, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
+        if (EmailTemplateCatalog.Find(key) is null)
+            return Result.Failure<EmailVariantDto>(
+                "A template you created has no built-in wording to go back to. Restore an earlier version from its history instead.",
+                ErrorCodes.InvalidState);
 
         var repository = _unitOfWork.EmailContentVariantRepository;
         var variant = await repository.GetAsync(definition!.Key, normalized!, ct);
@@ -247,7 +260,7 @@ public sealed class EmailContentService : IEmailContentService
     public async Task<Result<EmailVariantDto>> RestoreVersionAsync(
         AdminActorContext actor, string key, string locale, int version, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
 
         var variant = await _unitOfWork.EmailContentVariantRepository.GetAsync(definition!.Key, normalized!, ct);
@@ -282,7 +295,7 @@ public sealed class EmailContentService : IEmailContentService
     public async Task<Result<EmailVariantDto>> PublishAsync(
         AdminActorContext actor, string key, string locale, PublishEmailRequest request, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
 
         var note = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
@@ -312,7 +325,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<EmailVariantDto>> ArchiveAsync(AdminActorContext actor, string key, string locale, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
 
         var variant = await _unitOfWork.EmailContentVariantRepository.GetAsync(definition!.Key, normalized!, ct);
@@ -329,7 +342,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<EmailVariantDto>> UnarchiveAsync(AdminActorContext actor, string key, string locale, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
 
         var variant = await _unitOfWork.EmailContentVariantRepository.GetAsync(definition!.Key, normalized!, ct);
@@ -347,7 +360,7 @@ public sealed class EmailContentService : IEmailContentService
     public async Task<Result<EmailVariantDto>> DuplicateAsync(
         AdminActorContext actor, string key, string locale, DuplicateEmailVariantRequest request, CancellationToken ct = default)
     {
-        var (definition, normalized, error) = Resolve(key, locale);
+        var (definition, normalized, error) = await ResolveAsync(key, locale, ct);
         if (error is not null) return Result.Failure<EmailVariantDto>(error.Value.Message, error.Value.Code);
         var target = EmailLocales.Normalize(request.TargetLocale);
         if (target is null)
@@ -383,7 +396,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result<EmailPreviewDto>> PreviewAsync(string key, EmailPreviewRequest request, CancellationToken ct = default)
     {
-        var definition = EmailTemplateCatalog.Find(key);
+        var definition = (await _definitions.FindAsync(key, includeDeleted: true, ct))?.Definition;
         if (definition is null) return UnknownTemplate<EmailPreviewDto>(key);
 
         var values = await SampleValuesAsync(definition, request.SampleSetId, request.Values, ct);
@@ -396,10 +409,95 @@ public sealed class EmailContentService : IEmailContentService
         return Result.Success(new EmailPreviewDto(rendered.Subject, preheader, rendered.HtmlBody, rendered.TextBody, issues, layoutName));
     }
 
+    /// <summary>
+    /// A stored email, rendered as a recipient gets it: the thumbnail on the list and the "as
+    /// received" preview. <see cref="EmailRenderQuery.Source"/> "sent" follows the senders' own rule
+    /// (this locale's published content, else English's, else the built-in wording; a custom template
+    /// that was never published shows its draft, and says so); "draft" renders the locale's draft.
+    /// </summary>
+    public async Task<Result<EmailRenderedDto>> RenderAsync(string key, EmailRenderQuery query, CancellationToken ct = default)
+    {
+        var entry = await _definitions.FindAsync(key, includeDeleted: true, ct);
+        if (entry is null) return UnknownTemplate<EmailRenderedDto>(key);
+        var definition = entry.Definition;
+        var locale = EmailLocales.Normalize(query.Locale) ?? EmailLocales.Default;
+        var variants = await _unitOfWork.EmailContentVariantRepository.ListAsync(key, ct);
+
+        EmailContentVariant? Active(string code) =>
+            variants.FirstOrDefault(v => v.Locale == code && v.Status == EmailCmsConstants.StatusActive);
+
+        EmailTemplateContent content;
+        Guid? layoutId;
+        string sourceUsed;
+        string localeUsed;
+        var version = 0;
+        var draftOnly = string.Equals(query.Source, "draft", StringComparison.OrdinalIgnoreCase);
+
+        var chosen = draftOnly
+            ? Active(locale)
+            : EmailLocales.FallbackChain(locale).Select(Active).FirstOrDefault(v => v is { PublishedVersion: > 0 });
+        if (draftOnly && chosen is not null)
+        {
+            content = DraftOf(chosen);
+            layoutId = chosen.DraftLayoutId;
+            sourceUsed = "DRAFT";
+            localeUsed = chosen.Locale;
+        }
+        else if (!draftOnly && chosen is not null)
+        {
+            content = new EmailTemplateContent(
+                chosen.PublishedSubject ?? string.Empty, chosen.PublishedHeading ?? string.Empty,
+                chosen.PublishedBodyHtml ?? string.Empty, chosen.PublishedPreheader ?? string.Empty, chosen.PublishedTextBody);
+            layoutId = chosen.PublishedLayoutId;
+            sourceUsed = "PUBLISHED";
+            localeUsed = chosen.Locale;
+            version = chosen.PublishedVersion;
+        }
+        else if (entry.IsCustom && (Active(locale) ?? Active(EmailLocales.Default)) is { } draft)
+        {
+            // Nothing published yet: show the draft rather than a placeholder nobody wrote.
+            content = DraftOf(draft);
+            layoutId = draft.DraftLayoutId;
+            sourceUsed = "DRAFT";
+            localeUsed = draft.Locale;
+        }
+        else
+        {
+            content = definition.Default;
+            layoutId = null;
+            sourceUsed = "BUILT_IN";
+            localeUsed = EmailLocales.Default;
+        }
+
+        var values = await SampleValuesAsync(definition, query.SampleSetId, null, ct);
+        var (prepared, layout, layoutName, _) = await PrepareAsync(definition, content, layoutId, ct, publishedBlocksOnly: sourceUsed == "PUBLISHED");
+        var rendered = EmailTemplateRenderer.Render(definition, prepared, values, layout, new EmailRenderOptions(query.Dark));
+        var preheader = EmailTemplateRenderer.RenderPlainLine(prepared.Preheader, values);
+        var recipientName = values.TryGetValue(EmailCmsConstants.VariableRecipientName, out var name) ? name : "Linh Nguyen";
+        var recipientEmail = values.TryGetValue(EmailCmsConstants.VariableRecipientEmail, out var address) ? address : "linh@example.com";
+
+        return Result.Success(new EmailRenderedDto(
+            rendered.Subject,
+            preheader,
+            rendered.HtmlBody,
+            rendered.TextBody,
+            layoutName,
+            localeUsed,
+            sourceUsed,
+            version,
+            _envelope.FromName,
+            _envelope.FromAddress,
+            recipientName,
+            recipientEmail));
+    }
+
+    private static EmailTemplateContent DraftOf(EmailContentVariant v) =>
+        new(v.DraftSubject, v.DraftHeading, v.DraftBodyHtml, v.DraftPreheader, v.DraftTextBody);
+
     public async Task<Result<EmailTestSendDto>> SendTestAsync(
         AdminActorContext actor, string key, EmailTestSendRequest request, CancellationToken ct = default)
     {
-        var definition = EmailTemplateCatalog.Find(key);
+        var definition = (await _definitions.FindAsync(key, includeDeleted: false, ct))?.Definition;
         if (definition is null) return UnknownTemplate<EmailTestSendDto>(key);
         if (_emailSender is null)
             return Result.Failure<EmailTestSendDto>("Email sending is not configured on this deployment.", ErrorCodes.ServiceUnavailable);
@@ -448,7 +546,7 @@ public sealed class EmailContentService : IEmailContentService
     public async Task<Result<EmailSampleDataSetDto>> SaveSampleSetAsync(
         AdminActorContext actor, string key, Guid? id, SaveSampleDataSetRequest request, CancellationToken ct = default)
     {
-        var definition = EmailTemplateCatalog.Find(key);
+        var definition = (await _definitions.FindAsync(key, includeDeleted: false, ct))?.Definition;
         if (definition is null) return UnknownTemplate<EmailSampleDataSetDto>(key);
 
         var name = (request.Name ?? string.Empty).Trim();
@@ -496,7 +594,7 @@ public sealed class EmailContentService : IEmailContentService
 
     public async Task<Result> DeleteSampleSetAsync(AdminActorContext actor, string key, Guid id, CancellationToken ct = default)
     {
-        var definition = EmailTemplateCatalog.Find(key);
+        var definition = (await _definitions.FindAsync(key, includeDeleted: false, ct))?.Definition;
         if (definition is null) return Result.Failure($"The platform sends no email called '{key}'.", ErrorCodes.NotFound);
 
         var repository = _unitOfWork.EmailSampleDataSetRepository;
@@ -527,7 +625,7 @@ public sealed class EmailContentService : IEmailContentService
         var results = new List<BulkItemResultDto>();
         foreach (var key in keys)
         {
-            if (EmailTemplateCatalog.Find(key) is null)
+            if (await _definitions.FindAsync(key, includeDeleted: false, ct) is null)
             {
                 results.Add(new BulkItemResultDto(key, false, "Unknown email."));
                 continue;
@@ -694,13 +792,21 @@ public sealed class EmailContentService : IEmailContentService
     }
 
     private static EmailTemplateListItemDto ListItem(
-        EmailTemplateDefinition definition,
+        EmailDefinitionEntry entry,
         IReadOnlyList<EmailContentVariant> variants,
         IReadOnlyList<EmailBlock> layouts,
         IEnumerable<EmailDeliveryStat> stats)
     {
+        var definition = entry.Definition;
         var english = variants.FirstOrDefault(v => v.Locale == EmailLocales.Default && v.Status == EmailCmsConstants.StatusActive);
-        var subject = english is { PublishedVersion: > 0 } ? english.PublishedSubject ?? definition.Default.Subject : definition.Default.Subject;
+        // What goes out in English now; a custom template that was never published shows its draft.
+        var (subject, preheader) = english switch
+        {
+            { PublishedVersion: > 0 } => (english.PublishedSubject ?? definition.Default.Subject, english.PublishedPreheader ?? string.Empty),
+            not null when entry.IsCustom => (english.DraftSubject, english.DraftPreheader),
+            _ => (definition.Default.Subject, definition.Default.Preheader),
+        };
+        var samples = EmailTemplateCatalog.SampleValues(definition);
         var layoutId = english?.PublishedLayoutId;
         var layout = layoutId is { } id
             ? layouts.FirstOrDefault(l => l.Id == id)
@@ -717,14 +823,43 @@ public sealed class EmailContentService : IEmailContentService
             definition.Trigger,
             definition.IsLive,
             definition.DormantReason,
-            definition.Variables.Select(v => new EmailTemplateVariableDto(v.Name, v.Description, v.Sample, v.Required, v.Multiline)).ToList(),
+            VariableDtos(entry),
             subject,
             layout?.Name,
             variants.Select(ToSummary).ToList(),
             variants.Any(v => v.Status == EmailCmsConstants.StatusActive && HasDraftChanges(v)),
             latest?.DraftUpdatedAt,
             latest?.DraftUpdatedBy,
-            new EmailDeliveryTotalsDto(statRows.Sum(s => s.SentCount), statRows.Sum(s => s.FailedCount)));
+            new EmailDeliveryTotalsDto(statRows.Sum(s => s.SentCount), statRows.Sum(s => s.FailedCount)))
+        {
+            IsCustom = entry.IsCustom,
+            Category = entry.Custom?.Category ?? EmailTemplateListItemDto.CategoryBuiltIn,
+            Status = entry.Custom?.Status ?? EmailCmsConstants.StatusActive,
+            DeletedAt = entry.Custom?.DeletedAt,
+            DeleteReason = entry.Custom?.DeleteReason,
+            RenderedSubject = EmailTemplateRenderer.RenderPlainLine(subject, samples),
+            RenderedPreheader = EmailTemplateRenderer.RenderPlainLine(preheader, samples),
+            CreatedAt = entry.Custom?.CreatedAt,
+            CreatedBy = entry.Custom?.CreatedBy,
+        };
+    }
+
+    internal static IReadOnlyList<EmailTemplateVariableDto> VariableDtos(EmailDefinitionEntry entry)
+    {
+        var declared = entry.Custom is null
+            ? new Dictionary<string, EmailCustomVariable>()
+            : CustomEmailDefinitions.ReadVariables(entry.Custom.Variables).ToDictionary(v => v.Name, StringComparer.Ordinal);
+        return entry.Definition.Variables
+            .Select(v => new EmailTemplateVariableDto(
+                v.Name, v.Description, v.Sample,
+                declared.TryGetValue(v.Name, out var own) ? own.Required : v.Required,
+                v.Multiline)
+            {
+                Type = declared.TryGetValue(v.Name, out var custom) ? custom.Type : (v.Multiline ? EmailCmsConstants.VariableMultiline : EmailCmsConstants.VariableText),
+                Label = declared.TryGetValue(v.Name, out var labelled) ? labelled.Label : null,
+                Implicit = entry.IsCustom && CustomEmailDefinitions.IsImplicit(v.Name),
+            })
+            .ToList();
     }
 
     public static bool HasDraftChanges(EmailContentVariant v) =>
@@ -800,7 +935,7 @@ public sealed class EmailContentService : IEmailContentService
         }
     }
 
-    private static EmailContentVariant NewVariant(string key, string locale, Guid actorId, DateTime now) =>
+    internal static EmailContentVariant NewVariant(string key, string locale, Guid actorId, DateTime now) =>
         new()
         {
             Id = Guid.CreateVersion7(),
@@ -817,7 +952,7 @@ public sealed class EmailContentService : IEmailContentService
             DraftUpdatedBy = actorId,
         };
 
-    private static void ApplyDraft(EmailContentVariant variant, EmailTemplateContent draft, Guid? layoutId, Guid actorId, DateTime now)
+    internal static void ApplyDraft(EmailContentVariant variant, EmailTemplateContent draft, Guid? layoutId, Guid actorId, DateTime now)
     {
         variant.DraftSubject = draft.Subject;
         variant.DraftPreheader = draft.Preheader;
@@ -829,7 +964,7 @@ public sealed class EmailContentService : IEmailContentService
         variant.DraftUpdatedBy = actorId;
     }
 
-    private static EmailTemplateContent Normalize(string? subject, string? preheader, string? heading, string? body, string? text) =>
+    internal static EmailTemplateContent Normalize(string? subject, string? preheader, string? heading, string? body, string? text) =>
         new(
             (subject ?? string.Empty).Trim(),
             (heading ?? string.Empty).Trim(),
@@ -838,7 +973,7 @@ public sealed class EmailContentService : IEmailContentService
             string.IsNullOrWhiteSpace(text) ? null : text);
 
     /// <summary>A draft may be incomplete, but it must fit its columns.</summary>
-    private static string? DraftShapeError(EmailTemplateContent draft)
+    internal static string? DraftShapeError(EmailTemplateContent draft)
     {
         if (draft.Subject.Length > EmailTemplateRenderer.MaxSubjectLength) return "The subject is too long.";
         if (draft.Preheader.Length > EmailTemplateRenderer.MaxPreheaderLength) return "The preheader is too long.";
@@ -848,10 +983,14 @@ public sealed class EmailContentService : IEmailContentService
         return null;
     }
 
-    private static (EmailTemplateDefinition? Definition, string? Locale, (string Message, string Code)? Error) Resolve(string key, string locale)
+    private async Task<(EmailTemplateDefinition? Definition, string? Locale, (string Message, string Code)? Error)> ResolveAsync(
+        string key, string locale, CancellationToken ct)
     {
-        var definition = EmailTemplateCatalog.Find(key);
-        if (definition is null) return (null, null, ($"The platform sends no email called '{key}'.", ErrorCodes.NotFound));
+        var entry = await _definitions.FindAsync(key, includeDeleted: true, ct);
+        if (entry is null) return (null, null, ($"The platform sends no email called '{key}'.", ErrorCodes.NotFound));
+        if (entry.IsDeleted)
+            return (null, null, ("This template is deleted. Restore it before changing it.", ErrorCodes.InvalidState));
+        var definition = entry.Definition;
         var normalized = EmailLocales.Normalize(locale);
         if (normalized is null)
             return (definition, null, ($"Locale must be one of {string.Join(", ", EmailLocales.Supported)}.", ErrorCodes.ValidationError));
@@ -863,7 +1002,7 @@ public sealed class EmailContentService : IEmailContentService
     private static bool SameInstant(DateTime a, DateTime b) =>
         Math.Abs((a.ToUniversalTime() - b.ToUniversalTime()).TotalMilliseconds) < 1;
 
-    private static bool IsEmailAddress(string address)
+    internal static bool IsEmailAddress(string address)
     {
         try
         {

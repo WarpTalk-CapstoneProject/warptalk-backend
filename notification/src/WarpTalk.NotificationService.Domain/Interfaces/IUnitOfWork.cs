@@ -17,6 +17,9 @@ public interface IUnitOfWork : IDisposable
     IEmailCmsVersionRepository EmailCmsVersionRepository { get; }
     IEmailSampleDataSetRepository EmailSampleDataSetRepository { get; }
     IEmailDeliveryStatRepository EmailDeliveryStatRepository { get; }
+    IEmailCustomTemplateRepository EmailCustomTemplateRepository { get; }
+    IEmailCampaignRepository EmailCampaignRepository { get; }
+    IEmailCampaignRecipientRepository EmailCampaignRecipientRepository { get; }
     Task<int> SaveChangesAsync();
     Task BeginTransactionAsync(CancellationToken ct = default);
     Task CommitTransactionAsync(CancellationToken ct = default);
