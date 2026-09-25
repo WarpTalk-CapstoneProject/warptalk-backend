@@ -40,12 +40,16 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditTopUpPaymentEventHandler> _logger;
 
+    private readonly ICreditFreezeService? _creditFreeze;
+
     public CreditTopUpPaymentEventHandler(
         IUnitOfWork unitOfWork,
-        ILogger<CreditTopUpPaymentEventHandler> logger)
+        ILogger<CreditTopUpPaymentEventHandler> logger,
+        ICreditFreezeService? creditFreeze = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _creditFreeze = creditFreeze;
     }
 
     public bool CanHandle(PaymentEventContext context)
@@ -92,6 +96,29 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
 
         if (subscription is null)
         {
+            // backend#467: paid credit is never lost. Book it frozen on the workspace's latest
+            // subscription (restored on renewal) rather than failing a payment already taken.
+            var holder = _creditFreeze is null
+                ? null
+                : await _creditFreeze.StageFrozenPurchaseAsync(
+                    new FrozenPurchase(
+                        context.WorkspaceId,
+                        context.UserId,
+                        credits,
+                        string.Format(BillingMessageConstants.SuccessMessages.CreditTopUpGrantedTemplate, credits)
+                            + " (kept frozen: no live subscription)",
+                        context.PaymentId,
+                        context.Request.Currency,
+                        DateTime.UtcNow),
+                    cancellationToken);
+            if (holder is not null)
+            {
+                // The payment row points at the subscription holding the credits. Not
+                // SubscriptionChanged: nothing about the (ended) plan changed.
+                context.Subscription = holder;
+                return Result.Success();
+            }
+
             _logger.LogError(
                 "credit_topup_no_subscription: StripeSessionId={SessionId} WorkspaceId={WorkspaceId}. "
                 + "The payment succeeded but there is no active subscription to credit.",

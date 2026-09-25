@@ -56,6 +56,22 @@ public class PaymentAppService : IPaymentAppService
         _workspaceClient = workspaceClient;
     }
 
+    private static bool IsExtraCreditsPurchase(string? paymentType) =>
+        string.Equals(paymentType, PaymentConstants.PaymentTypes.CreditTopUp, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(paymentType, PaymentConstants.PaymentTypes.CreditPack, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A subscription the workspace is using right now: active, not deleted, its period not over.
+    /// A cancelled-at-period-end plan still counts (it is paid through its period), and so does an
+    /// overage suspension — a top-up is exactly how that one is cleared.
+    /// </summary>
+    private async Task<bool> HasLiveSubscriptionAsync(Guid workspaceId)
+    {
+        var now = DateTime.UtcNow;
+        return await _unitOfWork.SubscriptionRepository.AnyAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd > now);
+    }
+
     public async Task<Result<string>> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request)
     {
         try
@@ -65,6 +81,22 @@ public class PaymentAppService : IPaymentAppService
                 return Result.Failure<string>(
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
+            }
+
+            // backend#467 — EXTRA CREDITS ARE SOLD ONLY ON TOP OF A PLAN. Checked before anything
+            // is priced or any Stripe session exists: a top-up or pack paid for by a workspace with
+            // no live subscription used to be charged and then grant nothing, because the handlers
+            // that credit it look for the active subscription after the money is taken.
+            if (IsExtraCreditsPurchase(request.PaymentType)
+                && !await HasLiveSubscriptionAsync(request.WorkspaceId))
+            {
+                _logger.LogInformation(
+                    "checkout_refused_no_subscription: WorkspaceId={WorkspaceId} PaymentType={PaymentType}",
+                    request.WorkspaceId,
+                    request.PaymentType);
+                return Result.Failure<string>(
+                    BillingMessageConstants.ErrorMessages.PurchaseRequiresSubscription,
+                    ErrorCodes.BillingPurchaseRequiresSubscription);
             }
 
             // G11: a catalog checkout — credit pack, add-on, or a plan with a coupon — is priced by

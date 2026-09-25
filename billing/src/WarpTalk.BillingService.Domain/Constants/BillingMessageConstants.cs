@@ -17,6 +17,9 @@ public static class BillingMessageConstants
         public const string CreditTopUpMissingCreditCount =
             "This top-up carried no credit count, so nothing could be granted. Contact support with the payment reference.";
 
+        public const string PurchaseRequiresSubscription =
+            "Subscribe to a plan to buy extra credits.";
+
         public const string CreditTopUpNoSubscription =
             "This workspace has no active subscription to credit. Contact support with the payment reference.";
 

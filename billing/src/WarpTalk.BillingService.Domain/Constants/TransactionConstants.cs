@@ -31,6 +31,14 @@ public static class TransactionConstants
         /// <summary>Frozen credits moved into a live subscription; ReferenceId is the row they came from.</summary>
         public const string FrozenCreditRelease = "frozen_credit_release";
 
+        /// <summary>
+        /// Paid credits (a top-up or a credit pack) whose payment arrived for a workspace with no live
+        /// subscription. Checkout refuses that case, so this is the safety net: the credits are booked
+        /// FROZEN on the workspace's latest subscription instead of being dropped, restored on
+        /// renewal like any other frozen credits, and surfaced in the admin inbox.
+        /// </summary>
+        public const string FrozenPurchase = "frozen_purchase";
+
         /// <summary>An audited admin adjustment of an ended subscription's FROZEN credits.</summary>
         public const string FrozenCreditAdjustment = "frozen_credit_adjustment";
     }

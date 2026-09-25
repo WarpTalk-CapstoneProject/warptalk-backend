@@ -29,10 +29,13 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditPackPaymentEventHandler> _logger;
 
-    public CreditPackPaymentEventHandler(IUnitOfWork unitOfWork, ILogger<CreditPackPaymentEventHandler> logger)
+    private readonly ICreditFreezeService? _creditFreeze;
+
+    public CreditPackPaymentEventHandler(IUnitOfWork unitOfWork, ILogger<CreditPackPaymentEventHandler> logger, ICreditFreezeService? creditFreeze = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _creditFreeze = creditFreeze;
     }
 
     public bool CanHandle(PaymentEventContext context) =>
@@ -85,6 +88,29 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
                 s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.DeletedAt == null, cancellationToken);
         if (subscription is null)
         {
+            // backend#467: never lose paid credit. The pack is booked frozen on the workspace's
+            // latest subscription, and its purchase row points there so the pack still expires
+            // on its own date — from the frozen bucket (CreditPackExpiryService).
+            var frozenPurchaseId = Guid.NewGuid();
+            var holder = _creditFreeze is null
+                ? null
+                : await _creditFreeze.StageFrozenPurchaseAsync(
+                    new FrozenPurchase(
+                        context.WorkspaceId,
+                        context.UserId,
+                        totalCredits,
+                        string.Format(CultureInfo.InvariantCulture, "Credit pack '{0}': {1:N0} credits (kept frozen: no live subscription)", pack.Name, totalCredits),
+                        frozenPurchaseId,
+                        context.Request.Currency,
+                        DateTime.UtcNow),
+                    cancellationToken);
+            if (holder is not null)
+            {
+                await AddPurchaseAsync(context, pack, frozenPurchaseId, holder.Id, sessionId, baseCredits, bonus, DateTime.UtcNow, cancellationToken);
+                context.Subscription = holder;
+                return Result.Success();
+            }
+
             _logger.LogError(
                 "credit_pack_no_subscription: StripeSessionId={SessionId} WorkspaceId={WorkspaceId}. Paid, and nothing to credit.",
                 sessionId, context.WorkspaceId);
@@ -115,6 +141,29 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
             CreatedAt = now,
         }, cancellationToken);
 
+        await AddPurchaseAsync(context, pack, purchaseId, subscription.Id, sessionId, baseCredits, bonus, now, cancellationToken);
+
+        context.Subscription = subscription;
+        context.SubscriptionChanged = true;
+
+        _logger.LogInformation(
+            "credit_pack_granted: Pack={Slug} Credits={Credits} WorkspaceId={WorkspaceId} BalanceAfter={BalanceAfter}",
+            pack.Slug, totalCredits, context.WorkspaceId, subscription.CreditsRemaining);
+        return Result.Success();
+    }
+
+    /// <summary>The purchase row a pack's own expiry (G11) runs from, on whichever subscription holds it.</summary>
+    private async Task AddPurchaseAsync(
+        PaymentEventContext context,
+        CreditPack pack,
+        Guid purchaseId,
+        Guid subscriptionId,
+        string? sessionId,
+        int baseCredits,
+        int bonus,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
         var listPrice = context.Request.ListPrice > 0 ? context.Request.ListPrice : context.Request.Amount;
         await _unitOfWork.CreditPackPurchases.AddAsync(new CreditPackPurchase
         {
@@ -122,7 +171,7 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
             CreditPackId = pack.Id,
             WorkspaceId = context.WorkspaceId,
             UserId = context.UserId,
-            SubscriptionId = subscription.Id,
+            SubscriptionId = subscriptionId,
             PaymentId = context.PaymentId,
             StripeSessionId = string.IsNullOrWhiteSpace(sessionId) ? context.ProviderTransactionId : sessionId,
             Credits = baseCredits,
@@ -134,13 +183,5 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
             PurchasedAt = now,
             ExpiresAt = pack.ValidityDays is { } days ? now.AddDays(days) : null,
         }, cancellationToken);
-
-        context.Subscription = subscription;
-        context.SubscriptionChanged = true;
-
-        _logger.LogInformation(
-            "credit_pack_granted: Pack={Slug} Credits={Credits} WorkspaceId={WorkspaceId} BalanceAfter={BalanceAfter}",
-            pack.Slug, totalCredits, context.WorkspaceId, subscription.CreditsRemaining);
-        return Result.Success();
     }
 }

@@ -66,7 +66,27 @@ public interface ICreditFreezeService
 
     /// <summary>Marks frozen balances older than the grace window as dormant. Never deletes them.</summary>
     Task<int> MarkDormantAsync(DateTime nowUtc, int graceDays, CancellationToken ct = default);
+
+    /// <summary>
+    /// backend#467 safety net. Stages (does NOT save) paid credits whose payment arrived for a
+    /// workspace with no live subscription: they are added FROZEN to the workspace's latest
+    /// subscription row, with a <c>frozen_purchase</c> ledger row, so a renewal restores them.
+    /// Returns the row they were booked on, or null when the workspace has never had a
+    /// subscription at all (nothing to hold them; the caller must fail loudly instead).
+    /// </summary>
+    Task<Subscription?> StageFrozenPurchaseAsync(FrozenPurchase purchase, CancellationToken ct = default);
 }
+
+/// <summary>What was paid for, when it arrived with no live subscription to credit.</summary>
+/// <param name="ReferenceId">The payment (top-up) or the credit pack purchase (pack).</param>
+public sealed record FrozenPurchase(
+    Guid WorkspaceId,
+    Guid UserId,
+    int Credits,
+    string Description,
+    Guid? ReferenceId,
+    string? Currency,
+    DateTime NowUtc);
 
 /// <summary>
 /// WHAT HAPPENS TO CREDITS WHEN A SUBSCRIPTION ENDS WITHOUT A RENEWAL.
@@ -391,6 +411,55 @@ public sealed class CreditFreezeService : ICreditFreezeService
         }
 
         return marked;
+    }
+
+    public async Task<Subscription?> StageFrozenPurchaseAsync(FrozenPurchase purchase, CancellationToken ct = default)
+    {
+        if (purchase.Credits <= 0)
+        {
+            return null;
+        }
+
+        var rows = await _unitOfWork.SubscriptionRepository.FindAsync(
+            s => s.WorkspaceId == purchase.WorkspaceId && s.DeletedAt == null,
+            ct);
+        var holder = rows?.OrderByDescending(s => s.CurrentPeriodEnd).ThenByDescending(s => s.CreatedAt).FirstOrDefault();
+        if (holder is null)
+        {
+            return null;
+        }
+
+        holder.FrozenCredits += purchase.Credits;
+        // A frozen purchase is a fresh reason to keep the balance visible: it is not dormant.
+        holder.FrozenCreditsDormantAt = null;
+        holder.UpdatedAt = purchase.NowUtc;
+        _unitOfWork.SubscriptionRepository.Update(holder);
+
+        await _unitOfWork.CreditTransactionRepository.AddAsync(new CreditTransaction
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = holder.Id,
+            WorkspaceId = purchase.WorkspaceId,
+            UserId = purchase.UserId == Guid.Empty ? holder.UserId : purchase.UserId,
+            Amount = purchase.Credits,
+            Type = TransactionConstants.TransactionTypes.TopUp,
+            Description = purchase.Description,
+            ReferenceId = purchase.ReferenceId,
+            ReferenceType = TransactionConstants.ReferenceTypes.FrozenPurchase,
+            // The spendable balance, which a frozen booking does not move.
+            BalanceAfter = holder.CreditsRemaining,
+            Currency = purchase.Currency,
+            CreatedAt = purchase.NowUtc,
+        }, ct);
+
+        // An error, deliberately: checkout refuses this case, so reaching it means a payment got
+        // past the gate (an old session, a race with expiry). Money is safe; a person should look.
+        _logger.LogError(
+            "paid_credits_booked_frozen WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} Credits={Credits} Reference={Reference}. "
+            + "Paid with no live subscription; kept frozen until the workspace renews.",
+            purchase.WorkspaceId, holder.Id, purchase.Credits, purchase.ReferenceId);
+
+        return holder;
     }
 
     /// <summary>

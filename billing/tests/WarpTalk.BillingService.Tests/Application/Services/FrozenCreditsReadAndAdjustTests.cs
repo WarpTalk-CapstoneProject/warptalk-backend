@@ -48,6 +48,7 @@ public class FrozenCreditsReadAndAdjustTests
             .Returns(Task.CompletedTask);
 
         _unitOfWork.Setup(u => u.SubscriptionRepository).Returns(_subscriptionRepository.Object);
+        _unitOfWork.Setup(u => u.Plans).Returns(Mock.Of<IPlanRepository>());
         _unitOfWork.Setup(u => u.CreditTransactionRepository).Returns(ledger.Object);
         // The platform settings console sets the grace window; 45 here proves the live value is used.
         _settings
@@ -133,4 +134,31 @@ public class FrozenCreditsReadAndAdjustTests
         staged.IsSuccess.Should().BeFalse();
         _ledger.Should().BeEmpty();
     }
+
+    /// <summary>
+    /// The renew screen names the plan that ended even when nothing was left to freeze — the prod
+    /// workspace that leaked ended at −10 credits.
+    /// </summary>
+    [Fact]
+    public async Task An_expired_workspace_with_nothing_frozen_still_reads_which_plan_ended_and_when()
+    {
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Startup" };
+        var plans = new Mock<IPlanRepository>();
+        plans.Setup(r => r.GetByIdAsync(plan.Id, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+        _unitOfWork.Setup(u => u.Plans).Returns(plans.Object);
+        var ended = new DateTime(2026, 9, 23, 10, 48, 0, DateTimeKind.Utc);
+        _subscriptions.Add(new Subscription
+        {
+            Id = Guid.NewGuid(), WorkspaceId = _workspaceId, PlanId = plan.Id, IsActive = false,
+            Status = SubscriptionConstants.SubscriptionStatuses.Expired, CreditsRemaining = -10, CurrentPeriodEnd = ended,
+        });
+
+        var result = await Service().GetFrozenCreditsAsync(_workspaceId);
+
+        result.Value!.FrozenCredits.Should().Be(0);
+        result.Value.HasActiveSubscription.Should().BeFalse();
+        result.Value.LastPlanName.Should().Be("Startup");
+        result.Value.LastEndedAt.Should().Be(ended);
+    }
 }
+

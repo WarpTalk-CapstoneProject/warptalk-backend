@@ -36,6 +36,7 @@ public sealed class AdminInboxSourceService : IAdminInboxSourceService
     public const int DisputeLookbackDays = 60;
     public const int IncidentLookbackDays = 14;
     public const int ExpenseLeadDays = 7;
+    public const int FrozenPurchaseLookbackDays = 30;
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -195,6 +196,34 @@ public sealed class AdminInboxSourceService : IAdminInboxSourceService
                     WorkspaceHref(subscription.WorkspaceId),
                     NaturalCompletion: false));
             }
+        }
+
+        // backend#467: paid credits that arrived with no live subscription and were booked frozen.
+        // Stays until the credits are released (a renewal) or adjusted away by support.
+        var frozenSince = now.AddDays(-FrozenPurchaseLookbackDays);
+        var frozenPurchases = await _unitOfWork.CreditTransactionRepository.FindAsync(
+            t => t.ReferenceType == TransactionConstants.ReferenceTypes.FrozenPurchase && t.CreatedAt >= frozenSince,
+            ct) ?? Array.Empty<Domain.Entities.CreditTransaction>();
+        foreach (var entry in frozenPurchases.OrderBy(t => t.CreatedAt).Take(take))
+        {
+            var holder = await _unitOfWork.SubscriptionRepository.GetByIdAsync(entry.SubscriptionId, ct);
+            if (holder is null || holder.FrozenCredits <= 0)
+            {
+                continue;
+            }
+
+            items.Add(new Draft(
+                $"{AdminInbox.Types.PaidCreditsFrozen}:{entry.Id}",
+                AdminInbox.Types.PaidCreditsFrozen,
+                string.Create(Invariant, $"{entry.Amount:N0} paid credits kept frozen: no live subscription"),
+                entry.Description,
+                entry.WorkspaceId,
+                null,
+                Utc(entry.CreatedAt),
+                Utc(entry.CreatedAt).AddDays(1),
+                AdminInbox.Priorities.Urgent,
+                WorkspaceHref(entry.WorkspaceId),
+                NaturalCompletion: true));
         }
 
         return await RespondAsync(AdminInbox.Sources.Billing, items, now, ct);

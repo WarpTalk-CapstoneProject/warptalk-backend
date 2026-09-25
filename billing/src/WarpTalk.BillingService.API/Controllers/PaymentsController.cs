@@ -127,6 +127,13 @@ public class PaymentsController : ControllerBase
             var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);
             if (!createResult.IsSuccess)
             {
+                // backend#467: a state conflict, not a malformed request — the workspace must
+                // subscribe first. The web reads the code and points the buyer at the plans.
+                if (createResult.ErrorCode == ErrorCodes.BillingPurchaseRequiresSubscription)
+                {
+                    return Conflict(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
+                }
+
                 return BadRequest(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
             }
 

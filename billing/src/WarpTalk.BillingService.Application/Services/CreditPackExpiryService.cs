@@ -111,14 +111,22 @@ public sealed class CreditPackExpiryService : ICreditPackExpiryService
     private async Task<(Subscription? Holder, bool FromFrozen)> ResolveHolderAsync(CreditPackPurchase purchase, CancellationToken ct)
     {
         var owner = await _unitOfWork.SubscriptionRepository.GetByIdAsync(purchase.SubscriptionId, ct);
-        if (owner is not null && (owner.IsActive || owner.CreditsFrozenAt is null))
+        if (owner is { IsActive: true })
         {
             return (owner, false);
         }
 
+        // Frozen on the row it was bought into: the row ended (and was split), or the pack was paid
+        // with no live subscription and booked frozen there directly (backend#467).
         if (owner is { FrozenCredits: > 0 })
         {
             return (owner, true);
+        }
+
+        // Ended but not split yet: the credits are still in its spendable balance.
+        if (owner is not null && owner.CreditsFrozenAt is null && owner.CreditsRemaining > 0)
+        {
+            return (owner, false);
         }
 
         var live = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(

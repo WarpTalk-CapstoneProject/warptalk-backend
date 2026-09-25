@@ -341,5 +341,41 @@ public class CreditFreezeServiceTests
         ended.FrozenCredits.Should().Be(0);
         ended.FrozenCreditsDormantAt.Should().BeNull();
     }
+
+    // ── backend#467: paid credits with no live subscription are booked frozen ─────────────────
+
+    [Fact]
+    public async Task A_paid_purchase_with_no_live_subscription_is_booked_frozen_on_the_latest_row()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var older = AddSubscription(plan, balance: 0);
+        older.CurrentPeriodEnd = Now.AddDays(-90);
+        var latest = AddSubscription(plan, balance: 0);
+        latest.FrozenCredits = 300;
+        latest.FrozenCreditsDormantAt = Now.AddDays(-1);
+        var purchaseId = Guid.NewGuid();
+
+        var holder = await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 5_000, "Credit pack 'S'", purchaseId, "vnd", Now));
+
+        holder.Should().BeSameAs(latest);
+        latest.FrozenCredits.Should().Be(5_300);
+        latest.CreditsRemaining.Should().Be(0, "frozen, not spendable");
+        latest.FrozenCreditsDormantAt.Should().BeNull("a fresh purchase is not dormant");
+        var entry = _ledger.Single();
+        entry.ReferenceType.Should().Be(TransactionConstants.ReferenceTypes.FrozenPurchase);
+        entry.ReferenceId.Should().Be(purchaseId);
+        entry.Amount.Should().Be(5_000);
+    }
+
+    [Fact]
+    public async Task A_workspace_that_never_subscribed_has_nowhere_to_hold_it()
+    {
+        var holder = await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 5_000, "x", Guid.NewGuid(), "vnd", Now));
+
+        holder.Should().BeNull();
+        _ledger.Should().BeEmpty();
+    }
 }
 
