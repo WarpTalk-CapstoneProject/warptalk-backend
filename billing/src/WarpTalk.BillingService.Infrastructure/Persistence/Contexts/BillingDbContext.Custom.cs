@@ -22,8 +22,31 @@ public partial class BillingDbContext
     /// <summary>WT-263: the workspace self-service entitlement overrides (migration 050).</summary>
     public DbSet<WorkspaceEntitlementOverride> WorkspaceEntitlementOverrides => Set<WorkspaceEntitlementOverride>();
 
+    /// <summary>Provider-measured usage per UTC day (migration 20260918120000, Cartesia usage sync).</summary>
+    public DbSet<ProviderUsageDaily> ProviderUsageDaily => Set<ProviderUsageDaily>();
+
+    /// <summary>Recorded exchange rates per UTC day and source (migration 20260924150000, Stripe FX).</summary>
+    public DbSet<FxRate> FxRates => Set<FxRate>();
+
+    /// <summary>Our calls to external providers per UTC hour (migration 20260925090000, admin Providers page).</summary>
+    public DbSet<ProviderCallStat> ProviderCallStats => Set<ProviderCallStat>();
+
+    /// <summary>Incidents from providers' public status pages (migration 20260925090000, admin Providers page).</summary>
+    public DbSet<ProviderStatusIncident> ProviderStatusIncidents => Set<ProviderStatusIncident>();
+
+    /// <summary>Provider processing fees per paid payment (migration 20260925200000).</summary>
+    public DbSet<PaymentProviderFee> PaymentProviderFees => Set<PaymentProviderFee>();
+
+    /// <summary>G12 operating expenses (migration 20260925180000, /admin/finance/expenses).</summary>
+    public DbSet<ExpenseCategory> ExpenseCategories => Set<ExpenseCategory>();
+    public DbSet<OperatingExpense> OperatingExpenses => Set<OperatingExpense>();
+    public DbSet<ExpenseBudget> ExpenseBudgets => Set<ExpenseBudget>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // G11: the sellable catalog beyond plans, in its own partial file.
+        ConfigurePackageCatalog(modelBuilder);
+
         // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
         // a re-scaffold cannot drop them.
         modelBuilder.Entity<Plan>(entity =>
@@ -84,13 +107,205 @@ public partial class BillingDbContext
             entity.Property(e => e.Notes).HasColumnName("notes");
         });
 
+        modelBuilder.Entity<ProviderUsageDaily>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("provider_usage_daily_pkey");
+            entity.ToTable("provider_usage_daily", "subscription");
+            entity.HasIndex(e => new { e.Provider, e.UsageDate, e.GroupKind, e.GroupId })
+                .IsUnique()
+                .HasDatabaseName("ux_provider_usage_daily_day_group");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.UsageDate).HasColumnName("usage_date");
+            entity.Property(e => e.GroupKind).HasColumnName("group_kind").HasMaxLength(20);
+            entity.Property(e => e.GroupId).HasColumnName("group_id").HasMaxLength(200);
+            entity.Property(e => e.GroupLabel).HasColumnName("group_label").HasMaxLength(300);
+            entity.Property(e => e.Credits).HasColumnName("credits");
+            entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        modelBuilder.Entity<ProviderCallStat>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("provider_call_stats_pkey");
+            entity.ToTable("provider_call_stats", "subscription");
+            entity.HasIndex(e => new { e.Provider, e.HourStart, e.Operation, e.Model })
+                .IsUnique()
+                .HasDatabaseName("ux_provider_call_stats_hour");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.HourStart).HasColumnName("hour_start");
+            entity.Property(e => e.Operation).HasColumnName("operation").HasMaxLength(80);
+            entity.Property(e => e.Model).HasColumnName("model").HasMaxLength(120);
+            entity.Property(e => e.Ok).HasColumnName("ok");
+            entity.Property(e => e.Quota).HasColumnName("quota");
+            entity.Property(e => e.RateLimited).HasColumnName("rate_limited");
+            entity.Property(e => e.Auth).HasColumnName("auth");
+            entity.Property(e => e.ClientError).HasColumnName("client_error");
+            entity.Property(e => e.ServerError).HasColumnName("server_error");
+            entity.Property(e => e.Timeout).HasColumnName("timeout");
+            entity.Property(e => e.NetworkError).HasColumnName("network_error");
+            entity.Property(e => e.Error).HasColumnName("error");
+            entity.Property(e => e.Declined).HasColumnName("declined");
+            entity.Property(e => e.LatencyCount).HasColumnName("latency_count");
+            entity.Property(e => e.LatencySumMs).HasColumnName("latency_sum_ms");
+            entity.Property(e => e.LatencyBuckets).HasColumnName("latency_buckets").HasColumnType("jsonb");
+            entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        modelBuilder.Entity<PaymentProviderFee>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("payment_provider_fees_pkey");
+            entity.ToTable("payment_provider_fees", "subscription");
+            entity.HasIndex(e => e.PaymentId).IsUnique().HasDatabaseName("ux_payment_provider_fees_payment");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.Status).HasColumnName("status").HasMaxLength(20);
+            entity.Property(e => e.BalanceTransactionId).HasColumnName("balance_transaction_id").HasMaxLength(255);
+            entity.Property(e => e.ChargeId).HasColumnName("charge_id").HasMaxLength(255);
+            entity.Property(e => e.Currency).HasColumnName("currency").HasMaxLength(3);
+            entity.Property(e => e.Amount).HasColumnName("amount").HasPrecision(18, 4);
+            entity.Property(e => e.Fee).HasColumnName("fee").HasPrecision(18, 4);
+            entity.Property(e => e.Net).HasColumnName("net").HasPrecision(18, 4);
+            entity.Property(e => e.ExchangeRate).HasColumnName("exchange_rate").HasPrecision(24, 10);
+            entity.Property(e => e.OccurredAt).HasColumnName("occurred_at");
+            entity.Property(e => e.Error).HasColumnName("error").HasMaxLength(500);
+            entity.Property(e => e.FetchedAt).HasColumnName("fetched_at");
+        });
+
+        modelBuilder.Entity<ProviderStatusIncident>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("provider_status_incidents_pkey");
+            entity.ToTable("provider_status_incidents", "subscription");
+            entity.HasIndex(e => new { e.Provider, e.ExternalId })
+                .IsUnique()
+                .HasDatabaseName("ux_provider_status_incidents_external");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(40);
+            entity.Property(e => e.ExternalId).HasColumnName("external_id").HasMaxLength(100);
+            entity.Property(e => e.Name).HasColumnName("name").HasMaxLength(500);
+            entity.Property(e => e.Impact).HasColumnName("impact").HasMaxLength(20);
+            entity.Property(e => e.Status).HasColumnName("status").HasMaxLength(40);
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.ResolvedAt).HasColumnName("resolved_at");
+            entity.Property(e => e.Url).HasColumnName("url").HasMaxLength(500);
+            entity.Property(e => e.SyncedAt).HasColumnName("synced_at");
+        });
+
+        // G12: operating expenses. Every column mapped by name — this context has no naming convention.
+        modelBuilder.Entity<ExpenseCategory>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("expense_categories_pkey");
+            entity.ToTable("expense_categories", "subscription");
+            entity.HasIndex(e => e.Slug).IsUnique().HasDatabaseName("ux_expense_categories_slug");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Slug).HasColumnName("slug").HasMaxLength(60);
+            entity.Property(e => e.Name).HasColumnName("name").HasMaxLength(120);
+            entity.Property(e => e.Description).HasColumnName("description").HasMaxLength(500);
+            entity.Property(e => e.Color).HasColumnName("color").HasMaxLength(20);
+            entity.Property(e => e.SortOrder).HasColumnName("sort_order");
+            entity.Property(e => e.IsActive).HasColumnName("is_active");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<OperatingExpense>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("operating_expenses_pkey");
+            entity.ToTable("operating_expenses", "subscription");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.ExpenseDate).HasColumnName("expense_date");
+            entity.Property(e => e.Vendor).HasColumnName("vendor").HasMaxLength(200);
+            entity.Property(e => e.CategoryId).HasColumnName("category_id");
+            entity.Property(e => e.Description).HasColumnName("description").HasMaxLength(2000);
+            entity.Property(e => e.Amount).HasColumnName("amount").HasPrecision(18, 2);
+            entity.Property(e => e.Currency).HasColumnName("currency").HasMaxLength(3);
+            entity.Property(e => e.PaymentMethod).HasColumnName("payment_method").HasMaxLength(40);
+            entity.Property(e => e.Status).HasColumnName("status").HasMaxLength(20);
+            entity.Property(e => e.PaidAt).HasColumnName("paid_at");
+            entity.Property(e => e.PaidBy).HasColumnName("paid_by").HasMaxLength(200);
+            entity.Property(e => e.Tags).HasColumnName("tags").HasColumnType("text[]");
+            entity.Property(e => e.Recurrence).HasColumnName("recurrence").HasMaxLength(20);
+            entity.Property(e => e.NextDueDate).HasColumnName("next_due_date");
+            entity.Property(e => e.RecurrenceEndDate).HasColumnName("recurrence_end_date");
+            entity.Property(e => e.RecurringSourceId).HasColumnName("recurring_source_id");
+            entity.Property(e => e.ReceiptStorageKey).HasColumnName("receipt_storage_key").HasMaxLength(400);
+            entity.Property(e => e.ReceiptFileName).HasColumnName("receipt_file_name").HasMaxLength(255);
+            entity.Property(e => e.ReceiptContentType).HasColumnName("receipt_content_type").HasMaxLength(120);
+            entity.Property(e => e.ReceiptSizeBytes).HasColumnName("receipt_size_bytes");
+            entity.Property(e => e.ImportBatchId).HasColumnName("import_batch_id");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Ignore(e => e.IsSeries);
+
+            entity.HasOne(e => e.Category)
+                .WithMany()
+                .HasForeignKey(e => e.CategoryId)
+                .HasConstraintName("operating_expenses_category_id_fkey");
+            entity.HasOne<OperatingExpense>()
+                .WithMany()
+                .HasForeignKey(e => e.RecurringSourceId)
+                .HasConstraintName("operating_expenses_recurring_source_id_fkey");
+        });
+
+        modelBuilder.Entity<ExpenseBudget>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("expense_budgets_pkey");
+            entity.ToTable("expense_budgets", "subscription");
+            entity.HasIndex(e => new { e.CategoryId, e.Month }).IsUnique().HasDatabaseName("ux_expense_budgets_category_month");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.CategoryId).HasColumnName("category_id");
+            entity.Property(e => e.Month).HasColumnName("month");
+            entity.Property(e => e.AmountVnd).HasColumnName("amount_vnd").HasPrecision(18, 2);
+            entity.Property(e => e.Note).HasColumnName("note").HasMaxLength(500);
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.HasOne<ExpenseCategory>()
+                .WithMany()
+                .HasForeignKey(e => e.CategoryId)
+                .HasConstraintName("expense_budgets_category_id_fkey");
+        });
+
+        modelBuilder.Entity<FxRate>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("fx_rates_pkey");
+            entity.ToTable("fx_rates", "subscription");
+            entity.HasIndex(e => new { e.BaseCurrency, e.QuoteCurrency, e.RateDate, e.Source })
+                .IsUnique()
+                .HasDatabaseName("ux_fx_rates_pair_day_source");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.BaseCurrency).HasColumnName("base_currency").HasMaxLength(3);
+            entity.Property(e => e.QuoteCurrency).HasColumnName("quote_currency").HasMaxLength(3);
+            entity.Property(e => e.RateDate).HasColumnName("rate_date");
+            entity.Property(e => e.Rate).HasColumnName("rate").HasPrecision(24, 10);
+            entity.Property(e => e.Source).HasColumnName("source").HasMaxLength(40);
+            entity.Property(e => e.FeeInclusiveRate).HasColumnName("fee_inclusive_rate").HasPrecision(24, 10);
+            entity.Property(e => e.SourceRef).HasColumnName("source_ref").HasMaxLength(200);
+            entity.Property(e => e.FetchedAt).HasColumnName("fetched_at");
+        });
+
         modelBuilder.Entity<BillingPricingConfig>(entity =>
         {
             entity.HasKey(e => e.Key).HasName("billing_pricing_config_pkey");
             entity.ToTable("billing_pricing_config", "subscription");
 
             entity.Property(e => e.Key).HasColumnName("key").HasMaxLength(80);
-            entity.Property(e => e.Value).HasColumnName("value").HasPrecision(18, 6);
+            // (24,10) since migration 20260918120000: USD per Cartesia credit is 0.0000392, which
+            // (18,6) rounded to 0.000039 — a 0.5% error on every measured dubbing cost.
+            entity.Property(e => e.Value).HasColumnName("value").HasPrecision(24, 10);
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
         });
 

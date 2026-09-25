@@ -47,19 +47,78 @@ public class AssistantConversationService : IAssistantConversationService
         return Result.Success(conversation.ToDetailDto());
     }
 
-    public async Task<Result<AssistantConversationDto>> CreateConversationAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
+    /// <summary>How many turns a handed-over conversation may start with. The worker only ever
+    /// needs the recent thread, and this is the one request that writes many rows at once.</summary>
+    public const int MaxSeedMessages = 40;
+
+    /// <summary>Per seeded turn. A WarpBot answer is a few paragraphs; a book is not a turn.</summary>
+    public const int MaxSeedMessageLength = 8000;
+
+    /// <summary>Matches the 60 characters SendMessageAsync titles a conversation with.</summary>
+    public const int MaxTitleLength = 60;
+
+    private static readonly HashSet<string> SeedRoles = new(StringComparer.Ordinal) { "user", "assistant" };
+
+    public async Task<Result<AssistantConversationDto>> CreateConversationAsync(
+        Guid userId, CreateAssistantConversationRequest request, CancellationToken ct = default)
     {
+        var seeds = request.SeedMessages ?? new List<AssistantSeedMessageDto>();
+        if (seeds.Count > MaxSeedMessages)
+            return Result.Failure<AssistantConversationDto>(
+                $"A conversation can start with at most {MaxSeedMessages} messages.", "VALIDATION_ERROR");
+
+        foreach (var seed in seeds)
+        {
+            // Refused rather than dropped: "system" or "tool" here is somebody trying to write the
+            // prompt, and quietly keeping the rest would hide that the request was not what it said.
+            if (seed is null || !SeedRoles.Contains(seed.Role ?? string.Empty))
+                return Result.Failure<AssistantConversationDto>(
+                    "A seeded message's role must be \"user\" or \"assistant\".", "VALIDATION_ERROR");
+            if ((seed.Content ?? string.Empty).Length > MaxSeedMessageLength)
+                return Result.Failure<AssistantConversationDto>(
+                    $"A seeded message must be {MaxSeedMessageLength} characters or fewer.", "VALIDATION_ERROR");
+        }
+
+        var now = DateTime.UtcNow;
+        var title = request.Title?.Trim();
         var conversation = new AssistantConversation
         {
             Id = Guid.NewGuid(),
-            WorkspaceId = workspaceId,
+            WorkspaceId = request.WorkspaceId,
             UserId = userId,
-            Title = "New chat",
-            CreatedAt = DateTime.UtcNow,
+            Title = string.IsNullOrEmpty(title)
+                ? "New chat"
+                : title.Length > MaxTitleLength ? title[..MaxTitleLength] : title,
+            CreatedAt = now,
             IsArchived = false,
         };
 
         await _unitOfWork.AssistantConversationRepository.AddAsync(conversation, ct);
+
+        // Blank turns carry nothing to the model and would render as empty bubbles, so they are
+        // skipped. What survives is stamped a millisecond apart, BEFORE now: history is read back
+        // ordered by CreatedAt, and the first question asked in the widget must sort after them.
+        var kept = seeds.Where(seed => !string.IsNullOrWhiteSpace(seed.Content)).ToList();
+        for (var index = 0; index < kept.Count; index++)
+        {
+            var seed = kept[index];
+            var stamp = now.AddMilliseconds(index - kept.Count);
+            await _unitOfWork.AssistantMessageRepository.AddAsync(new AssistantMessage
+            {
+                Id = Guid.NewGuid(),
+                ConversationId = conversation.Id,
+                WorkspaceId = conversation.WorkspaceId,
+                UserId = seed.Role == "user" ? userId : null,
+                Role = seed.Role,
+                Content = seed.Content.Trim(),
+                Status = "completed",
+                CreatedAt = stamp,
+                CompletedAt = stamp,
+            }, ct);
+        }
+
+        if (kept.Count > 0) conversation.LastMessageAt = now;
+
         await _unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success(conversation.ToDto());

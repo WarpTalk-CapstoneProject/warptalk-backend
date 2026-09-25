@@ -8,6 +8,8 @@ using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
+using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -40,6 +42,10 @@ public class PluginCatalogAdminServiceTests
     private readonly IPluginConfirmationTokenRepository _confirmationTokenRepository = Substitute.For<IPluginConfirmationTokenRepository>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
     private readonly IWorkspacePluginRepository _workspacePluginRepository = Substitute.For<IWorkspacePluginRepository>();
+    private readonly PluginWorkspaceFixture _world = new();
+    private readonly IAdminAuditRecorder _auditRecorder = Substitute.For<IAdminAuditRecorder>();
+    private readonly List<(string Action, Guid EntityId, IReadOnlyDictionary<string, string?>? Before, IReadOnlyDictionary<string, string?>? After, int SavesSoFar)> _recorded = [];
+    private int _saves;
 
     public PluginCatalogAdminServiceTests()
     {
@@ -49,9 +55,26 @@ public class PluginCatalogAdminServiceTests
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
         _unitOfWork.WorkspacePluginRepository.Returns(_workspacePluginRepository);
-        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, int>());
-        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            _saves++;
+            return 1;
+        });
+        _auditRecorder.RecordPluginActionAsync(
+                Arg.Any<string>(),
+                Arg.Any<Guid>(),
+                Arg.Any<Guid>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                // Which save the record came before is the point: it must precede the commit.
+                _recorded.Add((call.ArgAt<string>(0), call.ArgAt<Guid>(1),
+                    call.ArgAt<IReadOnlyDictionary<string, string?>?>(3),
+                    call.ArgAt<IReadOnlyDictionary<string, string?>?>(4), _saves));
+                return Result.Success();
+            });
 
         _credentialProtector.Protect(Arg.Any<string>()).Returns(call => "enc:" + call.Arg<string>());
         // Unprotect is wired to throw rather than return a value: if any code path under test ever
@@ -644,6 +667,60 @@ public class PluginCatalogAdminServiceTests
         Assert.Null(connection.AccessTokenExpiresAt);
     }
 
+    // ---- API-key auth ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task UpdateAsync_SwitchingToApiKey_DropsTheOAuthClient_AndEndsExistingConnections()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSource = PluginConstants.OAuthClientSource.Preregistered;
+        plugin.OAuthClientId = "client-1";
+        plugin.OAuthClientSecretEncrypted = "enc:secret";
+        StubLookup(plugin);
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            Provider = McpKey,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "enc:oauth-token",
+        };
+        _connectionRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([connection]);
+
+        var result = await CreateSut().UpdateAsync(
+            McpKey,
+            new UpdatePluginCatalogRequest { AuthMode = PluginConstants.AuthMode.ApiKey },
+            AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.OAuthClientSource.ApiKey, plugin.OAuthClientSource);
+        Assert.Null(plugin.OAuthClientId);
+        Assert.Null(plugin.OAuthClientSecretEncrypted);
+        // An OAuth token must not keep working against a row that now expects each user's key.
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+    }
+
+    [Fact]
+    public async Task SetOAuthClientAsync_RefusesAnApiKeyRow()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        StubLookup(plugin);
+
+        var result = await CreateSut().SetOAuthClientAsync(
+            McpKey,
+            new SetPluginOAuthClientRequest("client-1"),
+            AdminUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidCatalogUpdate, result.ErrorCode);
+        Assert.Null(plugin.OAuthClientId);
+    }
+
     [Fact]
     public async Task UpdateAsync_LeavesConnectionsAlone_WhenTheServerUrlIsResubmittedUnchanged()
     {
@@ -935,10 +1012,86 @@ public class PluginCatalogAdminServiceTests
     }
 
     // -----------------------------------------------------------------------------------------
+    // Marketplace rows only
+    // -----------------------------------------------------------------------------------------
+
+    /// <summary>Every action on this surface that finds its row by key.</summary>
+    public static TheoryData<string> ByKeyActions => new()
+    {
+        "get", "update", "set-oauth", "replace-tools", "rediscover", "retire", "hard-delete", "audits",
+    };
+
+    [Theory]
+    [MemberData(nameof(ByKeyActions))]
+    public async Task EveryByKeyAction_AnswersUnknownPlugin_ForAWorkspacesPrivatePlugin_AndTouchesNothing(string action)
+    {
+        // A private plugin is its workspace Owner's to edit and remove. The listing already left it
+        // out; before this, typing its key still let an admin retire it, repoint it (revoking every
+        // member's connection) or hard-delete it under a workspace that never asked.
+        var privateRow = McpPlugin();
+        privateRow.OwnerWorkspaceId = Guid.NewGuid();
+        StubLookup(privateRow);
+        StubAudits(1, Audit("remote_app_search", "success"));
+
+        var errorCode = await RunByKeyAsync(action);
+
+        Assert.Equal(PluginConstants.ErrorCodes.UnknownPlugin, errorCode);
+        Assert.True(privateRow.IsActive);
+        Assert.Equal("https://example.test/mcp", privateRow.McpServerUrl);
+        _pluginRepository.DidNotReceive().Update(Arg.Any<Plugin>());
+        _pluginRepository.DidNotReceive().Remove(Arg.Any<Plugin>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _auditRepository.DidNotReceive().ListForPluginAsync(
+            Arg.Any<Guid>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [MemberData(nameof(ByKeyActions))]
+    public async Task EveryByKeyAction_StillFindsAMarketplaceRow(string action)
+    {
+        // The control for the test above: the same calls against the same row with no owning
+        // workspace get past the lookup, so the 404 there is the filter and not a broken call.
+        StubLookup(McpPlugin());
+        StubAudits(1, Audit("remote_app_search", "success"));
+
+        var errorCode = await RunByKeyAsync(action);
+
+        Assert.NotEqual(PluginConstants.ErrorCodes.UnknownPlugin, errorCode);
+    }
+
+    /// <summary>Runs one by-key action against <see cref="McpKey"/> and returns its error code, or null.</summary>
+    private async Task<string?> RunByKeyAsync(string action)
+    {
+        var sut = CreateSut();
+        return action switch
+        {
+            "get" => (await sut.GetAsync(McpKey)).ErrorCode,
+            "update" => (await sut.UpdateAsync(McpKey, new UpdatePluginCatalogRequest(IsActive: false, McpServerUrl: "https://elsewhere.test/mcp"), AdminUserId)).ErrorCode,
+            "set-oauth" => (await sut.SetOAuthClientAsync(McpKey, new SetPluginOAuthClientRequest("client-abc"), AdminUserId)).ErrorCode,
+            "replace-tools" => (await sut.ReplaceToolsAsync(McpKey, new ReplacePluginToolsRequest([]), AdminUserId)).ErrorCode,
+            "rediscover" => (await sut.RediscoverAsync(McpKey, AdminUserId)).ErrorCode,
+            "retire" => (await sut.DeleteAsync(McpKey, hard: false, AdminUserId)).ErrorCode,
+            "hard-delete" => (await sut.DeleteAsync(McpKey, hard: true, AdminUserId)).ErrorCode,
+            "audits" => (await sut.ListAuditsAsync(McpKey, new PluginToolAuditQueryDto())).ErrorCode,
+            _ => throw new ArgumentOutOfRangeException(nameof(action), action, "Not a by-key action."),
+        };
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------------------------
 
-    private PluginCatalogAdminService CreateSut() => new(_unitOfWork, _credentialProtector);
+    private PluginCatalogAdminService CreateSut() => new(_unitOfWork, _credentialProtector, _auditRecorder, _world.Directory);
+
+    private void AuditLogIsDown() =>
+        _auditRecorder.RecordPluginActionAsync(
+                Arg.Any<string>(),
+                Arg.Any<Guid>(),
+                Arg.Any<Guid>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("The change was not made because the audit log could not be reached.", ErrorCodes.ServiceUnavailable));
 
     /// <summary>
     /// Serialises a payload exactly as the API would and asserts the secret is nowhere in it, in
@@ -953,14 +1106,15 @@ public class PluginCatalogAdminServiceTests
     }
 
     [Fact]
-    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsWorkspacesUsing()
+    public async Task ListAsync_LeavesOutWorkspacePrivatePlugins_AndCountsWorkspacesThatAddedIt()
     {
         var marketplace = WorkspacePluginGuardTests.Marketplace("linear");
         var privateRow = WorkspacePluginGuardTests.Marketplace("ws_crm_1a2b3c4d");
         privateRow.OwnerWorkspaceId = Guid.NewGuid();
         StubAllPlugins(marketplace, privateRow);
-        _workspacePluginRepository.CountWorkspacesByPluginAsync(Arg.Any<CancellationToken>())
-            .Returns(new Dictionary<Guid, int> { [marketplace.Id] = 6 });
+        WireWorld();
+        for (var i = 0; i < 6; i++) _world.AddToList(marketplace, _world.AddWorkspace($"W{i}"));
+        _world.AddWorkspace("Untouched");
 
         var result = await CreateSut().ListAsync();
 
@@ -969,12 +1123,195 @@ public class PluginCatalogAdminServiceTests
         Assert.Equal(6, row.WorkspaceCount);
     }
 
+    [Fact]
+    public async Task ListAsync_CountsWorkspacesWhereAMemberConnectedIt_EvenIfTheOwnerNeverAddedIt()
+    {
+        // The owner report, again: "no workspaces" on every row. #443 counted the Owner's list and
+        // carried-over tool calls - and almost no Owner has ever edited a list, while connections
+        // (what members actually do) carry a user, never a workspace, so they were never counted.
+        var linear = WorkspacePluginGuardTests.Marketplace("linear");
+        var notion = WorkspacePluginGuardTests.Marketplace("notion");
+        StubAllPlugins(linear, notion);
+        WireWorld();
+        var a = _world.AddWorkspace("A");
+        var b = _world.AddWorkspace("B");
+        _world.AddWorkspace("C");
+        _world.Connect(linear, a);
+        _world.Connect(linear, a);
+        _world.Connect(linear, b);
+        _world.Connect(notion, b);
+
+        var rows = (await CreateSut().ListAsync()).Value!;
+
+        Assert.Equal(2, rows.Single(r => r.PluginKey == "linear").WorkspaceCount);
+        Assert.Equal(1, rows.Single(r => r.PluginKey == "notion").WorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_DoesNotCountAWorkspaceThePlatformTurnedThePluginOffFor()
+    {
+        var linear = WorkspacePluginGuardTests.Marketplace("linear");
+        StubAllPlugins(linear);
+        WireWorld();
+        var a = _world.AddWorkspace("A");
+        var b = _world.AddWorkspace("B");
+        _world.Connect(linear, a);
+        _world.AddToList(linear, b);
+        _world.Override(linear, b, PluginWorkspaceAccessConstants.OverrideState.Disabled, "security review");
+
+        var row = Assert.Single((await CreateSut().ListAsync()).Value!);
+
+        Assert.Equal(1, row.WorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_WorkspaceCountIsUnknown_NotZero_WhenTheWorkspaceServiceIsDown()
+    {
+        var linear = WorkspacePluginGuardTests.Marketplace("linear");
+        StubAllPlugins(linear);
+        WireWorld();
+        _world.DirectoryDown = true;
+
+        var row = Assert.Single((await CreateSut().ListAsync()).Value!);
+
+        Assert.Null(row.WorkspaceCount);
+    }
+
+    [Fact]
+    public async Task ListAsync_ReportsEachRowsDefaultAndPlanRule()
+    {
+        var available = WorkspacePluginGuardTests.Marketplace("linear");
+        var optIn = WorkspacePluginGuardTests.Marketplace("notion");
+        optIn.WorkspaceDefault = PluginWorkspaceAccessConstants.Default.OptIn;
+        optIn.AllowedPlanSlugsJson = "[\"business\",\"enterprise\"]";
+        var retired = WorkspacePluginGuardTests.Marketplace("figma");
+        retired.IsActive = false;
+        StubAllPlugins(available, optIn, retired);
+        WireWorld();
+
+        var rows = (await CreateSut().ListAsync()).Value!;
+
+        Assert.Equal("available", rows.Single(r => r.PluginKey == "linear").WorkspaceDefault);
+        Assert.Null(rows.Single(r => r.PluginKey == "linear").AllowedPlans);
+        Assert.Equal("opt_in", rows.Single(r => r.PluginKey == "notion").WorkspaceDefault);
+        Assert.Equal(["business", "enterprise"], rows.Single(r => r.PluginKey == "notion").AllowedPlans);
+        Assert.Equal("retired", rows.Single(r => r.PluginKey == "figma").WorkspaceDefault);
+    }
+
+    private void WireWorld() =>
+        _world.Wire(_unitOfWork, _workspacePluginRepository, _auditRepository, _installationRepository, _connectionRepository);
+
+    [Fact]
+    public async Task ListAsync_SendsTheRowsAvatar_SoTheAdminPageDrawsTheSameGlyph()
+    {
+        var plugin = McpPlugin();
+        plugin.AvatarUrl = "https://example.com/logo.svg";
+        StubAllPlugins(plugin);
+
+        var row = Assert.Single((await CreateSut().ListAsync()).Value!);
+
+        Assert.Equal("https://example.com/logo.svg", row.AvatarUrl);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The platform audit log
+    // -----------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task UpdateAsync_IsRecordedInTheAuditLog_BeforeItIsSaved()
+    {
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+
+        var result = await CreateSut().UpdateAsync(McpKey, new UpdatePluginCatalogRequest(Label: "Renamed"), AdminUserId);
+
+        Assert.True(result.IsSuccess);
+        var record = Assert.Single(_recorded);
+        Assert.Equal(AdminAuditPluginActions.Updated, record.Action);
+        Assert.Equal(McpPluginId, record.EntityId);
+        Assert.Equal(0, record.SavesSoFar);
+        Assert.Equal("Renamed", record.After!["label"]);
+        Assert.NotEqual("Renamed", record.Before!["label"]);
+        Assert.Equal(1, _saves);
+    }
+
+    [Theory]
+    [InlineData(true, false, AdminAuditPluginActions.Retired)]
+    [InlineData(false, true, AdminAuditPluginActions.Reinstated)]
+    public async Task UpdateAsync_NamesRetiringAndReinstating(bool wasActive, bool isActive, string action)
+    {
+        var plugin = McpPlugin();
+        plugin.IsActive = wasActive;
+        StubLookup(plugin);
+
+        await CreateSut().UpdateAsync(McpKey, new UpdatePluginCatalogRequest(IsActive: isActive), AdminUserId);
+
+        Assert.Equal(action, Assert.Single(_recorded).Action);
+    }
+
+    [Fact]
+    public async Task AnAdminChange_TheAuditLogCannotTake_IsNotMade()
+    {
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+        AuditLogIsDown();
+
+        var update = await CreateSut().UpdateAsync(McpKey, new UpdatePluginCatalogRequest(IsActive: false), AdminUserId);
+        var retire = await CreateSut().DeleteAsync(McpKey, hard: false, AdminUserId);
+        var delete = await CreateSut().DeleteAsync(McpKey, hard: true, AdminUserId);
+
+        Assert.Equal(ErrorCodes.ServiceUnavailable, update.ErrorCode);
+        Assert.Equal(ErrorCodes.ServiceUnavailable, retire.ErrorCode);
+        Assert.Equal(ErrorCodes.ServiceUnavailable, delete.ErrorCode);
+        Assert.Equal(0, _saves);
+        _pluginRepository.DidNotReceive().Remove(Arg.Any<Plugin>());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RecordsRetireAndHardDeleteUnderTheirOwnVerbs()
+    {
+        var plugin = McpPlugin();
+        StubLookup(plugin);
+
+        await CreateSut().DeleteAsync(McpKey, hard: false, AdminUserId);
+        await CreateSut().DeleteAsync(McpKey, hard: true, AdminUserId);
+
+        Assert.Equal(
+            [AdminAuditPluginActions.Retired, AdminAuditPluginActions.Deleted],
+            _recorded.Select(r => r.Action));
+        Assert.Null(_recorded[1].After);
+    }
+
+    [Fact]
+    public async Task TheAuditRecord_NeverCarriesTheClientSecret()
+    {
+        var plugin = McpPlugin();
+        plugin.OAuthClientSecretEncrypted = SecretCiphertext;
+        StubLookup(plugin);
+
+        await CreateSut().SetOAuthClientAsync(
+            McpKey,
+            new SetPluginOAuthClientRequest("client-abc", SecretPlaintext, null, null, null),
+            AdminUserId);
+
+        var record = Assert.Single(_recorded);
+        Assert.Equal(AdminAuditPluginActions.OAuthClientSet, record.Action);
+        AssertNoSecretIn(new { record.Before, record.After });
+        Assert.Equal("true", record.After!["has_client_secret"]);
+    }
+
+    // Applies the predicate it is handed, as StubAllPlugins does. The lookup's filter IS the
+    // marketplace-only rule, so a stub that ignored it would hand the service a private row the
+    // real query never could, and every test of that rule would pass against a service without it.
     private void StubLookup(Plugin? plugin) =>
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
-            .Returns(plugin);
+            .Returns(call => plugin is not null
+                             && call.Arg<Expression<Func<Plugin, bool>>>().Compile()(plugin)
+                ? plugin
+                : null);
 
     // The listing filters in the query (marketplace rows only), so the stub applies the predicate
     // it is handed rather than ignoring it.

@@ -193,7 +193,8 @@ public sealed class IdleRoomMonitoringWorkerTests
             _worker = new IdleRoomMonitoringWorker(
                 services.BuildServiceProvider(),
                 Redis.Multiplexer,
-                NullLogger<IdleRoomMonitoringWorker>.Instance);
+                NullLogger<IdleRoomMonitoringWorker>.Instance,
+                new WarpTalk.Shared.Coordination.DistributedLockProvider(new WarpTalk.Shared.Coordination.InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
         }
 
         public Task TickAsync() => _worker.CheckAndEndIdleRoomsAsync(CancellationToken.None);

@@ -32,6 +32,57 @@ public sealed class RecordingLifecycleEventProcessorTests
             NullLogger<RecordingLifecycleEventProcessor>.Instance);
     }
 
+    // ---- WT-826: auto-share counts as the release -------------------------------------------
+
+    /// <summary>
+    /// A recording LiveKit finishes uploading after the room ended — and after that room shared
+    /// its record automatically — must not sit behind a hold the host already released by leaving
+    /// auto-share on. The room's end released every recording row that existed then; this is the
+    /// one that did not exist yet.
+    /// </summary>
+    [Fact]
+    public async Task Completed_AfterTheRoomAutoSharedItsRecord_IsNotHeld()
+    {
+        GivenRoom("ENDED", "{\"artifact_access\":\"ALL_PARTICIPANTS\",\"auto_share_record\":true}");
+
+        await _sut.ProcessAsync(Completed());
+
+        Assert.False(Assert.Single(_store.Rows).ConsentRequired);
+    }
+
+    /// <summary>
+    /// A room that ended before WT-826 carries no toggle, and nothing published it. Its recordings
+    /// keep waiting for the host exactly as they always did — no retroactive release.
+    /// </summary>
+    [Fact]
+    public async Task Completed_ForARoomThatEndedBeforeAutoShare_IsStillHeld()
+    {
+        GivenRoom("ENDED", "{\"artifact_access\":\"HOST_ONLY\"}");
+
+        await _sut.ProcessAsync(Completed());
+
+        Assert.True(Assert.Single(_store.Rows).ConsentRequired);
+    }
+
+    /// <summary>A room still running has not been published yet, whatever its toggle says.</summary>
+    [Fact]
+    public async Task Started_WhileTheMeetingIsStillRunning_IsHeld()
+    {
+        GivenRoom("IN_PROGRESS", "{\"artifact_access\":\"ALL_PARTICIPANTS\",\"auto_share_record\":true}");
+
+        await _sut.ProcessAsync(Started());
+
+        Assert.True(Assert.Single(_store.Rows).ConsentRequired);
+    }
+
+    private void GivenRoom(string status, string settings)
+    {
+        var rooms = new Mock<ITranslationRoomRepository>();
+        rooms.Setup(repo => repo.GetByIdAsync(RoomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoom { Id = RoomId, Status = status, Settings = settings });
+        _store.UnitOfWork.SetupGet(work => work.TranslationRoomRepository).Returns(rooms.Object);
+    }
+
     // ---- started ---------------------------------------------------------------------------
 
     [Fact]
@@ -213,6 +264,58 @@ public sealed class RecordingLifecycleEventProcessorTests
         Assert.Equal("FAILED", row.Status);
         Assert.Equal(failed.OccurredAt, row.UpdatedAt);
         Assert.Equal(StartedAt, row.RecordingStartedAt);
+    }
+
+    /// <summary>
+    /// WT-824: the reason is kept on the row. The only two recordings production ever made both
+    /// failed, LiveKit's egress runs in LiveKit Cloud where our logs cannot see it, and the reason
+    /// lived only in a meeting-service log line that the next deploy deleted. A FAILED row with no
+    /// reason is a dead end for the host and for whoever triages it.
+    /// </summary>
+    [Fact]
+    public async Task Failed_KeepsTheReasonAndLiveKitsOwnStatusAndError()
+    {
+        await _sut.ProcessAsync(Failed());
+
+        var row = Assert.Single(_store.Rows);
+        Assert.NotNull(row.FailureReason);
+        Assert.Contains("The recording stopped unexpectedly.", row.FailureReason);
+        Assert.Contains("EGRESS_FAILED", row.FailureReason);
+        Assert.Contains("upload to", row.FailureReason);
+        // A storage endpoint is operator detail, and this row is readable by participants when
+        // the host shares the meeting's outputs.
+        Assert.DoesNotContain("https://bucket.example", row.FailureReason);
+    }
+
+    [Fact]
+    public async Task Failed_OnAProcessingRow_KeepsTheReason()
+    {
+        await _sut.ProcessAsync(Started(occurredAt: StartedAt));
+        await _sut.ProcessAsync(Failed(occurredAt: StartedAt.AddMinutes(4)));
+
+        var row = Assert.Single(_store.Rows);
+        Assert.Equal("FAILED", row.Status);
+        Assert.Contains("EGRESS_FAILED", row.FailureReason);
+    }
+
+    [Fact]
+    public async Task Completed_AfterFailed_ClearsTheReason()
+    {
+        await _sut.ProcessAsync(Failed());
+        await _sut.ProcessAsync(Completed());
+
+        var row = Assert.Single(_store.Rows);
+        Assert.Equal("COMPLETED", row.Status);
+        Assert.Null(row.FailureReason);
+    }
+
+    [Fact]
+    public void FailureReason_IsBounded()
+    {
+        var reason = RecordingLifecycleEventProcessor.DescribeFailure(
+            "The recording failed.", "EGRESS_FAILED", new string('x', 5000));
+
+        Assert.True(reason.Length <= RecordingLifecycleEventProcessor.FailureReasonMaxLength);
     }
 
     [Fact]

@@ -8,6 +8,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -40,27 +41,11 @@ public class CreditsController : ControllerBase
         return this.ToActionResult(result);
     }
 
-    /// <summary>
-    /// Manual credit adjustment, platform admin only. The service method existed, unit-tested,
-    /// for weeks with no route in front of it — the portal's Adjust Credit button posted here and
-    /// 404'd. The actor comes from the token, never the body, because the adjustment is written
-    /// into the audit trail under their id.
-    /// </summary>
-    [HttpPost("workspace/{workspaceId}/adjust")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<CreditTransactionDto>> AdjustWorkspaceCredits(
-        Guid workspaceId,
-        [FromBody] AdjustCreditsRequest request,
-        CancellationToken cancellationToken)
-    {
-        var adminUserId = User.GetUserId();
-        if (adminUserId == null)
-            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
-
-        var result = await _creditService.AdjustWorkspaceCreditsAsync(
-            workspaceId, request, adminUserId.Value, cancellationToken);
-        return this.ToActionResult(result);
-    }
+    // Manual credit adjustment moved to POST ~/api/v1/admin/billing/workspaces/{id}/credits/adjust
+    // (AdminWorkspaceBillingController): system-admin POLICY rather than Roles = "Admin, admin"
+    // (which admits the global Admin row), a bounded amount, and an entry in the platform audit log
+    // recorded before the adjustment is saved. This route did none of the three, so it is gone
+    // rather than kept as a second, unaudited door to the same balance.
 
     [HttpGet("workspace/{workspaceId}/history")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
@@ -90,8 +75,8 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("history/global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
+    [RequirePermission(AdminPermissions.BillingRead)]
+    public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] GlobalCreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
         return this.ToActionResult(result);

@@ -35,9 +35,13 @@ builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.App
 builder.Services.AddScoped<IWorkspaceEntitlementService, WarpTalk.WorkspaceService.Application.Services.WorkspaceEntitlementService>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
+// The admin workspace page's actions: transfer ownership, notice to the owner, notes, timeline, export.
+builder.Services.AddScoped<IAdminWorkspaceActionService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceActionService>();
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
 builder.Services.AddScoped<IWorkspaceAuditLogService, WarpTalk.WorkspaceService.Application.Services.WorkspaceAuditLogService>();
 builder.Services.AddScoped<IAdminPlatformHealthService, WarpTalk.WorkspaceService.Application.Services.AdminPlatformHealthService>();
+// G12 pending-work inbox.
+builder.Services.AddScoped<WarpTalk.WorkspaceService.Application.Services.IAdminInboxService, WarpTalk.WorkspaceService.Application.Services.AdminInboxService>();
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
 // WT-335: backs the presence query's membership intersection in the Gateway.
 builder.Services.AddScoped<IWorkspaceCoMembershipService, WarpTalk.WorkspaceService.Application.Services.WorkspaceCoMembershipService>();
@@ -65,7 +69,7 @@ builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
 // --- Authentication & Framework Services ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 // WT-431 (Linear): workspace was the one service in the mesh with no notification client, so a
 // member whose role was changed learned about it by reloading the page. Same registration shape
@@ -78,6 +82,8 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         "http://localhost:50054");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The invitation and join-approved emails read their admin-edited template through this client.
+WarpTalk.Shared.Email.EmailTemplateServiceCollectionExtensions.AddWarpTalkEmailTemplates(builder.Services);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 

@@ -10,6 +10,7 @@ using Testcontainers.PostgreSql;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.TranslationRoomService.Tests.Integration;
 
@@ -30,6 +31,15 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
     /// </summary>
     protected IServiceScope CreateScope() => _factory.Services.CreateScope();
 
+    /// <summary>
+    /// Last word on the host's services, for a suite that needs one more collaborator replaced —
+    /// e.g. the audit recorder, whose real implementation dials a workspace service this harness
+    /// does not run.
+    /// </summary>
+    protected virtual void ConfigureTestServices(IServiceCollection services)
+    {
+    }
+
     public async Task InitializeAsync()
     {
         await _dbContainer.StartAsync();
@@ -42,6 +52,10 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     "test-only-internal-grpc-secret-32-characters");
                 builder.ConfigureTestServices(services =>
                 {
+                    // G10: admin endpoints ask the auth service who is staff; here the token's
+                    // "admin" hint stands in for its answer (Super Admin), as before G10.
+                    services.UseTokenHintAsStaffAccessForTests();
+
                     // Remove existing DbContext registration
                     var descriptor = services.SingleOrDefault(
                         d => d.ServiceType == typeof(DbContextOptions<TranslationRoomDbContext>));
@@ -112,6 +126,8 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                             .RequireAuthenticatedUser()
                             .Build();
                     });
+
+                    ConfigureTestServices(services);
                 });
             });
 

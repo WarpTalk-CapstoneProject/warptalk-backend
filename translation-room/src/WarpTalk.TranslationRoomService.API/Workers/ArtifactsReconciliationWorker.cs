@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using StackExchange.Redis;
 using System;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Helpers;
@@ -56,6 +58,7 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 public class ArtifactsReconciliationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly IArtifactsFinalizationQueue _queue;
     private readonly IConnectionMultiplexer _redis;
     private readonly ArtifactFinalizationSettings _settings;
@@ -85,14 +88,24 @@ public class ArtifactsReconciliationWorker : BackgroundService
         IArtifactsFinalizationQueue queue,
         IConnectionMultiplexer redis,
         IOptions<ArtifactFinalizationSettings> options,
-        ILogger<ArtifactsReconciliationWorker> logger)
+        ILogger<ArtifactsReconciliationWorker> logger,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _queue = queue;
         _redis = redis;
         _settings = options.Value;
         _logger = logger;
     }
+
+    /// <summary>
+    /// One replica per tick. The retry counter is shared in Redis, but every replica that read a
+    /// count under the budget queued the room into its OWN in-memory finalization channel, so N
+    /// replicas finalized the same room N times: duplicate transcript/summary artifacts (the index
+    /// is not unique) and a MEETING_SUMMARY_READY notification per replica.
+    /// </summary>
+    public const string LockResource = "translation-room:artifacts-reconciliation";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -105,8 +118,16 @@ public class ArtifactsReconciliationWorker : BackgroundService
         {
             try
             {
-                await SweepAsync(stoppingToken);
-                await RecoverLateSummariesAsync(stoppingToken);
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(2),
+                    async ct =>
+                    {
+                        await SweepAsync(ct);
+                        await RecoverLateSummariesAsync(ct);
+                    },
+                    _logger,
+                    stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -217,11 +238,17 @@ public class ArtifactsReconciliationWorker : BackgroundService
     /// path where it found content, so a surviving key means precisely one thing: the summary
     /// was written after the artifact was. No content parsing, no marker string to drift.
     ///
+    /// WT-701 narrowed "found content" to "found structured_json": the finalizer now also keeps
+    /// the key when it saved the markdown fallback, so the structured version can upgrade it here.
+    /// That is why the artifact itself is checked too (<see cref="IsUpgradableSummary"/>) — only a
+    /// placeholder or fallback is replaced, never a structured summary.
+    ///
     /// UPDATE, NEVER ADD. The sweep above re-queues finalization, which calls
     /// `artifactRepo.AddAsync` — running it again here would give the meeting two summary
     /// artifacts rather than one correct one, and the page picks whichever it sees first.
     /// </summary>
-    private async Task RecoverLateSummariesAsync(CancellationToken ct)
+    /// <summary>One late-summary pass. Internal so the tests can drive it directly — see InternalsVisibleTo.</summary>
+    internal async Task RecoverLateSummariesAsync(CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -269,6 +296,16 @@ public class ArtifactsReconciliationWorker : BackgroundService
                 continue;
             }
 
+            if (!IsUpgradableSummary(artifact.Content))
+            {
+                // WT-701. The finalizer now keeps the key when it saved only the markdown fallback,
+                // so a surviving key no longer proves the artifact is the placeholder. An artifact
+                // that already carries a templateKey is a structured summary — the finalizer's own,
+                // or a host's rewrite — and overwriting it with a stale hash would undo that.
+                await db.KeyDeleteAsync(summaryKey);
+                continue;
+            }
+
             var entries = await db.HashGetAllAsync(summaryKey);
             string? Field(string name) =>
                 entries.FirstOrDefault(e => e.Name == name) is { Value.HasValue: true } hit
@@ -289,7 +326,17 @@ public class ArtifactsReconciliationWorker : BackgroundService
                 continue;
             }
 
-            artifact.Content = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
+            var rebuilt = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
+            var decision = DecideLateSummary(artifact.Content, rebuilt, structuredJson);
+
+            if (decision == LateSummaryDecision.Wait)
+            {
+                // Nothing to add, and the one thing still worth waiting for has not arrived: see
+                // DecideLateSummary. Neither rewritten nor deleted.
+                continue;
+            }
+
+            artifact.Content = rebuilt;
 
             // WT-432. A recovered summary and a first-try summary are the same artifact seen at
             // two different times — the reason SummaryContentBuilder was extracted at all — so the
@@ -304,12 +351,80 @@ public class ArtifactsReconciliationWorker : BackgroundService
 
             // Only after the update is committed. Deleting first would lose the summary if the
             // save then failed — the same ordering ArtifactsFinalizer settled on.
-            await db.KeyDeleteAsync(summaryKey);
+            //
+            // And only once the STRUCTURED summary has been saved. A rewrite from `content` alone
+            // is an improvement worth keeping (a placeholder becomes the markdown fallback), but
+            // the key is the only place structured_json can still land; deleting it there is how
+            // the fallback became permanent.
+            if (decision == LateSummaryDecision.UpgradeAndRelease)
+            {
+                await db.KeyDeleteAsync(summaryKey);
+            }
 
             recovered++;
             _logger.LogInformation(
                 "Recovered a late AI summary for room {RoomId} and updated its existing artifact.",
                 room.Id);
+        }
+    }
+
+    internal enum LateSummaryDecision
+    {
+        /// <summary>Leave the artifact and the key exactly as they are.</summary>
+        Wait,
+
+        /// <summary>Save the rebuilt content, but keep the key: structured_json may still come.</summary>
+        UpgradeAndKeepWaiting,
+
+        /// <summary>Save the rebuilt content and delete the key: the structured summary is in.</summary>
+        UpgradeAndRelease,
+    }
+
+    /// <summary>
+    /// What to do with a replaceable summary artifact given what the Redis hash holds now.
+    ///
+    /// THE REVIEW FINDING ON WT-701 (#423). The finalizer saves the markdown fallback and keeps
+    /// <c>meeting:{id}:summary</c> precisely so the structured summary can land later. But a hash
+    /// holding only <c>content</c> passes <see cref="MeetingSummaryHash.HasAnything"/>, so the next
+    /// sweep rebuilt the very fallback that was already stored, saved it again and DELETED the
+    /// key — before ai_assistant_worker wrote structured_json. The upgrade the finalizer kept the
+    /// key for could then never happen.
+    ///
+    /// So: structured_json present → upgrade and release. Absent → rewrite only when that
+    /// actually changes the artifact (a placeholder becoming the fallback), and never release.
+    /// Absent and nothing would change → wait.
+    /// </summary>
+    internal static LateSummaryDecision DecideLateSummary(string? storedContent, string rebuiltContent, string? structuredJson)
+    {
+        if (!string.IsNullOrWhiteSpace(structuredJson)) return LateSummaryDecision.UpgradeAndRelease;
+
+        return string.Equals(storedContent, rebuiltContent, StringComparison.Ordinal)
+            ? LateSummaryDecision.Wait
+            : LateSummaryDecision.UpgradeAndKeepWaiting;
+    }
+
+    /// <summary>
+    /// WT-701. Whether a stored summary is one the late-summary recovery may replace: the
+    /// insufficient-data placeholder, or the markdown fallback written when structured_json missed
+    /// the finalizer's window. Both are built by SummaryContentBuilder without a
+    /// <c>templateKey</c>; every structured summary ai_assistant_worker produces carries one.
+    /// Content that does not parse is treated as replaceable — there is nothing worth keeping.
+    /// </summary>
+    internal static bool IsUpgradableSummary(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return true;
+
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            return document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("templateKey", out var templateKey)
+                || templateKey.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(templateKey.GetString());
+        }
+        catch (JsonException)
+        {
+            return true;
         }
     }
 }

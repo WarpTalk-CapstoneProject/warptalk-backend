@@ -52,6 +52,24 @@ public class MeetingChatService : IMeetingChatService
         if (room.CreatedBy != userId && !isParticipant)
             return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Not a participant.", "FORBIDDEN");
 
+        // WT-699 / TC2504: "ever joined" is not "may still read". A participant row survives a
+        // kick — KickParticipantAsync only deactivates it — so the check above let a removed
+        // person keep polling the room's chat for as long as they liked, including everything
+        // said about them after they were thrown out. The kick (and a lobby reject) is recorded
+        // here as a REVOKED session grant, the same record the join path refuses on, so it is
+        // the one to ask. Somebody who merely LEFT keeps their read access: leaving is not a
+        // sanction, and the room's own wrap-up page reads this history.
+        if (room.CreatedBy != userId
+            && await _unitOfWork.RtcSessionRevocationRepository.AnyAsync(
+                r => r.MeetingRoomId == room.Id
+                    && r.InviteeUserId == userId
+                    && r.Status == MeetingChatConstants.RevokedSessionStatus,
+                ct))
+        {
+            return Result.Failure<IEnumerable<MeetingChatMessageDto>>(
+                "You were removed from this meeting and can no longer read its chat.", "FORBIDDEN");
+        }
+
         var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == room.Id, ct: ct);
 
         var dtos = messages.Where(m => !m.IsHidden || room.CreatedBy == userId)

@@ -289,6 +289,28 @@ public sealed class AdminUserDirectoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Created_and_last_login_windows_and_never_signed_in_run_in_sql()
+    {
+        // Seeded created_at: Ada +1d, Grace +2d, Pending +3d, Gone +4d (Deleted +5d is excluded
+        // by default). Only Ada has a last login (+9d).
+        var (created, createdTotal) = await _repository.GetDirectoryAsync(
+            new AdminUserDirectoryFilter(Status: "all", CreatedFrom: Anchor.AddDays(2), CreatedTo: Anchor.AddDays(4)),
+            1, 20);
+        Assert.Equal(2, createdTotal);
+        Assert.Equal(new[] { _unverifiedId, _lockedId }, created.Select(u => u.Id));
+
+        var (signedIn, _) = await _repository.GetDirectoryAsync(
+            new AdminUserDirectoryFilter(Status: "all", LastLoginFrom: Anchor.AddDays(9), LastLoginTo: Anchor.AddDays(10)),
+            1, 20);
+        Assert.Equal(_activeId, Assert.Single(signedIn).Id);
+
+        var (never, neverTotal) = await _repository.GetDirectoryAsync(
+            new AdminUserDirectoryFilter(Status: "all", NeverSignedIn: true), 1, 20);
+        Assert.Equal(3, neverTotal);
+        Assert.DoesNotContain(never, u => u.Id == _activeId);
+    }
+
+    [Fact]
     public async Task Paging_reports_the_filtered_total_not_the_page_size()
     {
         var (items, total) = await _repository.GetDirectoryAsync(Filter(), 1, 2);

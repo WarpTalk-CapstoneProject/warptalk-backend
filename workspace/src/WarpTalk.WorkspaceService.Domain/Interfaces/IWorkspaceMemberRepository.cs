@@ -9,7 +9,24 @@ namespace WarpTalk.WorkspaceService.Domain.Interfaces;
 public interface IWorkspaceMemberRepository : IGenericRepository<WorkspaceMember>
 {
     Task<List<WorkspaceMember>> GetActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The workspaces this person is an active member of, excluding deleted workspaces — a
+    /// deleted workspace keeps its membership rows, and they must not count.
+    /// </summary>
+    Task<List<WorkspaceMember>> GetActiveMembershipsForUserAsync(Guid userId, CancellationToken ct = default);
     Task<int> CountActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>Active member counts for every workspace that has any, in one grouped query.</summary>
+    Task<Dictionary<Guid, int>> CountActiveMembersPerWorkspaceAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// (user, workspace) for every ACTIVE membership of the given users in a workspace that is not
+    /// deleted - the same rule as <see cref="GetActiveWorkspaceIdsForUserAsync"/>, for a set of users.
+    /// </summary>
+    Task<List<(Guid UserId, Guid WorkspaceId)>> GetActiveMembershipsForUsersAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken ct = default);
     Task<int> CountActiveOwnersAsync(Guid workspaceId, Guid ownerRoleId, CancellationToken ct = default);
 
     /// <summary>

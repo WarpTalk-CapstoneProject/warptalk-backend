@@ -20,6 +20,7 @@ using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using Xunit;
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.IdentityModel.Tokens;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.WorkspaceService.Tests.Integration;
 
@@ -47,6 +48,10 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     "test-only-internal-grpc-secret-32-characters");
                 builder.ConfigureTestServices(services =>
                 {
+                    // G10: admin endpoints ask the auth service who is staff; here the token's
+                    // "admin" hint stands in for its answer (Super Admin), as before G10.
+                    services.UseTokenHintAsStaffAccessForTests();
+
                     // Do not use the Windows EventLog provider in the disposable
                     // test host; MassTransit's shutdown can log after that provider
                     // has already been disposed on Windows.

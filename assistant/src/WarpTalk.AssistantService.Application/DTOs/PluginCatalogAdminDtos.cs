@@ -23,7 +23,12 @@ public record CreateMcpPluginRequest(
     string McpServerUrl,
     string? AvatarUrl = null,
     IReadOnlyList<string>? RequiredScopes = null,
-    CreateMcpPluginOAuthRequest? OAuth = null);
+    CreateMcpPluginOAuthRequest? OAuth = null,
+    /// <summary>
+    /// <c>oauth</c> (the default) or <c>api_key</c>, where each user pastes their own key. An
+    /// <c>api_key</c> row cannot also carry <see cref="OAuth"/>.
+    /// </summary>
+    string? AuthMode = null);
 
 /// <summary>
 /// Pre-registered client credentials, for a server that supports neither Client ID Metadata
@@ -61,11 +66,16 @@ public record CreateMcpPluginOAuthRequest(
 /// <paramref name="HasClientId"/> and <paramref name="HasClientSecret"/> are booleans on purpose.
 /// An operator checking whether a row is credentialed needs a yes/no, and a yes/no is the largest
 /// answer that cannot leak a secret into a log, a screenshot or a browser cache.
+/// <para>
+/// <paramref name="AvatarUrl"/> is here so the listing draws the same glyph the member and Owner
+/// pages draw; a null falls back to the web's bundled brand mark for the plugin key.
+/// </para>
 /// </remarks>
 public record PluginCatalogAdminListItemDto(
     string PluginKey,
     string Label,
     string Description,
+    string? AvatarUrl,
     string Kind,
     string Provider,
     bool IsActive,
@@ -76,12 +86,21 @@ public record PluginCatalogAdminListItemDto(
     bool HasClientId,
     bool HasClientSecret,
     int ToolCount,
+    /// <summary>
+    /// Users who have the plugin installed now. A row a user removed (status <c>disabled</c>) is not
+    /// an install and is not counted.
+    /// </summary>
     int InstallationCount,
     /// <summary>
-    /// How many workspaces have added the plugin to their list. Counts explicit lists only: a
-    /// workspace still on the pre-marketplace "every plugin" default has no list to be counted in.
+    /// "Workspaces using it": workspaces the platform lets have the plugin AND that have it - on the
+    /// Owner's list (or carried over), or connected by at least one active member. Null when the
+    /// workspace service could not be reached, rather than a zero that means "unknown".
     /// </summary>
-    int WorkspaceCount = 0);
+    int? WorkspaceCount = null,
+    /// <summary><c>available</c>, <c>opt_in</c> or <c>retired</c>.</summary>
+    string WorkspaceDefault = "available",
+    /// <summary>The plan rule; null means every plan.</summary>
+    IReadOnlyList<string>? AllowedPlans = null);
 
 /// <summary>
 /// One catalog row in full, with the tool manifest that <c>PUT .../tools</c> replaces.
@@ -128,7 +147,11 @@ public record PluginCatalogAdminDetailDto(
     int ConnectionCount,
     Guid? UpdatedBy,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    /// <summary><c>available</c>, <c>opt_in</c> or <c>retired</c>.</summary>
+    string WorkspaceDefault = "available",
+    /// <summary>The plan rule; null means every plan.</summary>
+    IReadOnlyList<string>? AllowedPlans = null);
 
 /// <summary>
 /// A partial edit: every property is optional and only the ones supplied are written.
@@ -149,7 +172,12 @@ public record UpdatePluginCatalogRequest(
     bool? IsActive = null,
     bool? IsFeatured = null,
     int? SortOrder = null,
-    string? Category = null);
+    string? Category = null,
+    /// <summary>
+    /// <c>oauth</c> or <c>api_key</c>. Changing it revokes every existing connection to the row:
+    /// those were made with the other kind of credential.
+    /// </summary>
+    string? AuthMode = null);
 
 /// <summary>
 /// Sets or rotates a row's pre-registered OAuth client.

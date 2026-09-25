@@ -62,6 +62,31 @@ public class BillingEndpointSecurityContractTests
             roles);
     }
 
+    /// <summary>
+    /// WT-699 / TC3405: the overage switch decides whether a workspace keeps spending past zero
+    /// credits, and both actions were reachable by any logged-in account. They take the same
+    /// membership-resolved Owner/Admin gate as the rest of the workspace's money actions.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(SubscriptionsController.GetOverage))]
+    [InlineData(nameof(SubscriptionsController.SetOverage))]
+    public void WorkspaceOverageActions_RequireWorkspaceBillingRole_NotJustLogin(string actionName)
+    {
+        AssertWorkspaceBillingRole(typeof(SubscriptionsController), actionName);
+
+        var action = GetAction(typeof(SubscriptionsController), actionName);
+        Assert.Null(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+
+        var roleFilter = action.GetCustomAttribute<RequireWorkspaceRoleAttribute>();
+        var roles = Assert.IsType<string[]>(Assert.Single(roleFilter!.Arguments!));
+        Assert.DoesNotContain("Member", roles);
+
+        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.True(
+            authorize is null || string.IsNullOrEmpty(authorize.Roles),
+            $"{actionName} must not authorize off JWT role claims.");
+    }
+
     [Theory]
     [InlineData(nameof(UsagesController.GetGlobalMetrics))]
     [InlineData(nameof(UsagesController.GetGlobalUsageChart))]
@@ -238,15 +263,21 @@ public class BillingEndpointSecurityContractTests
             nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
     }
 
+    /// <summary>
+    /// G10: "admin only" now means one staff permission, and never a role string — a role claim
+    /// would admit every staff member (or the WORKSPACE role "Admin") whatever their permissions.
+    /// </summary>
     private static void AssertAdminOnly(Type controller, string actionName)
     {
         var action = GetAction(controller, actionName);
-        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        var authorize = action.GetCustomAttributes<AuthorizeAttribute>().ToList();
 
-        Assert.NotNull(authorize);
-        var roles = authorize!.Roles!.Split(',', StringSplitOptions.TrimEntries);
-        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.Admin, roles);
-        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.SystemAdmin, roles);
+        var permission = Assert.Single(authorize.OfType<WarpTalk.Shared.Authorization.RequirePermissionAttribute>());
+        Assert.True(
+            permission.Permission.StartsWith("billing.", StringComparison.Ordinal)
+                || permission.Permission.StartsWith("settings.", StringComparison.Ordinal),
+            $"{actionName} requires {permission.Permission}");
+        Assert.All(authorize, a => Assert.True(string.IsNullOrEmpty(a.Roles)));
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 

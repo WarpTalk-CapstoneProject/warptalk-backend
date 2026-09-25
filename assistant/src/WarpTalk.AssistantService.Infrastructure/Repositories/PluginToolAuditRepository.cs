@@ -91,4 +91,67 @@ public class PluginToolAuditRepository : GenericRepository<PluginToolAudit>, IPl
 
         return counts.ToDictionary(entry => entry.PluginId, entry => entry.Count);
     }
+
+    public async Task<IReadOnlySet<Guid>> GetPluginIdsUsedInWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        var ids = await _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId == workspaceId && audit.ResultStatus == SuccessStatus)
+            .Select(audit => audit.PluginId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        return ids.ToHashSet();
+    }
+
+    public async Task<IReadOnlyList<WorkspacePluginUsage>> GetSuccessfulUsageByWorkspaceAsync(
+        IReadOnlyCollection<Guid> pluginIds,
+        Guid? workspaceId,
+        CancellationToken ct = default)
+    {
+        if (pluginIds.Count == 0) return [];
+
+        // A List, so EF translates Contains into an IN; an anonymous projection, materialised, then
+        // mapped, because EF cannot translate a positional record.
+        var ids = pluginIds.ToList();
+        var query = _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId != null
+                && audit.ResultStatus == SuccessStatus
+                && ids.Contains(audit.PluginId));
+        if (workspaceId is { } only) query = query.Where(audit => audit.WorkspaceId == only);
+
+        var rows = await query
+            .GroupBy(audit => new { WorkspaceId = audit.WorkspaceId!.Value, audit.PluginId })
+            .Select(group => new
+            {
+                group.Key.WorkspaceId,
+                group.Key.PluginId,
+                Count = group.Count(),
+                LastUsedAt = group.Max(audit => audit.CreatedAt),
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(row => new WorkspacePluginUsage(row.WorkspaceId, row.PluginId, row.Count, row.LastUsedAt))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, PluginUsageByUser>> GetUsageByUserAsync(
+        Guid workspaceId,
+        Guid pluginId,
+        CancellationToken ct = default)
+    {
+        // Anonymous projection, materialised, then mapped: EF cannot translate a positional record.
+        var rows = await _db.PluginToolAudits.AsNoTracking()
+            .Where(audit => audit.WorkspaceId == workspaceId
+                && audit.PluginId == pluginId
+                && audit.ResultStatus == SuccessStatus)
+            .GroupBy(audit => audit.UserId)
+            .Select(group => new { UserId = group.Key, LastUsedAt = group.Max(audit => audit.CreatedAt), Count = group.Count() })
+            .ToListAsync(ct);
+
+        return rows.ToDictionary(row => row.UserId, row => new PluginUsageByUser(row.LastUsedAt, row.Count));
+    }
+
+    /// <summary>What McpToolOrchestrator writes for a call that worked - "success", never "ok".</summary>
+    private const string SuccessStatus = "success";
 }

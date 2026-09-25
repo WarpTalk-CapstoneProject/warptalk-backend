@@ -1,4 +1,5 @@
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using Npgsql;
 using Npgsql.NameTranslation;
 using Microsoft.EntityFrameworkCore;
@@ -93,8 +94,11 @@ builder.Services.AddScoped<IMeetingActionItemRepository, MeetingActionItemReposi
 builder.Services.AddScoped<IMeetingMinutesShareRepository, MeetingMinutesShareRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
+builder.Services.AddScoped<IMediaUsageService, MediaUsageService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
+// WT-691: language catalog writes, each recorded in the platform audit log before it is saved.
+builder.Services.AddScoped<IAdminLanguageService, AdminLanguageService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -141,6 +145,18 @@ builder.Services.AddScoped<IRedisStateRepository, RedisStateRepository>();
 builder.Services.AddSingleton<IRedisStreamRepository, RedisStreamRepository>();
 builder.Services.AddScoped<ITranscriptCacheService, TranscriptCacheService>();
 builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalizationQueue>();
+// Multi-replica coordination. Periodic sweeps take a Redis lease per tick (IDistributedLockProvider);
+// the pub/sub consumers (participant offline/online, telemetry) and the room system-event stream
+// are handled by ONE elected replica at a time — see each class's remarks. Registered before the
+// workers so the elector starts first and stops (releasing its lease) last.
+builder.Services.AddWarpTalkDistributedLocks();
+builder.Services.AddWarpTalkPubSubLeadership(
+    "translation-room:event-consumers",
+    [
+        ParticipantOfflineConsumerWorker.ParticipantOfflineChannel,
+        ParticipantOfflineConsumerWorker.ParticipantOnlineChannel,
+        TelemetryRedisSubscriber.TelemetryChannel,
+    ]);
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 // Recovers the failures the two workers above cannot see: a finalization that never ran,
@@ -162,6 +178,11 @@ builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
 // WT-14: reminds the host/participants at T-10min and T-1min before a SCHEDULED room's start.
 builder.Services.AddHostedService<ReminderNotificationWorker>();
+// WT-612 / WT-714: and the booking's own clock — at T-0 it opens itself (SCHEDULED to OPEN, so
+// nobody has to press Start for a meeting whose time has come), and two hours later, if nobody
+// ever came, the same sweep marks it EXPIRED instead of leaving it standing open for good. It
+// never starts the meeting; the first arrival does.
+builder.Services.AddHostedService<ScheduledRoomLifecycleWorker>();
 // WT-327: rolls each recurring booking's horizon forward. Polling, not a Redis subscriber —
 // "a day passed" is a clock fact, and an unguarded SubscribeAsync takes down the host process.
 builder.Services.AddHostedService<RecurringSeriesMaterializationWorker>();
@@ -187,10 +208,16 @@ builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
 // abortConnect=false: room CRUD and the gRPC surface are Postgres-backed; Redis is the event
-// bus. Safe here specifically because the two Redis-backed *gates* fail CLOSED rather than
-// open — SubscriptionQuotaInterceptor and RateLimitingFilter let the RedisConnectionException
-// surface, so the guarded call is rejected rather than silently allowed. If either is ever
-// changed to catch-and-allow, this line becomes a quota bypass and must be revisited.
+// bus. Safe here specifically because RateLimitingFilter, the Redis-backed gate, fails CLOSED
+// rather than open — it lets the RedisConnectionException surface, so the guarded call is
+// rejected rather than silently allowed. If it is ever changed to catch-and-allow, this line
+// becomes a bypass and must be revisited.
+//
+// WT-699 / TC3705: SubscriptionQuotaInterceptor, once named here, is gone. It was never
+// registered, and it intercepted "/JoinRoom" and "/CreateRoom" — RPCs this service does not
+// have — so registering it would have gated nothing. The credit gate that actually runs is
+// TranslationRoomService.EnsureTranslationCreditsAsync on Start Translation, fed by
+// warptalk-ai's billing_worker, which is the only thing that knows when a charge is refused.
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
@@ -228,10 +255,9 @@ builder.Services.AddWarpTalkJwtAuthentication(
         };
     });
 builder.Services.AddAuthorization();
-// The gate every ~/api/v1/admin/* endpoint shares. AdminMeetingsController is the first admin
-// surface in this service, and without this the policy name resolves to nothing — the attribute
-// then throws at request time instead of refusing the caller.
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+// Staff permissions for every admin endpoint here (meetings.read, settings.*). Without this the
+// permission handler is missing and every [RequirePermission] request is refused.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = builder.Configuration.GetRequiredServiceUri(
@@ -262,6 +288,20 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// WT-691: the platform audit log lives in the workspace service, and this service has no bus —
+// the same situation, and the same synchronous transport, as auth's admin actions. Same address as
+// the workspace client above: one workspace service, two contracts on it.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The recorder reads the admin's e-mail, address and user agent from the request it serves.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.TranslationRoomService.Infrastructure.Clients.AdminAuditGrpcClient>();
 // WT-14: reused by ReminderNotificationWorker to push reminder notifications through the
 // same NotificationService gRPC path other services use (see NotificationGrpcServiceImpl.SendNotification).
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
@@ -272,6 +312,8 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         "http://localhost:50054");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The meeting invitation email reads its admin-edited template through this client.
+WarpTalk.Shared.Email.EmailTemplateServiceCollectionExtensions.AddWarpTalkEmailTemplates(builder.Services);
 
 builder.Services.AddControllers();
 builder.Services.AddCustomApiBehavior();

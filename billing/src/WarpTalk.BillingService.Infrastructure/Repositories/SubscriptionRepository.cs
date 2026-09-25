@@ -98,7 +98,11 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
         return rows;
     }
 
-    private static IQueryable<Subscription> ApplyAdminFilters(
+    /// <summary>
+    /// The directory's WHERE clause. Public so tests can run it over plain rows and ask Npgsql to
+    /// translate it (ToQueryString) without a database.
+    /// </summary>
+    public static IQueryable<Subscription> ApplyAdminFilters(
         IQueryable<Subscription> query,
         AdminSubscriptionFilter filter)
     {
@@ -118,16 +122,43 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             query = query.Where(s => s.Plan.Slug == slug);
         }
 
+        if (!string.IsNullOrWhiteSpace(filter.ServiceState))
+        {
+            var serviceState = filter.ServiceState;
+            query = query.Where(s => s.ServiceState == serviceState);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.BillingCycle))
+        {
+            var cycle = filter.BillingCycle;
+            query = query.Where(s => s.Plan.BillingCycle == cycle);
+        }
+
+        if (filter.AutoRenew is { } autoRenew)
+            query = query.Where(s => s.AutoRenew == autoRenew);
+
+        if (filter.WorkspaceId is { } workspaceId)
+            query = query.Where(s => s.WorkspaceId == workspaceId);
+
+        // Half-open: inclusive from, exclusive to.
+        if (filter.PeriodEndFrom is { } periodEndFrom)
+            query = query.Where(s => s.CurrentPeriodEnd >= periodEndFrom);
+
+        if (filter.PeriodEndTo is { } periodEndTo)
+            query = query.Where(s => s.CurrentPeriodEnd < periodEndTo);
+
         return query;
     }
 
-    private static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
+    /// <summary>The directory's ORDER BY. Public for the same reason as <see cref="ApplyAdminFilters"/>.</summary>
+    public static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
         => sort switch
         {
             "period_end_desc" => query.OrderByDescending(s => s.CurrentPeriodEnd),
             "created_desc" => query.OrderByDescending(s => s.CreatedAt),
             "created_asc" => query.OrderBy(s => s.CreatedAt),
             "credits_asc" => query.OrderBy(s => s.CreditsRemaining),
+            "credits_desc" => query.OrderByDescending(s => s.CreditsRemaining),
             // Soonest renewal first: the default, because the question this screen answers is
             // "what needs attention", and what needs attention is what runs out next.
             _ => query.OrderBy(s => s.CurrentPeriodEnd),
@@ -208,5 +239,102 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
                 s.IsActive &&
                 s.DeletedAt == null &&
                 (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow), cancellationToken);
+    }
+
+    // ── Admin Insights (2026-09-17) ──────────────────────────────────────────
+
+    public async Task<SubscriptionFlowCounts> GetSubscriptionFlowCountsAsync(
+        DateTime from, DateTime to, DateTime now, CancellationToken ct = default)
+    {
+        var payments = _context.Payments.IgnoreQueryFilters();
+        var everySubscription = _dbSet.IgnoreQueryFilters();
+
+        // Soft-deleted subscriptions are excluded by the query filter: a deleted row is not a
+        // customer that joined or left.
+        var lifecycle = _dbSet.AsNoTracking().Select(s => new
+        {
+            s.Id,
+            s.WorkspaceId,
+            s.CreatedAt,
+            s.TrialEndsAt,
+            Start = s.ContractPriceVnd != null
+                ? (DateTime?)s.CreatedAt
+                : payments
+                    .Where(p => p.SubscriptionId == s.Id && p.Status == PaymentConstants.PaymentStatuses.Paid)
+                    .Min(p => (DateTime?)(p.PaidAt ?? p.UpdatedAt)),
+            // cancel-at-period-end (SubscriptionMapper.Cancel) never stamps cancelled_at, and
+            // updated_at moves on every usage charge, so the end of the paid period is the only
+            // stable date for it — and it is also when the revenue actually stops.
+            End = s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled
+                  || s.Status == SubscriptionConstants.SubscriptionStatuses.Expired
+                ? (DateTime?)(s.CancelledAt ?? s.CurrentPeriodEnd)
+                : null,
+        });
+
+        var cancelledBefore = to < now ? to : now;
+
+        var newSubscriptions = await lifecycle.CountAsync(x => x.Start >= from && x.Start < to, ct);
+        var trialsStarted = await lifecycle.CountAsync(
+            x => x.Start == null && x.TrialEndsAt != null && x.CreatedAt >= from && x.CreatedAt < to, ct);
+        var cancelled = await lifecycle.CountAsync(
+            x => x.Start != null
+                 && x.End >= from
+                 && x.End < cancelledBefore
+                 && !everySubscription.Any(o =>
+                     o.WorkspaceId == x.WorkspaceId
+                     && o.Id != x.Id
+                     && o.CreatedAt >= x.End!.Value.AddHours(-1)
+                     && o.CreatedAt <= x.End!.Value.AddHours(1)),
+            ct);
+        var activeAtStart = await lifecycle.CountAsync(
+            x => x.Start != null && x.Start < from && (x.End == null || x.End >= from), ct);
+
+        return new SubscriptionFlowCounts(newSubscriptions, trialsStarted, cancelled, activeAtStart);
+    }
+
+    public async Task<IReadOnlyList<EndingSoonSubscriptionRow>> GetEndingSoonAsync(
+        DateTime now, DateTime until, int take, CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s =>
+                s.IsActive
+                && s.CurrentPeriodEnd > now
+                && s.CurrentPeriodEnd <= until
+                // A trial's end is reported as trialsEndingThisWeek, not as a renewal.
+                && !(s.TrialEndsAt != null && s.TrialEndsAt > now))
+            .OrderBy(s => s.CurrentPeriodEnd)
+            .ThenBy(s => s.Id)
+            .Take(take)
+            .Select(s => new { s.WorkspaceId, PlanName = s.Plan.Name, s.CurrentPeriodEnd, s.AutoRenew, s.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new EndingSoonSubscriptionRow(r.WorkspaceId, r.PlanName, r.CurrentPeriodEnd, r.AutoRenew, r.Status))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<InboxSubscriptionRow>> GetNeedingAttentionAsync(
+        DateTime now, DateTime until, int take, CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s => s.IsActive && (
+                (s.TrialEndsAt != null && s.TrialEndsAt > now && s.TrialEndsAt <= until)
+                || (!s.AutoRenew && s.CurrentPeriodEnd > now && s.CurrentPeriodEnd <= until)
+                || s.ServiceState == SubscriptionConstants.ServiceStates.Suspended))
+            .OrderBy(s => s.TrialEndsAt ?? s.CurrentPeriodEnd)
+            .Take(take)
+            .Select(s => new
+            {
+                s.Id, s.WorkspaceId, PlanName = s.Plan.Name, s.TrialEndsAt, s.CurrentPeriodEnd, s.AutoRenew,
+                s.ServiceState, s.SuspendedReason, s.UpdatedAt,
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new InboxSubscriptionRow(
+                r.Id, r.WorkspaceId, r.PlanName, r.TrialEndsAt, r.CurrentPeriodEnd, r.AutoRenew, r.ServiceState, r.SuspendedReason, r.UpdatedAt))
+            .ToList();
     }
 }

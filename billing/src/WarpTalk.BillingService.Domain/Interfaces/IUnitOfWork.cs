@@ -22,6 +22,33 @@ public interface IUnitOfWork : IDisposable
     /// <summary>WT-263: the workspace self-service layer of the entitlement resolution order.</summary>
     IWorkspaceEntitlementOverrideRepository WorkspaceEntitlementOverrides { get; }
 
+    /// <summary>Provider-measured usage per UTC day (Cartesia usage sync).</summary>
+    IProviderUsageDailyRepository ProviderUsageDaily { get; }
+
+    /// <summary>Recorded USD→VND (and other) exchange rates per UTC day and source.</summary>
+    IFxRateRepository FxRates { get; }
+
+    /// <summary>Our calls to each external provider per UTC hour (admin Providers page).</summary>
+    IProviderCallStatRepository ProviderCallStats { get; }
+
+    /// <summary>Incidents from each provider's public status page (admin Providers page).</summary>
+    IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
+
+    /// <summary>Provider processing fees per paid payment (Stripe balance transactions).</summary>
+    IPaymentProviderFeeRepository PaymentProviderFees { get; }
+
+    /// <summary>G12: operating expense categories, expenses and monthly budgets.</summary>
+    IExpenseCategoryRepository ExpenseCategories { get; }
+    IOperatingExpenseRepository OperatingExpenses { get; }
+    IExpenseBudgetRepository ExpenseBudgets { get; }
+    // G11 — the sellable catalog beyond plans (/admin/packages) and what has been bought from it.
+    ICreditPackRepository CreditPacks { get; }
+    IAddonRepository Addons { get; }
+    IWorkspaceAddonRepository WorkspaceAddons { get; }
+    ICouponRepository Coupons { get; }
+    ICouponRedemptionRepository CouponRedemptions { get; }
+    ICreditPackPurchaseRepository CreditPackPurchases { get; }
+
     // This interface deliberately exposes no way to reach the raw database
     // connection. Doing so pulled a data-provider dependency into the Domain layer
     // and let any caller bypass the repositories with hand-written SQL. The two

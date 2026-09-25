@@ -3,6 +3,10 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -39,7 +43,7 @@ public class PlansController : ControllerBase
     /// Placed above `{id}` so ASP.NET does not try to bind "all" as a Guid.
     /// </summary>
     [HttpGet("all")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<IEnumerable<PlanDto>>> GetAllPlans(CancellationToken cancellationToken)
     {
         var result = await _planService.GetAllPlansAsync(cancellationToken);
@@ -63,7 +67,8 @@ public class PlansController : ControllerBase
 
 
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.PlanCreated, AdminAuditEntityTypes.Plan, typeof(Plan))]
+    [RequirePermission(AdminPermissions.BillingPlansManage)]
     public async Task<ActionResult<PlanDto>> CreatePlan([FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
@@ -75,7 +80,8 @@ public class PlansController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.PlanUpdated, AdminAuditEntityTypes.Plan, typeof(Plan), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.BillingPlansManage)]
     public async Task<ActionResult<PlanDto>> UpdatePlan(Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);

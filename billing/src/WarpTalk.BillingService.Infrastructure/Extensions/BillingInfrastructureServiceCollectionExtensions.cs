@@ -1,5 +1,6 @@
 using System;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.Shared.AdminAudit;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
@@ -43,14 +44,16 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 "Billing worker options are missing or invalid.")
             .ValidateOnStart();
 
-        services.AddDbContext<BillingDbContext>(options =>
+        services.AddDbContext<BillingDbContext>((provider, options) =>
             options.UseNpgsql(
                 configuration.GetConnectionString("BillingDb"),
                 npgsqlOptions =>
                 {
                     npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
                     npgsqlOptions.CommandTimeout(30);
-                }));
+                })
+            // [AdminAudited] routes record each save before it commits (see AddWarpTalkAdminAuditing).
+            .AddAdminAuditInterceptor(provider));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped(sp => sp.GetRequiredService<IUnitOfWork>().SubscriptionRepository);
@@ -82,7 +85,21 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IUsageRateCardResolverService, UsageRateCardResolverService>();
         services.AddScoped<IUsageSettlementRepository, UsageSettlementRepository>();
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
+        // G11: pushes credit packs, add-ons and coupons to Stripe Products/Prices/Coupons (admin only).
+        services.AddScoped<IStripeCatalogSync, StripeCatalogSyncService>();
+        // Stripe's USD→VND rate, recorded daily (FxRateRefreshWorker) and read by every VND report.
+        // Every Stripe call is counted for the admin Providers page (StripeCallObserver); the FX
+        // client builds its own StripeClient, so it is handed the observed HTTP client too.
+        services.AddSingleton<IProviderCallRecorder, RedisProviderCallRecorder>();
+        services.AddSingleton<IStripeFxClient>(sp => new StripeFxClient(
+            configuration["Stripe:SecretKey"],
+            configuration["Stripe:FxQuotesApiVersion"],
+            StripeCallObserver.CreateStripeHttpClient(sp.GetRequiredService<IProviderCallRecorder>())));
+        services.AddScoped<IFxRateService, WarpTalk.BillingService.Application.Services.FxRateService>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
+
+        AddCartesiaUsageSync(services, configuration);
+        AddProviderStatus(services, configuration);
 
         // WT-263: the entitlement layer. The resolver is the single place entitlements are computed;
         // the publisher is the single place they leave this service.
@@ -94,6 +111,51 @@ public static class BillingInfrastructureServiceCollectionExtensions
             WarpTalk.BillingService.Application.Entitlements.EntitlementChangePublisher>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Cartesia usage sync: options, the HTTP client, and the status the Insights snapshot reads.
+    /// Registered whether or not an admin key is configured — without one the worker only marks
+    /// itself disabled, and Insights fall back to rate-card estimates.
+    /// </summary>
+    private static void AddCartesiaUsageSync(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(CartesiaUsageOptions.SectionName);
+        services.AddOptions<CartesiaUsageOptions>().Bind(section);
+
+        var options = section.Get<CartesiaUsageOptions>() ?? new CartesiaUsageOptions();
+        services.AddHttpClient(CartesiaUsageOptions.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+        });
+        services.AddSingleton<ICartesiaUsageClient, CartesiaUsageClient>();
+
+        // Shared through Redis: billing runs several replicas, only one syncs at a time, and every
+        // replica's Insights snapshot has to report the sync that actually ran.
+        services.AddSingleton<ICartesiaSyncCoordinator>(sp =>
+            new RedisCartesiaSyncCoordinator(sp.GetRequiredService<IConnectionMultiplexer>()));
+        services.AddSingleton<ICartesiaUsageSyncStatus>(sp =>
+            new RedisCartesiaUsageSyncStatus(
+                sp.GetRequiredService<IConnectionMultiplexer>(),
+                configured: options.IsConfigured && options.UsageSyncIntervalMinutes > 0,
+                filteredToApiKey: options.IsFilteredToApiKey,
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RedisCartesiaUsageSyncStatus>>()));
+    }
+
+    /// <summary>
+    /// Admin Providers page: status page polling options, its HTTP client and shared state. The
+    /// pages are public URLs (ProviderStatus:Pages:{provider}); none configured = no polling.
+    /// </summary>
+    private static void AddProviderStatus(IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddOptions<ProviderStatusOptions>().Bind(configuration.GetSection(ProviderStatusOptions.SectionName));
+        services.AddHttpClient(Workers.ProviderStatusPollWorker.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("WarpTalk-Billing-StatusPoll/1.0");
+        });
+        services.AddSingleton<IProviderStatusPageState>(sp =>
+            new RedisProviderStatusPageState(sp.GetRequiredService<IConnectionMultiplexer>()));
     }
 
     public static void VerifyBillingDatabase(this IServiceProvider serviceProvider)

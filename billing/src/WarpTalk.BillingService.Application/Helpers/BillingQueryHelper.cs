@@ -22,9 +22,15 @@ public static class BillingQueryHelper
     public static PageRequest ToPageRequest(PaginationQuery query)
         => new(query.PageNumber, query.PageSize);
 
+    /// <summary>
+    /// Search and sort are only ever set by the global ledger (<see cref="GlobalCreditHistoryQuery"/>);
+    /// the workspace-scoped history leaves them at their defaults, so its query is unchanged.
+    /// </summary>
     public static CreditTransactionHistoryFilter ToCreditTransactionHistoryFilter(
         CreditHistoryQuery query,
-        IReadOnlyCollection<Guid>? subscriptionIds)
+        IReadOnlyCollection<Guid>? subscriptionIds,
+        string? search = null,
+        string sort = CreditHistorySorts.CreatedDesc)
     {
         return new CreditTransactionHistoryFilter(
             ToPageRequest(query),
@@ -34,7 +40,9 @@ public static class BillingQueryHelper
             query.FromDate,
             query.ToDate,
             query.MinAmount,
-            query.MaxAmount);
+            query.MaxAmount,
+            string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            sort);
     }
 
     public static Guid[] GetWorkspaceIds<T>(IEnumerable<T> items, Func<T, Guid?> getWorkspaceId)

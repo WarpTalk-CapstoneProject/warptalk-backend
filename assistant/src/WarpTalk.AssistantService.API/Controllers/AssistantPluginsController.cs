@@ -64,16 +64,22 @@ public class AssistantPluginsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("catalog")]
-    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> CreateMcpPlugin(
         [FromBody] CreateMcpPluginRequest request,
         CancellationToken ct)
     {
         var result = await _installationService.CreateMcpPluginAsync(request, CurrentUserId, ct);
         if (!result.IsSuccess)
-            return BadRequest(new { error = result.Error, errorCode = result.ErrorCode });
+        {
+            var body = new { error = result.Error, errorCode = result.ErrorCode };
+            // The platform audit log could not take the record, so the row was not created.
+            return result.ErrorCode == ErrorCodes.ServiceUnavailable
+                ? StatusCode(StatusCodes.Status503ServiceUnavailable, body)
+                : BadRequest(body);
+        }
 
         return CreatedAtAction(nameof(ListCatalog), new { }, result.Value);
     }
@@ -142,6 +148,32 @@ public class AssistantPluginsController : ControllerBase
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
             if (result.ErrorCode == PluginConstants.ErrorCodes.PluginNotInstalled) return Conflict(result.Error);
+            return BadRequest(result.Error);
+        }
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Connects an <c>api_key</c> plugin with the caller's own key. The key is never returned.
+    /// </summary>
+    [HttpPost("{pluginKey}/api-key")]
+    [ProducesResponseType(typeof(PluginCatalogItemDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ConnectWithApiKey(
+        string pluginKey,
+        [FromBody] ConnectPluginApiKeyRequest request,
+        [FromQuery] Guid? workspaceId,
+        CancellationToken ct)
+    {
+        var result = await _connectionService.ConnectWithApiKeyAsync(pluginKey, CurrentUserId, request.ApiKey, workspaceId, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
+            if (result.ErrorCode == PluginConstants.ErrorCodes.PluginNotInstalled) return Conflict(result.Error);
+            if (IsWorkspacePolicyRefusal(result.ErrorCode)) return StatusCode(StatusCodes.Status403Forbidden, result.Error);
             return BadRequest(result.Error);
         }
         return Ok(result.Value);

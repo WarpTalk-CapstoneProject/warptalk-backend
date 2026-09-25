@@ -171,6 +171,24 @@ public sealed class RedisStreamService
     }
 
     /// <summary>
+    /// Write a key only if nobody holds it yet, and say whether this call created it. The
+    /// atomicity is the point: a read followed by a write lets two replicas both "win".
+    /// </summary>
+    public async Task<bool> SetIfAbsentAsync(string key, string value, TimeSpan ttl)
+    {
+        var db = _redis.GetDatabase();
+        return await db.StringSetAsync(key, value, ttl, When.NotExists);
+    }
+
+    /// <summary>Read a plain string key, or null when it is absent.</summary>
+    public async Task<string?> GetStringAsync(string key)
+    {
+        var db = _redis.GetDatabase();
+        var value = await db.StringGetAsync(key);
+        return value.IsNullOrEmpty ? null : value.ToString();
+    }
+
+    /// <summary>
     /// Read one field of a hash, or null when the hash or the field is absent.
     /// </summary>
     /// <remarks>

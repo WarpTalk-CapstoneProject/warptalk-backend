@@ -12,11 +12,21 @@ namespace WarpTalk.AuthService.Domain.Interfaces;
 /// mistake and is rejected before it reaches SQL.
 /// </param>
 /// <param name="Role">A platform role name — the same values auth.roles seeds.</param>
+/// <param name="CreatedFrom">Inclusive lower bound on created_at, already UTC.</param>
+/// <param name="CreatedTo">Exclusive upper bound on created_at, already UTC.</param>
+/// <param name="LastLoginFrom">Inclusive lower bound on last_login_at, already UTC.</param>
+/// <param name="LastLoginTo">Exclusive upper bound on last_login_at, already UTC.</param>
+/// <param name="NeverSignedIn">true = last_login_at IS NULL; false = IS NOT NULL; null = either.</param>
 public sealed record AdminUserDirectoryFilter(
     string? Search = null,
     string? Status = null,
     string? Role = null,
-    string Sort = "created_desc");
+    string Sort = "created_desc",
+    DateTime? CreatedFrom = null,
+    DateTime? CreatedTo = null,
+    DateTime? LastLoginFrom = null,
+    DateTime? LastLoginTo = null,
+    bool? NeverSignedIn = null);
 
 /// <summary>
 /// One account as the directory lists it.
@@ -52,6 +62,12 @@ public sealed record AdminUserSessionRow(
 public interface IUserRepository : IGenericRepository<User>
 {
     Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-699 / TC4104: one keyset page of ACTIVE, undeleted user ids, ascending by id, strictly
+    /// after <paramref name="afterId"/> when given. Ids only — the broadcast audience needs nothing else.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> GetActiveUserIdsPageAsync(Guid? afterId, int pageSize, CancellationToken ct = default);
     Task<User?> GetByEmailWithRolesAsync(string email, CancellationToken ct = default);
     Task<User?> GetByIdWithRolesAsync(Guid id, CancellationToken ct = default);
     Task<User?> GetByGoogleIdWithRolesAsync(string googleId, CancellationToken ct = default);
@@ -77,5 +93,27 @@ public interface IUserRepository : IGenericRepository<User>
     /// <summary>Sessions that are live right now — not revoked, not expired — newest first.</summary>
     Task<IReadOnlyList<AdminUserSessionRow>> GetActiveSessionsAsync(
         Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Accounts created in <c>[from, to)</c>, soft-deleted ones INCLUDED: the figure is "how many
+    /// people signed up in that window", and a later deletion must not rewrite a past period.
+    /// </summary>
+    Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-692: accounts that existed at <paramref name="instant"/> — created before it and not
+    /// soft-deleted by then. A later deletion does not rewrite an earlier month's total.
+    /// </summary>
+    Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default);
+
+    /// <summary>
+    /// The creation instants of the same accounts, unordered. Deliberately not grouped by day in
+    /// SQL: which day an instant belongs to depends on the caller's time zone (the insights
+    /// <c>tz</c>), and the caller buckets them on those local days.
+    /// </summary>
+    Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
+        DateTime from,
+        DateTime to,
         CancellationToken ct = default);
 }

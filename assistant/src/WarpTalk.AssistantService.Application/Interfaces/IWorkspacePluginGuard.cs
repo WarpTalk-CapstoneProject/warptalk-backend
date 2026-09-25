@@ -44,6 +44,20 @@ public interface IWorkspacePluginGuard
     /// inside a workspace. A PRIVATE plugin is different, because merely being able to see and
     /// connect it reveals another workspace's MCP server: it is permitted only to an active member
     /// of the workspace that owns it, and never under another workspace's id.
+    /// <para>
+    /// A workspace id, when one IS sent, is held to the same standard as on the tool path: the
+    /// caller must be an active member of it before its list is consulted, for a marketplace plugin
+    /// as much as a private one. Only the absence of an id is the legacy case.
+    /// </para>
+    /// <para>
+    /// That legacy case is a known, deliberate gap rather than an oversight. The personal plugins
+    /// page and clients older than the marketplace send no workspace, and a user may belong to
+    /// several workspaces with different lists, so there is no single list to judge them by. What
+    /// it costs is small and bounded: a user can install and connect a marketplace plugin none of
+    /// their workspaces has added, but can never run it - execution goes through
+    /// <see cref="CanUsePluginInWorkspaceAsync"/>, which refuses a missing workspace outright.
+    /// Closing it means making every client send a workspace first.
+    /// </para>
     /// </remarks>
     Task<Result> CanUsePluginAsync(
         Guid? workspaceId,

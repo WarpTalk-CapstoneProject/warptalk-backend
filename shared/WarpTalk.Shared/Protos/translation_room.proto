@@ -27,10 +27,48 @@ service TranslationRoomService {
   //
   // A kick that does not reach here is not a kick; it is a disconnection the person can undo.
   rpc KickRoomParticipant (KickRoomParticipantRequest) returns (KickRoomParticipantResponse);
+
+  // WT-699 / TC2402: the lobby's "no", and the third write, for the reason the kick is the
+  // second: the waiting-room row lives HERE, and a reject that only revoked MeetingService's
+  // session grant left it WAITING — still in the host's lobby list, still able to be admitted,
+  // and (before the call had started) not recorded anywhere at all. Identified by USER id, like
+  // the kick, because that is what MeetingService's REST surface speaks.
+  rpc RejectRoomParticipant (RejectRoomParticipantRequest) returns (RejectRoomParticipantResponse);
+
+  // Admin Providers page: LiveKit usage per UTC hour and workspace — room minutes, estimated
+  // participant minutes and egress recordings — read by billing-service, which owns the page's API.
+  // Read-only; rules on MediaUsageCalculator. INVALID_ARGUMENT for a window over 120 days.
+  rpc GetMediaUsage (GetMediaUsageRequest) returns (GetMediaUsageResponse);
+}
+
+message GetMediaUsageRequest {
+  // [from, to) as Unix seconds, UTC.
+  int64 from_unix = 1;
+  int64 to_unix = 2;
+}
+
+message MediaUsageHour {
+  int64 hour_start_unix = 1;
+  string workspace_id = 2;
+  double room_seconds = 3;
+  double participant_seconds = 4;
+  int32 rooms_started = 5;
+  int32 recordings = 6;
+  int64 recording_bytes = 7;
+}
+
+message GetMediaUsageResponse {
+  repeated MediaUsageHour hours = 1;
 }
 
 message GetTranslationRoomRequest {
   string id = 1;
+  // WT-704: opt in to generatable_artifact_languages on the response. Off by default because
+  // computing it costs a workspace RPC plus a catalog read, and this RPC sits on hot paths —
+  // gateway RoomLanguagePolicy / RoomHostAuthority / AiResultConsumer, meeting, workspace, and
+  // transcript read access — none of which need it. Only callers that gate GENERATION of new
+  // language content (transcript backfill, MT correction) set it.
+  bool include_artifact_languages = 2;
 }
 
 message GetTranslationRoomByCodeRequest {
@@ -99,6 +137,22 @@ message GetTranslationRoomResponse {
   // ArtifactAccessHelper.ReadArtifactAccessLevel fails in for an unparseable blob. An
   // authorization input is not a fail-open case, so absent must never widen access.
   string artifact_access = 15;
+  // WT-704: the meeting's declared languages (L2) — the room's source and target languages as
+  // stored. Always filled. Empty from an older server.
+  string source_language = 16;
+  repeated string target_languages = 17;
+  // WT-704: which languages NEW content may be generated in for this room — L2 narrowed by the
+  // workspace whitelist (L1) and the active catalog, exactly what IRoomArtifactLanguagePolicy
+  // accepts. Filled only when the request set include_artifact_languages.
+  //
+  // Read it together with artifact_languages_resolved, never on its own: proto3 cannot tell an
+  // empty repeated field from an absent one.
+  repeated string generatable_artifact_languages = 18;
+  // WT-704: true when generatable_artifact_languages is the server's actual answer. False means
+  // it was not requested, the server predates the field, or the computation failed — the reader
+  // must then fall back to the room's own set (source_language + target_languages), never to
+  // "anything". An EMPTY list with resolved=true is an answer: nothing may be generated.
+  bool artifact_languages_resolved = 19;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host
@@ -132,6 +186,22 @@ message KickRoomParticipantResponse {
   // False when the person had no roster row to terminate — the kick still succeeded, and saying so
   // lets the caller tell "nothing to do" apart from "refused".
   bool kicked = 1;
+  // WT-699 / TC2103: the row was ALREADY KICKED before this call. Still a success (the state the
+  // host asked for holds), but a distinct one, so a second press is not reported as a new kick.
+  bool already_kicked = 2;
+}
+
+message RejectRoomParticipantRequest {
+  string room_id = 1;
+  string participant_user_id = 2;
+  string requested_by_user_id = 3;
+}
+
+message RejectRoomParticipantResponse {
+  // True when this call moved the row to REJECTED; false with already_rejected when it was
+  // REJECTED before (idempotent — the host double-clicked, or MeetingService retried).
+  bool rejected = 1;
+  bool already_rejected = 2;
 }
 
 message GetParticipantsByRoomIdRequest {
@@ -156,4 +226,9 @@ message Participant {
   string role = 3;       // HOST, PARTICIPANT
   string language = 4;   // e.g. "vi-VN"
   bool is_active = 5;
+  // WT-699 / TC1806: the stored participant_status (INVITED, WAITING, CONNECTED, DISCONNECTED,
+  // LEFT, KICKED, REJECTED). is_active answers only "holds a seat right now"; the realtime hub
+  // needs to tell "admitted but momentarily dropped" (DISCONNECTED) from "never admitted" and
+  // from "removed", which one bool cannot carry. Empty from an older server.
+  string status = 6;
 }

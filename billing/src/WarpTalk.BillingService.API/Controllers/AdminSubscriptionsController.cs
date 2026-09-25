@@ -8,6 +8,9 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -20,7 +23,6 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/subscriptions")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminSubscriptionsController : ControllerBase
 {
     private readonly IAdminSubscriptionService _adminSubscriptionService;
@@ -35,6 +37,7 @@ public class AdminSubscriptionsController : ControllerBase
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetDirectory(
         [FromQuery] AdminSubscriptionDirectoryQuery query,
         CancellationToken ct)
@@ -49,6 +52,7 @@ public class AdminSubscriptionsController : ControllerBase
     /// page's total.
     /// </summary>
     [HttpGet("summary")]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetSummary(CancellationToken ct)
     {
         var result = await _adminSubscriptionService.GetSummaryAsync(ct);
@@ -62,6 +66,8 @@ public class AdminSubscriptionsController : ControllerBase
     /// exactly the step an administrative move must not require.
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/change-plan")]
+    [AdminAudited(AdminAuditWorkspaceActions.PlanChanged, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<IActionResult> ChangePlan(
         Guid workspaceId,
         [FromBody] AdminChangeSubscriptionPlanRequest request,

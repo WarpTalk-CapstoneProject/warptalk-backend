@@ -219,6 +219,33 @@ public class AdminWorkspaceDirectoryIntegrationTests : BaseIntegrationTest
     }
 
     [Fact]
+    public async Task Directory_FiltersByCreatedWindowAndSortsByUpdatedAscending()
+    {
+        // Seeded: Acme created 10 days ago / updated 2 days ago; Zenith created 20 days ago /
+        // updated 1 day ago.
+        var (activeId, suspendedId) = await SeedAsync();
+        var client = AdminClient();
+        var fifteenDaysAgo = DateTime.UtcNow.AddDays(-15).ToString("O");
+
+        var recent = await client.GetFromJsonAsync<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+            $"/api/v1/admin/workspaces?createdFrom={Uri.EscapeDataString(fifteenDaysAgo)}");
+        Assert.Equal(activeId, Assert.Single(recent!.Items).Id);
+
+        var older = await client.GetFromJsonAsync<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+            $"/api/v1/admin/workspaces?createdTo={Uri.EscapeDataString(fifteenDaysAgo)}");
+        Assert.Equal(suspendedId, Assert.Single(older!.Items).Id);
+
+        var byUpdated = await client.GetFromJsonAsync<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+            "/api/v1/admin/workspaces?sort=updated_asc");
+        Assert.Equal(new[] { activeId, suspendedId }, byUpdated!.Items.Select(item => item.Id));
+
+        var inverted = await client.GetAsync(
+            $"/api/v1/admin/workspaces?createdFrom={Uri.EscapeDataString(DateTime.UtcNow.ToString("O"))}"
+            + $"&createdTo={Uri.EscapeDataString(fifteenDaysAgo)}");
+        Assert.Equal(HttpStatusCode.BadRequest, inverted.StatusCode);
+    }
+
+    [Fact]
     public async Task Detail_Returns404ForAnUnknownWorkspace()
     {
         await SeedAsync();

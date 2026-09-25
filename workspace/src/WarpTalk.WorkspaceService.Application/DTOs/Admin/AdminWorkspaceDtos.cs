@@ -20,8 +20,17 @@ public record AdminWorkspaceDirectoryQuery : AdminPageRequest
     public int? MaxMembers { get; init; }
 
     /// <summary>
+    /// Inclusive lower bound on <c>created_at</c> (UTC; a value without an offset is read as
+    /// UTC). Must not be later than <see cref="CreatedTo"/>.
+    /// </summary>
+    public DateTime? CreatedFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>created_at</c> (UTC).</summary>
+    public DateTime? CreatedTo { get; init; }
+
+    /// <summary>
     /// created_desc | created_asc | name_asc | name_desc | members_desc | members_asc |
-    /// updated_desc. Defaults to created_desc.
+    /// updated_desc | updated_asc. Defaults to created_desc.
     /// </summary>
     public string? Sort { get; init; }
 }
@@ -98,3 +107,23 @@ public record AdminWorkspaceMemberDto(
     string Status,
     bool CanCreateMeetings,
     DateTime JoinedAt);
+
+/// <summary>
+/// <c>GET /api/v1/admin/workspaces/insights</c>: metric <c>newWorkspaces</c> over the window, and
+/// <paramref name="SuspendedNow"/>, which is a point-in-time count independent of the window.
+/// </summary>
+public record AdminWorkspaceInsightsDto(
+    AdminInsightRange Range,
+    AdminInsightRange PreviousRange,
+    IReadOnlyList<AdminInsightMetric> Metrics,
+    int SuspendedNow,
+    IReadOnlyList<AdminWorkspaceMonthDto>? WorkspacesByMonth = null);
+
+/// <summary>
+/// WT-692: one local calendar month (of the request's <c>tz</c>, <c>yyyy-MM</c>) of workspace
+/// growth, over the six months ending with the month of <c>to</c>.
+/// </summary>
+/// <param name="NewWorkspaces">Created in the month, deleted ones included.</param>
+/// <param name="TotalWorkspaces">Existing at the END of the month: created before it and not deleted by then (suspended ones count — they still exist).</param>
+public record AdminWorkspaceMonthDto(string Month, int NewWorkspaces, int TotalWorkspaces);
+

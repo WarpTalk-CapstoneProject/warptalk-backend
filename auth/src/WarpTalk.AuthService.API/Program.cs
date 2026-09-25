@@ -22,6 +22,7 @@ using WarpTalk.AuthService.Infrastructure.Extensions;
 using WarpTalk.AuthService.Infrastructure.Services;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Email;
 using WarpTalk.Shared.Grpc;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -57,6 +58,8 @@ builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
 builder.Services.AddScoped<IVoiceConsentRepository, VoiceConsentRepository>();
 builder.Services.AddScoped<IVoiceSampleRepository, VoiceSampleRepository>();
+builder.Services.AddScoped<IStaffMemberRepository, StaffMemberRepository>();
+builder.Services.AddScoped<IStaffInvitationRepository, StaffInvitationRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // Application Services & Memory Cache
@@ -113,6 +116,10 @@ builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 builder.Services.AddScoped<IVoiceConsentService, VoiceConsentService>();
 builder.Services.AddScoped<IVoiceCarryOverService, VoiceCarryOverService>();
+// G10 — platform staff and roles. This service is the source of truth, so its own permission
+// checks read the database (DatabaseStaffAccessSource) instead of calling itself over gRPC.
+builder.Services.AddScoped<IStaffAccessService, StaffAccessService>();
+builder.Services.AddScoped<IStaffAdminService, StaffAdminService>();
 
 // Infrastructure Security & Storage Services
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
@@ -148,15 +155,30 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAud
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The recorder reads the admin's e-mail, address and user agent from the request it serves.
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
+
+// The verification and password-reset emails are admin-editable templates stored by the
+// notification service. ResendAuthEmailSender reads them through IEmailTemplateComposer on every
+// send; a notification outage falls back to the built-in wording rather than blocking sign-up.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:NotificationServiceUrl",
+        "http://localhost:50054");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddWarpTalkEmailTemplates();
 
 // Clean & Secure JWT Authentication
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-// The gate every ~/api/v1/admin/* endpoint shares. Auth is the last service to need it, and
-// AdminUsersController is why: without this registration the policy name resolves to nothing and
-// the attribute throws at request time instead of refusing the caller.
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+// Staff permissions for every admin endpoint here ([RequirePermission]). Without this the handler
+// is missing and every admin request is refused.
+builder.Services.AddWarpTalkStaffAuthorizationCore(builder.Configuration);
+builder.Services.AddSingleton<IStaffAccessSource, DatabaseStaffAccessSource>();
 
 // Validation & Custom API Behavior
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>();

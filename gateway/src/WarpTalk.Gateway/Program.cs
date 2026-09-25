@@ -8,10 +8,13 @@ using StackExchange.Redis;
 using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Configuration;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Monitoring;
 using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
@@ -62,6 +65,15 @@ builder.Services.AddWarpTalkJwtAuthentication(
                     context.Token = accessToken;
                 }
 
+                // The embedded Grafana's ForwardAuth call, and nothing else: an iframe cannot
+                // send an Authorization header, so the admin's access-token cookie stands in for
+                // it on that one path. See GrafanaForwardAuth.
+                if (string.IsNullOrEmpty(context.Token)
+                    && WarpTalk.Gateway.Monitoring.GrafanaForwardAuth.TryReadCookieToken(context.Request, out var cookieToken))
+                {
+                    context.Token = cookieToken;
+                }
+
                 return Task.CompletedTask;
             }
         };
@@ -71,15 +83,23 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
+// Staff authorization for the embedded Grafana's ForwardAuth endpoint (health.read) — the same
+// permission check every admin endpoint in the services makes, answered by the auth service.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
     ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
 
+// A cross-origin download can only name its file, or say it was cut short, through response
+// headers the browser is told it may read. The admin audit log's CSV export uses all three.
+string[] exposedHeaders = ["Content-Disposition", "X-Audit-Export-Rows", "X-Audit-Export-Truncated"];
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
+        policy.WithExposedHeaders(exposedHeaders);
         if (builder.Environment.IsDevelopment())
         {
             policy.SetIsOriginAllowed(origin => true) // Allow ngrok dynamic URLs
@@ -140,18 +160,27 @@ var signalRBuilder = builder.Services.AddSignalR(options =>
     options.MaximumReceiveMessageSize = 128 * 1024; // 128 KB — voice-cloned audio chunks
 });
 
-// Optional: Use Redis backplane for horizontal scaling
-var redisConnectionString = builder.Configuration["SignalR:Redis"];
-if (!string.IsNullOrEmpty(redisConnectionString))
+// Redis backplane: REQUIRED as soon as there is more than one gateway replica. The relay
+// subscribers (RealtimeRelay) and the AI result stream consumer group each hand an event to ONE
+// pod and rely on the backplane to reach the clients held by the others. Reads SignalR:Redis and
+// falls back to Redis:ConnectionString, so a deployment that forgets SignalR__Redis still scales
+// correctly instead of silently delivering to 1/N of the clients. abortConnect=false: a backplane
+// that cannot reach Redis degrades this instance to single-node SignalR rather than stopping the
+// gateway from booting (same reason as the multiplexer below). Channel prefix unchanged.
+//
+// Negotiate -> connect: the gateway hubs are negotiated and connected through Traefik, whose
+// sticky cookie (warptalk_gw_stick, deploy/k3s/chart/templates/ingress.yaml) pins both requests to
+// one gateway pod. Long Polling also depends on that stickiness.
+var backplaneRedis = SignalRBackplaneExtensions.ResolveBackplaneConnectionString(builder.Configuration);
+if (backplaneRedis is not null)
 {
-    signalRBuilder.AddStackExchangeRedis(redisConnectionString, options =>
+    signalRBuilder.AddStackExchangeRedis(backplaneRedis, options =>
     {
         options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk");
-        // Same reason as the multiplexer below: a backplane that cannot reach Redis must
-        // degrade this instance to single-node SignalR, not stop the gateway from booting.
         options.Configuration.AbortOnConnectFail = false;
     });
 }
+var redisConnectionString = builder.Configuration["SignalR:Redis"];
 
 // 6. Register Connection Manager (singleton — in-memory tracking)
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
@@ -186,6 +215,10 @@ builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddSingleton<IPresenceStore, RedisPresenceStore>();
 builder.Services.AddSingleton<IPresenceNotifier, PresenceNotifier>();
 builder.Services.AddHostedService<PresenceHeartbeatService>();
+
+// One gateway pod at a time relays pub/sub events into SignalR; see RealtimeRelay. Registered
+// before the subscribers so the elector starts first and stops (releasing its lease) last.
+builder.Services.AddWarpTalkPubSubLeadership(RealtimeRelay.LeaseResource, RealtimeRelay.RequiredSubscriptions);
 
 builder.Services.AddHostedService<AiResultConsumerService>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
@@ -237,6 +270,9 @@ builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomLanguagePolicy, WarpTa
 // WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
 // singleton would also be the wrong lifetime for something that must never cache its answer.
 builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
+// The one presence snapshot both NotificationHub.QueryPresence and POST /api/v1/presence/query
+// answer from. Scoped because it composes the scoped visibility check above.
+builder.Services.AddScoped<IPresenceQueryService, PresenceQueryService>();
 
 var app = builder.Build();
 
@@ -281,6 +317,7 @@ app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
     .RequireAuthorization("RequireAuth");
 
 app.MapPresenceEndpoints();
+app.MapGrafanaForwardAuth();
 
 
 

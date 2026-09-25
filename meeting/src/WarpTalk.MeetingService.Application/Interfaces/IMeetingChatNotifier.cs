@@ -70,4 +70,13 @@ public interface IMeetingChatNotifier
 
     Task BroadcastAssistantQuestionAsync(
         Guid roomId, Guid requestId, string questionsJson, CancellationToken ct = default);
+
+    /// <summary>
+    /// WarpBot was asked to move this thread to the WarpBot widget ("chuyển qua widget để bàn
+    /// tiếp"). Only the person who asked acts on it — their widget opens with the thread in it —
+    /// so the requester travels with the event: the room group is shared, and every other screen
+    /// in the meeting receives it and ignores it.
+    /// </summary>
+    Task BroadcastAssistantHandoffAsync(
+        Guid roomId, Guid requestId, Guid requestedByUserId, string handoffJson, CancellationToken ct = default);
 }

@@ -38,7 +38,15 @@ public record VoiceProfileDto(
     /// provider listed somebody's catalogue pointer among their own recordings and showed them
     /// its provider id as their chosen voice.
     /// </summary>
-    string? Source = null
+    string? Source = null,
+    /// <summary>
+    /// Why the clone failed, when <see cref="Status"/> is "clone_failed": a stable code the page
+    /// translates (PROVIDER_PLAN_REQUIRED, SAMPLE_REJECTED, SAMPLE_EXPIRED, ...). Null on a failed
+    /// row means the reason was not recorded — the row predates the column.
+    /// </summary>
+    string? CloneErrorCode = null,
+    /// <summary>The AI worker's one-line detail for <see cref="CloneErrorCode"/>.</summary>
+    string? CloneError = null
 );
 
 /// <summary>One selectable voice from the provider's public library.</summary>

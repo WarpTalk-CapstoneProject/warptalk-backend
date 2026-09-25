@@ -79,6 +79,74 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         return (live, startedSince);
     }
 
+    public async Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default,
+        Guid? workspaceId = null)
+    {
+        // Anonymous projection, mapped to the record in memory, never ordered in SQL as a record.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(r => workspaceId == null || r.WorkspaceId == workspaceId)
+            .Where(r => r.DeletedAt == null
+                && r.StartedAt != null
+                && r.StartedAt < to
+                && (r.EndedAt > from
+                    || (r.EndedAt == null && (LiveStatuses.Contains(r.Status) || r.StartedAt >= from))))
+            .Select(r => new { StartedAt = r.StartedAt!.Value, r.EndedAt, r.DurationSeconds, r.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new AdminMeetingSpan(r.StartedAt, r.EndedAt, r.DurationSeconds, r.Status))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<MediaUsageRoomSpan>> GetMediaUsageRoomsAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        // Same window rule as GetAdminMeetingSpansAsync, so the two reports cannot disagree on
+        // which meetings ran; scalars only, mapped to the record in memory.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(r => r.DeletedAt == null
+                && r.StartedAt != null
+                && r.StartedAt < to
+                && (r.EndedAt > from
+                    || (r.EndedAt == null && (LiveStatuses.Contains(r.Status) || r.StartedAt >= from))))
+            .Select(r => new { r.Id, r.WorkspaceId, StartedAt = r.StartedAt!.Value, r.EndedAt, r.DurationSeconds, r.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new MediaUsageRoomSpan(r.Id, r.WorkspaceId, r.StartedAt, r.EndedAt, r.DurationSeconds, r.Status))
+            .ToList();
+    }
+
+    /// <summary>Rooms that can still be joined or started, in any sense (WT-691).</summary>
+    private static readonly string[] OpenStatuses =
+    [
+        nameof(RoomStatus.IN_PROGRESS),
+        nameof(RoomStatus.PAUSED),
+        nameof(RoomStatus.WAITING),
+        nameof(RoomStatus.SCHEDULED),
+    ];
+
+    public async Task<IReadOnlyList<AdminOpenRoomLanguages>> GetOpenRoomLanguagesAsync(CancellationToken ct = default)
+    {
+        // Anonymous projection, mapped to the record in memory — never a positional record in SQL.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(r => r.DeletedAt == null && OpenStatuses.Contains(r.Status))
+            .Select(r => new { r.Status, r.SourceLanguage, r.TargetLanguages })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new AdminOpenRoomLanguages(r.Status, r.SourceLanguage, r.TargetLanguages))
+            .ToList();
+    }
+
     private static IQueryable<TranslationRoom> ApplyAdminFilters(
         IQueryable<TranslationRoom> query,
         AdminMeetingFilter filter)
@@ -180,7 +248,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         var now = DateTime.UtcNow;
 
         var live = candidates
-            .Where(r => r.Status == "IN_PROGRESS" || r.Status == "PAUSED" || r.Status == "WAITING")
+            // OPEN belongs with these (WT-612): the clock has unlocked today's occurrence, so a
+            // click on the series link means that room. Without it the code skipped an occurrence
+            // whose slot had arrived and handed the person next week's booking instead.
+            .Where(r => r.Status == "IN_PROGRESS" || r.Status == "PAUSED" || r.Status == "WAITING" || r.Status == "OPEN")
             .OrderBy(r => r.ScheduledAt ?? r.StartedAt ?? r.CreatedAt)
             .FirstOrDefault();
         if (live is not null) return live;

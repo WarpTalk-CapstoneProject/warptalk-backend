@@ -14,6 +14,15 @@ public class UserRepository : GenericRepository<User>, IUserRepository
     {
     }
 
+    public async Task<IReadOnlyList<Guid>> GetActiveUserIdsPageAsync(Guid? afterId, int pageSize, CancellationToken ct = default)
+    {
+        var query = _dbSet.AsNoTracking().Where(u => u.IsActive && u.DeletedAt == null);
+        if (afterId is { } after)
+            query = query.Where(u => u.Id.CompareTo(after) > 0);
+
+        return await query.OrderBy(u => u.Id).Select(u => u.Id).Take(pageSize).ToListAsync(ct);
+    }
+
     public async Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default)
     {
         return await _dbSet.AnyAsync(u => u.Email == email, ct);
@@ -226,7 +235,12 @@ public class UserRepository : GenericRepository<User>, IUserRepository
         return counts.ToDictionary(c => c.UserId, c => c.Count);
     }
 
-    private static IQueryable<User> ApplyFilters(
+    /// <summary>
+    /// The directory's WHERE clause. Public so tests can run it over plain rows and ask Npgsql to
+    /// translate it (ToQueryString) without a database; the search branch uses ILike, which only
+    /// the latter can evaluate.
+    /// </summary>
+    public static IQueryable<User> ApplyFilters(
         IQueryable<User> query,
         AdminUserDirectoryFilter filter,
         DateTime now)
@@ -267,10 +281,33 @@ public class UserRepository : GenericRepository<User>, IUserRepository
                 u.UserRoleUsers.Any(ur => ur.RevokedAt == null && ur.Role.Name == role));
         }
 
+        // Every bound is half-open: inclusive from, exclusive to.
+        if (filter.CreatedFrom is { } createdFrom)
+            query = query.Where(u => u.CreatedAt >= createdFrom);
+
+        if (filter.CreatedTo is { } createdTo)
+            query = query.Where(u => u.CreatedAt < createdTo);
+
+        // A NULL last_login_at fails both comparisons, so a last-login bound implicitly means
+        // "has signed in" — which is the only reading of "last signed in during August".
+        if (filter.LastLoginFrom is { } lastLoginFrom)
+            query = query.Where(u => u.LastLoginAt != null && u.LastLoginAt >= lastLoginFrom);
+
+        if (filter.LastLoginTo is { } lastLoginTo)
+            query = query.Where(u => u.LastLoginAt != null && u.LastLoginAt < lastLoginTo);
+
+        query = filter.NeverSignedIn switch
+        {
+            true => query.Where(u => u.LastLoginAt == null),
+            false => query.Where(u => u.LastLoginAt != null),
+            null => query,
+        };
+
         return query;
     }
 
-    private static IQueryable<User> ApplySort(IQueryable<User> query, string sort) => sort switch
+    /// <summary>The directory's ORDER BY. Public for the same reason as <see cref="ApplyFilters"/>.</summary>
+    public static IQueryable<User> ApplySort(IQueryable<User> query, string sort) => sort switch
     {
         "created_asc" => query.OrderBy(u => u.CreatedAt),
         "name_asc" => query.OrderBy(u => u.FullName),
@@ -285,4 +322,28 @@ public class UserRepository : GenericRepository<User>, IUserRepository
             .ThenBy(u => u.LastLoginAt),
         _ => query.OrderByDescending(u => u.CreatedAt),
     };
+
+    public Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .CountAsync(u => u.CreatedAt < instant && (u.DeletedAt == null || u.DeletedAt >= instant), ct);
+
+    public Task<int> CountCreatedBetweenAsync(DateTime from, DateTime to, CancellationToken ct = default)
+        => _dbSet
+            .AsNoTracking()
+            .CountAsync(u => u.CreatedAt >= from && u.CreatedAt < to, ct);
+
+    public async Task<IReadOnlyList<DateTime>> GetCreatedAtBetweenAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(u => u.CreatedAt >= from && u.CreatedAt < to)
+            .Select(u => u.CreatedAt)
+            .ToListAsync(ct);
+
+        return rows.Select(at => DateTime.SpecifyKind(at, DateTimeKind.Utc)).ToList();
+    }
 }

@@ -68,4 +68,14 @@ public class LanguageRepository : ILanguageRepository
             .AsNoTracking()
             .OrderBy(language => language.Code)
             .ToListAsync(ct);
+
+    public async Task<SupportedLanguage?> GetForUpdateAsync(string code, CancellationToken ct = default)
+    {
+        var normalized = code.Trim().ToLower();
+        return await _dbContext.SupportedLanguages
+            .FirstOrDefaultAsync(language => language.Code.ToLower() == normalized, ct);
+    }
+
+    public async Task AddAsync(SupportedLanguage language, CancellationToken ct = default)
+        => await _dbContext.SupportedLanguages.AddAsync(language, ct);
 }

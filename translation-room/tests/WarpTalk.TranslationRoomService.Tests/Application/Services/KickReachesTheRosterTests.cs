@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Moq;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Constants;
@@ -84,7 +85,7 @@ public class KickReachesTheRosterTests
         var result = await _sut.KickParticipantByUserAsync(RoomId, HostId, VisitorId);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().BeTrue();
+        result.Value.Should().Be(RosterRemovalOutcome.Removed);
         // The whole point: DISCONNECTED would be readmitted on the next join.
         participant.Status.Should().Be(TranslationRoomParticipantStatuses.Kicked);
         _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
@@ -141,7 +142,7 @@ public class KickReachesTheRosterTests
         var result = await _sut.KickParticipantByUserAsync(RoomId, HostId, VisitorId);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().BeFalse();
+        result.Value.Should().Be(RosterRemovalOutcome.NotOnRoster);
     }
 
     [Fact]
@@ -154,6 +155,9 @@ public class KickReachesTheRosterTests
         var result = await _sut.KickParticipantByUserAsync(RoomId, HostId, VisitorId);
 
         result.IsSuccess.Should().BeTrue();
+        // WT-699 / TC2103: idempotent, but not silent about it — the second press is reported as
+        // what it is, so MeetingService can tell the host the person was already gone.
+        result.Value.Should().Be(RosterRemovalOutcome.AlreadyRemoved);
         _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 

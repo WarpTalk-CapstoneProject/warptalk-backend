@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -11,18 +12,24 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 public sealed class BillingCycleWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<BillingCycleWorker> _logger;
     private readonly BillingWorkerOptions _options;
 
     public BillingCycleWorker(
         IServiceProvider serviceProvider,
         ILogger<BillingCycleWorker> logger,
-        IOptions<BillingWorkerOptions> options)
+        IOptions<BillingWorkerOptions> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
     }
+
+    /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
+    public const string LockResource = "billing:cycle-close";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -32,7 +39,14 @@ public sealed class BillingCycleWorker : BackgroundService
         {
             try
             {
-                await CloseDueCyclesAsync(stoppingToken);
+                // SINGLE RUNNER. The subscription xmin token already stops a double renewal, but the losing
+                // replica's whole batch (invoices included) rolls back with a concurrency error every tick.
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(5),
+                    ct => CloseDueCyclesAsync(ct),
+                    _logger,
+                    stoppingToken);
             }
             catch (Exception ex)
             {

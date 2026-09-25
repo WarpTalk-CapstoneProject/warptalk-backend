@@ -40,6 +40,14 @@ public interface IAdminUserService
     Task<Result<AdminUserDetailDto>> GetDetailAsync(Guid userId, CancellationToken ct = default);
 
     /// <summary>
+    /// New and active accounts over a window, compared with the window before it. A backwards,
+    /// oversized or unknown-compare window is a <see cref="ErrorCodes.ValidationError"/>.
+    /// </summary>
+    Task<Result<AdminUserInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Ends every session the account has open, by revoking its live refresh tokens.
     ///
     /// Does not lock the account or change its password — the person can sign in again
@@ -59,6 +67,17 @@ public interface IAdminUserService
     /// account stays usable until each token happens to expire, which is not what anybody reading
     /// "deactivated" on the screen would expect.
     /// </summary>
+    /// <summary>
+    /// The admin workspace page's force sign-out: <see cref="RevokeSessionsAsync"/> for each named
+    /// account, each recorded against <paramref name="workspaceId"/> so it lands on that
+    /// workspace's timeline.
+    /// </summary>
+    Task<Result<AdminWorkspaceSignOutResultDto>> RevokeSessionsForWorkspaceAsync(
+        Guid workspaceId,
+        AdminWorkspaceSignOutRequest request,
+        AdminActorContext actor,
+        CancellationToken ct = default);
+
     Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
         Guid userId,
         bool isActive,

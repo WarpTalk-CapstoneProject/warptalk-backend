@@ -495,6 +495,79 @@ public class TranslationRoomServiceTests
         _mockAudioRouteService.Verify(s => s.GenerateRoutesAsync(roomId, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    // ── WT-699 / TC3705: no translation on a workspace that cannot pay for it ─────────────
+
+    /// <summary>
+    /// Start Translation used to open a session at zero credits, and the meeting translated and
+    /// dubbed for free while every charge was refused. warptalk-ai's billing_worker now marks the
+    /// room suspended when a charge is refused; Start must honour it and say why.
+    /// </summary>
+    [Theory]
+    [InlineData("overage_cap", "run out of credits")]
+    [InlineData("invoice_overdue", "overdue invoice")]
+    [InlineData("trial_ended", "trial has ended")]
+    public async Task ResumeTranslationRoomAsync_IsRefusedWithTheReason_WhenTheRoomsAiServiceIsSuspended(
+        string reason, string expectedPhrase)
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockRedisStateRepository
+            .Setup(r => r.StringGetAsync($"translationRoom:{roomId}:ai_service_suspended"))
+            .ReturnsAsync("true");
+        _mockRedisStateRepository
+            .Setup(r => r.StringGetAsync($"translationRoom:{roomId}:ai_service_state"))
+            .ReturnsAsync($"{{\"serviceState\":\"suspended\",\"suspendedReason\":\"{reason}\"}}");
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        result.Error.Should().Contain(expectedPhrase);
+        _mockUow.Verify(u => u.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.Is<string>(p => p.Contains("RoomStarted"))),
+            Times.Never);
+    }
+
+    /// <summary>The workspace flag BillingService writes (trial end, overdue invoice) counts too.</summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_IsRefused_WhenTheWorkspacesAiServiceIsSuspended()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockRedisStateRepository
+            .Setup(r => r.StringGetAsync($"workspace:{room.WorkspaceId}:ai_service_suspended"))
+            .ReturnsAsync("true");
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_StillStarts_WhenTheSuspendedFlagSaysFalse()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockRedisStateRepository
+            .Setup(r => r.StringGetAsync($"workspace:{room.WorkspaceId}:ai_service_suspended"))
+            .ReturnsAsync("false");
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
     [Fact]
     public async Task ResumeTranslationRoomAsync_PublishesRoomStartedToTheGatewayRelay()
     {
@@ -726,7 +799,8 @@ public class TranslationRoomServiceTests
     /// (isOriginalHost || isActiveHost) while this accepted only the ORIGINAL one — so after a host
     /// transfer the first call tore down LiveKit and marked the meeting FINISHED, the second was
     /// refused, and the translation room stayed IN_PROGRESS forever. Nothing repairs that:
-    /// ExpireTranslationRoomAsync has no production callers.
+    /// ExpireTranslationRoomAsync's only caller (WT-714's booking sweep) is about meetings that
+    /// never happened, and it cannot touch an IN_PROGRESS room.
     ///
     /// The rule here is now RoomHostAccess — host OR workspace Owner/Admin — which is what WT-188
     /// established and WT-313 reconciled, so an orphaned room is always recoverable by an

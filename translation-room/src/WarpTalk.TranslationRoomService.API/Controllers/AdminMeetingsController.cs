@@ -6,6 +6,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs.Admin;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Contracts.Admin;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
@@ -18,7 +19,7 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/meetings")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.MeetingsRead)]
 public class AdminMeetingsController : ControllerBase
 {
     private readonly IAdminMeetingService _adminMeetingService;
@@ -45,6 +46,17 @@ public class AdminMeetingsController : ControllerBase
     public async Task<IActionResult> GetCounts(CancellationToken ct)
     {
         var result = await _adminMeetingService.GetCountsAsync(ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>Meetings held and hours over <c>[from, to)</c>, compared per <c>compare</c>, plus live counts.</summary>
+    [HttpGet("insights")]
+    public async Task<IActionResult> GetInsights(
+        [FromQuery] AdminInsightsQuery query,
+        CancellationToken ct,
+        [FromQuery] Guid? workspaceId = null)
+    {
+        var result = await _adminMeetingService.GetInsightsAsync(query, ct, workspaceId);
         return ToActionResult(result);
     }
 

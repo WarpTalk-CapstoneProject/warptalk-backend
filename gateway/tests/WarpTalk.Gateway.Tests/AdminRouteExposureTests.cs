@@ -35,6 +35,12 @@ public sealed class AdminRouteExposureTests
         // The System Health screen, served by workspace. Query-only against the metrics store:
         // nothing behind it can silence an alert, restart a container or write a sample.
         "/api/v1/admin/platform-health/{**catch-all}",
+        // The Providers page, served by billing. GET only: usage, cost, call outcomes and uptime of
+        // OpenAI, Cartesia, LiveKit and Stripe; configuration as set / not set, never a secret.
+        // Bare + catch-all for the same reason as meetings: GET /api/v1/admin/providers is the
+        // overview the page loads first, and the catch-all alone never matched it.
+        "/api/v1/admin/providers",
+        "/api/v1/admin/providers/{**catch-all}",
         // Product feedback, served by translation-room. Read-only and aggregated; comments come
         // back without the person who wrote them.
         "/api/v1/admin/feedback/{**catch-all}",
@@ -45,6 +51,17 @@ public sealed class AdminRouteExposureTests
         // Voice-clone consent, served by auth. COUNTS ONLY — a per-person list of who agreed to
         // being cloned is a register of biometric permissions, and nothing here acts on a person.
         "/api/v1/admin/voice-consent/{**catch-all}",
+        // G10 staff and roles, served by auth. Every endpoint behind it needs staff.read or
+        // staff.manage, and every write is audited before it commits. Bare + catch-all for the
+        // same reason as meetings: GET /api/v1/admin/staff is the list the screen calls.
+        "/api/v1/admin/staff",
+        "/api/v1/admin/staff/{**catch-all}",
+        // G12 pending-work inbox, served by workspace. It reads each owning service's inbox-items
+        // endpoint with the caller's own token, so it can never show more than the caller's role
+        // already could; its writes are triage only (assign, snooze, notes, done), each audited.
+        // Bare + catch-all: GET /api/v1/admin/inbox is the list the page calls.
+        "/api/v1/admin/inbox",
+        "/api/v1/admin/inbox/{**catch-all}",
     ];
 
     private static JsonElement Routes()

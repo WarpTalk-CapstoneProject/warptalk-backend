@@ -77,4 +77,33 @@ public interface IPluginToolAuditRepository : IGenericRepository<PluginToolAudit
     Task<IReadOnlyDictionary<Guid, int>> CountDistinctUsersByPluginForWorkspaceAsync(
         Guid workspaceId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// The plugins members have successfully used in one workspace - what a workspace that never
+    /// edited its plugin list carries over while AllowAnyPlugins is on.
+    /// </summary>
+    Task<IReadOnlySet<Guid>> GetPluginIdsUsedInWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Successful calls grouped by (workspace, plugin), for the given plugins - and one workspace
+    /// when <paramref name="workspaceId"/> is set. Calls with no workspace are not counted.
+    /// </summary>
+    Task<IReadOnlyList<WorkspacePluginUsage>> GetSuccessfulUsageByWorkspaceAsync(
+        IReadOnlyCollection<Guid> pluginIds,
+        Guid? workspaceId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Per user, the last successful call and how many there were, for one plugin in one workspace.
+    /// </summary>
+    Task<IReadOnlyDictionary<Guid, PluginUsageByUser>> GetUsageByUserAsync(
+        Guid workspaceId,
+        Guid pluginId,
+        CancellationToken ct = default);
 }
+
+/// <summary>One member's successful use of one plugin in one workspace.</summary>
+public sealed record PluginUsageByUser(DateTime LastUsedAt, int CallCount);
+
+/// <summary>Successful calls of one plugin inside one workspace.</summary>
+public sealed record WorkspacePluginUsage(Guid WorkspaceId, Guid PluginId, int CallCount, DateTime LastUsedAt);

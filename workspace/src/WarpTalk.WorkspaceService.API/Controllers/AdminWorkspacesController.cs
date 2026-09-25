@@ -24,7 +24,6 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/workspaces")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminWorkspacesController : ControllerBase
 {
     private readonly IAdminWorkspaceService _adminWorkspaceService;
@@ -35,6 +34,7 @@ public class AdminWorkspacesController : ControllerBase
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.WorkspacesRead)]
     public async Task<IActionResult> GetDirectory(
         [FromQuery] AdminWorkspaceDirectoryQuery query,
         CancellationToken ct)
@@ -43,7 +43,19 @@ public class AdminWorkspacesController : ControllerBase
         return ToActionResult(result);
     }
 
+    /// <summary>Workspaces created over <c>[from, to)</c>, compared per <c>compare</c>, and suspended now.</summary>
+    [HttpGet("insights")]
+    [RequirePermission(AdminPermissions.WorkspacesRead)]
+    public async Task<IActionResult> GetInsights(
+        [FromQuery] AdminInsightsQuery query,
+        CancellationToken ct)
+    {
+        var result = await _adminWorkspaceService.GetInsightsAsync(query, ct);
+        return ToActionResult(result);
+    }
+
     [HttpGet("{id:guid}")]
+    [RequirePermission(AdminPermissions.WorkspacesRead)]
     public async Task<IActionResult> GetDetail(Guid id, CancellationToken ct)
     {
         var result = await _adminWorkspaceService.GetDetailAsync(id, ct);
@@ -58,6 +70,7 @@ public class AdminWorkspacesController : ControllerBase
     /// without it every request here would simply 404 on the route constraint.
     /// </summary>
     [HttpGet("by-slug/{slug}")]
+    [RequirePermission(AdminPermissions.WorkspacesRead)]
     public async Task<IActionResult> GetDetailBySlug(string slug, CancellationToken ct)
     {
         var result = await _adminWorkspaceService.GetDetailBySlugAsync(slug, ct);
@@ -65,6 +78,7 @@ public class AdminWorkspacesController : ControllerBase
     }
 
     [HttpPost("{id:guid}/suspend")]
+    [RequirePermission(AdminPermissions.WorkspacesLifecycle)]
     public async Task<IActionResult> Suspend(
         Guid id,
         [FromBody] AdminWorkspaceLifecycleRequest request,
@@ -79,6 +93,7 @@ public class AdminWorkspacesController : ControllerBase
     }
 
     [HttpPost("{id:guid}/reactivate")]
+    [RequirePermission(AdminPermissions.WorkspacesLifecycle)]
     public async Task<IActionResult> Reactivate(
         Guid id,
         [FromBody] AdminWorkspaceLifecycleRequest request,
@@ -97,6 +112,7 @@ public class AdminWorkspacesController : ControllerBase
     /// is not idempotent in the audit trail — every acceptance appends a row.
     /// </summary>
     [HttpPost("{id:guid}/delete")]
+    [RequirePermission(AdminPermissions.WorkspacesLifecycle)]
     public async Task<IActionResult> Delete(
         Guid id,
         [FromBody] AdminWorkspaceLifecycleRequest request,
@@ -116,6 +132,7 @@ public class AdminWorkspacesController : ControllerBase
     /// bookkeeping the admin needs to operate suspensions, deletions and support requests.
     /// </summary>
     [HttpGet("{id:guid}/members")]
+    [RequirePermission(AdminPermissions.WorkspacesRead)]
     public async Task<IActionResult> GetMembers(Guid id, CancellationToken ct)
     {
         var result = await _adminWorkspaceService.GetMembersAsync(id, ct);

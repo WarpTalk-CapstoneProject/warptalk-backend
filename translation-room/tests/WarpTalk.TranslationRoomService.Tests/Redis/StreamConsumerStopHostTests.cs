@@ -31,7 +31,8 @@ public sealed class StreamConsumerStopHostTests
         var service = new TranslationRoomEventConsumerService(
             FailingRepository(),
             Mock.Of<IServiceScopeFactory>(),
-            logger.Object);
+            logger.Object,
+            Mock.Of<WarpTalk.Shared.Coordination.ILeaderElection>(l => l.IsLeader == true));
 
         await StartAndStopAsync(service, logger);
     }

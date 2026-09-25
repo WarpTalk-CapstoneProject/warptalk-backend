@@ -29,7 +29,29 @@ public interface IAdminAuditRecorder
         Guid actorId,
         string reason,
         string correlationId,
+        Guid? workspaceId,
         IReadOnlyDictionary<string, string?>? beforeSummary = null,
         IReadOnlyDictionary<string, string?>? afterSummary = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// The same guarantee for a subject that is not a user account (G10: a staff role, an
+    /// invitation), or when the entry should name what the subject was called at the time.
+    /// </summary>
+    Task<Result> RecordSubjectAsync(AdminAuditSubjectRecord record, CancellationToken ct = default);
 }
+
+/// <param name="EntityType">See AdminAuditEntityTypes.</param>
+/// <param name="ActorId">
+/// Normally the admin. For an invitation accepted at sign-in, the invitee: nobody else acted.
+/// </param>
+public sealed record AdminAuditSubjectRecord(
+    string Action,
+    string EntityType,
+    Guid? EntityId,
+    string? EntityLabel,
+    Guid ActorId,
+    string Reason,
+    string CorrelationId,
+    IReadOnlyDictionary<string, string?>? BeforeSummary = null,
+    IReadOnlyDictionary<string, string?>? AfterSummary = null);

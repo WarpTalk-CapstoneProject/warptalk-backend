@@ -18,7 +18,15 @@ public class RedisVoiceCarryOverQueue : IVoiceCarryOverQueue
     private const string CarryOverStream = "voice:auto_clone_ready";
     private const string DeleteStream = "voice:delete_requests";
     private const string GroupName = "auth-carry-over";
-    private const string ConsumerName = "auth-carry-over-consumer";
+
+    /// <summary>
+    /// Entries a consumer read but never acknowledged — a failed apply, or a replica that died
+    /// holding them — are reclaimed by whichever replica reads next once they have been idle this
+    /// long. That is what makes "a message that fails for a transient reason is redelivered"
+    /// (VoiceCarryOverConsumerWorker) true: reads were ">" only, so nothing pending was ever
+    /// read again. Applying one twice is safe (upsert behind a unique index).
+    /// </summary>
+    private const long ReclaimIdleMilliseconds = 5 * 60 * 1000;
 
     // The payload is four small fields. This is a backlog for a deploy, not a queue.
     private const int DeleteStreamMaxLength = 1_000;
@@ -26,6 +34,13 @@ public class RedisVoiceCarryOverQueue : IVoiceCarryOverQueue
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<RedisVoiceCarryOverQueue> _logger;
     private bool _groupReady;
+
+    /// <summary>
+    /// Unique per process. This was the constant "auth-carry-over-consumer", shared by every auth
+    /// replica, so all of them wrote into one pending list and a dead replica's entries could not
+    /// be told apart from a live one's.
+    /// </summary>
+    private readonly string _consumerName = $"auth-carry-over-{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public RedisVoiceCarryOverQueue(
         IConnectionMultiplexer redis,
@@ -73,8 +88,14 @@ public class RedisVoiceCarryOverQueue : IVoiceCarryOverQueue
         {
             await EnsureGroupAsync();
 
-            var entries = await _redis.GetDatabase().StreamReadGroupAsync(
-                CarryOverStream, GroupName, ConsumerName, StreamPosition.NewMessages, count);
+            var database = _redis.GetDatabase();
+            var entries = (await database.StreamAutoClaimAsync(
+                CarryOverStream, GroupName, _consumerName, ReclaimIdleMilliseconds, "0-0", count)).ClaimedEntries;
+            if (entries.Length == 0)
+            {
+                entries = await database.StreamReadGroupAsync(
+                    CarryOverStream, GroupName, _consumerName, StreamPosition.NewMessages, count);
+            }
 
             var messages = new List<VoiceCarryOverMessage>(entries.Length);
             foreach (var entry in entries)

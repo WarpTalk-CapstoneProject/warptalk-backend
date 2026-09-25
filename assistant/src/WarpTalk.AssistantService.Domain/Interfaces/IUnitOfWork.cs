@@ -7,6 +7,8 @@ public interface IUnitOfWork : IDisposable
     IAssistantConversationRepository AssistantConversationRepository { get; }
     IAssistantMessageRepository AssistantMessageRepository { get; }
     IAssistantToolCallRepository AssistantToolCallRepository { get; }
+    IPlatformConversationRepository PlatformConversationRepository { get; }
+    IPlatformMessageRepository PlatformMessageRepository { get; }
     IPluginRepository PluginRepository { get; }
     IPluginInstallationRepository PluginInstallationRepository { get; }
     IPluginConnectionRepository PluginConnectionRepository { get; }
@@ -15,6 +17,7 @@ public interface IUnitOfWork : IDisposable
     IWorkspacePluginRepository WorkspacePluginRepository { get; }
     IWorkspacePluginCurationRepository WorkspacePluginCurationRepository { get; }
     IPluginRequestRepository PluginRequestRepository { get; }
+    IWorkspacePluginOverrideRepository WorkspacePluginOverrideRepository { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

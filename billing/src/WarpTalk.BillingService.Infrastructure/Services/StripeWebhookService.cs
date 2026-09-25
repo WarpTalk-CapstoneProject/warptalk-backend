@@ -10,6 +10,7 @@ using Stripe;
 using Stripe.Checkout;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.Shared;
 
@@ -107,8 +108,22 @@ public class StripeWebhookService : IStripeWebhookService
                         // WT-429: credits to grant, decided server-side at checkout creation.
                         Credits: session.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var sessionCredits)
                             && int.TryParse(sessionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var sessionCreditCount)
-                            ? sessionCreditCount : 0
-                    ));
+                            ? sessionCreditCount : 0,
+                        // G11: an add-on checkout creates its own Stripe subscription.
+                        StripeSubscriptionId: session.SubscriptionId ?? string.Empty
+                    ).WithCatalogMetadata(session.Metadata));
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
+                }
+            }
+            // WT-699 / TC3906: the buyer abandoned Checkout and Stripe expired the session. This
+            // event used to fall through every branch unhandled, so a payment waiting on the
+            // session stayed Pending forever. Same failure contract as every branch here — a
+            // retryable failure is reported so Stripe redelivers.
+            else if (type == PaymentConstants.StripeEvents.CheckoutSessionExpired)
+            {
+                if (stripeEvent.Data.Object is Session expiredSession)
+                {
+                    var result = await _paymentAppService.ExpireCheckoutSessionAsync(expiredSession.Id, cancellationToken);
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
@@ -178,7 +193,15 @@ public class StripeWebhookService : IStripeWebhookService
             }
             else if (type == PaymentConstants.StripeEvents.CustomerSubscriptionUpdated)
             {
-                if (stripeEvent.Data.Object is Stripe.Subscription subscription)
+                if (stripeEvent.Data.Object is Stripe.Subscription addOnSubscription
+                    && CatalogMetadataMapper.IsAddOnSubscription(addOnSubscription.Metadata))
+                {
+                    // G11: an add-on's own subscription. Never routed as a plan update.
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(AddOnEvent(
+                        addOnSubscription, PaymentConstants.PaymentTypes.AddOnUpdate, PaymentConstants.PaymentStatuses.SubscriptionUpdated));
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
+                }
+                else if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
                     var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
@@ -201,7 +224,16 @@ public class StripeWebhookService : IStripeWebhookService
             }
             else if (type == PaymentConstants.StripeEvents.CustomerSubscriptionDeleted)
             {
-                if (stripeEvent.Data.Object is Stripe.Subscription subscription)
+                if (stripeEvent.Data.Object is Stripe.Subscription addOnSubscription
+                    && CatalogMetadataMapper.IsAddOnSubscription(addOnSubscription.Metadata))
+                {
+                    // G11: an add-on ending. Routed as a PLAN cancellation this would have ended
+                    // the workspace's plan (CancellationPaymentEventHandler) — it must only end the add-on.
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(AddOnEvent(
+                        addOnSubscription, PaymentConstants.PaymentTypes.AddOnCancellation, PaymentConstants.PaymentStatuses.Cancelled));
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
+                }
+                else if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
                     var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
@@ -231,28 +263,50 @@ public class StripeWebhookService : IStripeWebhookService
                     {
                         var subscription = await _stripeSubscriptionService.GetAsync(subId);
 
-                        string paymentType = invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCreate ? PaymentConstants.PaymentTypes.Subscription : PaymentConstants.PaymentTypes.SubscriptionRenewal;
-                        var finalAmount = NormalizeStripeAmount(invoice.AmountPaid, invoice.Currency);
+                        if (CatalogMetadataMapper.IsAddOnSubscription(subscription.Metadata))
+                        {
+                            // G11: an add-on's invoice. The first one (subscription_create) is the
+                            // checkout itself, already recorded by checkout.session.completed; only
+                            // a renewal is new money.
+                            if (invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCycle)
+                            {
+                                var renewal = await _paymentAppService.ProcessPaymentEventAsync(AddOnEvent(
+                                    subscription, PaymentConstants.PaymentTypes.AddOnRenewal, PaymentConstants.PaymentStatuses.Paid) with
+                                {
+                                    PaymentIntentId = invoice.Id,
+                                    Amount = NormalizeStripeAmount(invoice.AmountPaid, invoice.Currency),
+                                    Currency = invoice.Currency,
+                                    InvoiceUrl = invoice.HostedInvoiceUrl,
+                                    InvoicePdf = invoice.InvoicePdf,
+                                });
+                                if (!renewal.IsSuccess) processingFailure = Capture(renewal, type);
+                            }
+                        }
+                        else
+                        {
+                            string paymentType = invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCreate ? PaymentConstants.PaymentTypes.Subscription : PaymentConstants.PaymentTypes.SubscriptionRenewal;
+                            var finalAmount = NormalizeStripeAmount(invoice.AmountPaid, invoice.Currency);
 
-                        var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
-                            StripeSessionId: string.Empty,
-                            PaymentIntentId: invoice.Id,
-                            Amount: finalAmount,
-                            Currency: invoice.Currency,
-                            UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
-                            WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
-                            PaymentType: paymentType,
-                            Status: PaymentConstants.PaymentStatuses.Paid,
-                            InvoiceUrl: invoice.HostedInvoiceUrl,
-                            InvoicePdf: invoice.InvoicePdf,
-                            PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                            BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
-                        // WT-429: credits to grant, decided server-side at checkout creation.
-                        Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
-                            && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
-                            ? subscriptionCreditCount : 0
-                        ));
-                        if (!result.IsSuccess) processingFailure = Capture(result, type);
+                            var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                                StripeSessionId: string.Empty,
+                                PaymentIntentId: invoice.Id,
+                                Amount: finalAmount,
+                                Currency: invoice.Currency,
+                                UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                                WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
+                                PaymentType: paymentType,
+                                Status: PaymentConstants.PaymentStatuses.Paid,
+                                InvoiceUrl: invoice.HostedInvoiceUrl,
+                                InvoicePdf: invoice.InvoicePdf,
+                                PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                                BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                            // WT-429: credits to grant, decided server-side at checkout creation.
+                            Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
+                                && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
+                                ? subscriptionCreditCount : 0
+                            ));
+                            if (!result.IsSuccess) processingFailure = Capture(result, type);
+                        }
                     }
                 }
             }
@@ -308,6 +362,32 @@ public class StripeWebhookService : IStripeWebhookService
         errorCode != ErrorCodes.ValidationError
         && errorCode != ErrorCodes.BillingPlanNotFound
         && errorCode != ErrorCodes.NotFound;
+
+    /// <summary>
+    /// G11: a payment event about an add-on's Stripe subscription. Keyed on the subscription id
+    /// (not a session), and carrying the live quantity, cancel flag and paid-through date.
+    /// </summary>
+    private static StripePaymentEventRequest AddOnEvent(Stripe.Subscription subscription, string paymentType, string status)
+    {
+        var item = subscription.Items?.Data?.FirstOrDefault();
+        string Meta(string key) => subscription.Metadata.TryGetValue(key, out var value) ? value : string.Empty;
+
+        return new StripePaymentEventRequest(
+            StripeSessionId: string.Empty,
+            PaymentIntentId: subscription.Id,
+            Amount: 0,
+            Currency: subscription.Currency ?? PaymentConstants.Currencies.Usd,
+            UserIdStr: Meta(PaymentConstants.StripeMetadata.UserId),
+            WorkspaceIdStr: Meta(PaymentConstants.StripeMetadata.WorkspaceId),
+            PaymentType: paymentType,
+            Status: status,
+            BillingCycle: Meta(PaymentConstants.StripeMetadata.BillingCycle),
+            Quantity: (int)(item?.Quantity ?? 0),
+            StripeSubscriptionId: subscription.Id,
+            CancelAtPeriodEnd: subscription.CancelAtPeriodEnd,
+            PeriodEnd: item?.CurrentPeriodEnd
+        ).WithCatalogMetadata(subscription.Metadata);
+    }
 
     private static decimal NormalizeStripeAmount(decimal amount, string? currency)
     {

@@ -41,6 +41,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         WorkspaceDirectorySort.MembersDesc,
         WorkspaceDirectorySort.MembersAsc,
         WorkspaceDirectorySort.UpdatedDesc,
+        WorkspaceDirectorySort.UpdatedAsc,
     ];
 
     private readonly IUnitOfWork _unitOfWork;
@@ -107,6 +108,13 @@ public class AdminWorkspaceService : IAdminWorkspaceService
                 WorkspaceAdminErrors.InvalidMemberCountRange, ErrorCodes.ValidationError);
         }
 
+        if (AdminDateFilter.ValidateRange(query.CreatedFrom, query.CreatedTo, "createdFrom", "createdTo")
+            is { } createdRangeError)
+        {
+            return Result.Failure<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+                createdRangeError, ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize) = query.Normalize();
 
         var filter = new WorkspaceDirectoryFilter(
@@ -116,7 +124,9 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             status,
             query.MinMembers is { } minMembers ? Math.Max(minMembers, 0) : null,
             query.MaxMembers is { } maxMembers ? Math.Max(maxMembers, 0) : null,
-            sort);
+            sort,
+            AdminDateFilter.ToUtc(query.CreatedFrom),
+            AdminDateFilter.ToUtc(query.CreatedTo));
 
         try
         {
@@ -133,6 +143,52 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         {
             _logger.LogError(ex, "Admin workspace directory query failed.");
             return Result.Failure<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+                WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspaces, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// <c>newWorkspaces</c> counts workspaces by <c>created_at</c> in the window, including ones
+    /// deleted since (a past period must not shrink after the fact). <c>suspendedNow</c> excludes
+    /// deleted workspaces: a deleted workspace is gone, not suspended.
+    /// </summary>
+    public async Task<Result<AdminWorkspaceInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default)
+    {
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
+        {
+            return Result.Failure<AdminWorkspaceInsightsDto>(error!, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var workspaces = _unitOfWork.WorkspaceRepository;
+            var created = await workspaces.CountCreatedBetweenAsync(window.From, window.To, ct);
+            var createdBefore = await workspaces.CountCreatedBetweenAsync(window.PreviousFrom, window.PreviousTo, ct);
+            var suspended = await workspaces.CountSuspendedAsync(ct);
+
+            // WT-692: six local months of growth for the investor view on /admin/billing.
+            var months = new List<AdminWorkspaceMonthDto>(AdminComparisonRange.GrowthMonths);
+            foreach (var month in AdminComparisonRange.MonthsEnding(window.To, window.TimeZone))
+            {
+                months.Add(new AdminWorkspaceMonthDto(
+                    month.Key,
+                    await workspaces.CountCreatedBetweenAsync(month.Start, month.End, ct),
+                    await workspaces.CountExistingAtAsync(month.End, ct)));
+            }
+
+            return Result.Success(new AdminWorkspaceInsightsDto(
+                window.Range,
+                window.PreviousRange,
+                [new AdminInsightMetric("newWorkspaces", created, createdBefore, AdminInsightUnits.Count, true)],
+                suspended,
+                months));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin workspace insights query failed.");
+            return Result.Failure<AdminWorkspaceInsightsDto>(
                 WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspaces, ErrorCodes.InternalServerError);
         }
     }

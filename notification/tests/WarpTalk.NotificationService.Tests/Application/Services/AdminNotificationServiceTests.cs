@@ -24,6 +24,8 @@ public class AdminNotificationServiceTests
     private readonly Mock<IValidator<CreateAdminNotificationDto>> _mockValidator;
     private readonly Mock<IMessagePublisher> _mockPublisher;
     private readonly Mock<ILogger<AdminNotificationService>> _mockLogger;
+    private readonly Mock<IAdminAudienceResolver> _mockAudience = new();
+    private readonly List<Guid> _everyone = new() { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
     private readonly AdminNotificationService _sut;
 
     public AdminNotificationServiceTests()
@@ -33,7 +35,109 @@ public class AdminNotificationServiceTests
         _mockPublisher = new Mock<IMessagePublisher>();
         _mockLogger = new Mock<ILogger<AdminNotificationService>>();
 
-        _sut = new AdminNotificationService(_mockUnitOfWork.Object, _mockValidator.Object, _mockPublisher.Object, _mockLogger.Object);
+        _mockAudience
+            .Setup(a => a.ResolveAsync(NotificationConstants.TargetModeBroadcast, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<IReadOnlyList<Guid>>(_everyone));
+
+        _sut = new AdminNotificationService(_mockUnitOfWork.Object, _mockValidator.Object, _mockPublisher.Object, _mockLogger.Object, _mockAudience.Object);
+    }
+
+    // ── WT-699 / TC4104: BROADCAST and SEGMENT reach real people ────────────────────────
+
+    private Mock<IAdminNotificationRepository> AcceptingRepository(Action<AdminNotification>? onAdd = null)
+    {
+        var repo = new Mock<IAdminNotificationRepository>();
+        repo.Setup(r => r.AddAsync(It.IsAny<AdminNotification>(), It.IsAny<CancellationToken>()))
+            .Callback<AdminNotification, CancellationToken>((n, _) => onAdd?.Invoke(n))
+            .Returns(Task.CompletedTask);
+        _mockUnitOfWork.Setup(u => u.AdminNotificationRepository).Returns(repo.Object);
+        return repo;
+    }
+
+    [Fact]
+    public async Task Broadcast_IsDeliveredToEveryResolvedUser_AndStoresTheModeNotTheList()
+    {
+        var dto = new CreateAdminNotificationDto(
+            "Title", "Content", NotificationConstants.TypeAnnouncement, NotificationConstants.TargetModeBroadcast, null, null);
+        _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>())).ReturnsAsync(new ValidationResult());
+        AdminNotification? stored = null;
+        AcceptingRepository(n => stored = n);
+        var published = new List<DeliveryEventPayload>();
+        _mockPublisher
+            .Setup(p => p.PublishAsync("admin-notifications-delivery", It.IsAny<DeliveryEventPayload>(), It.IsAny<CancellationToken>()))
+            .Callback<string, DeliveryEventPayload, CancellationToken>((_, payload, _) => published.Add(payload))
+            .Returns(Task.CompletedTask);
+
+        var result = await _sut.CreateAdminNotificationAsync(Guid.NewGuid(), dto);
+
+        Assert.True(result.IsSuccess, result.Error);
+        var payload = Assert.Single(published);
+        Assert.Equal(NotificationConstants.TargetModeBroadcast, payload.TargetAudienceMode);
+        Assert.Equal(_everyone.OrderBy(x => x), payload.SpecificUserIds!.OrderBy(x => x));
+        Assert.Equal(NotificationConstants.TargetModeBroadcast, stored!.TargetAudienceMode);
+        Assert.DoesNotContain("userIds", stored.TargetAudienceData);
+    }
+
+    [Fact]
+    public async Task Segment_ResolvesTheNamedWorkspace()
+    {
+        var workspaceId = Guid.NewGuid();
+        var member = Guid.NewGuid();
+        _mockAudience
+            .Setup(a => a.ResolveAsync(NotificationConstants.TargetModeSegment, workspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<IReadOnlyList<Guid>>(new[] { member }));
+        var dto = new CreateAdminNotificationDto(
+            "Title", "Content", NotificationConstants.TypeAnnouncement, NotificationConstants.TargetModeSegment, null, workspaceId);
+        _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>())).ReturnsAsync(new ValidationResult());
+        AcceptingRepository();
+        DeliveryEventPayload? published = null;
+        _mockPublisher
+            .Setup(p => p.PublishAsync("admin-notifications-delivery", It.IsAny<DeliveryEventPayload>(), It.IsAny<CancellationToken>()))
+            .Callback<string, DeliveryEventPayload, CancellationToken>((_, payload, _) => published = payload)
+            .Returns(Task.CompletedTask);
+
+        var result = await _sut.CreateAdminNotificationAsync(Guid.NewGuid(), dto);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(new[] { member }, published!.SpecificUserIds);
+    }
+
+    [Fact]
+    public async Task Broadcast_WhoseAudienceCannotBeResolved_WritesNothing()
+    {
+        _mockAudience
+            .Setup(a => a.ResolveAsync(NotificationConstants.TargetModeBroadcast, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<IReadOnlyList<Guid>>("down", ErrorCodes.ServiceUnavailable));
+        var dto = new CreateAdminNotificationDto(
+            "Title", "Content", NotificationConstants.TypeAnnouncement, NotificationConstants.TargetModeBroadcast, null, null);
+        _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>())).ReturnsAsync(new ValidationResult());
+        var repo = AcceptingRepository();
+
+        var result = await _sut.CreateAdminNotificationAsync(Guid.NewGuid(), dto);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
+        repo.Verify(r => r.AddAsync(It.IsAny<AdminNotification>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockPublisher.Verify(p => p.PublishAsync(It.IsAny<string>(), It.IsAny<DeliveryEventPayload>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Segment_WithNobodyInIt_IsRefused()
+    {
+        var workspaceId = Guid.NewGuid();
+        _mockAudience
+            .Setup(a => a.ResolveAsync(NotificationConstants.TargetModeSegment, workspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<IReadOnlyList<Guid>>(Array.Empty<Guid>()));
+        var dto = new CreateAdminNotificationDto(
+            "Title", "Content", NotificationConstants.TypeAnnouncement, NotificationConstants.TargetModeSegment, null, workspaceId);
+        _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>())).ReturnsAsync(new ValidationResult());
+        var repo = AcceptingRepository();
+
+        var result = await _sut.CreateAdminNotificationAsync(Guid.NewGuid(), dto);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        repo.Verify(r => r.AddAsync(It.IsAny<AdminNotification>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
