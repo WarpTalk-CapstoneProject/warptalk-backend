@@ -20,10 +20,28 @@ namespace WarpTalk.NotificationService.API.Controllers;
 public sealed class AdminAnnouncementsController : CmsControllerBase
 {
     private readonly IAnnouncementService _announcements;
+    private readonly IStaffAccessResolver? _access;
 
-    public AdminAnnouncementsController(IAnnouncementService announcements)
+    public AdminAnnouncementsController(IAnnouncementService announcements, IStaffAccessResolver? access = null)
     {
         _announcements = announcements;
+        _access = access;
+    }
+
+    /// <summary>
+    /// An announcement with an email channel is an audience send, so choosing that channel — and
+    /// publishing an announcement that has one — also needs content.email_send.
+    /// </summary>
+    private async Task<bool> MaySendEmailAsync(CancellationToken ct) =>
+        _access is null || await _access.HasPermissionAsync(User, AdminPermissions.ContentEmailSend, ct);
+
+    private IActionResult EmailForbidden() =>
+        ControllerResults.Failure(this, "Sending an announcement by email needs the content.email_send permission.", WarpTalk.Shared.ErrorCodes.Forbidden);
+
+    private async Task<bool> SendsEmailAsync(Guid id, CancellationToken ct)
+    {
+        var current = await _announcements.GetAsync(id, ct);
+        return current.IsSuccess && current.Value!.EmailTemplateKey is not null;
     }
 
     [HttpGet]
@@ -39,20 +57,35 @@ public sealed class AdminAnnouncementsController : CmsControllerBase
 
     [AdminAudited(AdminAuditCmsActions.AnnouncementCreated, AdminAuditEntityTypes.Announcement, typeof(Announcement))]
     [HttpPost]
-    public Task<IActionResult> Create([FromBody] UpsertAnnouncementRequest request, CancellationToken ct) =>
-        AsActor(actor => _announcements.CreateAsync(actor, request, ct),
+    public async Task<IActionResult> Create([FromBody] UpsertAnnouncementRequest request, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(request.EmailTemplateKey) && !await MaySendEmailAsync(ct)) return EmailForbidden();
+        return await AsActor(actor => _announcements.CreateAsync(actor, request, ct),
             created => Created($"/api/v1/admin/notifications/announcements/{created.Id}", created));
+    }
 
     [AdminAudited(AdminAuditCmsActions.AnnouncementUpdated, AdminAuditEntityTypes.Announcement, typeof(Announcement), EntityRouteKey = "id")]
     [HttpPut("{id:guid}")]
-    public Task<IActionResult> Update(Guid id, [FromBody] UpsertAnnouncementRequest request, CancellationToken ct) =>
-        AsActor(actor => _announcements.UpdateAsync(actor, id, request, ct));
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpsertAnnouncementRequest request, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(request.EmailTemplateKey))
+        {
+            var current = await _announcements.GetAsync(id, ct);
+            var changed = !current.IsSuccess
+                || !string.Equals(current.Value!.EmailTemplateKey, request.EmailTemplateKey.Trim().ToLowerInvariant(), StringComparison.Ordinal);
+            if (changed && !await MaySendEmailAsync(ct)) return EmailForbidden();
+        }
+        return await AsActor(actor => _announcements.UpdateAsync(actor, id, request, ct));
+    }
 
     /// <summary>Publishes now (no startsAt) or schedules (a future startsAt).</summary>
     [AdminAudited(AdminAuditCmsActions.AnnouncementPublished, AdminAuditEntityTypes.Announcement, typeof(Announcement), EntityRouteKey = "id")]
     [HttpPost("{id:guid}/publish")]
-    public Task<IActionResult> Publish(Guid id, [FromBody] PublishAnnouncementRequest request, CancellationToken ct) =>
-        AsActor(actor => _announcements.PublishAsync(actor, id, request, ct));
+    public async Task<IActionResult> Publish(Guid id, [FromBody] PublishAnnouncementRequest request, CancellationToken ct)
+    {
+        if (await SendsEmailAsync(id, ct) && !await MaySendEmailAsync(ct)) return EmailForbidden();
+        return await AsActor(actor => _announcements.PublishAsync(actor, id, request, ct));
+    }
 
     [AdminAudited(AdminAuditCmsActions.AnnouncementUnpublished, AdminAuditEntityTypes.Announcement, typeof(Announcement), EntityRouteKey = "id")]
     [HttpPost("{id:guid}/unpublish")]
@@ -75,8 +108,17 @@ public sealed class AdminAnnouncementsController : CmsControllerBase
 
     [AdminAudited(AdminAuditCmsActions.AnnouncementBulkAction, AdminAuditEntityTypes.Announcement, typeof(Announcement))]
     [HttpPost("bulk")]
-    public Task<IActionResult> Bulk([FromBody] AnnouncementBulkRequest request, CancellationToken ct) =>
-        AsActor(actor => _announcements.BulkAsync(actor, request, ct));
+    public async Task<IActionResult> Bulk([FromBody] AnnouncementBulkRequest request, CancellationToken ct)
+    {
+        if (string.Equals(request.Action, "publish", StringComparison.OrdinalIgnoreCase) && !await MaySendEmailAsync(ct))
+        {
+            foreach (var id in (request.Ids ?? []).Distinct().Take(AnnouncementConstants.MaxBulkItems))
+            {
+                if (await SendsEmailAsync(id, ct)) return EmailForbidden();
+            }
+        }
+        return await AsActor(actor => _announcements.BulkAsync(actor, request, ct));
+    }
 
     /// <summary>An image for an announcement (multipart, one file named "file").</summary>
     [AdminAudited(AdminAuditCmsActions.AnnouncementAssetAdded, AdminAuditEntityTypes.Announcement, typeof(AnnouncementAsset))]

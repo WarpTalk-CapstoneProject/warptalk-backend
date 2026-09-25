@@ -42,6 +42,8 @@ public static class AdminPermissions
 
     public const string ContentAnnouncements = "content.announcements";
     public const string ContentEmailTemplates = "content.email_templates";
+    /// <summary>Email CMS v3: send a custom email template to an audience (or as an announcement's email).</summary>
+    public const string ContentEmailSend = "content.email_send";
 
     public const string GlossaryRead = "glossary.read";
     public const string GlossaryManage = "glossary.manage";
@@ -125,6 +127,7 @@ public static class AdminPermissions
 
         new(ContentAnnouncements, Areas.Content, "Write, publish and archive platform announcements.", false),
         new(ContentEmailTemplates, Areas.Content, "Edit, restore and test-send transactional email templates.", false),
+        new(ContentEmailSend, Areas.Content, "Send a custom email template to an audience, or as an announcement's email.", false),
 
         new(GlossaryRead, Areas.Glossary, "View the platform glossary and its history.", true),
         new(GlossaryManage, Areas.Glossary, "Create, edit, publish, archive and import platform glossary terms.", false),
@@ -214,7 +217,7 @@ public static class BuiltInStaffRoles
         new(ContentMarketing, "Content / Marketing",
             "Announcements, email templates and the platform glossary.",
             [
-                AdminPermissions.ContentAnnouncements, AdminPermissions.ContentEmailTemplates,
+                AdminPermissions.ContentAnnouncements, AdminPermissions.ContentEmailTemplates, AdminPermissions.ContentEmailSend,
                 AdminPermissions.GlossaryRead, AdminPermissions.GlossaryManage,
                 AdminPermissions.WorkspacesRead, AdminPermissions.MeetingsRead,
                 AdminPermissions.SettingsRead, AdminPermissions.WarpBotUse,

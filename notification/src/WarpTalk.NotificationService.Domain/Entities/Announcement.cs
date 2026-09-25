@@ -101,4 +101,13 @@ public partial class Announcement
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Optional email channel: a custom email template sent to this announcement's audience when it
+    /// goes live. Null sends no email.
+    /// </summary>
+    public string? EmailTemplateKey { get; set; }
+
+    /// <summary>The audience send the email channel created, once it was published.</summary>
+    public Guid? EmailCampaignId { get; set; }
 }

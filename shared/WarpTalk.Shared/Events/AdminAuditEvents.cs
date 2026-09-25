@@ -71,6 +71,8 @@ public static class AdminAuditEntityTypes
     public const string EmailBlock = "email_block";
     /// <summary>A named sample-data set for an email's preview. Entity id = the set's id.</summary>
     public const string EmailSampleData = "email_sample_data";
+    /// <summary>An audience send of a custom email template. Entity id = the send's id.</summary>
+    public const string EmailCampaign = "email_campaign";
 
     /// <summary>G11: a one-off credit pack (billing <c>credit_packs</c>). Entity id = the pack's id.</summary>
     public const string CreditPack = "credit_pack";
@@ -91,7 +93,7 @@ public static class AdminAuditEntityTypes
         Workspace, CreditAdjustment, PricingVersion, UsageRate, PaymentMethod, GlossaryTerm,
         Notification, User, SupportedLanguage, Subscription, Invoice, WorkspaceNote, Plugin, Plan,
         BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
-        Announcement, EmailTemplate, EmailBlock, EmailSampleData,
+        Announcement, EmailTemplate, EmailBlock, EmailSampleData, EmailCampaign,
         StaffMember, StaffRole, StaffInvitation,
         OperatingExpense, ExpenseCategory, ExpenseBudget, InboxItem,
         CreditPack, Addon, Coupon,
@@ -409,6 +411,14 @@ public static class AdminAuditCmsActions
     public const string EmailSampleSaved = "email_sample.saved";
     public const string EmailSampleDeleted = "email_sample.deleted";
 
+    public const string EmailTemplateCreated = "email.template_created";
+    public const string EmailTemplateUpdated = "email.template_updated";
+    public const string EmailTemplateDeleted = "email.template_deleted";
+    public const string EmailTemplateRestored = "email.template_restored";
+
+    public const string EmailSendStarted = "email_send.started";
+    public const string EmailSendCancelled = "email_send.cancelled";
+
     /// <summary>Every verb above, so a test can hold all of them to the column width.</summary>
     public static readonly string[] All =
     [
@@ -421,6 +431,8 @@ public static class AdminAuditCmsActions
         EmailBlockArchived, EmailBlockUnarchived, EmailBlockDuplicated, EmailBlockDeleted,
         EmailBlockSetDefault, EmailBlockVersionRestored, EmailBlockBulkAction,
         EmailSampleSaved, EmailSampleDeleted,
+        EmailTemplateCreated, EmailTemplateUpdated, EmailTemplateDeleted, EmailTemplateRestored,
+        EmailSendStarted, EmailSendCancelled,
     ];
 }
 

@@ -29,6 +29,20 @@ public sealed class AdminEmailBlocksController : CmsControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) => From(await _blocks.GetAsync(id, ct));
 
+    /// <summary>The stored block rendered inside an email: its thumbnail and preview. Only reads.</summary>
+    [HttpGet("{id:guid}/render")]
+    public async Task<IActionResult> Render(
+        Guid id,
+        [FromQuery] bool dark = false,
+        [FromQuery] string? templateKey = null,
+        [FromQuery] string? locale = null,
+        [FromQuery] bool draft = false,
+        CancellationToken ct = default)
+    {
+        Response.Headers.CacheControl = "private, max-age=30";
+        return From(await _blocks.RenderAsync(id, dark, templateKey, locale, draft, ct));
+    }
+
     [AdminAudited(AdminAuditCmsActions.EmailBlockCreated, AdminAuditEntityTypes.EmailBlock, typeof(EmailBlock))]
     [HttpPost]
     public Task<IActionResult> Create([FromBody] CreateEmailBlockRequest request, CancellationToken ct) =>
