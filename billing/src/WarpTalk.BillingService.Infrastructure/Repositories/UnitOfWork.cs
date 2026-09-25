@@ -31,6 +31,12 @@ public class UnitOfWork : IUnitOfWork
         FxRates = new FxRateRepository(db);
         ProviderCallStats = new ProviderCallStatRepository(db);
         ProviderStatusIncidents = new ProviderStatusIncidentRepository(db);
+        CreditPacks = new CreditPackRepository(db);
+        Addons = new AddonRepository(db);
+        WorkspaceAddons = new WorkspaceAddonRepository(db);
+        Coupons = new CouponRepository(db);
+        CouponRedemptions = new CouponRedemptionRepository(db);
+        CreditPackPurchases = new CreditPackPurchaseRepository(db);
     }
 
     public IPlanRepository Plans { get; }
@@ -50,6 +56,12 @@ public class UnitOfWork : IUnitOfWork
     public IFxRateRepository FxRates { get; }
     public IProviderCallStatRepository ProviderCallStats { get; }
     public IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
+    public ICreditPackRepository CreditPacks { get; }
+    public IAddonRepository Addons { get; }
+    public IWorkspaceAddonRepository WorkspaceAddons { get; }
+    public ICouponRepository Coupons { get; }
+    public ICouponRedemptionRepository CouponRedemptions { get; }
+    public ICreditPackPurchaseRepository CreditPackPurchases { get; }
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 

@@ -148,6 +148,189 @@ public class StripePaymentService : IStripePaymentService
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// G11. The line is the catalog's: a synced item is sold by its Stripe Price id (so Stripe's
+    /// reports name the product), an unsynced one by inline price data for the server-computed
+    /// unit amount. A coupon rides as a Stripe discount only when the catalog put one in the
+    /// extras — for a one-off pack with an unsynced coupon the discount is already in the unit
+    /// amount. One discount per session: Stripe Checkout accepts no more, which is also our
+    /// stacking rule.
+    /// </remarks>
+    public async Task<Result<string>> CreateCatalogCheckoutSessionAsync(
+        CreateCheckoutSessionRequest request,
+        CheckoutExtras extras,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configError = CheckoutConfigurationError(out var successUrl, out var cancelUrl);
+            if (configError is not null)
+            {
+                return Result.Failure<string>(configError, ErrorCodes.InternalServerError);
+            }
+
+            var metadata = BaseMetadata(request);
+            foreach (var (key, value) in extras.Metadata)
+            {
+                metadata[key] = value;
+            }
+
+            SessionLineItemOptions lineItem;
+            bool isSubscription;
+            if (extras.Line is { } line)
+            {
+                isSubscription = !string.IsNullOrWhiteSpace(line.RecurringInterval);
+                lineItem = !string.IsNullOrWhiteSpace(line.StripePriceId)
+                    ? new SessionLineItemOptions { Price = line.StripePriceId, Quantity = line.Quantity }
+                    : new SessionLineItemOptions
+                    {
+                        Quantity = line.Quantity,
+                        PriceData = new SessionLineItemPriceDataOptions
+                        {
+                            UnitAmount = ToMinorUnits(line.UnitAmount, line.Currency),
+                            Currency = line.Currency,
+                            Product = string.IsNullOrWhiteSpace(line.StripeProductId) ? null : line.StripeProductId,
+                            ProductData = string.IsNullOrWhiteSpace(line.StripeProductId)
+                                ? new SessionLineItemPriceDataProductDataOptions { Name = line.ProductName }
+                                : null,
+                            Recurring = isSubscription
+                                ? new SessionLineItemPriceDataRecurringOptions { Interval = line.RecurringInterval }
+                                : null,
+                        },
+                    };
+            }
+            else
+            {
+                // A plan checkout with a coupon: the plan's own line, unchanged, plus the discount.
+                isSubscription = request.PaymentType == PaymentConstants.PaymentTypes.Subscription;
+                lineItem = DefaultLineItem(request, isSubscription);
+            }
+
+            var options = new SessionCreateOptions
+            {
+                PaymentMethodTypes = new List<string> { PaymentConstants.PaymentMethods.Card },
+                LineItems = new List<SessionLineItemOptions> { lineItem },
+                Mode = isSubscription ? PaymentConstants.StripeModes.Subscription : PaymentConstants.StripeModes.Payment,
+                SuccessUrl = successUrl,
+                CancelUrl = cancelUrl,
+                CustomerEmail = string.IsNullOrWhiteSpace(request.BuyerEmail) ? null : request.BuyerEmail,
+                Metadata = metadata,
+            };
+
+            if (!string.IsNullOrWhiteSpace(extras.StripePromotionCodeId))
+            {
+                options.Discounts = new List<SessionDiscountOptions> { new() { PromotionCode = extras.StripePromotionCodeId } };
+            }
+            else if (!string.IsNullOrWhiteSpace(extras.StripeCouponId))
+            {
+                options.Discounts = new List<SessionDiscountOptions> { new() { Coupon = extras.StripeCouponId } };
+            }
+
+            if (isSubscription)
+            {
+                // The add-on's own subscription carries the metadata, so every later event about it
+                // (renewal, update, deletion) is recognisably an add-on's and never the plan's.
+                options.SubscriptionData = new SessionSubscriptionDataOptions { Metadata = metadata };
+            }
+            else
+            {
+                options.PaymentIntentData = new SessionPaymentIntentDataOptions { Metadata = metadata };
+            }
+
+            var session = await _stripeSdkClient.CreateCheckoutSessionAsync(options, cancellationToken);
+            return Result.Success(session.Url);
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure<string>(ex.Message, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<DateTime?>> CancelStripeSubscriptionAtPeriodEndAsync(
+        string stripeSubscriptionId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var updated = await _stripeSdkClient.UpdateSubscriptionAsync(
+                stripeSubscriptionId,
+                new SubscriptionUpdateOptions { CancelAtPeriodEnd = true },
+                cancellationToken);
+            DateTime? periodEnd = updated.Items?.Data?.FirstOrDefault()?.CurrentPeriodEnd;
+            return Result.Success(periodEnd);
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure<DateTime?>(ex.Message, ErrorCodes.BillingExternalServiceError);
+        }
+    }
+
+    private string? CheckoutConfigurationError(out string? successUrl, out string? cancelUrl)
+    {
+        successUrl = _configuration[PaymentConstants.StripeConfigKeys.SuccessUrl];
+        cancelUrl = _configuration[PaymentConstants.StripeConfigKeys.CancelUrl];
+
+        var secretKey = _configuration[PaymentConstants.StripeConfigKeys.SecretKey];
+        if (string.IsNullOrEmpty(secretKey) || secretKey == PaymentConstants.StripePlaceholders.SecretKeyPlaceholder)
+        {
+            return PaymentConstants.StripeErrorMessages.SecretKeyNotConfigured;
+        }
+
+        return string.IsNullOrWhiteSpace(successUrl) || string.IsNullOrWhiteSpace(cancelUrl)
+            ? PaymentConstants.StripeErrorMessages.CheckoutUrlsNotConfigured
+            : null;
+    }
+
+    private static Dictionary<string, string> BaseMetadata(CreateCheckoutSessionRequest request)
+    {
+        var metadata = new Dictionary<string, string>
+        {
+            { PaymentConstants.StripeMetadata.UserId, request.UserId.ToString() },
+            { PaymentConstants.StripeMetadata.WorkspaceId, request.WorkspaceId.ToString() },
+            { PaymentConstants.StripeMetadata.PaymentType, request.PaymentType }
+        };
+
+        if (!string.IsNullOrWhiteSpace(request.PlanSlug))
+            metadata[PaymentConstants.StripeMetadata.PlanSlug] = request.PlanSlug;
+        if (!string.IsNullOrWhiteSpace(request.BillingCycle))
+            metadata[PaymentConstants.StripeMetadata.BillingCycle] = request.BillingCycle;
+        if (request.Credits > 0)
+            metadata[PaymentConstants.StripeMetadata.Credits] = request.Credits.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        return metadata;
+    }
+
+    /// <summary>The plan / invoice / top-up line as <see cref="CreateCheckoutSessionAsync"/> builds it.</summary>
+    private static SessionLineItemOptions DefaultLineItem(CreateCheckoutSessionRequest request, bool isSubscription) => new()
+    {
+        PriceData = new SessionLineItemPriceDataOptions
+        {
+            UnitAmount = ToMinorUnits(request.Amount, request.Currency),
+            Currency = request.Currency,
+            ProductData = new SessionLineItemPriceDataProductDataOptions
+            {
+                Name = request.PaymentType == PaymentConstants.PaymentTypes.InvoicePayment
+                    ? PaymentConstants.ProductNames.InvoicePayment
+                    : PaymentConstants.ProductNames.SubscriptionPlan,
+            },
+            Recurring = isSubscription
+                ? new SessionLineItemPriceDataRecurringOptions
+                {
+                    Interval = BillingCycleResolver.ToPriceInterval(request.BillingCycle) ?? PaymentConstants.PriceIntervals.Month,
+                }
+                : null,
+        },
+        Quantity = 1,
+    };
+
+    /// <summary>Stripe amounts are in the currency's minor unit; VND has none.</summary>
+    public static long ToMinorUnits(decimal amount, string currency) =>
+        string.Equals(currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
+            ? (long)decimal.Round(amount, 0, MidpointRounding.AwayFromZero)
+            : (long)decimal.Round(amount * 100m, 0, MidpointRounding.AwayFromZero);
+
     public async Task<Result<bool>> CancelSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken = default)
     {
         try
@@ -239,7 +422,8 @@ public class StripePaymentService : IStripePaymentService
                 metadata,
                 session.PaymentStatus,
                 session.Status,
-                session.PaymentIntentId
+                session.PaymentIntentId,
+                session.SubscriptionId
             ));
         }
         catch (Exception ex)
