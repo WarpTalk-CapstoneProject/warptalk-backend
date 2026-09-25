@@ -29,6 +29,7 @@ public sealed class AnnouncementService : IAnnouncementService
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly IViewerAudienceResolver _viewerAudience;
+    private readonly IEmailCampaignService? _campaigns;
     private readonly TimeProvider _time;
     private readonly ILogger<AnnouncementService> _logger;
 
@@ -36,10 +37,12 @@ public sealed class AnnouncementService : IAnnouncementService
         IUnitOfWork unitOfWork,
         IViewerAudienceResolver viewerAudience,
         ILogger<AnnouncementService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEmailCampaignService? campaigns = null)
     {
         _unitOfWork = unitOfWork;
         _viewerAudience = viewerAudience;
+        _campaigns = campaigns;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
     }
@@ -115,7 +118,7 @@ public sealed class AnnouncementService : IAnnouncementService
     public async Task<Result<AdminAnnouncementDto>> CreateAsync(AdminActorContext actor, UpsertAnnouncementRequest request, CancellationToken ct = default)
     {
         var normalized = AnnouncementRules.Normalize(request);
-        var error = AnnouncementRules.Validate(normalized);
+        var error = AnnouncementRules.Validate(normalized) ?? await EmailChannelErrorAsync(normalized.EmailTemplateKey, ct);
         if (error is not null) return Invalid<AdminAnnouncementDto>(error);
 
         var now = Now;
@@ -141,11 +144,21 @@ public sealed class AnnouncementService : IAnnouncementService
             return InvalidState<AdminAnnouncementDto>("An archived announcement cannot be edited. Move it back to drafts first.");
 
         var normalized = AnnouncementRules.Normalize(request);
-        var error = AnnouncementRules.Validate(normalized);
+        var emailChanged = !string.Equals(announcement.EmailTemplateKey, normalized.EmailTemplateKey, StringComparison.Ordinal);
+        // Checked only when it changes, so an unrelated edit is never blocked by a template that
+        // was deleted after it was chosen.
+        var error = AnnouncementRules.Validate(normalized) ?? (emailChanged ? await EmailChannelErrorAsync(normalized.EmailTemplateKey, ct) : null);
         if (error is not null) return Invalid<AdminAnnouncementDto>(error);
 
         var now = Now;
         Apply(announcement, normalized, actor.ActorId, now);
+        // A live announcement whose email channel changed: a queued email is replaced; one that
+        // already went out is not sent again.
+        if (emailChanged && announcement.Status == AnnouncementConstants.StatusPublished)
+        {
+            var queueError = await RequeueEmailAsync(actor.ActorId, announcement, ct);
+            if (queueError is not null) return Invalid<AdminAnnouncementDto>(queueError);
+        }
         await _unitOfWork.SaveChangesAsync();
         return Result.Success(ToAdminDto(announcement, now));
     }
@@ -172,9 +185,35 @@ public sealed class AnnouncementService : IAnnouncementService
         announcement.ArchivedAt = null;
         announcement.UpdatedAt = now;
         announcement.UpdatedBy = actor.ActorId;
+        var queueError = await RequeueEmailAsync(actor.ActorId, announcement, ct);
+        if (queueError is not null) return Invalid<AdminAnnouncementDto>(queueError);
         await _unitOfWork.SaveChangesAsync();
 
         return Result.Success(ToAdminDto(announcement, now));
+    }
+
+    /// <summary>
+    /// The email channel follows the announcement: publishing queues the email for its start (a
+    /// queued one is replaced, so a new start time or template is honoured), and nothing already
+    /// sent is sent twice.
+    /// </summary>
+    private async Task<string?> RequeueEmailAsync(Guid actorId, Announcement announcement, CancellationToken ct)
+    {
+        if (_campaigns is null) return announcement.EmailTemplateKey is null ? null : "Email sending is not available on this deployment.";
+        await _campaigns.CancelQueuedForAnnouncementAsync(actorId, announcement, ct);
+        if (announcement.EmailTemplateKey is null || announcement.EmailCampaignId is not null) return null;
+        var queued = await _campaigns.QueueForAnnouncementAsync(actorId, announcement, ct);
+        if (!queued.IsSuccess) return queued.Error;
+        announcement.EmailCampaignId = queued.Value!.Id;
+        return null;
+    }
+
+    private async Task<string?> EmailChannelErrorAsync(string? key, CancellationToken ct)
+    {
+        if (key is null) return null;
+        if (_campaigns is null) return "Email sending is not available on this deployment.";
+        var error = await _campaigns.AnnouncementChannelErrorAsync(key, ct);
+        return error is null ? null : $"Email channel: {error}";
     }
 
     public async Task<Result<AdminAnnouncementDto>> UnpublishAsync(AdminActorContext actor, Guid id, CancellationToken ct = default)
@@ -188,6 +227,7 @@ public sealed class AnnouncementService : IAnnouncementService
         announcement.ArchivedAt = null;
         announcement.UpdatedAt = now;
         announcement.UpdatedBy = actor.ActorId;
+        if (_campaigns is not null) await _campaigns.CancelQueuedForAnnouncementAsync(actor.ActorId, announcement, ct);
         await _unitOfWork.SaveChangesAsync();
         return Result.Success(ToAdminDto(announcement, now));
     }
@@ -203,6 +243,7 @@ public sealed class AnnouncementService : IAnnouncementService
         announcement.ArchivedAt = now;
         announcement.UpdatedAt = now;
         announcement.UpdatedBy = actor.ActorId;
+        if (_campaigns is not null) await _campaigns.CancelQueuedForAnnouncementAsync(actor.ActorId, announcement, ct);
         await _unitOfWork.SaveChangesAsync();
         return Result.Success(ToAdminDto(announcement, now));
     }
@@ -239,6 +280,7 @@ public sealed class AnnouncementService : IAnnouncementService
             CtaUrl = source.CtaUrl,
             SecondaryCtaLabel = source.SecondaryCtaLabel,
             SecondaryCtaUrl = source.SecondaryCtaUrl,
+            EmailTemplateKey = source.EmailTemplateKey,
             // The window is not copied: a copy is for running it again, and the original's dates
             // are almost always the part that has to change.
             StartsAt = null,
@@ -535,6 +577,7 @@ public sealed class AnnouncementService : IAnnouncementService
         announcement.CtaUrl = request.CtaUrl;
         announcement.SecondaryCtaLabel = request.SecondaryCtaLabel;
         announcement.SecondaryCtaUrl = request.SecondaryCtaUrl;
+        announcement.EmailTemplateKey = request.EmailTemplateKey;
         announcement.StartsAt = request.StartsAt;
         announcement.EndsAt = request.EndsAt;
         announcement.UpdatedAt = now;
@@ -547,7 +590,11 @@ public sealed class AnnouncementService : IAnnouncementService
             a.Placement, a.Variant, a.AccentColor, a.Icon, a.ImageUrl, a.Priority, a.Dismissible, a.Frequency,
             a.AudienceMode, a.AudiencePlanSlugs, a.AudienceWorkspaceIds, a.TargetRoles, a.TargetLocales, a.NewUsersWithinDays,
             a.CtaLabel, a.CtaUrl, a.SecondaryCtaLabel, a.SecondaryCtaUrl,
-            a.StartsAt, a.EndsAt, a.PublishedAt, a.ArchivedAt, a.CreatedBy, a.UpdatedBy, a.CreatedAt, a.UpdatedAt);
+            a.StartsAt, a.EndsAt, a.PublishedAt, a.ArchivedAt, a.CreatedBy, a.UpdatedBy, a.CreatedAt, a.UpdatedAt)
+        {
+            EmailTemplateKey = a.EmailTemplateKey,
+            EmailCampaignId = a.EmailCampaignId,
+        };
 
     private static ViewerAnnouncementDto ToViewerDto(Announcement a) =>
         new(

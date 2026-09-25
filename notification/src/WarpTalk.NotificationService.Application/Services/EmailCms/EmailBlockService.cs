@@ -28,6 +28,9 @@ public interface IEmailBlockService
     Task<Result<IReadOnlyList<EmailCmsVersionDto>>> ListVersionsAsync(Guid id, CancellationToken ct = default);
     Task<Result<EmailBlockDto>> RestoreVersionAsync(AdminActorContext actor, Guid id, int version, CancellationToken ct = default);
     Task<Result<EmailPreviewDto>> PreviewAsync(Guid? id, string kind, EmailBlockPreviewRequest request, CancellationToken ct = default);
+
+    /// <summary>A stored block rendered inside an email (published side unless <paramref name="draft"/>): its thumbnail and preview.</summary>
+    Task<Result<EmailPreviewDto>> RenderAsync(Guid id, bool dark, string? templateKey, string? locale, bool draft, CancellationToken ct = default);
     Task<Result<BulkResultDto>> BulkAsync(AdminActorContext actor, EmailBlockBulkRequest request, CancellationToken ct = default);
 }
 
@@ -54,12 +57,16 @@ public sealed partial class EmailBlockService : IEmailBlockService
     public EmailBlockService(
         IUnitOfWork unitOfWork,
         ILogger<EmailBlockService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEmailDefinitionProvider? definitions = null)
     {
         _unitOfWork = unitOfWork;
+        _definitions = definitions ?? new EmailDefinitionProvider(unitOfWork);
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
     }
+
+    private readonly IEmailDefinitionProvider _definitions;
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
@@ -311,12 +318,32 @@ public sealed partial class EmailBlockService : IEmailBlockService
         return Result.Success(ToDto(block, await UsageAsync(ct)));
     }
 
+    public async Task<Result<EmailPreviewDto>> RenderAsync(
+        Guid id, bool dark, string? templateKey, string? locale, bool draft, CancellationToken ct = default)
+    {
+        var block = await _unitOfWork.EmailBlockRepository.GetByIdAsync(id, ct);
+        if (block is null) return NotFound<EmailPreviewDto>();
+        var usePublished = !draft && block.PublishedHtml is not null;
+        return await PreviewAsync(
+            id,
+            block.Kind,
+            new EmailBlockPreviewRequest(
+                usePublished ? block.PublishedHtml! : block.DraftHtml,
+                usePublished ? block.PublishedText : block.DraftText,
+                usePublished ? block.PublishedDarkCss : block.DraftDarkCss,
+                templateKey,
+                locale,
+                dark),
+            ct);
+    }
+
     public async Task<Result<EmailPreviewDto>> PreviewAsync(Guid? id, string kind, EmailBlockPreviewRequest request, CancellationToken ct = default)
     {
         var normalizedKind = NormalizeKind(kind);
         if (normalizedKind is null) return Result.Failure<EmailPreviewDto>("Kind must be LAYOUT or PARTIAL.", ErrorCodes.ValidationError);
 
-        var definition = EmailTemplateCatalog.Find(request.TemplateKey) ?? EmailTemplateCatalog.All[0];
+        var definition = (request.TemplateKey is null ? null : (await _definitions.FindAsync(request.TemplateKey, includeDeleted: true, ct))?.Definition)
+            ?? EmailTemplateCatalog.All[0];
         var resolver = new EmailPublishedResolver(_unitOfWork);
         var stored = await resolver.FindActiveAsync(definition.Key, request.Locale, ct);
         var content = stored is null
@@ -419,7 +446,7 @@ public sealed partial class EmailBlockService : IEmailBlockService
             var fields = new[] { variant.PublishedSubject, variant.PublishedPreheader, variant.PublishedHeading, variant.PublishedBodyHtml, variant.PublishedTextBody };
             if (!fields.Any(field => field is not null && EmailTemplateRenderer.ReferencedPartials(field).Contains(block.Key))) continue;
 
-            var definition = EmailTemplateCatalog.Find(variant.TemplateKey);
+            var definition = (await _definitions.FindAsync(variant.TemplateKey, includeDeleted: false, ct))?.Definition;
             if (definition is null) continue;
             var content = new EmailTemplateContent(
                 EmailTemplateRenderer.ExpandPartials(variant.PublishedSubject, partials),

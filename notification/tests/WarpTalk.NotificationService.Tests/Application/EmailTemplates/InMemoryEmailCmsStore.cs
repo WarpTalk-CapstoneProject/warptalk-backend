@@ -17,6 +17,11 @@ internal sealed class InMemoryEmailCmsStore
     public List<EmailCmsVersion> Versions { get; } = [];
     public List<EmailSampleDataSet> SampleSets { get; } = [];
     public List<EmailDeliveryStat> Stats { get; } = [];
+    public List<EmailCustomTemplate> Custom { get; } = [];
+    public List<EmailCampaign> Campaigns { get; } = [];
+    public List<EmailCampaignRecipient> Recipients { get; } = [];
+    /// <summary>(user, notification type) pairs that turned email off.</summary>
+    public HashSet<(Guid UserId, string Type)> OptOuts { get; } = [];
     public int SaveCount { get; private set; }
 
     public Mock<IUnitOfWork> UnitOfWork { get; } = new();
@@ -30,6 +35,15 @@ internal sealed class InMemoryEmailCmsStore
         UnitOfWork.Setup(u => u.EmailCmsVersionRepository).Returns(new VersionRepository(this));
         UnitOfWork.Setup(u => u.EmailSampleDataSetRepository).Returns(new SampleRepository(this));
         UnitOfWork.Setup(u => u.EmailDeliveryStatRepository).Returns(new StatRepository(this));
+        UnitOfWork.Setup(u => u.EmailCustomTemplateRepository).Returns(new CustomRepository(this));
+        UnitOfWork.Setup(u => u.EmailCampaignRepository).Returns(new CampaignRepository(this));
+        UnitOfWork.Setup(u => u.EmailCampaignRecipientRepository).Returns(new RecipientRepository(this));
+        var preferences = new Mock<INotificationPreferenceRepository>();
+        preferences
+            .Setup(p => p.ListEmailOptOutsAsync(It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyCollection<Guid> ids, string type, CancellationToken _) =>
+                (IReadOnlySet<Guid>)ids.Where(id => OptOuts.Contains((id, type))).ToHashSet());
+        UnitOfWork.Setup(u => u.NotificationPreferenceRepository).Returns(preferences.Object);
         UnitOfWork.Setup(u => u.SaveChangesAsync()).ReturnsAsync(() => ++SaveCount);
 
     }
@@ -101,5 +115,51 @@ internal sealed class InMemoryEmailCmsStore
 
         public Task<IReadOnlyList<EmailDeliveryStat>> ListSinceAsync(string? templateKey, DateOnly since, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<EmailDeliveryStat>>(store.Stats.Where(s => s.Day >= since && (templateKey == null || s.TemplateKey == templateKey)).ToList());
+    }
+
+    private sealed class CustomRepository(InMemoryEmailCmsStore store) : IEmailCustomTemplateRepository
+    {
+        public Task AddAsync(EmailCustomTemplate template, CancellationToken ct = default) { store.Custom.Add(template); return Task.CompletedTask; }
+        public void Remove(EmailCustomTemplate template) => store.Custom.Remove(template);
+        public Task<EmailCustomTemplate?> GetByKeyAsync(string key, CancellationToken ct = default) =>
+            Task.FromResult(store.Custom.FirstOrDefault(t => t.Key == key));
+        public Task<IReadOnlyList<EmailCustomTemplate>> ListAsync(bool includeDeleted, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<EmailCustomTemplate>>(store.Custom
+                .Where(t => includeDeleted || t.Status == EmailCmsConstants.StatusActive).OrderBy(t => t.Name).ToList());
+    }
+
+    private sealed class CampaignRepository(InMemoryEmailCmsStore store) : IEmailCampaignRepository
+    {
+        public Task AddAsync(EmailCampaign campaign, CancellationToken ct = default) { store.Campaigns.Add(campaign); return Task.CompletedTask; }
+        public Task<EmailCampaign?> GetByIdAsync(Guid id, CancellationToken ct = default) => Task.FromResult(store.Campaigns.FirstOrDefault(c => c.Id == id));
+        public Task<IReadOnlyList<EmailCampaign>> ListForTemplateAsync(string templateKey, int limit, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<EmailCampaign>>(store.Campaigns.Where(c => c.TemplateKey == templateKey).OrderByDescending(c => c.CreatedAt).Take(limit).ToList());
+        public Task<int> CountCreatedSinceAsync(Guid createdBy, DateTime since, CancellationToken ct = default) =>
+            Task.FromResult(store.Campaigns.Count(c => c.CreatedBy == createdBy && c.Source == EmailCmsConstants.CampaignSourceManual && c.CreatedAt >= since));
+        public Task<bool> AnySentAsync(string templateKey, CancellationToken ct = default) =>
+            Task.FromResult(store.Campaigns.Any(c => c.TemplateKey == templateKey && c.SentCount > 0));
+        public Task<EmailCampaign?> NextDueAsync(DateTime now, CancellationToken ct = default) =>
+            Task.FromResult(store.Campaigns.Where(c => c.Status == EmailCmsConstants.CampaignSending).OrderBy(c => c.StartedAt).FirstOrDefault()
+                ?? store.Campaigns.Where(c => c.Status == EmailCmsConstants.CampaignQueued && c.ScheduledAt <= now).OrderBy(c => c.ScheduledAt).FirstOrDefault());
+    }
+
+    private sealed class RecipientRepository(InMemoryEmailCmsStore store) : IEmailCampaignRecipientRepository
+    {
+        public Task AddRangeAsync(IEnumerable<EmailCampaignRecipient> recipients, CancellationToken ct = default) { store.Recipients.AddRange(recipients); return Task.CompletedTask; }
+        public Task<IReadOnlyList<EmailCampaignRecipient>> NextPendingAsync(Guid campaignId, int batchSize, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<EmailCampaignRecipient>>(store.Recipients
+                .Where(r => r.CampaignId == campaignId && r.Status == EmailCmsConstants.RecipientPending).OrderBy(r => r.Id).Take(batchSize).ToList());
+        public Task<bool> AnyAsync(Guid campaignId, CancellationToken ct = default) => Task.FromResult(store.Recipients.Any(r => r.CampaignId == campaignId));
+        public Task<(IReadOnlyList<EmailCampaignRecipient> Items, int Total)> PageAsync(Guid campaignId, string? status, int page, int pageSize, CancellationToken ct = default)
+        {
+            var all = store.Recipients.Where(r => r.CampaignId == campaignId && (status == null || r.Status == status)).OrderBy(r => r.Email).ToList();
+            return Task.FromResult<(IReadOnlyList<EmailCampaignRecipient>, int)>((all.Skip((page - 1) * pageSize).Take(pageSize).ToList(), all.Count));
+        }
+        public Task<int> SkipPendingAsync(Guid campaignId, string reason, CancellationToken ct = default)
+        {
+            var pending = store.Recipients.Where(r => r.CampaignId == campaignId && r.Status == EmailCmsConstants.RecipientPending).ToList();
+            foreach (var r in pending) { r.Status = EmailCmsConstants.RecipientSkipped; r.Error = reason; }
+            return Task.FromResult(pending.Count);
+        }
     }
 }

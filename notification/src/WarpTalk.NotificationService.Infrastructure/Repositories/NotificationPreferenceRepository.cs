@@ -15,4 +15,17 @@ public class NotificationPreferenceRepository : GenericRepository<NotificationPr
     {
         return await _dbSet.FirstOrDefaultAsync(p => p.UserId == userId, ct);
     }
+
+    public async Task<IReadOnlySet<Guid>> ListEmailOptOutsAsync(
+        IReadOnlyCollection<Guid> userIds, string notificationType, CancellationToken ct = default)
+    {
+        if (userIds.Count == 0) return new HashSet<Guid>();
+        var ids = userIds.ToList();
+        var optedOut = await _dbSet
+            .AsNoTracking()
+            .Where(p => ids.Contains(p.UserId) && p.NotificationType == notificationType && !p.EmailEnabled)
+            .Select(p => p.UserId)
+            .ToListAsync(ct);
+        return optedOut.ToHashSet();
+    }
 }

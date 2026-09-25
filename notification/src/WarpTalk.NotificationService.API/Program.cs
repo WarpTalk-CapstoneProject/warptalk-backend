@@ -111,6 +111,18 @@ builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateComposer, WarpTal
 builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailDeliveryRecorder, WarpTalk.NotificationService.Application.Services.EmailCms.DbEmailDeliveryRecorder>();
 builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailContentService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailContentService>();
 builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailBlockService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailBlockService>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailDefinitionProvider, WarpTalk.NotificationService.Application.Services.EmailCms.EmailDefinitionProvider>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailCustomTemplateService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailCustomTemplateService>();
+// Email CMS v3: the From line previews show, read from this service's own sender identity.
+builder.Services.AddSingleton(WarpTalk.NotificationService.Application.Services.EmailCms.EmailEnvelope.Parse(
+    builder.Configuration["Resend:FromEmail"], builder.Configuration["Resend:FromName"]));
+// Audience sends of custom templates, and the worker that sends them at a steady rate.
+var emailCampaignOptions = new WarpTalk.NotificationService.Application.Services.EmailCms.EmailCampaignOptions();
+builder.Configuration.GetSection("EmailCampaigns").Bind(emailCampaignOptions);
+builder.Services.AddSingleton(emailCampaignOptions);
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailAudienceResolver, WarpTalk.NotificationService.Application.Services.EmailCms.EmailAudienceResolver>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailCampaignService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailCampaignService>();
+builder.Services.AddHostedService<WarpTalk.NotificationService.API.HostedServices.EmailCampaignWorker>();
 builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
 // G12: the pending-work inbox source for content.
 builder.Services.AddScoped<IContentInboxSourceService, ContentInboxSourceService>();
@@ -141,10 +153,12 @@ if (!string.IsNullOrWhiteSpace(authServiceUrl))
 if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
 {
     builder.Services.AddScoped<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcAdminAudienceResolver>();
+    builder.Services.AddScoped<IEmailRecipientDirectory, WarpTalk.NotificationService.API.Audience.GrpcEmailRecipientDirectory>();
 }
 else
 {
     builder.Services.AddSingleton<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredAdminAudienceResolver>();
+    builder.Services.AddSingleton<IEmailRecipientDirectory, WarpTalk.NotificationService.API.Audience.UnconfiguredEmailRecipientDirectory>();
 }
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 

@@ -24,7 +24,14 @@ public sealed class EmailPublishedResolver : IEmailTemplateSource
 
     public async Task<StoredEmailTemplate?> FindActiveAsync(string templateKey, string? locale, CancellationToken ct = default)
     {
-        if (EmailTemplateCatalog.Find(templateKey) is null) return null;
+        var builtIn = EmailTemplateCatalog.Find(templateKey);
+        if (builtIn is null)
+        {
+            // A custom template (sent only by audience sends and announcements) is published content
+            // or nothing: there is no built-in wording to fall back to.
+            var custom = await _unitOfWork.EmailCustomTemplateRepository.GetByKeyAsync(templateKey, ct);
+            if (custom is not { Status: EmailCmsConstants.StatusActive }) return null;
+        }
 
         EmailContentVariant? variant = null;
         foreach (var candidate in EmailLocales.FallbackChain(locale))
@@ -40,8 +47,8 @@ public sealed class EmailPublishedResolver : IEmailTemplateSource
         {
             // No published content in any locale, but an admin may still have published a default
             // layout: the built-in wording goes out inside it.
-            if (layout is null) return null;
-            var definition = EmailTemplateCatalog.Get(templateKey);
+            if (layout is null || builtIn is null) return null;
+            var definition = builtIn;
             return Stored(definition.Default, 0, EmailLocales.Default, layout, partials);
         }
 

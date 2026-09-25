@@ -47,7 +47,43 @@ public record TranscriptSegmentDto(
     /// a summary written earlier is now behind the record.</summary>
     bool IsCorrected = false,
     /// <summary>When the row last changed — moved by a correction.</summary>
-    DateTime? UpdatedAt = null
+    DateTime? UpdatedAt = null,
+    /// <summary>
+    /// WT-716 tier 1: the line with fillers and stutters removed. NULL means NOT CLEANED — older
+    /// rows, an older producer, or a line a human has since corrected — and the client shows
+    /// <see cref="OriginalText"/>. An EMPTY string means the line was filler only, and the Clean
+    /// view hides it. OriginalText is always the raw record.
+    /// </summary>
+    string? CleanText = null,
+    /// <summary>WT-716: subset of filler_only, fillers_removed, stutter_removed, escalate. Empty
+    /// (never null) on the wire.</summary>
+    IReadOnlyList<string>? CleanFlags = null
+);
+
+/// <summary>
+/// WT-716 tier 2. One whole cleaned sentence over raw segments, in conversation order.
+///
+/// A view, not a replacement: <see cref="SegmentIds"/> are ids of <see cref="TranscriptSegmentDto"/>
+/// rows, and anything that anchors a line (summary citations, corrections, seeking the recording)
+/// keeps anchoring those. Ids may name segments the reader has not loaded, or that were not stored
+/// yet when the sentence was.
+/// </summary>
+/// <param name="SpeakerId">TranslationRoomService participant id; null for the system speaker.</param>
+/// <param name="Flags">Subset of self_repair, fallback_raw, escalate.</param>
+/// <param name="Source">llm | prepass | unknown.</param>
+/// <param name="Revision">Monotonic per sentence; the stored row is always the highest seen.</param>
+/// <param name="UpdatedAt">When this revision was stored. A covered segment corrected AFTER this is
+/// newer than the sentence, and the sentence no longer reflects the record.</param>
+public record TranscriptCleanSentenceDto(
+    Guid Id,
+    Guid? SpeakerId,
+    IReadOnlyList<Guid> SegmentIds,
+    string CleanText,
+    string Language,
+    IReadOnlyList<string> Flags,
+    string Source,
+    int Revision,
+    DateTime UpdatedAt
 );
 
 public record TranscriptTranslationDto(

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -38,6 +39,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly IKnowledgeChunkWriter _chunkWriter;
     private readonly ILogger<WorkspaceDocumentService> _logger;
 
+    private readonly IPlatformSettings? _platformSettings;
+
     public WorkspaceDocumentService(
         IUnitOfWork unitOfWork,
         IDocumentAccessEvaluator accessEvaluator,
@@ -48,8 +51,10 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         IWorkspaceDocumentStorage storage,
         IDocumentTextExtractor textExtractor,
         IKnowledgeChunkWriter chunkWriter,
-        ILogger<WorkspaceDocumentService> logger)
+        ILogger<WorkspaceDocumentService> logger,
+        IPlatformSettings? platformSettings = null)
     {
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _accessEvaluator = accessEvaluator;
         _eventPublisher = eventPublisher;
@@ -60,6 +65,39 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _textExtractor = textExtractor;
         _chunkWriter = chunkWriter;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// The upload limit for this workspace — platform setting limits.document_upload_mb, resolved
+    /// workspace override, then its plan's, then the platform value — read on every upload so a
+    /// change in /admin/settings applies to the next file. Null when the file fits.
+    /// </summary>
+    public async Task<string?> UploadTooLargeAsync(Guid workspaceId, long length, CancellationToken ct = default)
+    {
+        var limitMb = WorkspaceDocumentConstants.DefaultMaxUploadMb;
+        if (_platformSettings is not null)
+        {
+            string? planSlug = null;
+            try
+            {
+                planSlug = (await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetForWorkspaceAsync(workspaceId, ct))?.PlanSlug;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A plan override is a refinement: without the snapshot the platform value still applies.
+                _logger.LogDebug(ex, "Upload limit for {WorkspaceId} resolved without its plan.", workspaceId);
+            }
+
+            limitMb = await _platformSettings.GetInt32Async(
+                PlatformSettingsCatalog.DocumentUploadMb,
+                WorkspaceDocumentConstants.DefaultMaxUploadMb,
+                new SettingContext(workspaceId, planSlug),
+                ct);
+        }
+
+        return length > limitMb * 1024L * 1024L
+            ? $"The file is larger than this workspace's {limitMb} MB upload limit."
+            : null;
     }
 
     /// <summary>
@@ -270,6 +308,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (await UploadTooLargeAsync(workspaceId, request.File.Length, ct) is { } tooLarge)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>(tooLarge, ErrorCodes.ValidationError);
             }
 
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
@@ -1171,6 +1214,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (await UploadTooLargeAsync(workspaceId, request.File.Length, ct) is { } tooLarge)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(tooLarge, ErrorCodes.ValidationError);
             }
 
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(

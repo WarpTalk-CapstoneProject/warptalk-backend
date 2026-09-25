@@ -14,7 +14,7 @@ namespace WarpTalk.NotificationService.Tests.API.Controllers;
 public sealed class CmsAdminAuditContractTests
 {
     private static readonly Type[] CmsControllers =
-        [typeof(AdminAnnouncementsController), typeof(AdminEmailTemplatesController), typeof(AdminEmailBlocksController)];
+        [typeof(AdminAnnouncementsController), typeof(AdminEmailTemplatesController), typeof(AdminEmailBlocksController), typeof(AdminEmailSendsController)];
 
     public static TheoryData<string> WriteEndpoints()
     {
@@ -24,8 +24,8 @@ public sealed class CmsAdminAuditContractTests
         {
             var verbs = method.GetCustomAttributes<HttpMethodAttribute>().SelectMany(a => a.HttpMethods).ToList();
             if (verbs.Count == 0 || verbs.All(v => v == "GET")) continue;
-            // Previews render a draft and write nothing.
-            if (method.Name == "Preview") continue;
+            // Previews render a draft and an estimate counts an audience; neither writes anything.
+            if (method.Name is "Preview" or "Estimate") continue;
             data.Add($"{controller.Name}.{method.Name}");
         }
         return data;
@@ -44,6 +44,13 @@ public sealed class CmsAdminAuditContractTests
         Assert.Contains(audited!.Action, AdminAuditCmsActions.All);
         Assert.Contains(audited.EntityType, AdminAuditEntityTypes.All);
         Assert.NotEmpty(audited.SubjectTypes);
+    }
+
+    [Fact]
+    public void AudienceSends_NeedTheirOwnPermission_NotTheEditingOne()
+    {
+        var required = typeof(AdminEmailSendsController).GetCustomAttribute<WarpTalk.Shared.Authorization.RequirePermissionAttribute>();
+        Assert.Equal(WarpTalk.Shared.Authorization.AdminPermissions.ContentEmailSend, required?.Permission);
     }
 
     [Fact]

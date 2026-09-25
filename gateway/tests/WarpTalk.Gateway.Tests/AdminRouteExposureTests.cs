@@ -62,6 +62,12 @@ public sealed class AdminRouteExposureTests
         // Bare + catch-all: GET /api/v1/admin/inbox is the list the page calls.
         "/api/v1/admin/inbox",
         "/api/v1/admin/inbox/{**catch-all}",
+        // The platform settings console, served by workspace. Every read needs settings.read and
+        // every write settings.manage (security keys also settings.security); each write is
+        // validated against the typed registry and audited in the same save. Bare + catch-all:
+        // GET /api/v1/admin/settings is what the console loads first.
+        "/api/v1/admin/settings",
+        "/api/v1/admin/settings/{**catch-all}",
     ];
 
     private static JsonElement Routes()

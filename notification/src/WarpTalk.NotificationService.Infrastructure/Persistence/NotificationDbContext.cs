@@ -36,6 +36,9 @@ public partial class NotificationDbContext : DbContext
     public virtual DbSet<EmailCmsVersion> EmailCmsVersions { get; set; }
     public virtual DbSet<EmailSampleDataSet> EmailSampleDataSets { get; set; }
     public virtual DbSet<EmailDeliveryStat> EmailDeliveryStats { get; set; }
+    public virtual DbSet<EmailCustomTemplate> EmailCustomTemplates { get; set; }
+    public virtual DbSet<EmailCampaign> EmailCampaigns { get; set; }
+    public virtual DbSet<EmailCampaignRecipient> EmailCampaignRecipients { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -254,6 +257,8 @@ public partial class NotificationDbContext : DbContext
             entity.Property(e => e.NewUsersWithinDays).HasColumnName("new_users_within_days");
             entity.Property(e => e.SecondaryCtaLabel).HasMaxLength(60).HasColumnName("secondary_cta_label");
             entity.Property(e => e.SecondaryCtaUrl).HasMaxLength(2048).HasColumnName("secondary_cta_url");
+            entity.Property(e => e.EmailTemplateKey).HasMaxLength(60).HasColumnName("email_template_key");
+            entity.Property(e => e.EmailCampaignId).HasColumnName("email_campaign_id");
             entity.Property(e => e.CtaLabel)
                 .HasMaxLength(60)
                 .HasColumnName("cta_label");
@@ -417,6 +422,76 @@ public partial class NotificationDbContext : DbContext
             entity.Property(e => e.CreatedAt).HasColumnName("created_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<EmailCustomTemplate>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("email_custom_templates_pkey");
+
+            entity.ToTable("email_custom_templates", "notification");
+
+            entity.HasIndex(e => e.Key, "uq_email_custom_templates_key").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.Key).HasMaxLength(60).HasColumnName("key");
+            entity.Property(e => e.Name).HasMaxLength(120).HasColumnName("name");
+            entity.Property(e => e.Description).HasMaxLength(500).HasColumnName("description");
+            entity.Property(e => e.Category).HasMaxLength(30).HasColumnName("category");
+            entity.Property(e => e.Variables).HasColumnType("jsonb").HasColumnName("variables");
+            entity.Property(e => e.Status).HasMaxLength(20).HasColumnName("status");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
+            entity.Property(e => e.DeleteReason).HasMaxLength(500).HasColumnName("delete_reason");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<EmailCampaign>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("email_campaigns_pkey");
+
+            entity.ToTable("email_campaigns", "notification");
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.TemplateKey).HasMaxLength(60).HasColumnName("template_key");
+            entity.Property(e => e.Source).HasMaxLength(20).HasColumnName("source");
+            entity.Property(e => e.AnnouncementId).HasColumnName("announcement_id");
+            entity.Property(e => e.Audience).HasColumnType("jsonb").HasColumnName("audience");
+            entity.Property(e => e.Values).HasColumnType("jsonb").HasColumnName("values");
+            entity.Property(e => e.Status).HasMaxLength(20).HasColumnName("status");
+            entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+            entity.Property(e => e.TotalCount).HasColumnName("total_count");
+            entity.Property(e => e.SentCount).HasColumnName("sent_count");
+            entity.Property(e => e.FailedCount).HasColumnName("failed_count");
+            entity.Property(e => e.SkippedCount).HasColumnName("skipped_count");
+            entity.Property(e => e.Error).HasMaxLength(500).HasColumnName("error");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.CancelledBy).HasColumnName("cancelled_by");
+            entity.Property(e => e.CancelledAt).HasColumnName("cancelled_at");
+        });
+
+        modelBuilder.Entity<EmailCampaignRecipient>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("email_campaign_recipients_pkey");
+
+            entity.ToTable("email_campaign_recipients", "notification");
+
+            entity.HasIndex(e => new { e.CampaignId, e.UserId }, "uq_email_campaign_recipients_user").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.CampaignId).HasColumnName("campaign_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Email).HasMaxLength(320).HasColumnName("email");
+            entity.Property(e => e.FullName).HasMaxLength(200).HasColumnName("full_name");
+            entity.Property(e => e.Locale).HasMaxLength(5).HasColumnName("locale");
+            entity.Property(e => e.Status).HasMaxLength(20).HasColumnName("status");
+            entity.Property(e => e.Error).HasMaxLength(500).HasColumnName("error");
+            entity.Property(e => e.SentAt).HasColumnName("sent_at");
         });
 
         modelBuilder.Entity<EmailDeliveryStat>(entity =>

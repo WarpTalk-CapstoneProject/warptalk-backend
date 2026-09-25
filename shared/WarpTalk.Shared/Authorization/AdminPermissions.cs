@@ -42,12 +42,16 @@ public static class AdminPermissions
 
     public const string ContentAnnouncements = "content.announcements";
     public const string ContentEmailTemplates = "content.email_templates";
+    /// <summary>Email CMS v3: send a custom email template to an audience (or as an announcement's email).</summary>
+    public const string ContentEmailSend = "content.email_send";
 
     public const string GlossaryRead = "glossary.read";
     public const string GlossaryManage = "glossary.manage";
 
     public const string SettingsRead = "settings.read";
     public const string SettingsManage = "settings.manage";
+    /// <summary>Edit the Security &amp; auth category of platform settings, on top of <see cref="SettingsManage"/>.</summary>
+    public const string SettingsSecurity = "settings.security";
 
     public const string HealthRead = "health.read";
     public const string HealthOperate = "health.operate";
@@ -123,12 +127,14 @@ public static class AdminPermissions
 
         new(ContentAnnouncements, Areas.Content, "Write, publish and archive platform announcements.", false),
         new(ContentEmailTemplates, Areas.Content, "Edit, restore and test-send transactional email templates.", false),
+        new(ContentEmailSend, Areas.Content, "Send a custom email template to an audience, or as an announcement's email.", false),
 
         new(GlossaryRead, Areas.Glossary, "View the platform glossary and its history.", true),
         new(GlossaryManage, Areas.Glossary, "Create, edit, publish, archive and import platform glossary terms.", false),
 
-        new(SettingsRead, Areas.Settings, "View the language catalog and the billing policy.", true),
-        new(SettingsManage, Areas.Settings, "Edit the language catalog and the billing policy (VAT).", false),
+        new(SettingsRead, Areas.Settings, "View platform settings, their history and integration status, the language catalog and the billing policy.", true),
+        new(SettingsManage, Areas.Settings, "Change, reset, revert, import and export platform settings (except Security), the language catalog and the billing policy.", false),
+        new(SettingsSecurity, Areas.Settings, "Change the Security & auth platform settings: session lifetimes, password policy, login rate limits and lockout.", false),
 
         new(HealthRead, Areas.Operations, "View system health, Grafana dashboards and dead-lettered events.", true),
         new(HealthOperate, Areas.Operations, "Replay dead-lettered events.", false),
@@ -211,7 +217,7 @@ public static class BuiltInStaffRoles
         new(ContentMarketing, "Content / Marketing",
             "Announcements, email templates and the platform glossary.",
             [
-                AdminPermissions.ContentAnnouncements, AdminPermissions.ContentEmailTemplates,
+                AdminPermissions.ContentAnnouncements, AdminPermissions.ContentEmailTemplates, AdminPermissions.ContentEmailSend,
                 AdminPermissions.GlossaryRead, AdminPermissions.GlossaryManage,
                 AdminPermissions.WorkspacesRead, AdminPermissions.MeetingsRead,
                 AdminPermissions.SettingsRead, AdminPermissions.WarpBotUse,
