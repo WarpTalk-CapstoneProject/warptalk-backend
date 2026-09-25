@@ -49,6 +49,24 @@ public class TranscriptCorrectionPropagationTests
     }
 
     [Fact]
+    public async Task AnSttCorrection_DropsTheCleanTextThatWasCleanedFromTheOldWords()
+    {
+        // WT-716. Clean is the DEFAULT view: a stale clean_text would keep showing the machine's
+        // words over the human's fix. Null is "not cleaned", so readers fall back to the correction.
+        var context = Build([]);
+        context.Segment.CleanText = "what machine heard";
+        context.Segment.CleanFlags = ["fillers_removed"];
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("what was actually said", context.Segment.OriginalText);
+        Assert.Null(context.Segment.CleanText);
+        Assert.Null(context.Segment.CleanFlags);
+    }
+
+    [Fact]
     public async Task AnSttCorrection_OnALineNothingEverTranslatedQueuesNothing()
     {
         var context = Build([]);
