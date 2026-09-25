@@ -46,6 +46,18 @@ public sealed record AdminMeetingRow(
 /// When one started meeting ran, as far as the row knows. <paramref name="EndedAt"/> is null while
 /// it is live — and, for a few terminal paths that never stamped it, forever.
 /// </summary>
+/// <summary>
+/// One meeting as the admin Providers page's LiveKit usage sees it (media-usage gRPC): which
+/// workspace it belongs to and when it could have held a LiveKit room open.
+/// </summary>
+public sealed record MediaUsageRoomSpan(
+    Guid RoomId,
+    Guid WorkspaceId,
+    DateTime StartedAt,
+    DateTime? EndedAt,
+    int? DurationSeconds,
+    string Status);
+
 public sealed record AdminMeetingSpan(
     DateTime StartedAt,
     DateTime? EndedAt,
@@ -95,6 +107,15 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
         DateTime to,
         CancellationToken ct = default,
         Guid? workspaceId = null);
+
+    /// <summary>
+    /// The same rooms as <see cref="GetAdminMeetingSpansAsync"/>, with their ids and workspaces, for
+    /// the LiveKit usage the admin Providers page reports (room and participant minutes per hour).
+    /// </summary>
+    Task<IReadOnlyList<MediaUsageRoomSpan>> GetMediaUsageRoomsAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Languages of every non-deleted room that is live (IN_PROGRESS, PAUSED), about to be

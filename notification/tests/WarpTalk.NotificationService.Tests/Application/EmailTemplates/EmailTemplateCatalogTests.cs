@@ -128,9 +128,66 @@ public sealed class EmailTemplateCatalogTests
         Assert.Equal("Verify your WarpTalk email", email.Subject);
     }
 
+    [Fact]
+    public void TheBuiltInLayout_IsAValidLayout_WithAPreheaderAndDarkMode()
+    {
+        Assert.Empty(EmailTemplateRenderer.ValidateLayout(EmailTemplateRenderer.BuiltInLayout));
+        var definition = EmailTemplateCatalog.Get(EmailTemplateCatalog.AuthVerifyEmail);
+
+        var email = EmailTemplateRenderer.Render(definition, definition.Default, EmailTemplateCatalog.SampleValues(definition));
+        var dark = EmailTemplateRenderer.Render(definition, definition.Default, EmailTemplateCatalog.SampleValues(definition),
+            options: new EmailRenderOptions(ForceDark: true));
+
+        Assert.Contains("One click to confirm your address", email.HtmlBody);
+        Assert.Contains("@media (prefers-color-scheme: dark)", email.HtmlBody);
+        Assert.Contains("<meta name=\"color-scheme\" content=\"dark\">", dark.HtmlBody);
+        Assert.DoesNotContain("@media (prefers-color-scheme: dark)", dark.HtmlBody);
+    }
+
+    [Fact]
+    public void ALayoutWithoutAHeading_DropsTheHeadingSection()
+    {
+        var definition = EmailTemplateCatalog.Get(EmailTemplateCatalog.AuthVerifyEmail);
+        var layout = new EmailLayout("<html><body>{{#heading}}<h1>{{heading}}</h1>{{/heading}}{{content}}</body></html>");
+
+        var withHeading = EmailTemplateRenderer.Render(definition, definition.Default, new Dictionary<string, string>(), layout);
+        var without = EmailTemplateRenderer.Render(definition, definition.Default with { Heading = "" }, new Dictionary<string, string>(), layout);
+
+        Assert.Contains("<h1>Verify your email address</h1>", withHeading.HtmlBody);
+        Assert.DoesNotContain("<h1>", without.HtmlBody);
+    }
+
+    [Fact]
+    public void AHandWrittenTextPart_IsUsedAndMustCarryTheRequiredLink()
+    {
+        var definition = EmailTemplateCatalog.Get(EmailTemplateCatalog.AuthVerifyEmail);
+        var content = definition.Default with { TextBody = "Hi {{FullName}}, confirm here." };
+
+        Assert.Contains(EmailTemplateRenderer.Validate(definition, content), issue => issue.Field == "textBody" && issue.Code == "MISSING_REQUIRED_VARIABLE");
+
+        var fixedContent = content with { TextBody = "Hi {{FullName}}: {{VerifyUrl}}" };
+        var email = EmailTemplateRenderer.Render(definition, fixedContent,
+            new Dictionary<string, string> { ["FullName"] = "<Linh>", ["VerifyUrl"] = "https://x.test/v" },
+            new EmailLayout("<html><body>{{content}}</body></html>", "{{content}}\n-- sent by WarpTalk"));
+
+        Assert.Equal("Hi <Linh>: https://x.test/v\n-- sent by WarpTalk", email.TextBody);
+    }
+
+    [Fact]
+    public void Partials_ExpandOneLevel_AndUnknownOnesAreReported()
+    {
+        var unknown = new List<string>();
+        var expanded = EmailTemplateRenderer.ExpandPartials(
+            "<p>Hi</p>{{> signature}}{{> nope}}", new Dictionary<string, string> { ["signature"] = "<p>Team</p>" }, unknown);
+
+        Assert.Equal("<p>Hi</p><p>Team</p>{{> nope}}", expanded);
+        Assert.Equal(["nope"], unknown);
+        Assert.Contains(EmailTemplateRenderer.ValidatePartial("<p>{{> other}}</p>"), issue => issue.Code == "NESTED_PARTIAL");
+    }
+
     private sealed class FixedSource(StoredEmailTemplate template) : IEmailTemplateSource
     {
-        public Task<StoredEmailTemplate?> FindActiveAsync(string templateKey, CancellationToken ct = default) =>
+        public Task<StoredEmailTemplate?> FindActiveAsync(string templateKey, string? locale, CancellationToken ct = default) =>
             Task.FromResult<StoredEmailTemplate?>(template);
     }
 }

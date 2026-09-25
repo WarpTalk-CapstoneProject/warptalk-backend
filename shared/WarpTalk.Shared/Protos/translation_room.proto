@@ -34,6 +34,31 @@ service TranslationRoomService {
   // and (before the call had started) not recorded anywhere at all. Identified by USER id, like
   // the kick, because that is what MeetingService's REST surface speaks.
   rpc RejectRoomParticipant (RejectRoomParticipantRequest) returns (RejectRoomParticipantResponse);
+
+  // Admin Providers page: LiveKit usage per UTC hour and workspace — room minutes, estimated
+  // participant minutes and egress recordings — read by billing-service, which owns the page's API.
+  // Read-only; rules on MediaUsageCalculator. INVALID_ARGUMENT for a window over 120 days.
+  rpc GetMediaUsage (GetMediaUsageRequest) returns (GetMediaUsageResponse);
+}
+
+message GetMediaUsageRequest {
+  // [from, to) as Unix seconds, UTC.
+  int64 from_unix = 1;
+  int64 to_unix = 2;
+}
+
+message MediaUsageHour {
+  int64 hour_start_unix = 1;
+  string workspace_id = 2;
+  double room_seconds = 3;
+  double participant_seconds = 4;
+  int32 rooms_started = 5;
+  int32 recordings = 6;
+  int64 recording_bytes = 7;
+}
+
+message GetMediaUsageResponse {
+  repeated MediaUsageHour hours = 1;
 }
 
 message GetTranslationRoomRequest {

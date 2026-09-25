@@ -103,12 +103,16 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
 builder.Services.AddScoped<IAdminNotificationDeliveryService, AdminNotificationDeliveryService>();
 
-// The email template CMS. This service owns the store; its own senders (and the GetEmailTemplate
-// RPC every other sender calls) read it directly through DbEmailTemplateSource.
-builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateSource, DbEmailTemplateSource>();
+// The email CMS. This service owns the store: its own senders (and the GetEmailTemplate RPC every
+// other sender calls) read the published content through EmailPublishedResolver, and every send is
+// counted through DbEmailDeliveryRecorder (directly, or over RecordEmailDelivery).
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateSource, WarpTalk.NotificationService.Application.Services.EmailCms.EmailPublishedResolver>();
 builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateComposer, WarpTalk.Shared.Email.EmailTemplateComposer>();
-builder.Services.AddScoped<IAdminEmailTemplateService, AdminEmailTemplateService>();
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailDeliveryRecorder, WarpTalk.NotificationService.Application.Services.EmailCms.DbEmailDeliveryRecorder>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailContentService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailContentService>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailBlockService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailBlockService>();
 builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
+
 
 // WT-699 / TC4104: BROADCAST and SEGMENT announcements resolve their audience through AuthService
 // and WorkspaceService. Optional configuration on purpose — without the two addresses those modes
@@ -126,10 +130,14 @@ else
 {
     builder.Services.AddSingleton<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredViewerAudienceResolver>();
 }
-if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
+if (!string.IsNullOrWhiteSpace(authServiceUrl))
 {
+    // Also read by GrpcViewerAudienceResolver, for "new users" announcement targeting.
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.UserService.UserServiceClient>(o => o.Address = new Uri(authServiceUrl))
         .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+}
+if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
+{
     builder.Services.AddScoped<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcAdminAudienceResolver>();
 }
 else

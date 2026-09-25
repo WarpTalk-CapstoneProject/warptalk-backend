@@ -71,6 +71,8 @@ message UserWorkspaceAudienceItem {
   string workspace_id = 1;
   // From the replicated entitlement snapshot. Empty when the workspace has no plan.
   string plan_slug = 2;
+  // The person's role in this workspace (Owner, Admin, Member). Empty when it cannot be resolved.
+  string role_name = 3;
 }
 
 message ListUserWorkspaceAudienceResponse {

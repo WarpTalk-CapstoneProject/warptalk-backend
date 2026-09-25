@@ -91,6 +91,7 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 
         AddCartesiaUsageSync(services, configuration);
+        AddProviderStatus(services, configuration);
 
         // WT-263: the entitlement layer. The resolver is the single place entitlements are computed;
         // the publisher is the single place they leave this service.
@@ -131,6 +132,22 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 configured: options.IsConfigured && options.UsageSyncIntervalMinutes > 0,
                 filteredToApiKey: options.IsFilteredToApiKey,
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RedisCartesiaUsageSyncStatus>>()));
+    }
+
+    /// <summary>
+    /// Admin Providers page: status page polling options, its HTTP client and shared state. The
+    /// pages are public URLs (ProviderStatus:Pages:{provider}); none configured = no polling.
+    /// </summary>
+    private static void AddProviderStatus(IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddOptions<ProviderStatusOptions>().Bind(configuration.GetSection(ProviderStatusOptions.SectionName));
+        services.AddHttpClient(Workers.ProviderStatusPollWorker.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("WarpTalk-Billing-StatusPoll/1.0");
+        });
+        services.AddSingleton<IProviderStatusPageState>(sp =>
+            new RedisProviderStatusPageState(sp.GetRequiredService<IConnectionMultiplexer>()));
     }
 
     public static void VerifyBillingDatabase(this IServiceProvider serviceProvider)

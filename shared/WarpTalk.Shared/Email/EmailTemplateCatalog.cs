@@ -217,10 +217,29 @@ public static class EmailTemplateCatalog
                 Button("{{ActionUrl}}", "Open WarpTalk &rarr;"))),
     ];
 
-    private static readonly Dictionary<string, EmailTemplateDefinition> ByKey =
-        Definitions.ToDictionary(definition => definition.Key, StringComparer.Ordinal);
+    // The inbox preview line under each subject. Added with the v2 CMS; editable per locale.
+    private static readonly Dictionary<string, string> DefaultPreheaders = new(StringComparer.Ordinal)
+    {
+        [AuthVerifyEmail] = "One click to confirm your address and finish signing up.",
+        [AuthPasswordReset] = "Use this link to choose a new password. It expires soon.",
+        [WorkspaceInvitation] = "{{InviterName}} invited you to collaborate on WarpTalk.",
+        [WorkspaceJoinRequestApproved] = "You can open {{WorkspaceName}} now.",
+        [MeetingInvitation] = "{{MeetingTitle}} · {{ScheduledTime}}",
+        [MeetingReminder] = "{{MeetingTitle}} starts in {{StartsIn}}.",
+        [NotificationEmailCopy] = "",
+    };
 
-    public static IReadOnlyList<EmailTemplateDefinition> All => Definitions;
+    private static readonly EmailTemplateDefinition[] WithPreheaders = Definitions
+        .Select(definition => definition with
+        {
+            Default = definition.Default with { Preheader = DefaultPreheaders.GetValueOrDefault(definition.Key, string.Empty) },
+        })
+        .ToArray();
+
+    private static readonly Dictionary<string, EmailTemplateDefinition> ByKey =
+        WithPreheaders.ToDictionary(definition => definition.Key, StringComparer.Ordinal);
+
+    public static IReadOnlyList<EmailTemplateDefinition> All => WithPreheaders;
 
     public static EmailTemplateDefinition? Find(string? key) =>
         key is not null && ByKey.TryGetValue(key, out var definition) ? definition : null;

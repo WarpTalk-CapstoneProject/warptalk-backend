@@ -29,7 +29,7 @@ public class WorkspaceInvitationEmailComposerTests
             .Returns(new SendEmailResponse(true, "message-id", null));
 
         var source = Substitute.For<IEmailTemplateSource>();
-        source.FindActiveAsync(templateKey, Arg.Any<CancellationToken>()).Returns(stored);
+        source.FindActiveAsync(templateKey, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(stored);
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>

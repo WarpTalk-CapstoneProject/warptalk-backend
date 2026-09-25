@@ -49,6 +49,12 @@ public interface ICreditTransactionRepository : IGenericRepository<CreditTransac
     /// <summary>Consume rows in [from, to) per UTC half-hour, charge type, provider and plan, with provider cost.</summary>
     Task<IReadOnlyList<ConsumptionSlotRow>> GetConsumptionSlotsAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Consumed credits in [from, to) per workspace, AI provider and charge type, with provider cost
+    /// on the <see cref="ConsumptionTotals"/> coverage rule (admin Providers page, "by workspace").
+    /// </summary>
+    Task<IReadOnlyList<ProviderWorkspaceConsumption>> GetProviderWorkspaceConsumptionAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
     /// <summary>Consumed credits in [from, to) per UTC half-hour, workspace and plan.</summary>
     Task<IReadOnlyList<WorkspaceSlotRow>> GetWorkspaceSlotsAsync(DateTime from, DateTime to, CancellationToken cancellationToken = default);
 }

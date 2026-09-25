@@ -29,6 +29,8 @@ public class UnitOfWork : IUnitOfWork
         WorkspaceEntitlementOverrides = new WorkspaceEntitlementOverrideRepository(db);
         ProviderUsageDaily = new ProviderUsageDailyRepository(db);
         FxRates = new FxRateRepository(db);
+        ProviderCallStats = new ProviderCallStatRepository(db);
+        ProviderStatusIncidents = new ProviderStatusIncidentRepository(db);
     }
 
     public IPlanRepository Plans { get; }
@@ -46,6 +48,8 @@ public class UnitOfWork : IUnitOfWork
     public IWorkspaceEntitlementOverrideRepository WorkspaceEntitlementOverrides { get; }
     public IProviderUsageDailyRepository ProviderUsageDaily { get; }
     public IFxRateRepository FxRates { get; }
+    public IProviderCallStatRepository ProviderCallStats { get; }
+    public IProviderStatusIncidentRepository ProviderStatusIncidents { get; }
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 

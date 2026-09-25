@@ -54,6 +54,15 @@ public static class AdminAuditEntityTypes
     /// <summary>Staff access offered to an address with no account yet (G10).</summary>
     public const string StaffInvitation = "staff_invitation";
 
+    /// <summary>An in-app announcement (admin → Announcements). Entity id = the announcement's id.</summary>
+    public const string Announcement = "announcement";
+    /// <summary>One transactional email in one locale. Entity id = the content variant's id.</summary>
+    public const string EmailTemplate = "email_template";
+    /// <summary>A reusable email layout or block. Entity id = the block's id.</summary>
+    public const string EmailBlock = "email_block";
+    /// <summary>A named sample-data set for an email's preview. Entity id = the set's id.</summary>
+    public const string EmailSampleData = "email_sample_data";
+
     /// <summary>
     /// Every value above, so the audit screen's entity filter and the web's label table have one
     /// list to agree with.
@@ -63,6 +72,7 @@ public static class AdminAuditEntityTypes
         Workspace, CreditAdjustment, PricingVersion, UsageRate, PaymentMethod, GlossaryTerm,
         Notification, User, SupportedLanguage, Subscription, Invoice, WorkspaceNote, Plugin, Plan,
         BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
+        Announcement, EmailTemplate, EmailBlock, EmailSampleData,
         StaffMember, StaffRole, StaffInvitation,
     ];
 }
@@ -248,6 +258,64 @@ public static class AdminAuditStaffActions
     [
         Granted, Invited, InvitationRevoked, InvitationAccepted, RoleChanged, Suspended, Reactivated,
         Removed, RoleCreated, RoleUpdated, RoleDuplicated, RoleDeleted,
+    ];
+}
+
+/// <summary>
+/// Action verbs recorded by the admin CMS (Announcements, Email templates) through
+/// <c>[AdminAudited]</c> on each write endpoint. Every value is at most 30 characters:
+/// <c>workspace_admin_actions.action</c> is varchar(30).
+/// </summary>
+public static class AdminAuditCmsActions
+{
+    public const string AnnouncementCreated = "announcement.created";
+    public const string AnnouncementUpdated = "announcement.updated";
+    public const string AnnouncementPublished = "announcement.published";
+    public const string AnnouncementUnpublished = "announcement.unpublished";
+    public const string AnnouncementArchived = "announcement.archived";
+    public const string AnnouncementDuplicated = "announcement.duplicated";
+    public const string AnnouncementDeleted = "announcement.deleted";
+    public const string AnnouncementAssetAdded = "announcement.asset_added";
+    public const string AnnouncementBulkAction = "announcement.bulk_action";
+
+    public const string EmailDraftSaved = "email.draft_saved";
+    public const string EmailPublished = "email.published";
+    public const string EmailDraftDiscarded = "email.draft_discarded";
+    public const string EmailArchived = "email.archived";
+    public const string EmailUnarchived = "email.unarchived";
+    public const string EmailDuplicated = "email.duplicated";
+    public const string EmailResetToDefault = "email.reset_to_default";
+    public const string EmailVersionRestored = "email.version_restored";
+    public const string EmailTestSent = "email.test_sent";
+    public const string EmailBulkAction = "email.bulk_action";
+
+    public const string EmailBlockCreated = "email_block.created";
+    public const string EmailBlockDraftSaved = "email_block.draft_saved";
+    public const string EmailBlockPublished = "email_block.published";
+    public const string EmailBlockDraftDiscarded = "email_block.draft_discarded";
+    public const string EmailBlockArchived = "email_block.archived";
+    public const string EmailBlockUnarchived = "email_block.unarchived";
+    public const string EmailBlockDuplicated = "email_block.duplicated";
+    public const string EmailBlockDeleted = "email_block.deleted";
+    public const string EmailBlockSetDefault = "email_block.set_default";
+    public const string EmailBlockVersionRestored = "email_block.version_restored";
+    public const string EmailBlockBulkAction = "email_block.bulk_action";
+
+    public const string EmailSampleSaved = "email_sample.saved";
+    public const string EmailSampleDeleted = "email_sample.deleted";
+
+    /// <summary>Every verb above, so a test can hold all of them to the column width.</summary>
+    public static readonly string[] All =
+    [
+        AnnouncementCreated, AnnouncementUpdated, AnnouncementPublished,
+        AnnouncementUnpublished, AnnouncementArchived, AnnouncementDuplicated, AnnouncementDeleted,
+        AnnouncementAssetAdded, AnnouncementBulkAction,
+        EmailDraftSaved, EmailPublished, EmailDraftDiscarded, EmailArchived, EmailUnarchived,
+        EmailDuplicated, EmailResetToDefault, EmailVersionRestored, EmailTestSent, EmailBulkAction,
+        EmailBlockCreated, EmailBlockDraftSaved, EmailBlockPublished, EmailBlockDraftDiscarded,
+        EmailBlockArchived, EmailBlockUnarchived, EmailBlockDuplicated, EmailBlockDeleted,
+        EmailBlockSetDefault, EmailBlockVersionRestored, EmailBlockBulkAction,
+        EmailSampleSaved, EmailSampleDeleted,
     ];
 }
 

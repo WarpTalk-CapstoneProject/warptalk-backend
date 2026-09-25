@@ -14,7 +14,7 @@ public interface IWorkspaceMemberRepository : IGenericRepository<WorkspaceMember
     /// The workspaces this person is an active member of, excluding deleted workspaces — a
     /// deleted workspace keeps its membership rows, and they must not count.
     /// </summary>
-    Task<List<Guid>> GetActiveWorkspaceIdsForUserAsync(Guid userId, CancellationToken ct = default);
+    Task<List<WorkspaceMember>> GetActiveMembershipsForUserAsync(Guid userId, CancellationToken ct = default);
     Task<int> CountActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
 
     /// <summary>Active member counts for every workspace that has any, in one grouped query.</summary>

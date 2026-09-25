@@ -85,6 +85,7 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         {
             WorkspaceId = item.WorkspaceId.ToString(),
             PlanSlug = item.PlanSlug ?? string.Empty,
+            RoleName = item.RoleName ?? string.Empty,
         }));
         return response;
     }

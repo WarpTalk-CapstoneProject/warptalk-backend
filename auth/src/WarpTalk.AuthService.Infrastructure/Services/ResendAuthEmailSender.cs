@@ -23,6 +23,7 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
 {
     private readonly IResendEmailClient _resend;
     private readonly IEmailTemplateComposer _templates;
+    private readonly IEmailDeliveryRecorder _deliveries;
     private readonly ResendSettings _settings;
     private readonly string _appBaseUrl;
 
@@ -30,10 +31,12 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
         IResendEmailClient resend,
         IEmailTemplateComposer templates,
         IOptions<ResendSettings> settings,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IEmailDeliveryRecorder? deliveries = null)
     {
         _resend = resend;
         _templates = templates;
+        _deliveries = deliveries ?? NullEmailDeliveryRecorder.Instance;
         _settings = settings.Value;
         _appBaseUrl = (configuration["AppBaseUrl"] ?? "http://localhost:3000").TrimEnd('/');
     }
@@ -51,6 +54,7 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
                 ["FullName"] = user.FullName,
                 ["VerifyUrl"] = verifyUrl,
             },
+            user.PreferredLanguage,
             ct);
 
         await SendAsync(user.Email, email, ct);
@@ -69,6 +73,7 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
                 ["FullName"] = user.FullName,
                 ["ResetUrl"] = resetUrl,
             },
+            user.PreferredLanguage,
             ct);
 
         await SendAsync(user.Email, email, ct);
@@ -89,6 +94,9 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
                 ["SignInUrl"] = $"{_appBaseUrl}/login?redirect={Uri.EscapeDataString("/admin")}",
                 ["ExpiresIn"] = $"{StaffConstants.InvitationLifetimeDays} days",
             },
+            // The address may have no account yet, so there is no language to honour: the
+            // template's default locale.
+            locale: null,
             ct);
 
         await SendAsync(toEmail, email, ct);
@@ -104,6 +112,7 @@ public sealed class ResendAuthEmailSender : IAuthEmailSender
                 email.HtmlBody,
                 email.TextBody),
             ct);
+        await _deliveries.RecordAsync(email, result.IsSuccess, ct);
         if (!result.IsSuccess)
             throw new InvalidOperationException(result.ErrorMessage ?? "Email provider rejected the message.");
     }

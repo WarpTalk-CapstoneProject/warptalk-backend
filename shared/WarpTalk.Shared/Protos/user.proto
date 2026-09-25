@@ -75,6 +75,8 @@ message GetUserResponse {
   string full_name = 3;
   string avatar_url = 4;
   string preferred_language = 5;
+  // ISO 8601 UTC. When the account was created — what "new users" announcement targeting reads.
+  string created_at = 6;
 }
 
 message GetUserSettingsResponse {

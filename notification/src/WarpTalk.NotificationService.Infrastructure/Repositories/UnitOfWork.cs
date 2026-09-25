@@ -12,9 +12,15 @@ public class UnitOfWork : IUnitOfWork
     private IPushSubscriptionRepository? _pushSubscriptionRepository;
     private IAdminNotificationRepository? _adminNotificationRepository;
     private INotificationInboxMessageRepository? _notificationInboxMessageRepository;
-    private INotificationTemplateVersionRepository? _notificationTemplateVersionRepository;
     private IAnnouncementRepository? _announcementRepository;
-    private IAnnouncementDismissalRepository? _announcementDismissalRepository;
+    private IAnnouncementViewerStateRepository? _announcementViewerStateRepository;
+    private IAnnouncementDailyStatRepository? _announcementDailyStatRepository;
+    private IAnnouncementAssetRepository? _announcementAssetRepository;
+    private IEmailBlockRepository? _emailBlockRepository;
+    private IEmailContentVariantRepository? _emailContentVariantRepository;
+    private IEmailCmsVersionRepository? _emailCmsVersionRepository;
+    private IEmailSampleDataSetRepository? _emailSampleDataSetRepository;
+    private IEmailDeliveryStatRepository? _emailDeliveryStatRepository;
 
     public UnitOfWork(NotificationDbContext context)
     {
@@ -39,14 +45,32 @@ public class UnitOfWork : IUnitOfWork
     public INotificationInboxMessageRepository NotificationInboxMessageRepository =>
         _notificationInboxMessageRepository ??= new NotificationInboxMessageRepository(_context);
 
-    public INotificationTemplateVersionRepository NotificationTemplateVersionRepository =>
-        _notificationTemplateVersionRepository ??= new NotificationTemplateVersionRepository(_context);
-
     public IAnnouncementRepository AnnouncementRepository =>
         _announcementRepository ??= new AnnouncementRepository(_context);
 
-    public IAnnouncementDismissalRepository AnnouncementDismissalRepository =>
-        _announcementDismissalRepository ??= new AnnouncementDismissalRepository(_context);
+    public IAnnouncementViewerStateRepository AnnouncementViewerStateRepository =>
+        _announcementViewerStateRepository ??= new AnnouncementViewerStateRepository(_context);
+
+    public IAnnouncementDailyStatRepository AnnouncementDailyStatRepository =>
+        _announcementDailyStatRepository ??= new AnnouncementDailyStatRepository(_context);
+
+    public IAnnouncementAssetRepository AnnouncementAssetRepository =>
+        _announcementAssetRepository ??= new AnnouncementAssetRepository(_context);
+
+    public IEmailBlockRepository EmailBlockRepository =>
+        _emailBlockRepository ??= new EmailBlockRepository(_context);
+
+    public IEmailContentVariantRepository EmailContentVariantRepository =>
+        _emailContentVariantRepository ??= new EmailContentVariantRepository(_context);
+
+    public IEmailCmsVersionRepository EmailCmsVersionRepository =>
+        _emailCmsVersionRepository ??= new EmailCmsVersionRepository(_context);
+
+    public IEmailSampleDataSetRepository EmailSampleDataSetRepository =>
+        _emailSampleDataSetRepository ??= new EmailSampleDataSetRepository(_context);
+
+    public IEmailDeliveryStatRepository EmailDeliveryStatRepository =>
+        _emailDeliveryStatRepository ??= new EmailDeliveryStatRepository(_context);
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 

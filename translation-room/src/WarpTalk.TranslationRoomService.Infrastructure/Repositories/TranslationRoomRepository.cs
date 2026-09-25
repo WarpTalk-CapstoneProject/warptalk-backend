@@ -102,6 +102,28 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
             .ToList();
     }
 
+    public async Task<IReadOnlyList<MediaUsageRoomSpan>> GetMediaUsageRoomsAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        // Same window rule as GetAdminMeetingSpansAsync, so the two reports cannot disagree on
+        // which meetings ran; scalars only, mapped to the record in memory.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(r => r.DeletedAt == null
+                && r.StartedAt != null
+                && r.StartedAt < to
+                && (r.EndedAt > from
+                    || (r.EndedAt == null && (LiveStatuses.Contains(r.Status) || r.StartedAt >= from))))
+            .Select(r => new { r.Id, r.WorkspaceId, StartedAt = r.StartedAt!.Value, r.EndedAt, r.DurationSeconds, r.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new MediaUsageRoomSpan(r.Id, r.WorkspaceId, r.StartedAt, r.EndedAt, r.DurationSeconds, r.Status))
+            .ToList();
+    }
+
     /// <summary>Rooms that can still be joined or started, in any sense (WT-691).</summary>
     private static readonly string[] OpenStatuses =
     [
