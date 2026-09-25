@@ -79,6 +79,9 @@ public static class AdminAuditEntityTypes
     /// <summary>G11: a discount coupon or auto-apply campaign (billing <c>coupons</c>).</summary>
     public const string Coupon = "coupon";
 
+    /// <summary>A platform setting (/admin/settings). Entity key = the setting key; no entity id.</summary>
+    public const string PlatformSetting = "platform_setting";
+
     /// <summary>
     /// Every value above, so the audit screen's entity filter and the web's label table have one
     /// list to agree with.
@@ -92,6 +95,7 @@ public static class AdminAuditEntityTypes
         StaffMember, StaffRole, StaffInvitation,
         OperatingExpense, ExpenseCategory, ExpenseBudget, InboxItem,
         CreditPack, Addon, Coupon,
+        PlatformSetting,
     ];
 }
 
@@ -270,6 +274,18 @@ public static class AdminAuditSources
     public const string AuthService = "auth-service";
     public const string TranslationRoomService = "translation-room-service";
     public const string AssistantService = "assistant-service";
+}
+
+/// <summary>Action verbs recorded against a platform setting (/admin/settings).</summary>
+public static class AdminAuditPlatformSettingActions
+{
+    public const string Changed = "setting.changed";
+    public const string Reset = "setting.reset";
+    public const string Reverted = "setting.reverted";
+    public const string Imported = "setting.imported";
+    public const string Exported = "settings.exported";
+
+    public static readonly string[] All = [Changed, Reset, Reverted, Imported, Exported];
 }
 
 /// <summary>Action verbs recorded against a language catalog row (WT-691).</summary>

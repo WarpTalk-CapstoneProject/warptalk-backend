@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -42,6 +43,8 @@ public class WorkspaceService : IWorkspaceService
     private readonly IBillingSubscriptionClient? _billingSubscriptionClient;
     private readonly IWorkspaceInvitationService? _invitationService;
 
+    private readonly IPlatformSettings? _platformSettings;
+
     public WorkspaceService(
         IUnitOfWork unitOfWork,
         IWorkspaceCacheService workspaceCache,
@@ -49,8 +52,10 @@ public class WorkspaceService : IWorkspaceService
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher,
         IBillingSubscriptionClient? billingSubscriptionClient = null,
-        IWorkspaceInvitationService? invitationService = null)
+        IWorkspaceInvitationService? invitationService = null,
+        IPlatformSettings? platformSettings = null)
     {
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _workspaceCache = workspaceCache;
         _logger = logger;
@@ -170,7 +175,14 @@ public class WorkspaceService : IWorkspaceService
             var config = new WorkspaceConfiguration
             {
                 VerifiedDomains = domainsToVerify,
-                RequireVerifiedDomainForInternal = requireVerified
+                RequireVerifiedDomainForInternal = requireVerified,
+                // New-workspace defaults from /admin/settings; existing workspaces keep theirs.
+                DefaultLanguage = _platformSettings is null
+                    ? WorkspaceConstants.DefaultWorkspaceLanguage
+                    : await _platformSettings.GetStringAsync(PlatformSettingsCatalog.WorkspaceDefaultLanguage, WorkspaceConstants.DefaultWorkspaceLanguage, ct: ct),
+                Timezone = _platformSettings is null
+                    ? WorkspaceConstants.DefaultWorkspaceTimezone
+                    : await _platformSettings.GetStringAsync(PlatformSettingsCatalog.WorkspaceDefaultTimezone, WorkspaceConstants.DefaultWorkspaceTimezone, ct: ct),
             };
             var settingsJson = JsonSerializer.Serialize(config);
             var workspace = request.ToEntity(slug, userId, settingsJson);

@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Net.Http;
 using Amazon.S3;
@@ -60,6 +61,9 @@ public static class DependencyInjection
         services.AddScoped<IWorkspaceAdminNoteRepository, WorkspaceAdminNoteRepository>();
         services.AddScoped<IAdminInboxStateRepository, AdminInboxStateRepository>();
         services.AddScoped<IAdminInboxNoteRepository, AdminInboxNoteRepository>();
+        // Platform settings console: stored values and their append-only history.
+        services.AddScoped<IPlatformSettingValueRepository, PlatformSettingValueRepository>();
+        services.AddScoped<IPlatformSettingChangeRepository, PlatformSettingChangeRepository>();
 
         // 3. Object Storage Options & Adapters
         services.AddWarpTalkObjectStorageOptions(configuration);
@@ -203,6 +207,30 @@ public static class DependencyInjection
         });
         services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
         services.AddScoped<IWorkspaceCacheService, WorkspaceCacheService>();
+
+        // Platform settings: this service writes the published snapshot (and re-publishes it every
+        // minute, which heals an eviction); it also reads settings like every other service.
+        services.AddSingleton<IPlatformSettingsPublisher, RedisPlatformSettingsPublisher>();
+        services.AddWarpTalkPlatformSettings();
+        services.AddWarpTalkIntegrationStatus("workspace", sp =>
+        {
+            var config = sp.GetRequiredService<IConfiguration>();
+            return IntegrationStatusServiceCollectionExtensions.Snapshot(
+                (IntegrationKeys.Resend, new IntegrationReport(
+                    IntegrationReport.FromConfiguration(config, null, "Resend:ApiKey").Configured
+                    || IntegrationReport.FromConfiguration(config, null, "RESEND_API_KEY").Configured, "invitation e-mail")),
+                (IntegrationKeys.ObjectStorage, IntegrationReport.ObjectStorage(config, "knowledge documents")),
+                (IntegrationKeys.Qdrant, IntegrationReport.FromConfiguration(config, "knowledge search", "VectorDb:Url")),
+                (IntegrationKeys.Prometheus, IntegrationReport.FromConfiguration(config, "system health", "Monitoring:PrometheusUrl")),
+                (IntegrationKeys.Alertmanager, IntegrationReport.FromConfiguration(config, "system health", "Monitoring:AlertmanagerUrl")),
+                (IntegrationKeys.Grafana, IntegrationReport.FromConfiguration(config, "embedded dashboards", "Monitoring:GrafanaEmbedPath")),
+                (IntegrationKeys.Redis, new IntegrationReport(true, "settings snapshot, caches")),
+                (IntegrationKeys.Postgres, IntegrationReport.FromConfiguration(config, "workspace database", "ConnectionStrings:WorkspaceDb")));
+        });
+        services.AddHostedService<PlatformSettingsPublisherWorker>();
+        // Integrations section: assembles every service's self-report and runs read-only tests.
+        services.AddHttpClient(PlatformIntegrationsService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(10));
+        services.AddScoped<IPlatformIntegrationsService, PlatformIntegrationsService>();
 
         // 6. Hosted Background Consumer Services
         services.AddHostedService<DocumentSecurityGuardrailConsumerService>();

@@ -9,6 +9,7 @@ using WarpTalk.Shared.Extensions;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.API.Controllers;
 
@@ -26,7 +27,9 @@ public class WorkspaceDocumentsController : ControllerBase
     [Authorize]
     [HttpPost]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(10 * 1024 * 1024)] // Enforce 10MB limit at request level
+    // Ceiling only: the live per-workspace limit (platform setting limits.document_upload_mb) is
+    // enforced by the service, which can name it in the error.
+    [RequestSizeLimit(WorkspaceDocumentConstants.MaxUploadRequestBytes)]
     public async Task<IActionResult> UploadDocument(
         Guid workspaceId,
         [FromForm] UploadDocumentApiRequest request,
@@ -79,7 +82,7 @@ public class WorkspaceDocumentsController : ControllerBase
     [Authorize]
     [HttpPost("{documentId:guid}/revision")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(10 * 1024 * 1024)]
+    [RequestSizeLimit(WorkspaceDocumentConstants.MaxUploadRequestBytes)]
     public async Task<IActionResult> ReuploadDocument(
         Guid workspaceId,
         Guid documentId,
