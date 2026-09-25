@@ -51,12 +51,21 @@ public sealed class CreditPackExpiryService : ICreditPackExpiryService
             var consumed = (await _unitOfWork.CreditTransactionRepository.GetWorkspaceConsumptionTotalsAsync(
                 purchase.WorkspaceId, purchase.PurchasedAt, purchase.ExpiresAt ?? now, ct)).CreditsConsumed;
 
-            var subscription = await _unitOfWork.SubscriptionRepository.GetByIdAsync(purchase.SubscriptionId, ct);
-            var expired = ExpiredCredits(purchase.TotalCredits, consumed, subscription?.CreditsRemaining ?? 0);
+            var (subscription, fromFrozen) = await ResolveHolderAsync(purchase, ct);
+            var available = subscription is null ? 0 : fromFrozen ? subscription.FrozenCredits : subscription.CreditsRemaining;
+            var expired = ExpiredCredits(purchase.TotalCredits, consumed, available);
 
             if (expired > 0 && subscription is not null)
             {
-                subscription.CreditsRemaining -= expired;
+                if (fromFrozen)
+                {
+                    subscription.FrozenCredits -= expired;
+                }
+                else
+                {
+                    subscription.CreditsRemaining -= expired;
+                }
+
                 subscription.UpdatedAt = now;
                 _unitOfWork.SubscriptionRepository.Update(subscription);
 
@@ -68,9 +77,12 @@ public sealed class CreditPackExpiryService : ICreditPackExpiryService
                     UserId = purchase.UserId,
                     Amount = -expired,
                     Type = TransactionConstants.TransactionTypes.Adjustment,
-                    Description = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Credit pack expired: {expired:N0} unspent credits removed"),
+                    Description = fromFrozen
+                        ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Credit pack expired while frozen: {expired:N0} frozen credits removed")
+                        : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Credit pack expired: {expired:N0} unspent credits removed"),
                     ReferenceId = purchase.Id,
                     ReferenceType = PackageCatalogConstants.ReferenceTypes.CreditPackExpiry,
+                    // The SPENDABLE balance, which a frozen expiry does not touch.
                     BalanceAfter = subscription.CreditsRemaining,
                     CreatedAt = now,
                 }, ct);
@@ -88,6 +100,30 @@ public sealed class CreditPackExpiryService : ICreditPackExpiryService
         }
 
         return swept;
+    }
+
+    /// <summary>
+    /// Where the pack's credits are now. A pack is bought into one subscription, but that
+    /// subscription can end: its balance is then frozen on the same row (CreditFreezeService), and a
+    /// renewal moves the frozen credits into the workspace's NEW live row. A frozen pack still
+    /// expires on its own date, so it is taken from wherever the credits went.
+    /// </summary>
+    private async Task<(Subscription? Holder, bool FromFrozen)> ResolveHolderAsync(CreditPackPurchase purchase, CancellationToken ct)
+    {
+        var owner = await _unitOfWork.SubscriptionRepository.GetByIdAsync(purchase.SubscriptionId, ct);
+        if (owner is not null && (owner.IsActive || owner.CreditsFrozenAt is null))
+        {
+            return (owner, false);
+        }
+
+        if (owner is { FrozenCredits: > 0 })
+        {
+            return (owner, true);
+        }
+
+        var live = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == purchase.WorkspaceId && s.IsActive && s.DeletedAt == null, ct);
+        return (live ?? owner, false);
     }
 
     /// <summary>The customer-favourable rule in the class summary, as a pure function.</summary>

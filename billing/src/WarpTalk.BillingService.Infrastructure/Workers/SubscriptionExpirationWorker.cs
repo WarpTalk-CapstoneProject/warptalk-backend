@@ -1,15 +1,20 @@
 using WarpTalk.Shared.Coordination;
 using WarpTalk.BillingService.Domain.Constants;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.Entitlements;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Options;
+using WarpTalk.Shared.PlatformSettings;
 
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
@@ -73,6 +78,8 @@ public class SubscriptionExpirationWorker : BackgroundService
         var now = DateTime.UtcNow;
 
         var expiredSubscriptions = await unitOfWork.SubscriptionRepository.GetExpiredActiveSubscriptionsAsync(now, cancellationToken);
+        var expiredWorkspaces = new List<Guid>();
+        var suspendedTrialWorkspaces = new List<Guid>();
 
         if (expiredSubscriptions.Count > 0)
         {
@@ -88,6 +95,7 @@ public class SubscriptionExpirationWorker : BackgroundService
                     sub.Status = SubscriptionConstants.SubscriptionStatuses.Active;
                     sub.IsActive = true;
                     suspendedTrials++;
+                    suspendedTrialWorkspaces.Add(sub.WorkspaceId);
 
                     if (aiServiceStateStore is not null)
                     {
@@ -103,6 +111,7 @@ public class SubscriptionExpirationWorker : BackgroundService
                     sub.IsActive = false;
                     sub.Status = SubscriptionConstants.SubscriptionStatuses.Expired;
                     expiredCount++;
+                    expiredWorkspaces.Add(sub.WorkspaceId);
                 }
 
                 sub.UpdatedAt = now;
@@ -114,6 +123,109 @@ public class SubscriptionExpirationWorker : BackgroundService
                 "Processed expired subscriptions. Expired={ExpiredCount}, SuspendedTrials={SuspendedTrials}.",
                 expiredCount,
                 suspendedTrials);
+
+            // THE LEAK THIS CLOSES. Expiring a subscription used to be a row update and nothing
+            // else, so every reader that does not query billing kept the answer it had a moment
+            // before: the workspace's entitlement snapshot still said has_active_subscription (so
+            // WT-515 let it create rooms), the Redis AI-service flag Start Translation reads was
+            // never set, and billing_worker, finding no active row, returned without charging OR
+            // stopping anything. A workspace expired on 23 Sep translated a meeting free on 24 Sep.
+            if (aiServiceStateStore is not null)
+            {
+                foreach (var workspaceId in expiredWorkspaces.Distinct())
+                {
+                    var pushed = await aiServiceStateStore.SetAiServiceStateAsync(
+                        workspaceId,
+                        SubscriptionConstants.ServiceStates.Suspended,
+                        SubscriptionConstants.SuspendedReasons.SubscriptionExpired,
+                        cancellationToken);
+                    if (!pushed.IsSuccess)
+                    {
+                        _logger.LogWarning(
+                            "subscription_expired_ai_state_push_failed WorkspaceId={WorkspaceId} Error={Error}. "
+                            + "The entitlement snapshot and settlement still refuse the workspace.",
+                            workspaceId,
+                            pushed.Error);
+                    }
+                }
+            }
+
+            await RefreshEntitlementsAsync(
+                scope.ServiceProvider,
+                unitOfWork,
+                expiredWorkspaces.Concat(suspendedTrialWorkspaces).Distinct().ToList(),
+                cancellationToken);
+        }
+
+        await SettleEndedCreditsAsync(scope.ServiceProvider, now, cancellationToken);
+    }
+
+    /// <summary>
+    /// Republishes the entitlement snapshot of every workspace whose subscription just ended, so the
+    /// paywall (WT-515) closes now rather than whenever something else happens to republish.
+    /// After the business save on purpose: the resolver reads committed rows.
+    /// </summary>
+    private async Task RefreshEntitlementsAsync(
+        IServiceProvider services,
+        IUnitOfWork unitOfWork,
+        IReadOnlyList<Guid> workspaceIds,
+        CancellationToken cancellationToken)
+    {
+        var publisher = services.GetService<IEntitlementChangePublisher>();
+        if (publisher is null || workspaceIds.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (var workspaceId in workspaceIds)
+            {
+                await publisher.EnqueueAsync(workspaceId, EntitlementConstants.Reasons.SubscriptionExpired, cancellationToken);
+            }
+
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The expiry is committed. The hourly reconcile republishes lapsed workspaces too.
+            _logger.LogError(ex, "subscription_expired_entitlements_publish_failed Count={Count}", workspaceIds.Count);
+        }
+    }
+
+    /// <summary>
+    /// Freezes the credits of subscriptions that ended, releases frozen credits into renewed ones,
+    /// and marks old frozen credits dormant. See CreditFreezeService for the policy.
+    /// </summary>
+    private async Task SettleEndedCreditsAsync(IServiceProvider services, DateTime now, CancellationToken cancellationToken)
+    {
+        var freezer = services.GetService<ICreditFreezeService>();
+        if (freezer is null || !_options.FrozenCreditSweepEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            var split = await freezer.SplitEndedSubscriptionsAsync(now, cancellationToken);
+            var released = await freezer.ReleaseFrozenCreditsAsync(now, cancellationToken);
+
+            var settings = services.GetService<IPlatformSettings>();
+            var graceDays = settings is null
+                ? FrozenCreditDefaults.GraceDays
+                : await settings.GetInt32Async(FrozenCreditDefaults.GraceDaysKey, FrozenCreditDefaults.GraceDays, ct: cancellationToken);
+            var dormant = await freezer.MarkDormantAsync(now, graceDays, cancellationToken);
+
+            if (split + released + dormant > 0)
+            {
+                _logger.LogInformation(
+                    "ended_subscription_credits_settled Split={Split} Released={Released} Dormant={Dormant} GraceDays={GraceDays}",
+                    split, released, dormant, graceDays);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "ended_subscription_credits_failed; the next sweep retries.");
         }
     }
 }

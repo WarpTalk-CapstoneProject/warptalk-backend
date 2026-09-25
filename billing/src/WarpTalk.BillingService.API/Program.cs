@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -109,6 +110,12 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddScoped<IPackageCatalogService, PackageCatalogService>();
     builder.Services.AddScoped<ICustomerCatalogService, CustomerCatalogService>();
     builder.Services.AddScoped<ICreditPackExpiryService, CreditPackExpiryService>();
+    // Frozen credits: what an ended subscription's balance becomes (SubscriptionExpirationWorker,
+    // SubscriptionPaymentEventHandler). See CreditFreezeService for the policy.
+    builder.Services.AddScoped<ICreditFreezeService, CreditFreezeService>();
+    // Platform settings console values (billing.frozen_credits.grace_days is the first billing
+    // key read live). A reader over the published Redis hashes; unset keys keep their defaults.
+    builder.Services.AddWarpTalkPlatformSettings();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();

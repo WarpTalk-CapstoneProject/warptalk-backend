@@ -2259,6 +2259,22 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private async Task<Result> EnsureTranslationCreditsAsync(TranslationRoom translationRoom, CancellationToken ct)
     {
+        // The workspace must have a live subscription at all. The Redis flags below only ever
+        // described a subscription that EXISTS and cannot pay; a subscription that expired wrote
+        // none, so a workspace that expired on 23 Sep started translation on 24 Sep and ran free.
+        // This asks the replicated entitlement snapshot — WT-515's own answer — and only a snapshot
+        // that positively says "no live subscription" refuses (null = unknown = allow; billing
+        // refuses every charge of such a workspace anyway, which stops the room).
+        if (translationRoom.WorkspaceId != Guid.Empty
+            && await _workspaceMeetingPolicy.HasActiveSubscriptionAsync(translationRoom.WorkspaceId, ct) == false)
+        {
+            _logger.LogWarning(
+                "Refused Start Translation in room {RoomId}: workspace {WorkspaceId} has no active subscription.",
+                translationRoom.Id,
+                translationRoom.WorkspaceId);
+            return Result.Failure(TranslationSuspendedMessage("subscription_expired"), ErrorCodes.Forbidden);
+        }
+
         if (_redisStateRepository is null)
             return Result.Success();
 
@@ -2331,6 +2347,8 @@ public class TranslationRoomService : ITranslationRoomService
             "Translation is unavailable because this workspace has an overdue invoice. Ask a workspace owner to settle it.",
         "trial_ended" =>
             "Translation is unavailable because this workspace's trial has ended. Ask a workspace owner to choose a plan.",
+        "subscription_expired" =>
+            "Translation is unavailable because this workspace's subscription has expired. Ask a workspace owner to renew the plan.",
         "overage_cap" or "insufficient_credits" =>
             "This workspace has run out of credits, so translation cannot start. Ask a workspace owner to add credits or upgrade the plan.",
         _ =>

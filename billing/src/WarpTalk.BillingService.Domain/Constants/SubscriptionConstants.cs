@@ -31,6 +31,16 @@ public static class SubscriptionConstants
         public const string OverageCap = "overage_cap";
         public const string InvoiceOverdue = "invoice_overdue";
         public const string TrialEnded = "trial_ended";
+
+        /// <summary>
+        /// The workspace has no live subscription: it expired, or was superseded, without a
+        /// renewal. NEVER stored in subscriptions.suspended_reason — that column's CHECK allows the
+        /// three reasons above, and an ended row's own service state is not what changed. It is the
+        /// reason settle_usage_charge returns for an inactive row, the one billing_worker publishes
+        /// when a room's workspace has no subscription at all, and the one the expiry sweep writes
+        /// into the Redis AI-service state that Start Translation reads.
+        /// </summary>
+        public const string SubscriptionExpired = "subscription_expired";
     }
 
     public static class Tiers

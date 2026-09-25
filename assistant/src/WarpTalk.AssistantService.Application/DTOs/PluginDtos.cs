@@ -344,11 +344,4 @@ public record McpToolExecutionResult(
     string? PluginKey = null,
     string? PluginLabel = null,
     string? ConnectionStatus = null,
-    string? ConnectedAccountEmail = null,
-    /// <summary>
-    /// The tool policy this call CHANGED, or null when it changed none. Set to
-    /// <c>PluginConstants.ToolPolicy.Allow</c> when the user answered the card with "Always
-    /// allow": the tool has stopped asking, and nothing else on the way back says so — the
-    /// assistant needs to be able to tell the user that the next one will just run.
-    /// </summary>
-    string? AppliedToolPolicy = null);
+    string? ConnectedAccountEmail = null);

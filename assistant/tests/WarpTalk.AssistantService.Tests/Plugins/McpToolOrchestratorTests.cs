@@ -853,35 +853,6 @@ public class McpToolOrchestratorTests
         Assert.Equal(
             PluginConstants.ToolPolicy.Allow,
             PluginToolPolicyStore.Read(_installation!.ConfigJson)["google_calendar_create_event"]);
-        // And it says so on the way back: the card is gone for this tool from now on, and the
-        // result is the only thing that reaches the person who pressed the button.
-        Assert.Equal(PluginConstants.ToolPolicy.Allow, result.Value.AppliedToolPolicy);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_ReportsNoPolicyChange_WhenTheUserOnlyConfirmedThisCall()
-    {
-        ConfigureInstalledConnected(GoogleDrivePlugin(includeWriteTool: true));
-        var confirmed = Request(
-            "google_calendar_create_event",
-            new JsonObject { ["summary"] = "Roadmap review" },
-            "signed-confirmation-token");
-        _confirmationTokenService.ValidateAndConsumeAsync(
-                UserId, PluginId, confirmed, "signed-confirmation-token", Arg.Any<CancellationToken>())
-            .Returns(Result.Success());
-        _gateway.ExecuteAsync(
-                Arg.Any<PluginDefinitionDto>(),
-                Arg.Any<McpToolDescriptorDto>(),
-                Arg.Any<PluginConnection>(),
-                Arg.Any<McpToolExecutionRequest>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "calendar:event", null));
-
-        var result = await CreateSut().ExecuteAsync(UserId, confirmed);
-
-        Assert.True(result.Value!.IsSuccess);
-        Assert.Null(result.Value.AppliedToolPolicy);
-        Assert.Empty(PluginToolPolicyStore.Read(_installation!.ConfigJson));
     }
 
     [Fact]

@@ -167,4 +167,34 @@ public class SubscriptionPeriodEndTests
             DateTime.UtcNow,
             "paying again after lapsing must start a period that has not already ended");
     }
+
+    /// <summary>
+    /// Renewing after expiry creates a NEW subscription row, so the credits the workspace kept when
+    /// the last one ended (frozen on the old row) have to be moved — in the same commit as the
+    /// payment, so the plan is never live with its promised credits still frozen.
+    /// </summary>
+    [Fact]
+    public async Task RenewingAfterExpiryRestoresFrozenCreditsIntoTheNewSubscription()
+    {
+        _plans
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MonthlyPlan);
+        var freezer = new Mock<WarpTalk.BillingService.Application.Services.ICreditFreezeService>();
+        Subscription? added = null;
+        _subscriptions
+            .Setup(r => r.AddAsync(It.IsAny<Subscription>(), It.IsAny<CancellationToken>()))
+            .Callback<Subscription, CancellationToken>((sub, _) => added = sub)
+            .Returns(Task.CompletedTask);
+        var handler = new SubscriptionPaymentEventHandler(
+            _unitOfWork.Object,
+            Mock.Of<ILogger<SubscriptionPaymentEventHandler>>(),
+            freezer.Object);
+
+        // No live subscription: the workspace's only one expired.
+        var result = await handler.HandleAsync(Context(PaymentConstants.PriceIntervals.Month, subscription: null!));
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        added.Should().NotBeNull();
+        freezer.Verify(f => f.StageReleaseIntoAsync(added!, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

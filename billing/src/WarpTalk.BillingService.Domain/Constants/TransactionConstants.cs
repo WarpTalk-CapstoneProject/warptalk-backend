@@ -18,6 +18,15 @@ public static class TransactionConstants
         public const string ManualAdjustment = "manual_adjustment";
         public const string UsageRecord = "usage_record";
         public const string AggregatedBatch = "AggregatedBatch";
+
+        /// <summary>A freeze or forfeit at the end of the subscription the row belongs to.</summary>
+        public const string SubscriptionExpiry = "subscription_expiry";
+
+        /// <summary>Frozen credits moved into a live subscription; ReferenceId is the row they came from.</summary>
+        public const string FrozenCreditRelease = "frozen_credit_release";
+
+        /// <summary>An audited admin adjustment of an ended subscription's FROZEN credits.</summary>
+        public const string FrozenCreditAdjustment = "frozen_credit_adjustment";
     }
 
     public static class TransactionTypes
@@ -25,5 +34,14 @@ public static class TransactionConstants
         public const string Consume = "consume";
         public const string TopUp = "top_up";
         public const string Adjustment = "adjustment";
+
+        /// <summary>Spendable balance moved into the frozen bucket when the subscription ended.</summary>
+        public const string CreditFreeze = "credit_freeze";
+
+        /// <summary>Frozen credits moved back into a live subscription's spendable balance.</summary>
+        public const string CreditUnfreeze = "credit_unfreeze";
+
+        /// <summary>Plan credits above the plan's rollover cap, removed when the subscription ended.</summary>
+        public const string CreditForfeit = "credit_forfeit";
     }
 }

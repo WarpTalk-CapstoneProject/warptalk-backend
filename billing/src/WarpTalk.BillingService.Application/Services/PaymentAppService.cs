@@ -21,6 +21,7 @@ public class PaymentAppService : IPaymentAppService
     private readonly IUsageRateCardRepository _rateCards;
     private readonly ICustomerCatalogService? _catalog;
     private readonly IEntitlementChangePublisher? _entitlements;
+    private readonly IAiServiceStateStore? _aiServiceStateStore;
 
     /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
     private const string CreditValueConfigKey = "credit_value_vnd";
@@ -40,8 +41,10 @@ public class PaymentAppService : IPaymentAppService
         IWorkspaceClient workspaceClient,
         IUsageRateCardRepository rateCards,
         ICustomerCatalogService? catalog = null,
-        IEntitlementChangePublisher? entitlements = null)
+        IEntitlementChangePublisher? entitlements = null,
+        IAiServiceStateStore? aiServiceStateStore = null)
     {
+        _aiServiceStateStore = aiServiceStateStore;
         _rateCards = rateCards;
         _catalog = catalog;
         _entitlements = entitlements;
@@ -377,6 +380,7 @@ public class PaymentAppService : IPaymentAppService
             await _unitOfWork.SaveChangesAsync();
             await PublishSubscriptionUpdateAsync(context);
             await PublishEntitlementsAsync(context);
+            await PushAiServiceStateAsync(context);
 
             return Result.Success();
         }
@@ -612,19 +616,63 @@ public class PaymentAppService : IPaymentAppService
     /// </summary>
     private async Task PublishEntitlementsAsync(PaymentEventContext context)
     {
-        if (!context.EntitlementsChanged || _entitlements is null)
+        // SubscriptionChanged too, not only add-ons. A plan bought or renewed through checkout set
+        // only SubscriptionChanged, so the workspace's snapshot kept saying whatever it said before
+        // — for a workspace renewing after expiry, "no active subscription" — and the WT-515 paywall
+        // refused the customer who had just paid until the hourly reconcile came round.
+        if ((!context.EntitlementsChanged && !context.SubscriptionChanged) || _entitlements is null)
         {
             return;
         }
 
         try
         {
-            await _entitlements.EnqueueAsync(context.WorkspaceId, EntitlementConstants.Reasons.AddonChanged);
+            await _entitlements.EnqueueAsync(
+                context.WorkspaceId,
+                context.EntitlementsChanged
+                    ? EntitlementConstants.Reasons.AddonChanged
+                    : EntitlementConstants.Reasons.SubscriptionChanged);
             await _unitOfWork.SaveChangesAsync();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "addon_entitlements_publish_failed: WorkspaceId={WorkspaceId}; the hourly reconcile will republish.", context.WorkspaceId);
+        }
+    }
+
+    /// <summary>
+    /// Tells the AI pipeline the workspace's service state after a payment changed its subscription.
+    /// The expiry sweep marks an expired workspace suspended ('subscription_expired') in Redis, and
+    /// Start Translation refuses on that mark — so a renewal has to lift it, now, not when its 24h
+    /// TTL runs out. Pushes whatever the live subscription says, which for a top-up on an overage
+    /// suspension is still "suspended". Never fails the payment: it is committed already.
+    /// </summary>
+    private async Task PushAiServiceStateAsync(PaymentEventContext context)
+    {
+        if (!context.SubscriptionChanged
+            || _aiServiceStateStore is null
+            || context.Subscription is not { IsActive: true } subscription)
+        {
+            return;
+        }
+
+        try
+        {
+            var pushed = await _aiServiceStateStore.SetAiServiceStateAsync(
+                subscription.WorkspaceId,
+                subscription.ServiceState,
+                subscription.SuspendedReason);
+            if (!pushed.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "payment_ai_state_push_failed: WorkspaceId={WorkspaceId} Error={Error}",
+                    subscription.WorkspaceId,
+                    pushed.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "payment_ai_state_push_failed: WorkspaceId={WorkspaceId}", subscription.WorkspaceId);
         }
     }
 

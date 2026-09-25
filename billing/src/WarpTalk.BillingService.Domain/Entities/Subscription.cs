@@ -91,6 +91,23 @@ public partial class Subscription
 
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// Credits kept from this subscription after it ended without a renewal: purchased and
+    /// admin-granted credits, plus plan credits within the plan's rollover cap. Not spendable —
+    /// the row is inactive and settle_usage_charge refuses it — and moved into the workspace's
+    /// live subscription when it renews. See CreditFreezeService.
+    /// </summary>
+    public int FrozenCredits { get; set; }
+
+    /// <summary>
+    /// When the end-of-subscription split (freeze + forfeit) ran for this row. Set exactly once,
+    /// also when there was nothing to freeze: it is the split's idempotency marker.
+    /// </summary>
+    public DateTime? CreditsFrozenAt { get; set; }
+
+    /// <summary>When frozen credits outlived the grace window without a renewal. Never deleted.</summary>
+    public DateTime? FrozenCreditsDormantAt { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }

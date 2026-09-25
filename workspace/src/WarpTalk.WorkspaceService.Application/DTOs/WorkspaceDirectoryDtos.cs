@@ -50,7 +50,14 @@ public record WorkspaceSettingsSnapshotDto(
     /// <summary>
     /// The workspace's plan from the replicated entitlement snapshot; null when there is none.
     /// </summary>
-    string? PlanSlug = null
+    string? PlanSlug = null,
+    /// <summary>
+    /// Whether the entitlement snapshot exists for this workspace. False means unknown, and a
+    /// caller must not deny on <see cref="HasActiveSubscription"/> then (the WT-515 IsKnown rule).
+    /// </summary>
+    bool SubscriptionKnown = false,
+    /// <summary>The snapshot's has_active_subscription. Meaningful only when known.</summary>
+    bool HasActiveSubscription = false
 );
 
 public record WorkspacePreflightDto(

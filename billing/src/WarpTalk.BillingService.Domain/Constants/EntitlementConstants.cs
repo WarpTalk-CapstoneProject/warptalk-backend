@@ -112,6 +112,9 @@ public static class EntitlementConstants
         public const string WorkspaceOverrideChanged = "workspace_override_changed";
         public const string Backfill = "backfill";
         public const string AddonChanged = "addon_changed";
+
+        /// <summary>The subscription ended without a renewal, so plan entitlements left force.</summary>
+        public const string SubscriptionExpired = "subscription_expired";
     }
 
     public static class Errors

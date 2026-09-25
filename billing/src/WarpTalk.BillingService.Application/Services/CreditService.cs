@@ -13,6 +13,7 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Contracts.Admin;
+using WarpTalk.Shared.PlatformSettings;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -22,13 +23,16 @@ public class CreditService : ICreditService
     private readonly ILogger<CreditService> _logger;
     private readonly IUsageSettlementService _settlementService;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IPlatformSettings? _platformSettings;
 
     public CreditService(
         IUnitOfWork unitOfWork,
         ILogger<CreditService> logger,
         IUsageSettlementService settlementService,
-        IWorkspaceClient workspaceClient)
+        IWorkspaceClient workspaceClient,
+        IPlatformSettings? platformSettings = null)
     {
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _logger = logger;
         _settlementService = settlementService;
@@ -179,11 +183,101 @@ public class CreditService : ICreditService
         // paid period keeps its balance, and compensating that balance is what this is for.
         var subResult = await GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
         if (!subResult.IsSuccess)
+        {
+            // No live subscription: what the workspace still holds is FROZEN on the row that ended
+            // (CreditFreezeService). Adjusting it is how support corrects kept credit — the one
+            // manual door to a balance the policy promises never to destroy silently.
+            var frozen = await LatestFrozenSubscriptionAsync(workspaceId, cancellationToken);
+            if (frozen is not null)
+                return await StageFrozenAdjustmentAsync(frozen, amount, reason, adminUserId, cancellationToken);
+
             return Result.Failure<StagedCreditAdjustment>(
                 subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
                 subResult.ErrorCode);
+        }
 
         return await StageAdjustmentAsync(subResult.Value!.Id, amount, reason, adminUserId, cancellationToken);
+    }
+
+    private async Task<Subscription?> LatestFrozenSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken)
+    {
+        var rows = await _unitOfWork.SubscriptionRepository.FindAsync(
+            s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.FrozenCredits > 0,
+            cancellationToken);
+        return rows?.OrderByDescending(s => s.CreditsFrozenAt).FirstOrDefault();
+    }
+
+    private async Task<Result<StagedCreditAdjustment>> StageFrozenAdjustmentAsync(
+        Subscription sub, int amount, string reason, Guid adminUserId, CancellationToken cancellationToken)
+    {
+        if (adminUserId == Guid.Empty)
+            return Result.Failure<StagedCreditAdjustment>("AdminUserId is required for audit trail.", "INVALID_REQUEST");
+        if (string.IsNullOrWhiteSpace(reason))
+            return Result.Failure<StagedCreditAdjustment>("Adjustment reason is required for audit trail.", "INVALID_REQUEST");
+        if (sub.FrozenCredits + amount < 0)
+            return Result.Failure<StagedCreditAdjustment>(
+                "Adjustment would make the frozen credit balance negative.", ErrorCodes.BillingInsufficientCredits);
+
+        var frozenBefore = sub.FrozenCredits;
+        sub.FrozenCredits += amount;
+        sub.UpdatedAt = DateTime.UtcNow;
+        _unitOfWork.SubscriptionRepository.Update(sub);
+
+        var adjustmentTx = new CreditTransaction
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = sub.Id,
+            WorkspaceId = sub.WorkspaceId,
+            UserId = adminUserId,
+            Amount = amount,
+            Type = TransactionConstants.TransactionTypes.Adjustment,
+            Description = reason.Trim(),
+            ReferenceType = TransactionConstants.ReferenceTypes.FrozenCreditAdjustment,
+            ReferenceId = sub.Id,
+            // The spendable balance, which a frozen adjustment does not move.
+            BalanceAfter = sub.CreditsRemaining,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
+        return Result.Success(new StagedCreditAdjustment(sub, adjustmentTx, sub.CreditsRemaining, frozenBefore));
+    }
+
+    public async Task<Result<FrozenCreditsDto>> GetFrozenCreditsAsync(
+        Guid workspaceId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var rows = await _unitOfWork.SubscriptionRepository.FindAsync(
+                s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
+                cancellationToken) ?? Array.Empty<Subscription>();
+
+            var hasActive = rows.Any(s => s.IsActive);
+            var frozen = rows.Where(s => s.FrozenCredits > 0).OrderByDescending(s => s.CreditsFrozenAt).ToList();
+            if (frozen.Count == 0)
+                return Result.Success(new FrozenCreditsDto(workspaceId, 0, null, null, null, null, hasActive));
+
+            var latest = frozen[0];
+            var graceDays = _platformSettings is null
+                ? FrozenCreditDefaults.GraceDays
+                : await _platformSettings.GetInt32Async(FrozenCreditDefaults.GraceDaysKey, FrozenCreditDefaults.GraceDays, ct: cancellationToken);
+            var endedAt = CreditFreezeService.EndedAt(latest);
+            var dormantSince = frozen.Select(s => s.FrozenCreditsDormantAt).Where(d => d.HasValue).Min();
+
+            return Result.Success(new FrozenCreditsDto(
+                workspaceId,
+                frozen.Sum(s => s.FrozenCredits),
+                latest.CreditsFrozenAt,
+                endedAt,
+                dormantSince,
+                dormantSince is null ? endedAt.AddDays(graceDays) : null,
+                hasActive));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting frozen credits for WorkspaceId {WorkspaceId}", workspaceId);
+            return Result.Failure<FrozenCreditsDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
     }
 
     /// <summary>

@@ -230,10 +230,6 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (missingScopes.Count > 0)
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.MissingScope, "Reconnect the provider account with the required scopes.", ct);
 
-        // Set only when this call changes the tool's policy — see where it is attached to the
-        // result below.
-        string? appliedToolPolicy = null;
-
         // Asks when the user's policy says to, not when the tool writes. Before WT-687 the two were
         // the same thing; now a user can trust a write tool (allow) or want to see a read tool
         // coming (approval), and the policy already defaults to the old rule when they have not.
@@ -289,7 +285,6 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                     new Dictionary<string, string> { [tool.Name] = PluginConstants.ToolPolicy.Allow });
                 _unitOfWork.PluginInstallationRepository.Update(installation);
                 await _unitOfWork.SaveChangesAsync(ct);
-                appliedToolPolicy = PluginConstants.ToolPolicy.Allow;
             }
         }
 
@@ -367,13 +362,6 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             result.IsSuccess ? "success" : result.ErrorCode ?? "failed",
             result.ProviderResourceRef,
             ct);
-
-        // The card is gone from this tool for good, and the result is the only thing on its way
-        // back to the person who pressed the button. Carried whether the call then succeeded or
-        // failed: the setting changed either way, and a silent change to what WarpBot may do
-        // without asking is exactly the kind a user should hear about once.
-        if (appliedToolPolicy != null)
-            result = result with { AppliedToolPolicy = appliedToolPolicy };
 
         return Result.Success(result);
     }

@@ -53,6 +53,7 @@ public static class PlatformSettingsCatalog
     // ── Billing ─────────────────────────────────────────────────────────────────────────────
     public const string TrialDays = "billing.trial.days";
     public const string TrialCredits = "billing.trial.credits";
+    public const string FrozenCreditGraceDays = "billing.frozen_credits.grace_days";
 
     // ── Notifications & email ───────────────────────────────────────────────────────────────
     public const string EmailFromName = "notifications.email.from_name";
@@ -275,6 +276,16 @@ public static class PlatformSettingsCatalog
             Min = 0, Max = 1_000_000, Unit = "credits",
             Label = "Trial credits",
             Description = "Credits a new trial starts with. Running trials keep their balance.",
+        },
+        new()
+        {
+            // Read by BillingService's SubscriptionExpirationWorker (dormancy sweep) and
+            // CreditService.GetFrozenCreditsAsync (the date shown to the owner).
+            Key = FrozenCreditGraceDays, Category = SettingCategories.Billing, Type = SettingValueType.Integer,
+            Default = Json(30), OwningService = SettingOwners.Billing,
+            Min = 0, Max = 3650, Unit = "days",
+            Label = "Frozen credit grace window",
+            Description = "Days an ended subscription's kept credits wait for a renewal before they are marked dormant. Dormant credits are never deleted and still come back on renewal.",
         },
 
         // Notifications & email

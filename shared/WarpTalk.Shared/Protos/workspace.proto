@@ -210,6 +210,14 @@ message GetWorkspaceSettingsResponse {
   // no plan (no snapshot yet, or never subscribed). The assistant service applies a plugin's
   // plan rule with it; empty never matches a plan.
   string plan_slug = 10;
+  // Whether the replicated entitlement snapshot has resolved this workspace at all. False (the
+  // proto3 default, and what an older server sends) means "unknown": a caller must NOT read
+  // has_active_subscription as a denial then — the same IsKnown rule WT-515 applies, which keeps
+  // a workspace that has just paid from being refused in the seconds before its snapshot lands.
+  bool subscription_known = 11;
+  // The snapshot's has_active_subscription: false once the workspace's subscription expired or was
+  // never paid. Read by Start Translation so a lapsed workspace cannot turn on billable AI.
+  bool has_active_subscription = 12;
 }
 
 message GetWorkspacePreflightRequest {
