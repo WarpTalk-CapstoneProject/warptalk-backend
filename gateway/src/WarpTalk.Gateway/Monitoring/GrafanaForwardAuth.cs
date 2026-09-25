@@ -90,7 +90,8 @@ public static class GrafanaForwardAuth
                 context.Response.Headers.CacheControl = "no-store";
                 return Results.Ok();
             })
-            .RequireAuthorization(SystemAdminAuthorization.PolicyName)
+            // Grafana is part of System Health: whoever may read health may read its dashboards.
+            .RequireAuthorization(new RequirePermissionAttribute(AdminPermissions.HealthRead))
             .DisableRateLimiting()
             .ExcludeFromDescription()
             .WithName("GrafanaForwardAuth");

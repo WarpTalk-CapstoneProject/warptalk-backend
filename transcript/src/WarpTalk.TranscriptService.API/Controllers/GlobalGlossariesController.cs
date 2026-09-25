@@ -23,7 +23,6 @@ namespace WarpTalk.TranscriptService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/global-glossary")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class GlobalGlossariesController : ControllerBase
 {
     private readonly IGlobalGlossaryService _globalGlossaryService;
@@ -34,6 +33,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.GlossaryRead)]
     public async Task<ActionResult<PagedResultDto<GlobalGlossaryTermDto>>> GetTerms(
         [FromQuery] GlobalGlossaryTermQuery query, CancellationToken cancellationToken)
     {
@@ -44,6 +44,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpGet("{id}")]
+    [RequirePermission(AdminPermissions.GlossaryRead)]
     public async Task<ActionResult<GlobalGlossaryTermDto>> GetTerm(Guid id, CancellationToken cancellationToken)
     {
         var result = await _globalGlossaryService.GetTermByIdAsync(id, cancellationToken);
@@ -54,6 +55,7 @@ public class GlobalGlossariesController : ControllerBase
 
     [HttpPost]
     [AdminAudited(AdminAuditGlossaryActions.TermCreated, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm))]
+    [RequirePermission(AdminPermissions.GlossaryManage)]
     public async Task<ActionResult<GlobalGlossaryTermDto>> CreateTerm(
         [FromBody] CreateGlobalGlossaryTermDto request, CancellationToken cancellationToken)
     {
@@ -67,6 +69,7 @@ public class GlobalGlossariesController : ControllerBase
 
     [HttpPut("{id}")]
     [AdminAudited(AdminAuditGlossaryActions.TermUpdated, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.GlossaryManage)]
     public async Task<ActionResult> UpdateTerm(Guid id, [FromBody] UpdateGlobalGlossaryTermDto request, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -79,6 +82,7 @@ public class GlobalGlossariesController : ControllerBase
 
     [HttpDelete("{id}")]
     [AdminAudited(AdminAuditGlossaryActions.TermDeleted, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.GlossaryManage)]
     public async Task<ActionResult> DeleteTerm(Guid id, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -91,6 +95,7 @@ public class GlobalGlossariesController : ControllerBase
 
     [HttpPost("{id}/publish")]
     [AdminAudited(AdminAuditGlossaryActions.TermPublished, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.GlossaryManage)]
     public async Task<ActionResult> PublishTerm(Guid id, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -103,6 +108,7 @@ public class GlobalGlossariesController : ControllerBase
 
     [HttpPost("{id}/archive")]
     [AdminAudited(AdminAuditGlossaryActions.TermArchived, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.GlossaryManage)]
     public async Task<ActionResult> ArchiveTerm(Guid id, CancellationToken cancellationToken)
     {
         if (!TryGetActorId(out var actorId)) return Unauthorized();
@@ -115,6 +121,7 @@ public class GlobalGlossariesController : ControllerBase
 
     [HttpPost("bulk-import")]
     [AdminAudited(AdminAuditGlossaryActions.BulkImported, AdminAuditEntityTypes.GlossaryTerm, typeof(GlobalGlossaryTerm), Aggregate = true)]
+    [RequirePermission(AdminPermissions.GlossaryManage)]
     public async Task<ActionResult<BulkImportResultDto>> BulkImport(
         [FromBody] BulkImportGlobalGlossaryTermsDto request, CancellationToken cancellationToken)
     {
@@ -127,6 +134,7 @@ public class GlobalGlossariesController : ControllerBase
     }
 
     [HttpGet("{id}/audits")]
+    [RequirePermission(AdminPermissions.GlossaryRead)]
     public async Task<ActionResult> GetAudits(Guid id, CancellationToken cancellationToken)
     {
         var result = await _globalGlossaryService.GetAuditsAsync(id, cancellationToken);

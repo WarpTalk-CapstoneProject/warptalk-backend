@@ -7,6 +7,7 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Events;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -23,8 +24,8 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPost("contract")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     [AdminAudited(AdminAuditBillingActions.ContractCreated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<ActionResult<SubscriptionDto>> CreateWorkspaceContractSubscription(
         [FromBody] CreateWorkspaceContractSubscriptionRequest request,
         CancellationToken cancellationToken)
@@ -64,7 +65,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptions(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
@@ -132,8 +133,8 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPut("workspace/{workspaceId}/contract-terms")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     [AdminAudited(AdminAuditBillingActions.ContractTermsUpdated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<ActionResult<SubscriptionDto>> UpdateContractTerms(
         Guid workspaceId,
         [FromBody] UpdateSubscriptionContractTermsRequest request,

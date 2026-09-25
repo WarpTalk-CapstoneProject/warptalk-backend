@@ -184,15 +184,16 @@ public sealed class AdminWorkspaceAnalyticsServiceTests : IAsyncLifetime
     // ── Authorization ────────────────────────────────────────
 
     [Fact]
-    public void ControllerIsGatedOnTheSharedSystemAdminPolicy()
+    public void ControllerRequiresBillingRead()
     {
+        // G10: one staff permission, no role string.
         var authorize = typeof(AdminWorkspaceAnalyticsController)
             .GetCustomAttributes<AuthorizeAttribute>(inherit: true)
             .SingleOrDefault();
 
-        authorize.Should().NotBeNull();
-        authorize!.Policy.Should().Be(SystemAdminAuthorization.PolicyName);
-        authorize.Roles.Should().BeNull();
+        authorize.Should().BeOfType<RequirePermissionAttribute>()
+            .Which.Permission.Should().Be(AdminPermissions.BillingRead);
+        authorize!.Roles.Should().BeNull();
     }
 
     [Fact]

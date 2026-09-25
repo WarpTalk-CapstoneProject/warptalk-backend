@@ -17,14 +17,24 @@ namespace WarpTalk.BillingService.Tests.API.Controllers;
 /// </summary>
 public class AdminWorkspaceBillingSecurityTests
 {
-    [Fact]
-    public void The_controller_is_gated_by_the_system_admin_policy_and_by_no_role_string()
+    /// <summary>
+    /// G10: each money action needs its own staff permission, so Support can look at a workspace's
+    /// billing without being able to hand it credits.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(AdminWorkspaceBillingController.GetOverview), AdminPermissions.BillingRead)]
+    [InlineData(nameof(AdminWorkspaceBillingController.AdjustCredits), AdminPermissions.BillingAdjustCredit)]
+    [InlineData(nameof(AdminWorkspaceBillingController.ChangePlan), AdminPermissions.BillingSubscriptionsManage)]
+    [InlineData(nameof(AdminWorkspaceBillingController.ExtendTrial), AdminPermissions.BillingSubscriptionsManage)]
+    [InlineData(nameof(AdminWorkspaceBillingController.CompPeriod), AdminPermissions.BillingSubscriptionsManage)]
+    [InlineData(nameof(AdminWorkspaceBillingController.SetEntitlementOverrides), AdminPermissions.BillingSubscriptionsManage)]
+    [InlineData(nameof(AdminWorkspaceBillingController.MarkInvoicePaid), AdminPermissions.BillingPaymentsManage)]
+    public void Each_action_requires_its_own_permission_and_no_role_string(string actionName, string permission)
     {
-        var authorize = typeof(AdminWorkspaceBillingController).GetCustomAttribute<AuthorizeAttribute>();
+        var action = typeof(AdminWorkspaceBillingController).GetMethod(actionName)!;
 
-        Assert.NotNull(authorize);
-        Assert.Equal(SystemAdminAuthorization.PolicyName, authorize!.Policy);
-        Assert.True(string.IsNullOrEmpty(authorize.Roles));
+        Assert.Equal(permission, action.GetCustomAttribute<RequirePermissionAttribute>()!.Permission);
+        Assert.Null(typeof(AdminWorkspaceBillingController).GetCustomAttribute<AuthorizeAttribute>());
     }
 
     [Fact]

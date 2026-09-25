@@ -148,7 +148,7 @@ builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationVali
 
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 // abortConnect=false: the notification read APIs are served from Postgres and must keep

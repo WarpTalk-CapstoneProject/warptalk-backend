@@ -19,7 +19,7 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/meetings")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.MeetingsRead)]
 public class AdminMeetingsController : ControllerBase
 {
     private readonly IAdminMeetingService _adminMeetingService;

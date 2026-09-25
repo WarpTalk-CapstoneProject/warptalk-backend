@@ -47,8 +47,12 @@ public sealed class AdminAuditActionFilter : IAsyncActionFilter
         var attribute = context.ActionDescriptor.EndpointMetadata.OfType<AdminAuditedAttribute>().FirstOrDefault();
         var httpContext = context.HttpContext;
 
+        // G10: an endpoint behind a staff permission is audited for whoever passed it — a staff
+        // member added a minute ago still holds a token without the "admin" hint, and their
+        // writes must not go unrecorded because of it.
+        var requiresStaffPermission = context.ActionDescriptor.EndpointMetadata.OfType<RequirePermissionAttribute>().Any();
         if (attribute is null
-            || !IsPlatformAdministrator(httpContext.User)
+            || !(requiresStaffPermission || IsPlatformAdministrator(httpContext.User))
             || !AdminActorContext.TryResolve(httpContext.User, httpContext, out var actor))
         {
             await next();

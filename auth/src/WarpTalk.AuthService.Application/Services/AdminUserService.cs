@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.AuthService.Application.DTOs.Admin;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
@@ -40,12 +41,17 @@ public class AdminUserService : IAdminUserService
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AdminUserService> _logger;
 
+    // G10: optional so hand-built instances in tests keep compiling; DI always supplies it.
+    private readonly IStaffAccessService? _staffAccess;
+
     public AdminUserService(
         IUnitOfWork unitOfWork,
         IAdminAuditRecorder audit,
         ILogger<AdminUserService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IStaffAccessService? staffAccess = null)
     {
+        _staffAccess = staffAccess;
         _unitOfWork = unitOfWork;
         _audit = audit;
         _logger = logger;
@@ -308,13 +314,21 @@ public class AdminUserService : IAdminUserService
         return Result.Success(new AdminWorkspaceSignOutResultDto(workspaceId, signedOut, failed));
     }
 
-    public Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
+    public async Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
         Guid userId,
         bool isActive,
         AdminActorContext actor,
         AdminUserActionRequest request,
         CancellationToken ct = default)
-        => PerformAsync(
+    {
+        if (!isActive)
+        {
+            var guarded = await GuardStaffDeactivationAsync(userId, actor, ct);
+            if (!guarded.IsSuccess)
+                return Result.Failure<AdminUserDetailDto>(guarded.Error!, guarded.ErrorCode);
+        }
+
+        return await PerformAsync(
             userId,
             actor,
             request,
@@ -342,6 +356,7 @@ public class AdminUserService : IAdminUserService
                 return after;
             },
             ct);
+    }
 
     public Task<Result<AdminUserDetailDto>> UnlockAsync(
         Guid userId,
@@ -372,6 +387,29 @@ public class AdminUserService : IAdminUserService
                 });
             },
             ct);
+
+    /// <summary>
+    /// G10: deactivating an ACCOUNT is also a way to take away someone's staff access, so the staff
+    /// guard rails apply here too. accounts.manage (which Support holds) must not be a back door to
+    /// switching off a Super Admin, and nobody — including a Super Admin deactivating their own
+    /// account — may switch off the last active one: that is a platform nobody can administer.
+    /// </summary>
+    private async Task<Result> GuardStaffDeactivationAsync(Guid userId, AdminActorContext actor, CancellationToken ct)
+    {
+        var target = await _unitOfWork.StaffMemberRepository.GetByUserIdAsync(userId, ct);
+        if (target is null || target.Status != StaffConstants.Statuses.Active) return Result.Success();
+
+        var targetIsSuper = string.Equals(target.Role?.Slug, BuiltInStaffRoles.SuperAdmin, StringComparison.Ordinal);
+        if (actor.ActorId != userId)
+        {
+            var actorAccess = _staffAccess is null ? StaffAccess.None : await _staffAccess.GetAccessAsync(actor.ActorId, ct);
+            var manage = StaffGuards.CanManage(actorAccess, targetIsSuper, target.Role is null ? [] : StaffAccessService.EffectiveCodes(target.Role));
+            if (!manage.IsSuccess) return manage;
+        }
+
+        var others = await _unitOfWork.StaffMemberRepository.CountActiveWithRoleSlugAsync(BuiltInStaffRoles.SuperAdmin, userId, ct);
+        return StaffGuards.KeepsASuperAdmin(targetIsSuper, false, others);
+    }
 
     /// <summary>
     /// The shape all three privileged actions share: change, record, and only then commit.

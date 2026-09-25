@@ -277,9 +277,9 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
             options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         });
 
-    // Shared system-admin gate for every ~/api/v1/admin/* endpoint (WT-205). Distinct from the
-    // "BillingAdmin" policy above, which guards operational tooling such as outbox replay.
-    builder.Services.AddWarpTalkSystemAdminAuthorization();
+    // Staff permissions for every admin endpoint (G10, replacing the WT-205 system-admin gate):
+    // [RequirePermission] asks the auth service who is staff, through a short cache.
+    builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
     var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
     builder.Services.AddCors(options =>

@@ -263,15 +263,21 @@ public class BillingEndpointSecurityContractTests
             nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
     }
 
+    /// <summary>
+    /// G10: "admin only" now means one staff permission, and never a role string — a role claim
+    /// would admit every staff member (or the WORKSPACE role "Admin") whatever their permissions.
+    /// </summary>
     private static void AssertAdminOnly(Type controller, string actionName)
     {
         var action = GetAction(controller, actionName);
-        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        var authorize = action.GetCustomAttributes<AuthorizeAttribute>().ToList();
 
-        Assert.NotNull(authorize);
-        var roles = authorize!.Roles!.Split(',', StringSplitOptions.TrimEntries);
-        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.Admin, roles);
-        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.SystemAdmin, roles);
+        var permission = Assert.Single(authorize.OfType<WarpTalk.Shared.Authorization.RequirePermissionAttribute>());
+        Assert.True(
+            permission.Permission.StartsWith("billing.", StringComparison.Ordinal)
+                || permission.Permission.StartsWith("settings.", StringComparison.Ordinal),
+            $"{actionName} requires {permission.Permission}");
+        Assert.All(authorize, a => Assert.True(string.IsNullOrEmpty(a.Roles)));
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 

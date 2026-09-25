@@ -49,7 +49,13 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
             .AddAuthentication(TestAuthHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
         builder.Services.AddAuthorization();
-        builder.Services.AddWarpTalkSystemAdminAuthorization();
+        // G10: the auth service's answer, stubbed — the caller authenticated as "admin" is staff
+        // holding billing.read; everyone else is not staff at all.
+        builder.Services.AddWarpTalkStaffAuthorizationCore();
+        builder.Services.AddSingleton<IStaffAccessSource>(new DelegateStaffAccessSource(id =>
+            id == TestAuthHandler.StaffUserId
+                ? DelegateStaffAccessSource.Staff(AdminPermissions.BillingRead)
+                : StaffAccess.None));
         builder.Services.AddScoped<IAdminBillingInsightsService>(_ => _useRealService
             // Validation runs before any data access, so the real service needs no database here.
             ? new AdminBillingInsightsService(
@@ -219,6 +225,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     {
         public const string SchemeName = "Test";
         public const string RoleHeader = "X-Test-Role";
+        public static readonly Guid StaffUserId = Guid.NewGuid();
 
         public TestAuthHandler(
             IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
@@ -232,7 +239,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
                 return Task.FromResult(AuthenticateResult.NoResult());
 
             var identity = new ClaimsIdentity(
-                [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim(ClaimTypes.Role, role.ToString())],
+                [new Claim(ClaimTypes.NameIdentifier, (role.ToString() == "admin" ? StaffUserId : Guid.NewGuid()).ToString()), new Claim(ClaimTypes.Role, role.ToString())],
                 SchemeName);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
         }

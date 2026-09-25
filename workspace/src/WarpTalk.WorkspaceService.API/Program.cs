@@ -67,7 +67,7 @@ builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
 // --- Authentication & Framework Services ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 // WT-431 (Linear): workspace was the one service in the mesh with no notification client, so a
 // member whose role was changed learned about it by reloading the page. Same registration shape

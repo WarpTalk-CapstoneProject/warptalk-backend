@@ -23,7 +23,6 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/subscriptions")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminSubscriptionsController : ControllerBase
 {
     private readonly IAdminSubscriptionService _adminSubscriptionService;
@@ -38,6 +37,7 @@ public class AdminSubscriptionsController : ControllerBase
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetDirectory(
         [FromQuery] AdminSubscriptionDirectoryQuery query,
         CancellationToken ct)
@@ -52,6 +52,7 @@ public class AdminSubscriptionsController : ControllerBase
     /// page's total.
     /// </summary>
     [HttpGet("summary")]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetSummary(CancellationToken ct)
     {
         var result = await _adminSubscriptionService.GetSummaryAsync(ct);
@@ -66,6 +67,7 @@ public class AdminSubscriptionsController : ControllerBase
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/change-plan")]
     [AdminAudited(AdminAuditWorkspaceActions.PlanChanged, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<IActionResult> ChangePlan(
         Guid workspaceId,
         [FromBody] AdminChangeSubscriptionPlanRequest request,

@@ -17,7 +17,7 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/providers")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.ProvidersRead)]
 public class AdminProvidersController : ControllerBase
 {
     private readonly IAdminProvidersService _providers;

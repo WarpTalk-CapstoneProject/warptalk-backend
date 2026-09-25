@@ -255,10 +255,9 @@ builder.Services.AddWarpTalkJwtAuthentication(
         };
     });
 builder.Services.AddAuthorization();
-// The gate every ~/api/v1/admin/* endpoint shares. AdminMeetingsController is the first admin
-// surface in this service, and without this the policy name resolves to nothing — the attribute
-// then throws at request time instead of refusing the caller.
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+// Staff permissions for every admin endpoint here (meetings.read, settings.*). Without this the
+// permission handler is missing and every [RequirePermission] request is refused.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = builder.Configuration.GetRequiredServiceUri(

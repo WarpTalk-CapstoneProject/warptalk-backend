@@ -13,6 +13,7 @@ using WarpTalk.BillingService.API.Controllers;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.Tests.API.Controllers;
 
@@ -151,6 +152,10 @@ public class PaymentsCheckoutAuthorizationTests
 
         var services = new ServiceCollection();
         services.AddSingleton(workspaceClient);
+        // G10: nobody here is staff; the checkout gate is the workspace role.
+        services.AddLogging();
+        services.AddWarpTalkStaffAuthorizationCore();
+        services.AddSingleton<IStaffAccessSource>(new DelegateStaffAccessSource(_ => StaffAccess.None));
         using var provider = services.BuildServiceProvider();
 
         var filter = Assert.IsAssignableFrom<IAsyncActionFilter>(

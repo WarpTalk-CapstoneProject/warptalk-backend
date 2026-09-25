@@ -47,6 +47,12 @@ public static class AdminAuditEntityTypes
     public const string Payment = "payment";
     /// <summary>The USD→VND rate VND reports convert with (billing <c>fx_rates</c> + its config keys).</summary>
     public const string FxRate = "fx_rate";
+    /// <summary>A platform staff member (G10). Entity id = the staff member's USER id.</summary>
+    public const string StaffMember = "staff_member";
+    /// <summary>A platform staff role and its permissions (G10). Entity id = auth.roles.id.</summary>
+    public const string StaffRole = "staff_role";
+    /// <summary>Staff access offered to an address with no account yet (G10).</summary>
+    public const string StaffInvitation = "staff_invitation";
 
     /// <summary>An in-app announcement (admin → Announcements). Entity id = the announcement's id.</summary>
     public const string Announcement = "announcement";
@@ -74,6 +80,7 @@ public static class AdminAuditEntityTypes
         Notification, User, SupportedLanguage, Subscription, Invoice, WorkspaceNote, Plugin, Plan,
         BillingPolicy, PricingConfig, SalesLead, AuditLog, Payment, FxRate,
         Announcement, EmailTemplate, EmailBlock, EmailSampleData,
+        StaffMember, StaffRole, StaffInvitation,
         CreditPack, Addon, Coupon,
     ];
 }
@@ -267,6 +274,35 @@ public static class AdminAuditUserActions
     public const string Deactivated = "user.deactivated";
     public const string Reactivated = "user.reactivated";
     public const string Unlocked = "user.unlocked";
+}
+
+/// <summary>
+/// Verbs for platform staff and roles (G10, /admin/staff and /admin/roles). Recorded by the auth
+/// service before each change commits; an unrecorded staff change is abandoned.
+/// </summary>
+public static class AdminAuditStaffActions
+{
+    /// <summary>An existing account was given staff access directly.</summary>
+    public const string Granted = "staff.granted";
+    /// <summary>An address with no account was invited.</summary>
+    public const string Invited = "staff.invited";
+    public const string InvitationRevoked = "staff.invitation_revoked";
+    /// <summary>The invitee signed in with the invited, verified address. Actor = the invitee.</summary>
+    public const string InvitationAccepted = "staff.invitation_accepted";
+    public const string RoleChanged = "staff.role_changed";
+    public const string Suspended = "staff.suspended";
+    public const string Reactivated = "staff.reactivated";
+    public const string Removed = "staff.removed";
+    public const string RoleCreated = "staff_role.created";
+    public const string RoleUpdated = "staff_role.updated";
+    public const string RoleDuplicated = "staff_role.duplicated";
+    public const string RoleDeleted = "staff_role.deleted";
+
+    public static readonly string[] All =
+    [
+        Granted, Invited, InvitationRevoked, InvitationAccepted, RoleChanged, Suspended, Reactivated,
+        Removed, RoleCreated, RoleUpdated, RoleDuplicated, RoleDeleted,
+    ];
 }
 
 /// <summary>

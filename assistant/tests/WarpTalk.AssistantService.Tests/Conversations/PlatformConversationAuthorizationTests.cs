@@ -28,22 +28,38 @@ public class PlatformConversationAuthorizationTests
         return new ClaimsPrincipal(new ClaimsIdentity(claims, authenticationType: "Bearer"));
     }
 
-    private static IAuthorizationService RealAuthorization()
+    /// <summary>
+    /// The real authorization stack, with the auth service's answer replaced: a token that carries
+    /// the platform role "admin" is staff here (with warpbot.use), anyone else is not — which is
+    /// what the auth service answers for these fixtures.
+    /// </summary>
+    private static IAuthorizationService RealAuthorization(Func<Guid, StaffAccess>? access = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddAuthorization();
-        services.AddWarpTalkSystemAdminAuthorization();
+        services.AddWarpTalkStaffAuthorizationCore();
+        services.AddSingleton<IStaffAccessSource>(new DelegateStaffAccessSource(access ?? (id => Granted.Contains(id)
+            ? DelegateStaffAccessSource.Staff(AdminPermissions.WarpBotUse)
+            : StaffAccess.None)));
         return services.BuildServiceProvider().GetRequiredService<IAuthorizationService>();
     }
 
+    private static readonly HashSet<Guid> Granted = [];
+
+    private static ClaimsPrincipal StaffPrincipal(Guid userId)
+    {
+        Granted.Add(userId);
+        return Principal(userId, SystemAdminAuthorization.RoleName);
+    }
+
     [Fact]
-    public void TheWholeController_IsBehindTheSystemAdminPolicy()
+    public void TheWholeController_RequiresWarpBotUse()
     {
         var type = typeof(PlatformAssistantConversationsController);
         var authorize = type.GetCustomAttributes<AuthorizeAttribute>(inherit: true).ToList();
 
-        Assert.Contains(authorize, a => a.Policy == SystemAdminAuthorization.PolicyName);
+        Assert.Contains(authorize, a => a is RequirePermissionAttribute { Permission: AdminPermissions.WarpBotUse });
         Assert.Empty(type.GetCustomAttributes<AllowAnonymousAttribute>(inherit: true));
 
         // No action may loosen it: an [AllowAnonymous] or a bare [Authorize] on one action would
@@ -51,9 +67,7 @@ public class PlatformConversationAuthorizationTests
         foreach (var action in type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly))
         {
             Assert.Empty(action.GetCustomAttributes<AllowAnonymousAttribute>(inherit: true));
-            Assert.All(
-                action.GetCustomAttributes<AuthorizeAttribute>(inherit: true),
-                a => Assert.Equal(SystemAdminAuthorization.PolicyName, a.Policy));
+            Assert.Empty(action.GetCustomAttributes<AuthorizeAttribute>(inherit: true));
         }
     }
 
@@ -65,18 +79,27 @@ public class PlatformConversationAuthorizationTests
     public async Task TheGate_RefusesEveryWorkspaceRole(string role)
     {
         var result = await RealAuthorization().AuthorizeAsync(
-            Principal(Guid.NewGuid(), role), SystemAdminAuthorization.PolicyName);
+            Principal(Guid.NewGuid(), role), resource: null, new PermissionRequirement(AdminPermissions.WarpBotUse));
 
         Assert.False(result.Succeeded);
     }
 
     [Fact]
-    public async Task TheGate_AdmitsThePlatformSystemAdmin()
+    public async Task TheGate_AdmitsStaffWithWarpBotUse()
     {
         var result = await RealAuthorization().AuthorizeAsync(
-            Principal(Guid.NewGuid(), SystemAdminAuthorization.RoleName), SystemAdminAuthorization.PolicyName);
+            StaffPrincipal(Guid.NewGuid()), resource: null, new PermissionRequirement(AdminPermissions.WarpBotUse));
 
         Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public async Task TheGate_RefusesStaffWithoutWarpBotUse_EvenWithTheAdminHint()
+    {
+        var result = await RealAuthorization(_ => DelegateStaffAccessSource.Staff(AdminPermissions.AuditRead)).AuthorizeAsync(
+            Principal(Guid.NewGuid(), SystemAdminAuthorization.RoleName), resource: null, new PermissionRequirement(AdminPermissions.WarpBotUse));
+
+        Assert.False(result.Succeeded);
     }
 
     // ── the hub: the realtime stream has the same gate as the REST controller ────────────────
@@ -133,7 +156,7 @@ public class PlatformConversationAuthorizationTests
         fixture.Platform.AuthorizeConversationAccessAsync(conversationId, userId, Arg.Any<CancellationToken>())
             .Returns(Result.Failure("Conversation not found.", ErrorCodes.NotFound));
 
-        var hub = fixture.Hub(Principal(userId, SystemAdminAuthorization.RoleName));
+        var hub = fixture.Hub(StaffPrincipal(userId));
 
         await Assert.ThrowsAsync<HubException>(() => hub.JoinConversation(conversationId));
     }
@@ -149,7 +172,7 @@ public class PlatformConversationAuthorizationTests
         fixture.Platform.AuthorizeConversationAccessAsync(conversationId, userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
 
-        var hub = fixture.Hub(Principal(userId, SystemAdminAuthorization.RoleName));
+        var hub = fixture.Hub(StaffPrincipal(userId));
         await hub.JoinConversation(conversationId);
 
         await fixture.Groups.Received(1).AddToGroupAsync(
