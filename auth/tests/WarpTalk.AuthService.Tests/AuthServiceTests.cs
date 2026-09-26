@@ -635,6 +635,31 @@ public class AuthServiceTests
     }
 
     [Fact]
+    public async Task ForgotPasswordAsync_ShouldBeRateLimited_WhenCooldownActiveForEmail()
+    {
+        // WT-841: forgot-password had no rate limit at all — the cooldown key is keyed by
+        // email (not user id) precisely so this also protects addresses with no account.
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = "cooldown@warptalk.vn",
+            EmailVerified = true,
+            IsActive = true
+        };
+        _userRepository.GetByEmailWithRolesAsync(user.Email, Arg.Any<CancellationToken>())
+            .Returns(user);
+        MockCacheGet($"forgot-password:cooldown:{user.Email}", "1");
+
+        var result = await _authService.ForgotPasswordAsync(
+            new ForgotPasswordRequest(user.Email));
+
+        Assert.True(result.IsSuccess);
+        await _authEmailSender.DidNotReceiveWithAnyArgs()
+            .SendPasswordResetEmailAsync(default!, default!, default);
+        Assert.Null(user.PasswordResetTokenHash);
+    }
+
+    [Fact]
     public async Task ResetPasswordAsync_ShouldConsumeValidTokenAndRevokeRefreshTokens()
     {
         var token = "password-reset-token";
