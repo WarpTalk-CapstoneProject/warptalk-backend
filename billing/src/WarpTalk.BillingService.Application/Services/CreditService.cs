@@ -253,9 +253,21 @@ public class CreditService : ICreditService
                 cancellationToken) ?? Array.Empty<Subscription>();
 
             var hasActive = rows.Any(s => s.IsActive);
+
+            // The renew screen's headline: which plan ended, and when. Read from the latest row
+            // whatever its balance, because an ended plan with nothing left is still an ended plan.
+            string? lastPlanName = null;
+            DateTime? lastEndedAt = null;
+            if (!hasActive && rows.OrderByDescending(s => s.CurrentPeriodEnd).FirstOrDefault() is { } last)
+            {
+                lastEndedAt = CreditFreezeService.EndedAt(last);
+                lastPlanName = (await _unitOfWork.Plans.GetByIdAsync(last.PlanId, cancellationToken))?.Name;
+            }
+
             var frozen = rows.Where(s => s.FrozenCredits > 0).OrderByDescending(s => s.CreditsFrozenAt).ToList();
             if (frozen.Count == 0)
-                return Result.Success(new FrozenCreditsDto(workspaceId, 0, null, null, null, null, hasActive));
+                return Result.Success(new FrozenCreditsDto(
+                    workspaceId, 0, null, null, null, null, hasActive, lastPlanName, lastEndedAt));
 
             var latest = frozen[0];
             var graceDays = _platformSettings is null
@@ -271,7 +283,9 @@ public class CreditService : ICreditService
                 endedAt,
                 dormantSince,
                 dormantSince is null ? endedAt.AddDays(graceDays) : null,
-                hasActive));
+                hasActive,
+                lastPlanName,
+                lastEndedAt));
         }
         catch (Exception ex)
         {

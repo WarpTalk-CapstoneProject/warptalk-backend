@@ -23,6 +23,8 @@ public sealed class AdminInboxSourceServiceTests
     private readonly List<InboxSubscriptionRow> _subscriptions = [];
     private readonly List<ProviderCallStat> _calls = [];
     private readonly List<OperatingExpense> _planned = [];
+    private readonly List<CreditTransaction> _ledger = [];
+    private readonly List<Subscription> _subscriptionRows = [];
     private readonly AdminInboxSourceService _service;
 
     public AdminInboxSourceServiceTests()
@@ -53,6 +55,12 @@ public sealed class AdminInboxSourceServiceTests
         _unitOfWork.SetupGet(u => u.ProviderStatusIncidents).Returns(incidents.Object);
         _unitOfWork.SetupGet(u => u.ProviderCallStats).Returns(calls.Object);
         _unitOfWork.SetupGet(u => u.OperatingExpenses).Returns(expenses.Object);
+        var ledger = new Mock<ICreditTransactionRepository>();
+        ledger.Setup(r => r.FindAsync(It.IsAny<Expression<Func<CreditTransaction, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<CreditTransaction, bool>> where, CancellationToken _) => _ledger.AsQueryable().Where(where).ToList());
+        _unitOfWork.SetupGet(u => u.CreditTransactionRepository).Returns(ledger.Object);
+        subscriptions.Setup(r => r.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid id, CancellationToken _) => _subscriptionRows.FirstOrDefault(s => s.Id == id));
 
         var workspaces = new Mock<IWorkspaceClient>();
         workspaces.Setup(w => w.GetWorkspaceNamesAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
@@ -109,4 +117,35 @@ public sealed class AdminInboxSourceServiceTests
     {
         public override DateTimeOffset GetUtcNow() => new(now, TimeSpan.Zero);
     }
+
+    /// <summary>
+    /// backend#467: paid credits booked frozen (paid with no live subscription) are an urgent item
+    /// until a renewal releases them — the "alert" half of "never lose paid credit".
+    /// </summary>
+    [Fact]
+    public async Task Paid_credits_booked_frozen_are_urgent_until_released()
+    {
+        var held = new Subscription { Id = Guid.NewGuid(), WorkspaceId = Workspace, FrozenCredits = 5_000 };
+        var released = new Subscription { Id = Guid.NewGuid(), WorkspaceId = Workspace, FrozenCredits = 0 };
+        _subscriptionRows.AddRange([held, released]);
+        _ledger.Add(new CreditTransaction
+        {
+            Id = Guid.NewGuid(), SubscriptionId = held.Id, WorkspaceId = Workspace, Amount = 5_000, Type = "top_up",
+            ReferenceType = "frozen_purchase", Description = "Credit pack 'S'", CreatedAt = Now.AddHours(-2),
+        });
+        _ledger.Add(new CreditTransaction
+        {
+            Id = Guid.NewGuid(), SubscriptionId = released.Id, WorkspaceId = Workspace, Amount = 100, Type = "top_up",
+            ReferenceType = "frozen_purchase", CreatedAt = Now.AddHours(-3),
+        });
+
+        var response = await _service.GetBillingItemsAsync();
+
+        var item = response.Items.Should().ContainSingle(i => i.Type == AdminInbox.Types.PaidCreditsFrozen).Subject;
+        item.Priority.Should().Be(AdminInbox.Priorities.Urgent);
+        item.Title.Should().Contain("5,000");
+        item.Href.Should().Be($"/admin/workspaces/{Workspace}");
+        item.NaturalCompletion.Should().BeTrue();
+    }
 }
+

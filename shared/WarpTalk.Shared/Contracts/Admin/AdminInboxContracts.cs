@@ -46,12 +46,17 @@ public static class AdminInbox
         public const string AnnouncementDraft = "announcement_draft";
         public const string BroadcastFailed = "broadcast_failed";
         public const string DeadLetter = "dead_letter";
+        /// <summary>
+        /// backend#467: a top-up or credit pack was paid for by a workspace with no live subscription
+        /// and booked FROZEN instead of granted. Checkout refuses that, so each one needs a person.
+        /// </summary>
+        public const string PaidCreditsFrozen = "paid_credits_frozen";
 
         public static readonly IReadOnlyList<string> All =
         [
             SalesLead, InvoicePastDue, InvoiceAwaitingPayment, PaymentDisputed, TrialEnding, SubscriptionEnding,
             SubscriptionSuspended, ProviderIncident, ProviderQuota, ExpenseDue, StaffInvitation,
-            AnnouncementScheduled, AnnouncementDraft, BroadcastFailed, DeadLetter,
+            AnnouncementScheduled, AnnouncementDraft, BroadcastFailed, DeadLetter, PaidCreditsFrozen,
         ];
     }
 

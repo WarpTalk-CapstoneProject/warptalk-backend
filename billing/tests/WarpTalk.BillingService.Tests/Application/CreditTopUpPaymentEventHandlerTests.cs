@@ -184,4 +184,40 @@ public class CreditTopUpPaymentEventHandlerTests
         result.IsSuccess.Should().BeTrue(result.Error);
         subscription.CreditsRemaining.Should().Be(1_750);
     }
+
+    /// <summary>
+    /// backend#467: checkout refuses a top-up without a live subscription, but a payment that gets
+    /// past it anyway (an old session, a race with expiry) must not be lost. It is booked FROZEN on
+    /// the workspace's latest subscription — restored on renewal — and the payment succeeds.
+    /// </summary>
+    [Fact]
+    public async Task APaidTopUpWithNoLiveSubscriptionIsBookedFrozenNotLost()
+    {
+        _subscriptions
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
+        var ended = new Subscription
+        {
+            Id = Guid.NewGuid(), WorkspaceId = _workspaceId, UserId = _userId, IsActive = false,
+            Status = SubscriptionConstants.SubscriptionStatuses.Expired, CreditsRemaining = 0, FrozenCredits = 200,
+        };
+        var freezer = new Mock<WarpTalk.BillingService.Application.Services.ICreditFreezeService>();
+        freezer
+            .Setup(f => f.StageFrozenPurchaseAsync(It.IsAny<WarpTalk.BillingService.Application.Services.FrozenPurchase>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ended);
+        var handler = new CreditTopUpPaymentEventHandler(
+            _unitOfWork.Object, Mock.Of<ILogger<CreditTopUpPaymentEventHandler>>(), freezer.Object);
+        var context = Context(10_000);
+
+        var result = await handler.HandleAsync(context);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        context.Subscription.Should().BeSameAs(ended, "the payment row points at the subscription holding the credits");
+        freezer.Verify(f => f.StageFrozenPurchaseAsync(
+            It.Is<WarpTalk.BillingService.Application.Services.FrozenPurchase>(p =>
+                p.Credits == 10_000 && p.WorkspaceId == _workspaceId && p.ReferenceId == context.PaymentId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
 }
+

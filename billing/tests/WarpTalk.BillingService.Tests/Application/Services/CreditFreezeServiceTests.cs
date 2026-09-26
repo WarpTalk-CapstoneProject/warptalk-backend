@@ -341,5 +341,92 @@ public class CreditFreezeServiceTests
         ended.FrozenCredits.Should().Be(0);
         ended.FrozenCreditsDormantAt.Should().BeNull();
     }
+
+    // ── backend#467: paid credits with no live subscription are booked frozen ─────────────────
+
+    [Fact]
+    public async Task A_paid_purchase_with_no_live_subscription_is_booked_frozen_on_the_latest_row()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var older = AddSubscription(plan, balance: 0);
+        older.CurrentPeriodEnd = Now.AddDays(-90);
+        var latest = AddSubscription(plan, balance: 0);
+        latest.FrozenCredits = 300;
+        latest.FrozenCreditsDormantAt = Now.AddDays(-1);
+        var purchaseId = Guid.NewGuid();
+
+        var holder = await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 5_000, "Credit pack 'S'", purchaseId, "vnd", Now));
+
+        holder.Should().BeSameAs(latest);
+        latest.FrozenCredits.Should().Be(5_300);
+        latest.CreditsRemaining.Should().Be(0, "frozen, not spendable");
+        latest.FrozenCreditsDormantAt.Should().BeNull("a fresh purchase is not dormant");
+        var entry = _ledger.Single();
+        entry.ReferenceType.Should().Be(TransactionConstants.ReferenceTypes.FrozenPurchase);
+        entry.ReferenceId.Should().Be(purchaseId);
+        entry.Amount.Should().Be(5_000);
+    }
+
+    [Fact]
+    public async Task A_purchase_on_a_row_whose_freeze_was_already_released_starts_a_new_freeze_episode()
+    {
+        // The release is idempotency-keyed on (row, CreditsFrozenAt). Reusing the instant of a
+        // freeze that was already released would collide, and the renewal could never restore it.
+        var plan = AddPlan(rolloverCap: 0);
+        var latest = AddSubscription(plan, balance: 0);
+        latest.CreditsFrozenAt = Now.AddDays(-40);
+        latest.FrozenCredits = 0;
+
+        await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 1_000, "Top-up", Guid.NewGuid(), "vnd", Now));
+
+        latest.CreditsFrozenAt.Should().Be(Now);
+        latest.FrozenCredits.Should().Be(1_000);
+    }
+
+    [Fact]
+    public async Task A_purchase_on_a_row_not_split_yet_leaves_the_split_to_the_worker()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var latest = AddSubscription(plan, balance: 200);
+        latest.CreditsFrozenAt = null;
+
+        await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 1_000, "Top-up", Guid.NewGuid(), "vnd", Now));
+
+        latest.CreditsFrozenAt.Should().BeNull("setting it would stop the split worker freezing the 200 still spendable");
+        latest.FrozenCredits.Should().Be(1_000);
+        latest.CreditsRemaining.Should().Be(200);
+    }
+
+    [Fact]
+    public async Task A_frozen_purchase_is_not_counted_as_purchased_when_its_row_is_split_later()
+    {
+        // It already sits in FrozenCredits. Counting it as purchased in the spendable balance
+        // would shield plan credits from the forfeit they are owed.
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 500);
+        Grant(ended, 500, TransactionConstants.TransactionTypes.TopUp, TransactionConstants.ReferenceTypes.StripePayment,
+            "Subscription Plan Activation: Plan");
+        ended.FrozenCredits = 1_000;
+        Grant(ended, 1_000, TransactionConstants.TransactionTypes.TopUp, TransactionConstants.ReferenceTypes.FrozenPurchase,
+            "Credit top-up: 1000 credits purchased (kept frozen: no live subscription)");
+
+        await _service.SplitEndedSubscriptionsAsync(Now, PolicyInForce);
+
+        ended.CreditsRemaining.Should().Be(0);
+        ended.FrozenCredits.Should().Be(1_000, "the 500 plan credits above a rollover cap of 0 are forfeited");
+    }
+
+    [Fact]
+    public async Task A_workspace_that_never_subscribed_has_nowhere_to_hold_it()
+    {
+        var holder = await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 5_000, "x", Guid.NewGuid(), "vnd", Now));
+
+        holder.Should().BeNull();
+        _ledger.Should().BeEmpty();
+    }
 }
 
