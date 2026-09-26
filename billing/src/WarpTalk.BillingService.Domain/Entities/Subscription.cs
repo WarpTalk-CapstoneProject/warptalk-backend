@@ -108,6 +108,36 @@ public partial class Subscription
     /// <summary>When frozen credits outlived the grace window without a renewal. Never deleted.</summary>
     public DateTime? FrozenCreditsDormantAt { get; set; }
 
+    /// <summary>
+    /// #466: WHO RENEWS THIS ROW. Exactly one owner per state transition — see
+    /// <see cref="Services.SubscriptionOwnership"/>. <c>invoice</c>: the cycle-close worker issues an
+    /// invoice and grants the cycle (contract / enterprise). <c>stripe</c>: a live Stripe
+    /// Subscription charges the card and the <c>invoice.paid</c> webhook renews. <c>none</c>: nothing
+    /// renews it (a one-off card purchase, a trial); the expiry sweep ends it at period end.
+    /// </summary>
+    public string RenewalMode { get; set; } = SubscriptionConstants.RenewalModes.Invoice;
+
+    /// <summary>#466: the Stripe Subscription (<c>sub_…</c>) that charges this row each cycle.</summary>
+    public string? StripeSubscriptionId { get; set; }
+
+    /// <summary>#466: the Stripe Customer holding the saved card; the billing portal opens on it.</summary>
+    public string? StripeCustomerId { get; set; }
+
+    /// <summary>#466: Stripe's own status for <see cref="StripeSubscriptionId"/> as last reported by a webhook.</summary>
+    public string? StripeSubscriptionStatus { get; set; }
+
+    /// <summary>#466: first failed renewal charge of the current dunning episode; null when not in dunning.</summary>
+    public DateTime? PaymentFailedAt { get; set; }
+
+    /// <summary>
+    /// #466: end of the dunning grace window (<c>billing.dunning.grace_days</c> after the first
+    /// failure). The plan stays in force until then; after it the expiry sweep ends the row.
+    /// </summary>
+    public DateTime? PaymentGraceEndsAt { get; set; }
+
+    /// <summary>#466: why the last renewal charge failed, as Stripe said it. Never card data.</summary>
+    public string? PaymentFailureReason { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }

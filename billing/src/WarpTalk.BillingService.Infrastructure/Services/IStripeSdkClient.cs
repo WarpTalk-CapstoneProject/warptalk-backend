@@ -28,6 +28,14 @@ public interface IStripeSdkClient
     Task<PromotionCode> UpdatePromotionCodeAsync(string promotionCodeId, PromotionCodeUpdateOptions options, CancellationToken cancellationToken = default);
     Task<Stripe.Subscription> GetSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken = default);
 
+    // #466 — recurring plan billing. Nothing here deletes a Stripe object: a subscription is
+    // canceled (it stays in Stripe with its invoices), a price is archived.
+    Task<StripeList<Price>> ListPricesAsync(PriceListOptions options, CancellationToken cancellationToken = default);
+    Task<Stripe.Subscription> GetSubscriptionWithPaymentMethodAsync(string subscriptionId, CancellationToken cancellationToken = default);
+    Task<Stripe.Subscription> CancelSubscriptionAsync(string subscriptionId, SubscriptionCancelOptions options, CancellationToken cancellationToken = default);
+    Task<Invoice> CreateInvoicePreviewAsync(InvoiceCreatePreviewOptions options, CancellationToken cancellationToken = default);
+    Task<Stripe.BillingPortal.Session> CreateBillingPortalSessionAsync(Stripe.BillingPortal.SessionCreateOptions options, CancellationToken cancellationToken = default);
+
     // Admin Providers page: the fee Stripe kept on a payment (StripeFeeSyncWorker). Read-only.
     Task<StripeList<Charge>> ListChargesAsync(ChargeListOptions options, CancellationToken cancellationToken = default);
     Task<StripeList<InvoicePayment>> ListInvoicePaymentsAsync(InvoicePaymentListOptions options, CancellationToken cancellationToken = default);

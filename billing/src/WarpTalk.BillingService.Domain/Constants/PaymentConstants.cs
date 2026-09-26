@@ -103,6 +103,9 @@ public static class PaymentConstants
         /// re-deriving it from the amount (which would make the rate a client input).
         /// </summary>
         public const string Credits = "Credits";
+
+        /// <summary>#466: whether the plan checkout was sold as a recurring Stripe Subscription.</summary>
+        public const string AutoRenew = "AutoRenew";
     }
 
     public static class StripeEvents
@@ -119,6 +122,9 @@ public static class PaymentConstants
         public const string CustomerSubscriptionUpdated = "customer.subscription.updated";
         public const string CustomerSubscriptionDeleted = "customer.subscription.deleted";
         public const string InvoicePaid = "invoice.paid";
+
+        /// <summary>#466: a renewal charge failed — dunning starts.</summary>
+        public const string InvoicePaymentFailed = "invoice.payment_failed";
     }
 
     public static class StripePrefixes

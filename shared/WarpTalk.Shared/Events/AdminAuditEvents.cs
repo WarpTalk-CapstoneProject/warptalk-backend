@@ -156,12 +156,19 @@ public static class AdminAuditBillingActions
     public const string FxRateOverridden = "fx_rate.overridden";
     public const string FxRateOverrideCleared = "fx_rate.override_cleared";
 
+    /// <summary>#466: auto-renew switched on or off (Stripe cancel_at_period_end).</summary>
+    public const string SubscriptionAutoRenewSet = "subscription.auto_renew_set";
+
+    /// <summary>#466: pre-#466 card rows linked to the Stripe subscription their checkout created.</summary>
+    public const string StripeLinksBackfilled = "subscription.stripe_backfill";
+
     public static readonly string[] All =
     [
         PlanCreated, PlanUpdated, RateCardUpserted, RateCardDeactivated, RateCardCostSet,
         PricingConfigUpdated, BillingPolicyUpdated, ContractCreated, ContractTermsUpdated,
         SubscriptionCancelled, SubscriptionReactivated, SubscriptionResumed, SalesLeadStatusChanged,
         PaymentRecorded, FxRateRefreshed, FxRateOverridden, FxRateOverrideCleared,
+        SubscriptionAutoRenewSet, StripeLinksBackfilled,
     ];
 }
 

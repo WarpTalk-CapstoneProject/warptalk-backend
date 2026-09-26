@@ -40,4 +40,11 @@ public sealed class PaymentEventContext
     /// reads the committed rows — an add-on only added to the unit of work is invisible to it.
     /// </summary>
     public bool EntitlementsChanged { get; set; }
+
+    /// <summary>
+    /// #466: side effects that must only happen once the payment event is COMMITTED — cancelling a
+    /// Stripe subscription the new plan replaced, telling the owner a renewal charge failed. Run by
+    /// the caller after its save, each best-effort: the money state is already durable.
+    /// </summary>
+    public List<Func<CancellationToken, Task>> AfterCommit { get; } = new();
 }

@@ -100,6 +100,23 @@ public interface ISubscriptionRepository : IGenericRepository<Subscription>
     Task<PagedResult<Subscription>> GetPageAsync(PageRequest page, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Subscription>> GetActiveSubscriptionsAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Subscription>> GetDueForRenewalAsync(DateTime renewalThreshold, DateTime lowerBound, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(DateTime now, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// #466: active rows whose period ended AND that no other owner may still act on — see
+    /// <see cref="Services.SubscriptionOwnership.DueForExpiry"/>.
+    /// </summary>
+    Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(
+        DateTime now,
+        TimeSpan renewalLookback,
+        TimeSpan stripeSafetyMargin,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>#466: the row a Stripe subscription charges, active or not (plan included).</summary>
+    Task<Subscription?> GetByStripeSubscriptionIdAsync(string stripeSubscriptionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// #466: active card-bought rows (renewal_mode none) not yet linked to a Stripe subscription —
+    /// the admin backfill looks up each one's checkout session.
+    /// </summary>
+    Task<IReadOnlyList<Subscription>> GetUnlinkedCardSubscriptionsAsync(int limit, CancellationToken cancellationToken = default);
     Task<Subscription?> GetActiveByWorkspaceIdAsync(Guid workspaceId, bool includePlan = true, bool requireActivePeriod = false, CancellationToken cancellationToken = default);
 }

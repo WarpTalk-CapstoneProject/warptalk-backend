@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 
 using WarpTalk.BillingService.Infrastructure.Persistence;
 
@@ -200,22 +201,49 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
         DateTime lowerBound,
         CancellationToken cancellationToken = default)
     {
+        // #466: invoice rows only. A card customer's renewal is Stripe's to charge and grant.
         return await _dbSet
             .Include(s => s.Plan)
-            .Where(s =>
-                s.IsActive &&
-                s.DeletedAt == null &&
-                s.AutoRenew &&
-                s.Status == SubscriptionConstants.SubscriptionStatuses.Active &&
-                s.CurrentPeriodEnd <= renewalThreshold &&
-                s.CurrentPeriodEnd > lowerBound)
+            .Where(SubscriptionOwnership.DueForCycleClose(renewalThreshold, lowerBound))
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(DateTime now, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(
+        DateTime now,
+        TimeSpan renewalLookback,
+        TimeSpan stripeSafetyMargin,
+        CancellationToken cancellationToken = default)
     {
         return await _dbSet
-            .Where(s => s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd < now)
+            .Where(SubscriptionOwnership.DueForExpiry(now, renewalLookback, stripeSafetyMargin))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<Subscription?> GetByStripeSubscriptionIdAsync(
+        string stripeSubscriptionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(stripeSubscriptionId))
+        {
+            return null;
+        }
+
+        return await _dbSet
+            .Include(s => s.Plan)
+            .FirstOrDefaultAsync(s => s.StripeSubscriptionId == stripeSubscriptionId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Subscription>> GetUnlinkedCardSubscriptionsAsync(
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Where(s => s.IsActive
+                        && s.DeletedAt == null
+                        && s.RenewalMode == SubscriptionConstants.RenewalModes.None
+                        && s.StripeSubscriptionId == null)
+            .OrderBy(s => s.CurrentPeriodEnd)
+            .Take(limit)
             .ToListAsync(cancellationToken);
     }
 

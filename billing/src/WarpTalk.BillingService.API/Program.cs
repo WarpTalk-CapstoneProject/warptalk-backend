@@ -113,6 +113,8 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // Frozen credits: what an ended subscription's balance becomes (SubscriptionExpirationWorker,
     // SubscriptionPaymentEventHandler). See CreditFreezeService for the policy.
     builder.Services.AddScoped<ICreditFreezeService, CreditFreezeService>();
+    // #466: auto-renew toggle, billing-page renewal status, Stripe portal, subscription webhooks.
+    builder.Services.AddScoped<IStripeSubscriptionLifecycleService, StripeSubscriptionLifecycleService>();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();

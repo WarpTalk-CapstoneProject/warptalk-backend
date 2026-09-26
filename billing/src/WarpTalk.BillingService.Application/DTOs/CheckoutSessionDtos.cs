@@ -42,7 +42,13 @@ public record CreateCheckoutSessionRequest(
     /// G11: a coupon code typed by the buyer. Validated server-side; an auto-apply campaign is
     /// used when this is empty. One coupon per checkout.
     /// </summary>
-    string CouponCode = ""
+    string CouponCode = "",
+    /// <summary>
+    /// #466, plan checkouts: renew automatically. On (the default, and what every plan checkout
+    /// did before) sells a Stripe Subscription on the plan's recurring Price, so the saved card is
+    /// charged each cycle. Off sells ONE period as a one-off payment; nothing renews it.
+    /// </summary>
+    bool? AutoRenew = null
 ) : IWorkspaceScopedRequest;
 public record StripePaymentEventRequest(
     string StripeSessionId,
@@ -73,7 +79,11 @@ public record StripePaymentEventRequest(
     /// <summary>G11: customer.subscription.updated — cancellation scheduled for period end.</summary>
     bool CancelAtPeriodEnd = false,
     /// <summary>G11: end of the Stripe subscription's current paid period, when known.</summary>
-    DateTime? PeriodEnd = null
+    DateTime? PeriodEnd = null,
+    /// <summary>#466: the Stripe Customer the checkout / subscription belongs to.</summary>
+    string StripeCustomerId = "",
+    /// <summary>#466: start of the period a renewal invoice paid for (the invoice line's period).</summary>
+    DateTime? PeriodStart = null
 );
 
 public record CheckoutSessionDto(
@@ -85,5 +95,7 @@ public record CheckoutSessionDto(
     string Status,
     string PaymentIntentId,
     /// <summary>G11: the subscription a subscription-mode session created (add-on checkouts).</summary>
-    string? SubscriptionId = null
+    string? SubscriptionId = null,
+    /// <summary>#466: the Stripe Customer the session created or used.</summary>
+    string? CustomerId = null
 );

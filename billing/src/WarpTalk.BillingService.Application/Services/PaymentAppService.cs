@@ -6,6 +6,7 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Services;
@@ -22,6 +23,7 @@ public class PaymentAppService : IPaymentAppService
     private readonly ICustomerCatalogService? _catalog;
     private readonly IEntitlementChangePublisher? _entitlements;
     private readonly IAiServiceStateStore? _aiServiceStateStore;
+    private readonly IStripeRecurringGateway? _recurring;
 
     /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
     private const string CreditValueConfigKey = "credit_value_vnd";
@@ -42,9 +44,11 @@ public class PaymentAppService : IPaymentAppService
         IUsageRateCardRepository rateCards,
         ICustomerCatalogService? catalog = null,
         IEntitlementChangePublisher? entitlements = null,
-        IAiServiceStateStore? aiServiceStateStore = null)
+        IAiServiceStateStore? aiServiceStateStore = null,
+        IStripeRecurringGateway? recurring = null)
     {
         _aiServiceStateStore = aiServiceStateStore;
+        _recurring = recurring;
         _rateCards = rateCards;
         _catalog = catalog;
         _entitlements = entitlements;
@@ -88,6 +92,13 @@ public class PaymentAppService : IPaymentAppService
                 return Result.Failure<string>(
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
+            }
+
+            // #466: a plan is priced by the server and sold either as a recurring Stripe
+            // Subscription (auto-renew on) or as one paid period (auto-renew off).
+            if (string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.Subscription, StringComparison.OrdinalIgnoreCase))
+            {
+                return await CreatePlanCheckoutAsync(request);
             }
 
             // backend#467 — EXTRA CREDITS ARE SOLD ONLY ON TOP OF A PLAN. Checked before anything
@@ -330,7 +341,8 @@ public class PaymentAppService : IPaymentAppService
                     System.Globalization.NumberStyles.Integer,
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var sessionCredits) ? sessionCredits : 0,
-                StripeSubscriptionId: session.SubscriptionId ?? string.Empty
+                StripeSubscriptionId: session.SubscriptionId ?? string.Empty,
+                StripeCustomerId: session.CustomerId ?? string.Empty
             ).WithCatalogMetadata(session.Metadata));
             
             if (!processResult.IsSuccess)
@@ -417,6 +429,7 @@ public class PaymentAppService : IPaymentAppService
             await CreateInvoiceForPaidPaymentAsync(context);
             await RecordCouponRedemptionAsync(context);
             await _unitOfWork.SaveChangesAsync();
+            await RunAfterCommitAsync(context);
             await PublishSubscriptionUpdateAsync(context);
             await PublishEntitlementsAsync(context);
             await PushAiServiceStateAsync(context);
@@ -509,6 +522,124 @@ public class PaymentAppService : IPaymentAppService
             return Result.Failure(
                 $"{BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed}: {ex.GetBaseException().Message}",
                 ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// #466: a plan checkout. The PRICE is the server's (<see cref="PlanPricing"/>) — a recurring
+    /// Price is charged every cycle without the browser, so it cannot be the client's number — and
+    /// the MODE follows the buyer's auto-renew choice:
+    ///   * on (default): mode=subscription on the plan's recurring Stripe Price, created on first
+    ///     use. Stripe saves the card and charges it each cycle; invoice.paid renews the row.
+    ///   * off: mode=payment for exactly one period. Nothing renews it; it ends at period end.
+    /// A coupon rides as a Stripe discount exactly as before (G11).
+    /// </summary>
+    private async Task<Result<string>> CreatePlanCheckoutAsync(CreateCheckoutSessionRequest request)
+    {
+        var slug = (request.PlanSlug ?? string.Empty).Trim().ToLowerInvariant();
+        var plan = string.IsNullOrEmpty(slug)
+            ? null
+            : await _unitOfWork.Plans.FirstOrDefaultAsync(p => p.Slug.ToLower() == slug && p.DeletedAt == null);
+        if (plan is null || !plan.IsActive)
+        {
+            return Result.Failure<string>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
+        }
+
+        var cycle = PlanPricing.NormalizeCycle(request.BillingCycle);
+        var amount = PlanPricing.PeriodTotal(plan, cycle);
+        var currency = PlanPricing.StripeCurrency(plan);
+        if (Math.Abs(request.Amount - amount) > 0.01m)
+        {
+            _logger.LogWarning(
+                "plan_checkout_amount_overridden: Plan={PlanSlug} Cycle={Cycle} ClientAmount={ClientAmount} ServerAmount={ServerAmount} {Currency}",
+                plan.Slug, cycle, request.Amount, amount, currency);
+        }
+
+        var autoRenew = request.AutoRenew ?? true;
+        request = request with { Amount = amount, Currency = currency, BillingCycle = cycle, PlanSlug = plan.Slug, AutoRenew = autoRenew };
+
+        var extras = CheckoutExtras.None;
+        if (_catalog is not null)
+        {
+            var prepared = await _catalog.PrepareCheckoutAsync(request);
+            if (!prepared.IsSuccess)
+            {
+                return Result.Failure<string>(prepared.Error!, prepared.ErrorCode ?? ErrorCodes.ValidationError);
+            }
+
+            (request, extras) = prepared.Value;
+        }
+
+        string? priceId = null;
+        if (autoRenew && _recurring is not null)
+        {
+            var price = await _recurring.EnsurePlanPriceAsync(plan, cycle, amount, currency);
+            if (!price.IsSuccess)
+            {
+                _logger.LogError(
+                    "plan_recurring_price_unavailable: Plan={PlanSlug} Cycle={Cycle} Reason={Reason}",
+                    plan.Slug, cycle, price.Error);
+                return Result.Failure<string>(
+                    BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                    ErrorCodes.InternalServerError);
+            }
+
+            priceId = price.Value;
+            // The ids are the plan's from now on; persisted before the session exists so a second
+            // checkout reuses them instead of looking the price up again.
+            await _unitOfWork.SaveChangesAsync();
+        }
+
+        var metadata = new Dictionary<string, string>(extras.Metadata)
+        {
+            [PaymentConstants.StripeMetadata.AutoRenew] = autoRenew ? "true" : "false",
+        };
+        var line = new CatalogCheckoutLine(
+            plan.Name,
+            string.IsNullOrWhiteSpace(plan.StripeProductId) ? null : plan.StripeProductId,
+            priceId,
+            amount,
+            currency,
+            1,
+            autoRenew ? BillingCycleResolver.ToPriceInterval(cycle) : null);
+
+        var result = await _stripePaymentService.CreateCatalogCheckoutSessionAsync(
+            request,
+            extras with { Line = line, Metadata = metadata });
+        if (!result.IsSuccess)
+        {
+            _logger.LogError(
+                "{Message}. WorkspaceId: {WorkspaceId}, Plan: {PlanSlug}, Cycle: {BillingCycle}, AutoRenew: {AutoRenew}, Amount: {Amount} {Currency}, Reason: {Reason} ({ErrorCode})",
+                BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession,
+                request.WorkspaceId,
+                plan.Slug,
+                cycle,
+                autoRenew,
+                amount,
+                currency,
+                result.Error,
+                result.ErrorCode);
+            return Result.Failure<string>(
+                result.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                ErrorCodes.InternalServerError);
+        }
+
+        return Result.Success(result.Value!);
+    }
+
+    /// <summary>#466: see <see cref="PaymentEventContext.AfterCommit"/>. Never fails the committed event.</summary>
+    private async Task RunAfterCommitAsync(PaymentEventContext context)
+    {
+        foreach (var action in context.AfterCommit)
+        {
+            try
+            {
+                await action(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "payment_event_after_commit_failed: WorkspaceId={WorkspaceId}", context.WorkspaceId);
+            }
         }
     }
 
