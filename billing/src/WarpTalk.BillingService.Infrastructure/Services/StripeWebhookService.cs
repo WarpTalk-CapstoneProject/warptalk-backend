@@ -23,19 +23,22 @@ public class StripeWebhookService : IStripeWebhookService
     private readonly IHostEnvironment _environment;
     private readonly ILogger<StripeWebhookService> _logger;
     private readonly Stripe.SubscriptionService _stripeSubscriptionService;
+    private readonly IStripeSubscriptionLifecycleService? _lifecycle;
 
     public StripeWebhookService(
         IPaymentAppService paymentAppService,
         IConfiguration configuration,
         IHostEnvironment environment,
         ILogger<StripeWebhookService> logger,
-        Stripe.SubscriptionService stripeSubscriptionService)
+        Stripe.SubscriptionService stripeSubscriptionService,
+        IStripeSubscriptionLifecycleService? lifecycle = null)
     {
         _paymentAppService = paymentAppService;
         _configuration = configuration;
         _environment = environment;
         _logger = logger;
         _stripeSubscriptionService = stripeSubscriptionService;
+        _lifecycle = lifecycle;
     }
 
     public async Task<Result<bool>> HandleWebhookAsync(string jsonPayload, string signatureHeader, CancellationToken cancellationToken = default)
@@ -110,7 +113,9 @@ public class StripeWebhookService : IStripeWebhookService
                             && int.TryParse(sessionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var sessionCreditCount)
                             ? sessionCreditCount : 0,
                         // G11: an add-on checkout creates its own Stripe subscription.
-                        StripeSubscriptionId: session.SubscriptionId ?? string.Empty
+                        // #466: so does a plan checkout with auto-renew on; the row is linked to it.
+                        StripeSubscriptionId: session.SubscriptionId ?? string.Empty,
+                        StripeCustomerId: session.CustomerId ?? string.Empty
                     ).WithCatalogMetadata(session.Metadata));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -203,22 +208,9 @@ public class StripeWebhookService : IStripeWebhookService
                 }
                 else if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
-                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
-                        StripeSessionId: string.Empty,
-                        PaymentIntentId: subscription.Id,
-                        Amount: NormalizeStripeAmount(subscription.Items.Data.FirstOrDefault()?.Price.UnitAmountDecimal ?? 0, subscription.Currency),
-                        Currency: subscription.Currency ?? PaymentConstants.Currencies.Usd,
-                        UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
-                        WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
-                        PaymentType: PaymentConstants.PaymentTypes.SubscriptionUpdate,
-                        Status: PaymentConstants.PaymentStatuses.SubscriptionUpdated,
-                        PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
-                        // WT-429: credits to grant, decided server-side at checkout creation.
-                        Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
-                            && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
-                            ? subscriptionCreditCount : 0
-                    ));
+                    // #466: a plan subscription's renewal changed (auto-renew toggled here or in the
+                    // Stripe portal, status moved). Mirrored onto the row; money never moves here.
+                    var result = await ApplySubscriptionChangeAsync(subscription, deleted: false, cancellationToken);
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
@@ -235,79 +227,20 @@ public class StripeWebhookService : IStripeWebhookService
                 }
                 else if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
-                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
-                        StripeSessionId: string.Empty,
-                        PaymentIntentId: subscription.Id,
-                        Amount: 0,
-                        Currency: PaymentConstants.Currencies.Usd,
-                        UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
-                        WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
-                        PaymentType: PaymentConstants.PaymentTypes.Subscription,
-                        Status: PaymentConstants.PaymentStatuses.Cancelled,
-                        PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
-                        // WT-429: credits to grant, decided server-side at checkout creation.
-                        Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
-                            && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
-                            ? subscriptionCreditCount : 0
-                    ));
+                    // #466: Stripe will never charge this subscription again. The plan ENDS AT
+                    // PERIOD END — it used to be cancelled on the spot (status = cancelled took
+                    // every entitlement away the moment the event arrived, mid-period).
+                    var result = await ApplySubscriptionChangeAsync(subscription, deleted: true, cancellationToken);
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
-            else if (type == PaymentConstants.StripeEvents.InvoicePaid)
+            else if (type == PaymentConstants.StripeEvents.InvoicePaid
+                     || type == PaymentConstants.StripeEvents.InvoicePaymentFailed)
             {
-                if (stripeEvent.Data.Object is Invoice invoice && (invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCycle || invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCreate))
+                if (stripeEvent.Data.Object is Invoice invoice)
                 {
-                    var subId = invoice.Lines?.FirstOrDefault()?.SubscriptionId;
-                    if (!string.IsNullOrEmpty(subId))
-                    {
-                        var subscription = await _stripeSubscriptionService.GetAsync(subId);
-
-                        if (CatalogMetadataMapper.IsAddOnSubscription(subscription.Metadata))
-                        {
-                            // G11: an add-on's invoice. The first one (subscription_create) is the
-                            // checkout itself, already recorded by checkout.session.completed; only
-                            // a renewal is new money.
-                            if (invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCycle)
-                            {
-                                var renewal = await _paymentAppService.ProcessPaymentEventAsync(AddOnEvent(
-                                    subscription, PaymentConstants.PaymentTypes.AddOnRenewal, PaymentConstants.PaymentStatuses.Paid) with
-                                {
-                                    PaymentIntentId = invoice.Id,
-                                    Amount = NormalizeStripeAmount(invoice.AmountPaid, invoice.Currency),
-                                    Currency = invoice.Currency,
-                                    InvoiceUrl = invoice.HostedInvoiceUrl,
-                                    InvoicePdf = invoice.InvoicePdf,
-                                });
-                                if (!renewal.IsSuccess) processingFailure = Capture(renewal, type);
-                            }
-                        }
-                        else
-                        {
-                            string paymentType = invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCreate ? PaymentConstants.PaymentTypes.Subscription : PaymentConstants.PaymentTypes.SubscriptionRenewal;
-                            var finalAmount = NormalizeStripeAmount(invoice.AmountPaid, invoice.Currency);
-
-                            var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
-                                StripeSessionId: string.Empty,
-                                PaymentIntentId: invoice.Id,
-                                Amount: finalAmount,
-                                Currency: invoice.Currency,
-                                UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
-                                WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
-                                PaymentType: paymentType,
-                                Status: PaymentConstants.PaymentStatuses.Paid,
-                                InvoiceUrl: invoice.HostedInvoiceUrl,
-                                InvoicePdf: invoice.InvoicePdf,
-                                PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                                BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
-                            // WT-429: credits to grant, decided server-side at checkout creation.
-                            Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
-                                && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
-                                ? subscriptionCreditCount : 0
-                            ));
-                            if (!result.IsSuccess) processingFailure = Capture(result, type);
-                        }
-                    }
+                    var result = await HandleSubscriptionInvoiceAsync(invoice, paid: type == PaymentConstants.StripeEvents.InvoicePaid, cancellationToken);
+                    if (result is { IsSuccess: false }) processingFailure = Capture(result, type);
                 }
             }
 
@@ -330,6 +263,121 @@ public class StripeWebhookService : IStripeWebhookService
             _logger.LogError(ex, "Unexpected error occurred while handling webhook");
             return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// #466 — a subscription invoice was paid, or its charge failed.
+    ///
+    ///   * An add-on's renewal is the add-on's (G11), unchanged.
+    ///   * A plan's FIRST invoice (billing_reason subscription_create) is the checkout itself, which
+    ///     checkout.session.completed and the return page already activate. It used to be processed
+    ///     as a second "Subscription" payment under the invoice id — a different idempotency key
+    ///     from the session's — so a new subscriber was granted the plan's credits twice.
+    ///   * A plan's CYCLE invoice is the renewal (paid) or the start of dunning (failed): one
+    ///     SubscriptionRenewal payment event keyed by the invoice id, so a replay is a no-op and a
+    ///     failed invoice that is later paid flips the same payment row.
+    /// </summary>
+    private async Task<Result?> HandleSubscriptionInvoiceAsync(Invoice invoice, bool paid, CancellationToken cancellationToken)
+    {
+        var reason = invoice.BillingReason;
+        if (reason != InvoiceConstants.BillingReasons.SubscriptionCycle && reason != InvoiceConstants.BillingReasons.SubscriptionCreate)
+        {
+            return null;
+        }
+
+        var subscriptionId = invoice.Parent?.SubscriptionDetails?.SubscriptionId
+                             ?? invoice.Lines?.FirstOrDefault()?.SubscriptionId;
+        if (string.IsNullOrEmpty(subscriptionId))
+        {
+            return null;
+        }
+
+        // The subscription's metadata as of the invoice rides on the invoice itself; the API is
+        // asked only when it does not (older API versions).
+        Dictionary<string, string>? metadata = invoice.Parent?.SubscriptionDetails?.Metadata;
+        Stripe.Subscription? subscription = null;
+        if (metadata is null || metadata.Count == 0)
+        {
+            subscription = await _stripeSubscriptionService.GetAsync(subscriptionId, cancellationToken: cancellationToken);
+            metadata = subscription.Metadata;
+        }
+
+        metadata ??= new Dictionary<string, string>();
+        var line = invoice.Lines?.FirstOrDefault();
+
+        if (CatalogMetadataMapper.IsAddOnSubscription(metadata))
+        {
+            // G11: an add-on's invoice. The first one (subscription_create) is the checkout itself,
+            // already recorded by checkout.session.completed; only a paid renewal is new money.
+            if (!paid || reason != InvoiceConstants.BillingReasons.SubscriptionCycle)
+            {
+                return null;
+            }
+
+            subscription ??= await _stripeSubscriptionService.GetAsync(subscriptionId, cancellationToken: cancellationToken);
+            return await _paymentAppService.ProcessPaymentEventAsync(AddOnEvent(
+                subscription, PaymentConstants.PaymentTypes.AddOnRenewal, PaymentConstants.PaymentStatuses.Paid) with
+            {
+                PaymentIntentId = invoice.Id,
+                Amount = NormalizeStripeAmount(paid ? invoice.AmountPaid : invoice.AmountDue, invoice.Currency),
+                Currency = invoice.Currency,
+                InvoiceUrl = invoice.HostedInvoiceUrl,
+                InvoicePdf = invoice.InvoicePdf,
+            });
+        }
+
+        if (reason != InvoiceConstants.BillingReasons.SubscriptionCycle)
+        {
+            _logger.LogInformation(
+                "stripe_plan_first_invoice_skipped Invoice={InvoiceId} StripeSubscription={StripeSubscriptionId}: the checkout activates the plan.",
+                invoice.Id, subscriptionId);
+            return null;
+        }
+
+        string Meta(string key) => metadata.TryGetValue(key, out var value) ? value : string.Empty;
+
+        return await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+            StripeSessionId: string.Empty,
+            PaymentIntentId: invoice.Id,
+            Amount: NormalizeStripeAmount(paid ? invoice.AmountPaid : invoice.AmountDue, invoice.Currency),
+            Currency: invoice.Currency,
+            UserIdStr: Meta(PaymentConstants.StripeMetadata.UserId),
+            WorkspaceIdStr: Meta(PaymentConstants.StripeMetadata.WorkspaceId),
+            PaymentType: PaymentConstants.PaymentTypes.SubscriptionRenewal,
+            Status: paid ? PaymentConstants.PaymentStatuses.Paid : PaymentConstants.PaymentStatuses.Failed,
+            FailureReason: paid
+                ? string.Empty
+                : string.Format(System.Globalization.CultureInfo.InvariantCulture, "The card was declined for the renewal (attempt {0}).", invoice.AttemptCount),
+            InvoiceUrl: invoice.HostedInvoiceUrl ?? string.Empty,
+            InvoicePdf: invoice.InvoicePdf ?? string.Empty,
+            PlanSlug: Meta(PaymentConstants.StripeMetadata.PlanSlug),
+            BillingCycle: Meta(PaymentConstants.StripeMetadata.BillingCycle),
+            StripeSubscriptionId: subscriptionId,
+            PeriodEnd: line?.Period?.End,
+            StripeCustomerId: invoice.CustomerId ?? string.Empty,
+            PeriodStart: line?.Period?.Start));
+    }
+
+    /// <summary>#466: customer.subscription.updated / .deleted for a plan subscription.</summary>
+    private async Task<Result> ApplySubscriptionChangeAsync(Stripe.Subscription subscription, bool deleted, CancellationToken cancellationToken)
+    {
+        if (_lifecycle is null)
+        {
+            return Result.Success();
+        }
+
+        return await _lifecycle.ApplyStripeSubscriptionChangeAsync(
+            new StripeSubscriptionChange(
+                subscription.Id,
+                subscription.Status ?? string.Empty,
+                subscription.CancelAtPeriodEnd,
+                deleted,
+                subscription.CustomerId,
+                subscription.Metadata is not null && subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.WorkspaceId, out var workspaceId)
+                    ? workspaceId
+                    : string.Empty,
+                subscription.Items?.Data?.FirstOrDefault()?.CurrentPeriodEnd),
+            cancellationToken);
     }
 
     /// <summary>

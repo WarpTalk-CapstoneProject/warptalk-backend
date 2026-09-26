@@ -101,6 +101,8 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
         // G11: pushes credit packs, add-ons and coupons to Stripe Products/Prices/Coupons (admin only).
         services.AddScoped<IStripeCatalogSync, StripeCatalogSyncService>();
+        // #466: recurring plan billing (auto-renew = a Stripe Subscription).
+        services.AddScoped<IStripeRecurringGateway, StripeRecurringGateway>();
         // Stripe's USD→VND rate, recorded daily (FxRateRefreshWorker) and read by every VND report.
         // Every Stripe call is counted for the admin Providers page (StripeCallObserver); the FX
         // client builds its own StripeClient, so it is handed the observed HTTP client too.

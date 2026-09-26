@@ -98,6 +98,14 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         DateTime now,
         CancellationToken cancellationToken)
     {
+        // #466: the cycle close owns invoice rows only. The query already says so; this is the
+        // guard for the manual close-now path and for a row that changed owner between the select
+        // and here (the xmin token then fails the save rather than granting twice).
+        if (subscription.RenewalMode != SubscriptionConstants.RenewalModes.Invoice)
+        {
+            return $"Subscription {subscription.Id} renews through {subscription.RenewalMode}, not an invoice.";
+        }
+
         var plan = subscription.Plan ?? throw new InvalidOperationException("Billing cycle close requires subscription.Plan to be loaded.");
         var creditsPerCycle = subscription.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
         var invoiceTermsDays = subscription.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays;

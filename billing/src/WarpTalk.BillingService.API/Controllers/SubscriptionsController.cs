@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.Shared;
 using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Events;
@@ -17,10 +18,12 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class SubscriptionsController : ControllerBase
 {
     private readonly ISubscriptionService _subscriptionService;
+    private readonly IStripeSubscriptionLifecycleService _lifecycle;
 
-    public SubscriptionsController(ISubscriptionService subscriptionService)
+    public SubscriptionsController(ISubscriptionService subscriptionService, IStripeSubscriptionLifecycleService lifecycle)
     {
         _subscriptionService = subscriptionService;
+        _lifecycle = lifecycle;
     }
 
     [HttpPost("contract")]
@@ -130,6 +133,80 @@ public class SubscriptionsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
         }
         return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// #466: switch automatic renewal off or back on. For a card plan this is Stripe's
+    /// cancel_at_period_end — the paid period always runs to its end — and Stripe is asked first.
+    /// A plan that was paid once (no card on file) answers 409 BILLING_AUTO_RENEW_REQUIRES_CHECKOUT
+    /// when switched on: that needs a new checkout with auto-renew on.
+    /// </summary>
+    [HttpPut("workspace/{workspaceId}/auto-renew")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionAutoRenewSet, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> SetAutoRenew(
+        Guid workspaceId,
+        [FromBody] SetAutoRenewRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _lifecycle.SetAutoRenewAsync(workspaceId, request.AutoRenew, cancellationToken);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+        return result.ErrorCode switch
+        {
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(error),
+            StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutCode => Conflict(error),
+            ErrorCodes.BillingExternalServiceError => StatusCode(StatusCodes.Status502BadGateway, error),
+            _ => BadRequest(error),
+        };
+    }
+
+    /// <summary>
+    /// #466: renewal as the billing page shows it — who renews, the next charge date and amount,
+    /// the card on file (brand and last four digits only) and any failed renewal charge.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId}/recurring")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<RecurringBillingStatusDto>> GetRecurringStatus(Guid workspaceId, CancellationToken cancellationToken)
+    {
+        var result = await _lifecycle.GetRecurringBillingStatusAsync(workspaceId, cancellationToken);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+        return result.ErrorCode == ErrorCodes.BillingSubscriptionNotFound ? NotFound(error) : BadRequest(error);
+    }
+
+    /// <summary>
+    /// #466: a Stripe billing-portal link where the owner updates the card. Returns only the URL;
+    /// the portal session is Stripe's and expires on its own. Writes nothing here.
+    /// </summary>
+    [HttpPost("workspace/{workspaceId}/billing-portal")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<BillingPortalDto>> CreateBillingPortal(
+        Guid workspaceId,
+        [FromBody] BillingPortalRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _lifecycle.CreateBillingPortalAsync(workspaceId, request?.ReturnPath, cancellationToken);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+        return result.ErrorCode switch
+        {
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(error),
+            ErrorCodes.BillingExternalServiceError => StatusCode(StatusCodes.Status502BadGateway, error),
+            _ => BadRequest(error),
+        };
     }
 
     [HttpPut("workspace/{workspaceId}/contract-terms")]

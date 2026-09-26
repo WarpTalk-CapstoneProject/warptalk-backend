@@ -77,8 +77,17 @@ public class SubscriptionExpirationWorker : BackgroundService
 
         var now = DateTime.UtcNow;
 
-        var expiredSubscriptions = await unitOfWork.SubscriptionRepository.GetExpiredActiveSubscriptionsAsync(now, cancellationToken);
+        // #466: only rows no other owner may still act on — the cycle close inside its lookback,
+        // Stripe while a renewal webhook is due, and any row in dunning grace are left alone
+        // (SubscriptionOwnership.DueForExpiry). An auto_renew row used to be expired here minutes
+        // after its period ended, before the cycle close ever saw it.
+        var expiredSubscriptions = await unitOfWork.SubscriptionRepository.GetExpiredActiveSubscriptionsAsync(
+            now,
+            _options.SubscriptionRenewalLookback,
+            await StripeSafetyMarginAsync(scope.ServiceProvider, cancellationToken),
+            cancellationToken);
         var expiredWorkspaces = new List<Guid>();
+        var stripeSubscriptionsToStop = new List<string>();
         var suspendedTrialWorkspaces = new List<Guid>();
 
         if (expiredSubscriptions.Count > 0)
@@ -112,6 +121,20 @@ public class SubscriptionExpirationWorker : BackgroundService
                     sub.Status = SubscriptionConstants.SubscriptionStatuses.Expired;
                     expiredCount++;
                     expiredWorkspaces.Add(sub.WorkspaceId);
+
+                    // #466: a Stripe-owned row reaches here only when dunning ran out (or its
+                    // renewal webhook never came). Stripe must stop retrying a card for a plan
+                    // that no longer exists — after the save, below.
+                    if (sub.IsStripeManaged
+                        && !SubscriptionConstants.StripeSubscriptionStatuses.Ended.Contains(sub.StripeSubscriptionStatus ?? string.Empty))
+                    {
+                        stripeSubscriptionsToStop.Add(sub.StripeSubscriptionId!);
+                        sub.StripeSubscriptionStatus = SubscriptionConstants.StripeSubscriptionStatuses.Canceled;
+                        sub.AutoRenew = false;
+                        _logger.LogWarning(
+                            "stripe_subscription_expired_locally WorkspaceId={WorkspaceId} Subscription={SubscriptionId} StripeSubscription={StripeSubscriptionId} PaymentFailedAt={PaymentFailedAt:o}",
+                            sub.WorkspaceId, sub.Id, sub.StripeSubscriptionId, sub.PaymentFailedAt);
+                    }
                 }
 
                 sub.UpdatedAt = now;
@@ -119,6 +142,7 @@ public class SubscriptionExpirationWorker : BackgroundService
             }
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
+            await StopStripeSubscriptionsAsync(scope.ServiceProvider, stripeSubscriptionsToStop, cancellationToken);
             _logger.LogInformation(
                 "Processed expired subscriptions. Expired={ExpiredCount}, SuspendedTrials={SuspendedTrials}.",
                 expiredCount,
@@ -158,6 +182,46 @@ public class SubscriptionExpirationWorker : BackgroundService
         }
 
         await SettleEndedCreditsAsync(scope.ServiceProvider, now, cancellationToken);
+    }
+
+    /// <summary>
+    /// #466: how long past its period end a Stripe-owned row with no failure recorded waits for its
+    /// renewal webhook. The dunning grace plus a day: longer than any normal delivery, short enough
+    /// that a lost webhook cannot leave a plan running unpaid indefinitely.
+    /// </summary>
+    private static async Task<TimeSpan> StripeSafetyMarginAsync(IServiceProvider services, CancellationToken cancellationToken)
+    {
+        var settings = services.GetService<IPlatformSettings>();
+        var graceDays = settings is null
+            ? SubscriptionConstants.Dunning.DefaultGraceDays
+            : await settings.GetInt32Async(SubscriptionConstants.Dunning.GraceDaysKey, SubscriptionConstants.Dunning.DefaultGraceDays, ct: cancellationToken);
+        return TimeSpan.FromDays(Math.Max(0, graceDays)) + SubscriptionConstants.Dunning.StripeRenewalSafetyMargin;
+    }
+
+    /// <summary>#466: cancels (never deletes) the Stripe subscriptions of rows this sweep just ended.</summary>
+    private async Task StopStripeSubscriptionsAsync(IServiceProvider services, IReadOnlyList<string> stripeSubscriptionIds, CancellationToken cancellationToken)
+    {
+        if (stripeSubscriptionIds.Count == 0)
+        {
+            return;
+        }
+
+        var stripe = services.GetService<IStripeRecurringGateway>();
+        if (stripe is null)
+        {
+            return;
+        }
+
+        foreach (var id in stripeSubscriptionIds)
+        {
+            var cancelled = await stripe.CancelNowAsync(id, cancellationToken);
+            if (!cancelled.IsSuccess)
+            {
+                _logger.LogError(
+                    "stripe_subscription_cancel_after_expiry_failed StripeSubscription={StripeSubscriptionId} Error={Error}. Cancel it in Stripe; the plan is already ended here.",
+                    id, cancelled.Error);
+            }
+        }
     }
 
     /// <summary>

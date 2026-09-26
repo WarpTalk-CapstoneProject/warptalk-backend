@@ -27,13 +27,34 @@ public class AdminSubscriptionsController : ControllerBase
 {
     private readonly IAdminSubscriptionService _adminSubscriptionService;
     private readonly ISubscriptionService _subscriptionService;
+    private readonly IStripeSubscriptionLifecycleService _lifecycle;
 
     public AdminSubscriptionsController(
         IAdminSubscriptionService adminSubscriptionService,
-        ISubscriptionService subscriptionService)
+        ISubscriptionService subscriptionService,
+        IStripeSubscriptionLifecycleService lifecycle)
     {
         _adminSubscriptionService = adminSubscriptionService;
         _subscriptionService = subscriptionService;
+        _lifecycle = lifecycle;
+    }
+
+    /// <summary>
+    /// #466: link card plans bought before #466 to the Stripe subscription their checkout created,
+    /// so Stripe's invoice.paid — not the expiry sweep — owns their next renewal. Run it once after
+    /// the deploy, dry-run first. Reads Stripe only (checkout session → subscription); it never
+    /// creates, changes or cancels anything there.
+    /// </summary>
+    [HttpPost("stripe-links/backfill")]
+    [AdminAudited(AdminAuditBillingActions.StripeLinksBackfilled, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
+    public async Task<IActionResult> BackfillStripeLinks(
+        [FromQuery] bool dryRun = true,
+        [FromQuery] int limit = 200,
+        CancellationToken ct = default)
+    {
+        var result = await _lifecycle.BackfillStripeLinksAsync(dryRun, limit, ct);
+        return ToActionResult(result);
     }
 
     [HttpGet]
