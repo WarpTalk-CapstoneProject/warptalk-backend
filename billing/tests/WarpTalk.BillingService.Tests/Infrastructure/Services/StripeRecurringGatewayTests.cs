@@ -43,7 +43,11 @@ public class StripeRecurringGatewayTests
         sdk.Setup(s => s.CreatePriceAsync(It.IsAny<PriceCreateOptions>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((PriceCreateOptions o, CancellationToken _) => StripePrice("price_test_new", o.Product, o.UnitAmount!.Value, o.Recurring.Interval));
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { [PaymentConstants.StripeConfigKeys.SecretKey] = "sk_test_placeholder_for_tests" })
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [PaymentConstants.StripeConfigKeys.SecretKey] = "placeholder-for-tests",
+                [PaymentConstants.StripeConfigKeys.SuccessUrl] = "https://app.warptalk.test/payment/success?session_id={CHECKOUT_SESSION_ID}",
+            })
             .Build();
         return (new StripeRecurringGateway(sdk.Object, configuration), sdk);
     }
@@ -115,5 +119,17 @@ public class StripeRecurringGatewayTests
 
         result.Value.Should().Be("price_test_raced");
         sdk.Verify(s => s.CreatePriceAsync(It.IsAny<PriceCreateOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("/acme/settings/billing", "https://app.warptalk.test/acme/settings/billing")]
+    [InlineData(null, "https://app.warptalk.test/")]
+    [InlineData("https://evil.example/phish", "https://app.warptalk.test/")]
+    [InlineData("//evil.example/phish", "https://app.warptalk.test/")]
+    public void The_portal_only_ever_returns_to_our_own_site(string? path, string expected)
+    {
+        var (gateway, _) = Build();
+
+        gateway.ResolveReturnUrl(path).Should().Be(expected);
     }
 }

@@ -1,5 +1,4 @@
 using System.Linq.Expressions;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.BillingService.Application.DTOs;
@@ -225,9 +224,6 @@ internal sealed class RecurringBillingWorld
         UnitOfWork.Object,
         Stripe.Object,
         (stripePayments ?? new Mock<IStripePaymentService>()).Object,
-        new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { [PaymentConstants.StripeConfigKeys.SuccessUrl] = "https://app.warptalk.test/payment/success" })
-            .Build(),
         NullLogger<StripeSubscriptionLifecycleService>.Instance);
 
     /// <summary>The payment event invoice.paid / invoice.payment_failed turns into (see StripeWebhookService).</summary>

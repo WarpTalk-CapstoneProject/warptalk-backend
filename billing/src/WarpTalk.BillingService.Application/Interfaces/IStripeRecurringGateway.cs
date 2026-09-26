@@ -34,8 +34,12 @@ public interface IStripeRecurringGateway
     /// <summary>Stops all further charges now (no proration, no final invoice). Used when dunning ran out or a plan was replaced.</summary>
     Task<Result> CancelNowAsync(string stripeSubscriptionId, CancellationToken ct = default);
 
-    /// <summary>A Stripe billing-portal session where the customer updates the card. Returns its URL.</summary>
-    Task<Result<string>> CreateBillingPortalUrlAsync(string stripeCustomerId, string returnUrl, CancellationToken ct = default);
+    /// <summary>
+    /// A Stripe billing-portal session where the customer updates the card. Returns its URL. The
+    /// return URL is ALWAYS on our own site (the configured checkout origin): the caller picks only
+    /// a path, so this can never bounce someone to a foreign page.
+    /// </summary>
+    Task<Result<string>> CreateBillingPortalUrlAsync(string stripeCustomerId, string? returnPath, CancellationToken ct = default);
 }
 
 /// <summary>#466: what the billing page shows about a Stripe subscription. Never card data beyond brand and last4.</summary>

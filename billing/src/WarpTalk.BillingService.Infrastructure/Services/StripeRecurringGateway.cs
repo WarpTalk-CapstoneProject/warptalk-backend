@@ -164,8 +164,14 @@ public sealed class StripeRecurringGateway : IStripeRecurringGateway
         }
     }
 
-    public async Task<Result<string>> CreateBillingPortalUrlAsync(string stripeCustomerId, string returnUrl, CancellationToken ct = default)
+    public async Task<Result<string>> CreateBillingPortalUrlAsync(string stripeCustomerId, string? returnPath, CancellationToken ct = default)
     {
+        var returnUrl = ResolveReturnUrl(returnPath);
+        if (returnUrl is null)
+        {
+            return Result.Failure<string>(PaymentConstants.StripeErrorMessages.CheckoutUrlsNotConfigured, ErrorCodes.InternalServerError);
+        }
+
         try
         {
             var session = await _sdk.CreateBillingPortalSessionAsync(
@@ -177,6 +183,24 @@ public sealed class StripeRecurringGateway : IStripeRecurringGateway
         {
             return Result.Failure<string>(StripeCatalogSyncService.Redact(ex), ErrorCodes.BillingExternalServiceError);
         }
+    }
+
+    /// <summary>The configured checkout origin plus a same-site path; anything else becomes "/".</summary>
+    public string? ResolveReturnUrl(string? returnPath)
+    {
+        var configured = _configuration[PaymentConstants.StripeConfigKeys.SuccessUrl];
+        if (string.IsNullOrWhiteSpace(configured) || !Uri.TryCreate(configured, UriKind.Absolute, out var origin))
+        {
+            return null;
+        }
+
+        var path = string.IsNullOrWhiteSpace(returnPath)
+                   || !returnPath.StartsWith('/')
+                   || returnPath.StartsWith("//", StringComparison.Ordinal)
+                   || returnPath.Contains('\\')
+            ? "/"
+            : returnPath;
+        return new Uri(new Uri(origin.GetLeftPart(UriPartial.Authority)), path).ToString();
     }
 
     private async Task<string> EnsureProductAsync(Domain.Entities.Plan plan, Dictionary<string, string> metadata, CancellationToken ct)

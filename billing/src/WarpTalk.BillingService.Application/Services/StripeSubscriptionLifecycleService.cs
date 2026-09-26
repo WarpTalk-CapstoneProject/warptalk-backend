@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Entitlements;
@@ -28,7 +27,6 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
     private readonly IUnitOfWork _unitOfWork;
     private readonly IStripeRecurringGateway _stripe;
     private readonly IStripePaymentService _payments;
-    private readonly IConfiguration _configuration;
     private readonly ILogger<StripeSubscriptionLifecycleService> _logger;
     private readonly IEntitlementChangePublisher? _entitlements;
 
@@ -36,14 +34,12 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
         IUnitOfWork unitOfWork,
         IStripeRecurringGateway stripe,
         IStripePaymentService payments,
-        IConfiguration configuration,
         ILogger<StripeSubscriptionLifecycleService> logger,
         IEntitlementChangePublisher? entitlements = null)
     {
         _unitOfWork = unitOfWork;
         _stripe = stripe;
         _payments = payments;
-        _configuration = configuration;
         _logger = logger;
         _entitlements = entitlements;
     }
@@ -209,8 +205,7 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
 
     /// <summary>
     /// A Stripe billing-portal session on the workspace's customer, where the owner replaces the
-    /// card. The return URL is ALWAYS on our own site (the configured checkout origin) — a caller
-    /// only picks the path — so this can never be used to bounce someone to a foreign page.
+    /// card. The caller only picks a PATH; the gateway puts it on our own origin.
     /// </summary>
     public async Task<Result<BillingPortalDto>> CreateBillingPortalAsync(Guid workspaceId, string? returnPath, CancellationToken ct = default)
     {
@@ -232,13 +227,7 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
             return Result.Failure<BillingPortalDto>(NoPaymentMethodMessage, ErrorCodes.BillingSubscriptionNotFound);
         }
 
-        var returnUrl = ResolveReturnUrl(returnPath);
-        if (returnUrl is null)
-        {
-            return Result.Failure<BillingPortalDto>(PaymentConstants.StripeErrorMessages.CheckoutUrlsNotConfigured, ErrorCodes.InternalServerError);
-        }
-
-        var portal = await _stripe.CreateBillingPortalUrlAsync(customerId, returnUrl, ct);
+        var portal = await _stripe.CreateBillingPortalUrlAsync(customerId, returnPath, ct);
         if (!portal.IsSuccess)
         {
             _logger.LogError("billing_portal_failed WorkspaceId={WorkspaceId} Error={Error}", workspaceId, portal.Error);
@@ -246,23 +235,6 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
         }
 
         return Result.Success(new BillingPortalDto(portal.Value!));
-    }
-
-    public string? ResolveReturnUrl(string? returnPath)
-    {
-        var configured = _configuration[PaymentConstants.StripeConfigKeys.SuccessUrl];
-        if (string.IsNullOrWhiteSpace(configured) || !Uri.TryCreate(configured, UriKind.Absolute, out var origin))
-        {
-            return null;
-        }
-
-        var path = string.IsNullOrWhiteSpace(returnPath)
-                   || !returnPath.StartsWith('/')
-                   || returnPath.StartsWith("//", StringComparison.Ordinal)
-                   || returnPath.Contains('\\')
-            ? "/"
-            : returnPath;
-        return new Uri(new Uri(origin.GetLeftPart(UriPartial.Authority)), path).ToString();
     }
 
     // ---- customer.subscription.updated / .deleted --------------------------------------------
