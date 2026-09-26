@@ -24,7 +24,8 @@
     <ProjectReference Include="..\..\src\WarpTalk.TranscriptService.Domain\WarpTalk.TranscriptService.Domain.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.TranscriptService.Application\WarpTalk.TranscriptService.Application.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.TranscriptService.Infrastructure\WarpTalk.TranscriptService.Infrastructure.csproj" />
-    <!-- G10: the admin endpoint permission coverage test reads the API assembly. -->
+    <!-- G10's admin endpoint permission coverage test and GlossariesControllerAuthorizationTests
+         both read the API assembly's controller types. -->
     <ProjectReference Include="..\..\src\WarpTalk.TranscriptService.API\WarpTalk.TranscriptService.API.csproj" />
   </ItemGroup>
 
