@@ -743,7 +743,11 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         }
     }
 
-    public async Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(Guid artifactId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(
+        Guid artifactId,
+        Guid userId,
+        bool asAttachment = false,
+        CancellationToken ct = default)
     {
         try
         {
@@ -818,12 +822,26 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // the database; those rows are never rewritten.
             if (ArtifactPlainText.IsTextExport(artifact.ArtifactType))
             {
+                var isSummary = string.Equals(
+                    artifact.ArtifactType,
+                    ArtifactType.SUMMARY_EXPORT.ToString(),
+                    StringComparison.OrdinalIgnoreCase);
+
                 return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
                     // A text export never has a file behind it — the content IS the artifact — so
                     // there is no signed URL to produce here.
                     null,
                     ArtifactPlainText.Render(artifact.ArtifactType, artifact.Content),
-                    $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.txt",
+                    RecordFileName.For(
+                        artifact.TranslationRoom.Title,
+                        isSummary ? RecordFileName.Summary : RecordFileName.Transcript,
+                        MeetingStart(artifact.TranslationRoom),
+                        // Only the summary has a language of its own to declare: the AI stamps the
+                        // rendering it wrote into the content, and a room can hold the same summary
+                        // in several. A transcript is in the languages that were spoken, which is
+                        // not one thing and does not belong in a file name.
+                        isSummary ? ReadStoredSummaryKey(artifact.Content).Language : null,
+                        "txt"),
                     "text/plain"));
             }
 
@@ -850,12 +868,34 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 "wav" => "audio/wav",
                 _ => artifact.ContainsRawAudio ? "application/octet-stream" : "text/plain"
             };
-            var fileName = $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.{extension}";
+            // A recording is named after its meeting like everything else a person keeps. The rest
+            // — DEBUG_LOG, AUDIO_SAMPLE — keep the row-id name: nobody files those away, they are
+            // fetched by an engineer who is holding the id already, and for them the id IS the
+            // useful name.
+            var isRecording = string.Equals(
+                artifact.ArtifactType,
+                ArtifactType.OPTIONAL_RECORDING.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            var fileName = isRecording
+                ? RecordFileName.For(
+                    artifact.TranslationRoom.Title,
+                    RecordFileName.Recording,
+                    MeetingStart(artifact.TranslationRoom),
+                    null,
+                    extension,
+                    await RecordingOrdinalAsync(artifact, ct))
+                : $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.{extension}";
+
             var downloadUrl = string.IsNullOrWhiteSpace(artifact.FileUrl)
                 ? null
                 : await _urlSigner.CreateDownloadUrlAsync(
                     artifact.FileUrl,
                     TimeSpan.FromMinutes(15),
+                    // Only a download asks for the name. The record page fetches this same link
+                    // for its <video> element, and an attachment disposition on that one is a
+                    // browser being told to save the file it was asked to play.
+                    asAttachment ? fileName : null,
                     ct);
             return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
                 downloadUrl,
@@ -868,6 +908,69 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             _logger.LogError(ex, "Error getting download URL for artifact {ArtifactId}", artifactId);
             return Result.Failure<ArtifactDownloadDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// The date a person would say the meeting was on, for the file name.
+    /// </summary>
+    /// <remarks>
+    /// UTC, and deliberately not converted. There is no timezone on the room and none on the
+    /// workspace, so the only honest alternatives are UTC or inventing a zone — and a zone guessed
+    /// from the server's locale would move a late-evening meeting onto the wrong day for readers in
+    /// Hanoi while looking perfectly right in the code. The web helper renders the reader's own
+    /// zone because the browser actually knows it; here the day is the UTC day. Both are defensible,
+    /// they differ only for meetings within a few hours of midnight, and a real zone on the room
+    /// (someone has to decide whose — host's, workspace's, or the invite's) would settle it for
+    /// both sides at once.
+    ///
+    /// <c>StartedAt</c> first because that is when it happened; <c>ScheduledAt</c> for a meeting
+    /// with artifacts but no recorded start; <c>CreatedAt</c> last, which for an instant meeting is
+    /// its start to within seconds. <c>default</c> is treated as absent throughout — an unset
+    /// column reads as 0001-01-01, and a file called "… - 0001-01-01.mp4" is a wrong answer that
+    /// looks like a right one.
+    /// </remarks>
+    private static DateTime? MeetingStart(TranslationRoom room)
+    {
+        if (room.StartedAt.HasValue && room.StartedAt.Value != default) return room.StartedAt;
+        if (room.ScheduledAt.HasValue && room.ScheduledAt.Value != default) return room.ScheduledAt;
+        return room.CreatedAt == default ? null : room.CreatedAt;
+    }
+
+    /// <summary>
+    /// Which recording of the meeting this is: 1 when it is the only one, 2 upwards otherwise.
+    /// </summary>
+    /// <remarks>
+    /// A host who stops and restarts recording gets a second row, and both rows share a title and a
+    /// date — so without this they would arrive as one name and the browser would silently rename
+    /// the second "… (1).mp4", numbering them in the order somebody happened to click rather than
+    /// the order they were recorded.
+    ///
+    /// The extra query is paid only by recordings, and only once per download of one. Ordered by
+    /// <c>RecordingStartedAt</c> rather than <c>CreatedAt</c> because CreatedAt is stamped when
+    /// EGRESS FINISHED — a long first pass and a short second one land out of order — with
+    /// CreatedAt as the fallback for rows written before that column existed.
+    /// </remarks>
+    private async Task<int> RecordingOrdinalAsync(TranslationRoomArtifact artifact, CancellationToken ct)
+    {
+        var siblings = await _unitOfWork.TranslationRoomArtifactRepository
+            .GetArtifactsByRoomIdAsync(artifact.TranslationRoomId, ct);
+        if (siblings == null) return 1;
+
+        var recordings = siblings
+            .Where(item => string.Equals(
+                item.ArtifactType,
+                ArtifactType.OPTIONAL_RECORDING.ToString(),
+                StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.RecordingStartedAt ?? item.CreatedAt)
+            .ThenBy(item => item.Id)
+            .ToList();
+
+        // One recording is just "the recording" — a "(1)" on a lone file would only make the reader
+        // look for a second one.
+        if (recordings.Count < 2) return 1;
+
+        var index = recordings.FindIndex(item => item.Id == artifact.Id);
+        return index < 0 ? 1 : index + 1;
     }
 
     /// <summary>
