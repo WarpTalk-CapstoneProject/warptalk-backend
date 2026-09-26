@@ -4,6 +4,7 @@ using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
@@ -351,6 +352,12 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
 
     app.Services.VerifyBillingDatabase();
     Log.Information("Database connection verified");
+
+    // backend#467: the paid-credit safety-net counters start at 0 once the meter provider is
+    // listening, so the alert's increase() sees the FIRST event. A counter series that appears
+    // at 1 has no earlier sample, and increase() over it is empty — the rare event this alert
+    // exists for would never fire it.
+    app.Lifetime.ApplicationStarted.Register(PaidCreditsMetrics.Initialize);
 
     Log.Information("WarpTalk Billing Service started successfully on http://localhost:5107");
     await app.RunAsync();

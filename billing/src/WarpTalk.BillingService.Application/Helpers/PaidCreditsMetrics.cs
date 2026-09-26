@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Diagnostics.Metrics;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.Helpers;
 
@@ -35,6 +36,23 @@ public static class PaidCreditsMetrics
     private static readonly Counter<long> Unheld = Meter.CreateCounter<long>(
         "billing.paid_credits_unheld",
         description: "Paid top-ups/credit packs for a workspace that never had a subscription to hold them.");
+
+    private static readonly string[] PaymentTypes =
+        [PaymentConstants.PaymentTypes.CreditTopUp, PaymentConstants.PaymentTypes.CreditPack];
+
+    /// <summary>
+    /// Publishes every series at 0. Call once the meter provider is listening (ApplicationStarted):
+    /// a series first seen at 1 has no earlier sample, so <c>increase()</c> would miss that event.
+    /// </summary>
+    public static void Initialize()
+    {
+        foreach (var paymentType in PaymentTypes)
+        {
+            var tag = new KeyValuePair<string, object?>("payment_type", paymentType);
+            Frozen.Add(0, tag);
+            Unheld.Add(0, tag);
+        }
+    }
 
     public static void RecordFrozen(string paymentType) =>
         Frozen.Add(1, new KeyValuePair<string, object?>("payment_type", paymentType));
