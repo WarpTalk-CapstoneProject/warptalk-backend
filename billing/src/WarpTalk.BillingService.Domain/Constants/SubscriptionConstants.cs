@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace WarpTalk.BillingService.Domain.Constants;
 
 public static class SubscriptionConstants
@@ -10,6 +13,64 @@ public static class SubscriptionConstants
         public const string Cancelled = "cancelled";
         public const string Expired = "expired";
         public const string Suspended = "suspended";
+    }
+
+    /// <summary>
+    /// #466: who owns a subscription's end-of-period transition. One owner per row, so the
+    /// cycle-close worker, the expiry sweep and the Stripe webhooks can never act on the same row.
+    /// Stored in subscriptions.renewal_mode (CHECK-constrained to these three).
+    /// </summary>
+    public static class RenewalModes
+    {
+        /// <summary>Contract / enterprise: BillingCycleWorker invoices and grants the next cycle.</summary>
+        public const string Invoice = "invoice";
+
+        /// <summary>A Stripe Subscription charges the saved card; <c>invoice.paid</c> renews.</summary>
+        public const string Stripe = "stripe";
+
+        /// <summary>Nothing renews it: a one-off card purchase or a trial. The sweep ends it.</summary>
+        public const string None = "none";
+    }
+
+    /// <summary>
+    /// #466: Stripe's subscription statuses, and which of them still mean "Stripe will send a
+    /// renewal or a failure for this". A canceled / incomplete_expired subscription will never
+    /// invoice again, so the local sweep takes the row back.
+    /// </summary>
+    public static class StripeSubscriptionStatuses
+    {
+        public const string Active = "active";
+        public const string Trialing = "trialing";
+        public const string PastDue = "past_due";
+        public const string Incomplete = "incomplete";
+        public const string Unpaid = "unpaid";
+        public const string Canceled = "canceled";
+        public const string IncompleteExpired = "incomplete_expired";
+        public const string Paused = "paused";
+
+        public static readonly IReadOnlySet<string> Ended = new HashSet<string>(StringComparer.Ordinal)
+        {
+            Canceled,
+            IncompleteExpired,
+        };
+    }
+
+    /// <summary>#466: dunning after a failed renewal charge.</summary>
+    public static class Dunning
+    {
+        /// <summary>Platform setting holding the grace window, in days.</summary>
+        public const string GraceDaysKey = WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.DunningGraceDays;
+
+        public const int DefaultGraceDays = 7;
+
+        /// <summary>
+        /// Extra time the sweep gives a Stripe-owned row past its period end before assuming the
+        /// webhook will never come. Stripe finalizes a renewal invoice about an hour after the period
+        /// ends; this is the safety net for a lost webhook, not the normal path.
+        /// </summary>
+        public static readonly TimeSpan StripeRenewalSafetyMargin = TimeSpan.FromDays(1);
+
+        public const int FailureReasonMaxLength = 500;
     }
 
     public static class BillingCycles

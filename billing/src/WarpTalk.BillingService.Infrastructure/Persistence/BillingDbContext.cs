@@ -123,6 +123,13 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
+            // #466: the recurring Stripe Product / Prices an auto-renew checkout sells this plan by.
+            entity.Property(e => e.StripeProductId)
+                .HasMaxLength(255)
+                .HasColumnName("stripe_product_id");
+            entity.Property(e => e.StripePriceIds)
+                .HasColumnType("jsonb")
+                .HasColumnName("stripe_price_ids");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
@@ -149,6 +156,7 @@ public partial class BillingDbContext : DbContext
             {
                 t.HasCheckConstraint("chk_subscription_status", "status IN ('pending', 'active', 'cancelled', 'expired')");
                 t.HasCheckConstraint("chk_subscription_credits", "credits_remaining >= -2147483648");
+                t.HasCheckConstraint("chk_subscriptions_renewal_mode", "renewal_mode IN ('invoice', 'stripe', 'none')");
             });
 
             entity.Property(e => e.Id)
@@ -214,6 +222,28 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("frozen_credits");
             entity.Property(e => e.CreditsFrozenAt).HasColumnName("credits_frozen_at");
             entity.Property(e => e.FrozenCreditsDormantAt).HasColumnName("frozen_credits_dormant_at");
+            // #466 (20260926120000_stripe_recurring_auto_renew). Hand-mapped, like every column here.
+            entity.Property(e => e.RenewalMode)
+                .HasMaxLength(16)
+                .HasDefaultValue("invoice")
+                .HasColumnName("renewal_mode");
+            entity.Property(e => e.StripeSubscriptionId)
+                .HasMaxLength(255)
+                .HasColumnName("stripe_subscription_id");
+            entity.Property(e => e.StripeCustomerId)
+                .HasMaxLength(255)
+                .HasColumnName("stripe_customer_id");
+            entity.Property(e => e.StripeSubscriptionStatus)
+                .HasMaxLength(32)
+                .HasColumnName("stripe_subscription_status");
+            entity.Property(e => e.PaymentFailedAt).HasColumnName("payment_failed_at");
+            entity.Property(e => e.PaymentGraceEndsAt).HasColumnName("payment_grace_ends_at");
+            entity.Property(e => e.PaymentFailureReason)
+                .HasMaxLength(500)
+                .HasColumnName("payment_failure_reason");
+            entity.HasIndex(e => e.StripeSubscriptionId, "ux_subscriptions_stripe_subscription")
+                .IsUnique()
+                .HasFilter("stripe_subscription_id IS NOT NULL");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");

@@ -55,6 +55,7 @@ public static class PlatformSettingsCatalog
     public const string TrialCredits = "billing.trial.credits";
     public const string FrozenCreditGraceDays = "billing.frozen_credits.grace_days";
     public const string FrozenCreditPolicyEffectiveAt = "billing.frozen_credits.policy_effective_at";
+    public const string DunningGraceDays = "billing.dunning.grace_days";
 
     // ── Notifications & email ───────────────────────────────────────────────────────────────
     public const string EmailFromName = "notifications.email.from_name";
@@ -298,6 +299,16 @@ public static class PlatformSettingsCatalog
             MaxLength = 20, Pattern = @"^$|^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
             Label = "Credit forfeit policy effective from (UTC)",
             Description = "Subscriptions that ended before this instant keep their WHOLE balance frozen (grandfathered); only those ending at or after it forfeit plan credits above the rollover cap. Empty means the moment the policy was deployed. Format 2026-09-26T09:00:00Z.",
+        },
+        new()
+        {
+            // #466. Read by BillingService when a Stripe renewal charge fails (the date is stamped
+            // on the row then, so a later change applies to the NEXT failure, not a running one).
+            Key = DunningGraceDays, Category = SettingCategories.Billing, Type = SettingValueType.Integer,
+            Default = Json(7), OwningService = SettingOwners.Billing, Risky = true,
+            Min = 0, Max = 60, Unit = "days",
+            Label = "Failed card payment grace",
+            Description = "Days a workspace keeps its plan after an automatic renewal charge fails, while Stripe retries the card and the owner is asked to update it. After this the subscription expires and its credits are frozen.",
         },
 
         // Notifications & email

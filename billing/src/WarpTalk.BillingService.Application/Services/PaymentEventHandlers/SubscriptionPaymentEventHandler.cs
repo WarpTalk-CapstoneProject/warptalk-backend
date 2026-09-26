@@ -8,23 +8,36 @@ using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
+using WarpTalk.Shared.PlatformSettings;
 
 namespace WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
 
-public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
+public sealed partial class SubscriptionPaymentEventHandler : IPaymentEventHandler
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubscriptionPaymentEventHandler> _logger;
     private readonly ICreditFreezeService? _creditFreeze;
+    private readonly ISubscriptionDomainService _domainService;
+    private readonly IStripeRecurringGateway? _recurring;
+    private readonly INotificationClient? _notifications;
+    private readonly IPlatformSettings? _settings;
 
     public SubscriptionPaymentEventHandler(
         IUnitOfWork unitOfWork,
         ILogger<SubscriptionPaymentEventHandler> logger,
-        ICreditFreezeService? creditFreeze = null)
+        ICreditFreezeService? creditFreeze = null,
+        ISubscriptionDomainService? domainService = null,
+        IStripeRecurringGateway? recurring = null,
+        INotificationClient? notifications = null,
+        IPlatformSettings? settings = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _creditFreeze = creditFreeze;
+        _domainService = domainService ?? new SubscriptionDomainService();
+        _recurring = recurring;
+        _notifications = notifications;
+        _settings = settings;
     }
 
     public bool CanHandle(PaymentEventContext context)
@@ -32,6 +45,14 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
 
     public async Task<Result> HandleAsync(PaymentEventContext context, CancellationToken cancellationToken = default)
     {
+        // #466: a Stripe renewal (invoice.paid / invoice.payment_failed on a subscription_cycle
+        // invoice) renews or dunns the row the Stripe subscription is linked to. See
+        // SubscriptionPaymentEventHandler.Renewal.cs.
+        if (context.Request.PaymentType == PaymentConstants.PaymentTypes.SubscriptionRenewal)
+        {
+            return await HandleStripeRenewalAsync(context, cancellationToken);
+        }
+
         var request = context.Request;
         var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
             p => p.Slug.ToLower() == request.PlanSlug.ToLower() && p.DeletedAt == null,
@@ -49,6 +70,7 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         }
 
         var subscription = await ActivateSubscriptionAsync(context, plan, cancellationToken);
+        LinkCheckoutToStripe(context, subscription);
         var topupTx = CreditMapper.CreateStripeSubscriptionTransaction(
             new StripeSubscriptionTransactionRequest(
                 subscription,
@@ -94,6 +116,9 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
 
         foreach (var oldSub in oldSubs)
         {
+            // #466: a replaced plan's Stripe subscription must stop charging the card. Only after
+            // the new plan is committed — see PaymentEventContext.AfterCommit.
+            ScheduleStripeCancellation(context, oldSub.StripeSubscriptionId, context.Request.StripeSubscriptionId);
             oldSub.AutoRenew = false;
             oldSub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
             // IsActive is the flag every "does this workspace have a plan" query filters on, and

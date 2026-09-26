@@ -423,7 +423,8 @@ public class StripePaymentService : IStripePaymentService
                 session.PaymentStatus,
                 session.Status,
                 session.PaymentIntentId,
-                session.SubscriptionId
+                session.SubscriptionId,
+                session.CustomerId
             ));
         }
         catch (Exception ex)

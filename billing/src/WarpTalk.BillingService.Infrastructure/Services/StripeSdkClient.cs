@@ -15,6 +15,25 @@ public sealed class StripeSdkClient : IStripeSdkClient
     private readonly PromotionCodeService _promotionCodeService = new();
     private readonly ChargeService _chargeService = new();
     private readonly InvoicePaymentService _invoicePaymentService = new();
+    private readonly Stripe.BillingPortal.SessionService _billingPortalSessionService = new();
+
+    public Task<StripeList<Price>> ListPricesAsync(PriceListOptions options, CancellationToken cancellationToken = default)
+        => _priceService.ListAsync(options, cancellationToken: cancellationToken);
+
+    public Task<Stripe.Subscription> GetSubscriptionWithPaymentMethodAsync(string subscriptionId, CancellationToken cancellationToken = default)
+        => _subscriptionService.GetAsync(
+            subscriptionId,
+            new SubscriptionGetOptions { Expand = new List<string> { "default_payment_method" } },
+            cancellationToken: cancellationToken);
+
+    public Task<Stripe.Subscription> CancelSubscriptionAsync(string subscriptionId, SubscriptionCancelOptions options, CancellationToken cancellationToken = default)
+        => _subscriptionService.CancelAsync(subscriptionId, options, cancellationToken: cancellationToken);
+
+    public Task<Invoice> CreateInvoicePreviewAsync(InvoiceCreatePreviewOptions options, CancellationToken cancellationToken = default)
+        => _invoiceService.CreatePreviewAsync(options, cancellationToken: cancellationToken);
+
+    public Task<Stripe.BillingPortal.Session> CreateBillingPortalSessionAsync(Stripe.BillingPortal.SessionCreateOptions options, CancellationToken cancellationToken = default)
+        => _billingPortalSessionService.CreateAsync(options, cancellationToken: cancellationToken);
 
     public Task<StripeList<Charge>> ListChargesAsync(ChargeListOptions options, CancellationToken cancellationToken = default)
         => _chargeService.ListAsync(options, cancellationToken: cancellationToken);

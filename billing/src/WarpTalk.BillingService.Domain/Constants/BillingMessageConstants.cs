@@ -30,6 +30,13 @@ public static class BillingMessageConstants
     public static class NotificationTitles
     {
         public const string BillingInvoiceReminder = "Billing invoice reminder";
+
+        /// <summary>#466: the first failed automatic renewal charge of a dunning episode.</summary>
+        public const string RenewalPaymentFailed = "Payment failed — update your card";
+
+        /// <summary>#466: {0} is the end of the grace window (UTC).</summary>
+        public const string RenewalPaymentFailedBody =
+            "We could not charge your card for your plan's renewal. Your plan stays active until {0} while we retry. Update your card on the Billing page to keep it.";
     }
 
     public static class NotificationMetadataKeys
@@ -37,6 +44,8 @@ public static class BillingMessageConstants
         public const string InvoiceId = "invoice_id";
         public const string InvoiceNumber = "invoice_number";
         public const string ReminderKind = "reminder_kind";
+        public const string WorkspaceId = "workspace_id";
+        public const string GraceEndsAt = "grace_ends_at";
     }
 
     public static class AdjustmentMessages
