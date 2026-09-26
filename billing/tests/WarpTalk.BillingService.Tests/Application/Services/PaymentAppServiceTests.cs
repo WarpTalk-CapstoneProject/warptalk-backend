@@ -305,7 +305,7 @@ public class PaymentAppServiceTests
         _stripePaymentService.VerifyNoOtherCalls();
     }
 
-    /// <summary>The gate asks about a LIVE plan: active, not deleted, its period not over.</summary>
+    /// <summary>The gate asks about a LIVE plan: active, status active, not deleted, its period not over.</summary>
     [Fact]
     public async Task CreateCheckoutSessionAsync_TheLiveSubscriptionTest_ExcludesAnEndedPeriod()
     {
@@ -323,6 +323,9 @@ public class PaymentAppServiceTests
         Assert.True(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
         Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddMinutes(-1) }));
         Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = false, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        // The snapshot's liveness (GrantsPlanEntitlements): an admin-suspended or cancelled row is not live.
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, Status = SubscriptionConstants.SubscriptionStatuses.Suspended, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3), DeletedAt = DateTime.UtcNow }));
     }
 
     [Fact]
