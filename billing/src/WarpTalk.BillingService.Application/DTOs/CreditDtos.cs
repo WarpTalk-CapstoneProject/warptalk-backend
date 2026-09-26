@@ -33,7 +33,14 @@ public record FrozenCreditsDto(
     DateTime? EndedAt,
     DateTime? DormantSince,
     DateTime? GraceEndsAt,
-    bool HasActiveSubscription);
+    bool HasActiveSubscription,
+    /// <summary>
+    /// The plan of the workspace's most recent subscription when it has no live one — so the
+    /// renew screen can say "the X plan ended on …" even when nothing was left to freeze.
+    /// Null when there is a live subscription, or there never was one.
+    /// </summary>
+    string? LastPlanName = null,
+    DateTime? LastEndedAt = null);
 
 public record ConsumeCreditsRequest(
     [Required]

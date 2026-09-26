@@ -284,4 +284,63 @@ public class PaymentAppServiceTests
             WorkspaceIdStr: Guid.NewGuid().ToString(),
             PaymentType: paymentType,
             Status: PaymentConstants.PaymentStatuses.Paid);
+
+    // ── backend#467: extra credits are sold only on top of a plan ─────────────────────────────
+
+    [Theory]
+    [InlineData(PaymentConstants.PaymentTypes.CreditTopUp)]
+    [InlineData(PaymentConstants.PaymentTypes.CreditPack)]
+    public async Task CreateCheckoutSessionAsync_RefusesExtraCredits_WithoutALiveSubscription_BeforeStripeIsCalled(string paymentType)
+    {
+        _subscriptionRepository
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await CreateService().CreateCheckoutSessionAsync(
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), Guid.NewGuid(), 0m, PaymentType: paymentType, Credits: 50_000,
+                PackageId: Guid.NewGuid()));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.BillingPurchaseRequiresSubscription, result.ErrorCode);
+        _stripePaymentService.VerifyNoOtherCalls();
+    }
+
+    /// <summary>The gate asks about a LIVE plan: active, status active, not deleted, its period not over.</summary>
+    [Fact]
+    public async Task CreateCheckoutSessionAsync_TheLiveSubscriptionTest_ExcludesAnEndedPeriod()
+    {
+        Expression<Func<Subscription, bool>>? asked = null;
+        _subscriptionRepository
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .Callback<Expression<Func<Subscription, bool>>, CancellationToken>((predicate, _) => asked = predicate)
+            .ReturnsAsync(false);
+        var workspaceId = Guid.NewGuid();
+
+        await CreateService().CreateCheckoutSessionAsync(
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), workspaceId, 0m, PaymentType: PaymentConstants.PaymentTypes.CreditTopUp, Credits: 50_000));
+
+        var test = asked!.Compile();
+        Assert.True(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddMinutes(-1) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = false, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        // The snapshot's liveness (GrantsPlanEntitlements): an admin-suspended or cancelled row is not live.
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, Status = SubscriptionConstants.SubscriptionStatuses.Suspended, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3), DeletedAt = DateTime.UtcNow }));
+    }
+
+    [Fact]
+    public async Task CreateCheckoutSessionAsync_APlanCheckoutIsNotGatedOnHavingAPlan()
+    {
+        _stripePaymentService
+            .Setup(s => s.CreateCheckoutSessionAsync(It.IsAny<CreateCheckoutSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success("https://checkout.stripe.test/s"));
+
+        var result = await CreateService().CreateCheckoutSessionAsync(
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), Guid.NewGuid(), 100m, PaymentType: "Renewal", PlanSlug: "pro"));
+
+        Assert.True(result.IsSuccess, result.Error);
+        _subscriptionRepository.Verify(
+            r => r.AnyAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }
+

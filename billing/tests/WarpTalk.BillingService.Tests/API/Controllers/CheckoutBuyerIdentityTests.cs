@@ -98,6 +98,25 @@ public class CheckoutBuyerIdentityTests
             Times.Never);
     }
 
+    [Fact]
+    public async Task ExtraCreditsWithoutAPlan_AreA409Conflict_WithTheCodeTheWebReads()
+    {
+        // backend#467: a state conflict (subscribe first), not a malformed request.
+        var (controller, appService) = ControllerWith(TokenUserId, TokenEmail);
+        appService
+            .Setup(service => service.CreateCheckoutSessionAsync(It.IsAny<CreateCheckoutSessionRequest>()))
+            .ReturnsAsync(Result.Failure<string>(
+                "Subscribe to a plan to buy extra credits.",
+                ErrorCodes.BillingPurchaseRequiresSubscription));
+
+        var result = await controller.CreateCheckoutSession(
+            new CreateCheckoutSessionRequest(TokenUserId, WorkspaceId, 10m) { PaymentType = "CreditTopUp" });
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        var body = Assert.IsType<ApiErrorResponse>(conflict.Value);
+        Assert.Equal(ErrorCodes.BillingPurchaseRequiresSubscription, body.Code);
+    }
+
     private static (PaymentsController, Mock<IPaymentAppService>) ControllerWith(Guid? userId, string? email)
     {
         var appService = new Mock<IPaymentAppService>();

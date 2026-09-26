@@ -24,6 +24,12 @@ public static class ErrorCodes
     public const string BillingSubscriptionNotActive = "BILLING_SUBSCRIPTION_NOT_ACTIVE";
     public const string BillingSubscriptionConflict = "BILLING_SUBSCRIPTION_CONFLICT";
     public const string BillingSubscriptionExpired = "BILLING_SUBSCRIPTION_EXPIRED";
+    /// <summary>
+    /// A credit top-up or credit pack was requested for a workspace with no live subscription.
+    /// Extra credits are sold only on top of a plan (owner decision, backend#467); answered 409
+    /// before any Stripe session is created.
+    /// </summary>
+    public const string BillingPurchaseRequiresSubscription = "BILLING_PURCHASE_REQUIRES_SUBSCRIPTION";
     public const string BillingPlanNotFound = "BILLING_PLAN_NOT_FOUND";
     public const string BillingPlanInactive = "BILLING_PLAN_INACTIVE";
     public const string BillingPaymentInvalidStatus = "BILLING_PAYMENT_INVALID_STATUS";
