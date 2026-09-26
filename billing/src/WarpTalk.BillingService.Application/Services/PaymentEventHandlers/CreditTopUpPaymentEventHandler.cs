@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
@@ -116,9 +117,11 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
                 // The payment row points at the subscription holding the credits. Not
                 // SubscriptionChanged: nothing about the (ended) plan changed.
                 context.Subscription = holder;
+                PaidCreditsMetrics.RecordFrozen(PaymentConstants.PaymentTypes.CreditTopUp);
                 return Result.Success();
             }
 
+            PaidCreditsMetrics.RecordUnheld(PaymentConstants.PaymentTypes.CreditTopUp);
             _logger.LogError(
                 "credit_topup_no_subscription: StripeSessionId={SessionId} WorkspaceId={WorkspaceId}. "
                 + "The payment succeeded but there is no active subscription to credit.",

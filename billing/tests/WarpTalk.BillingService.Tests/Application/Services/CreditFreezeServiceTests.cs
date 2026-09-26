@@ -369,6 +369,38 @@ public class CreditFreezeServiceTests
     }
 
     [Fact]
+    public async Task A_purchase_on_a_row_whose_freeze_was_already_released_starts_a_new_freeze_episode()
+    {
+        // The release is idempotency-keyed on (row, CreditsFrozenAt). Reusing the instant of a
+        // freeze that was already released would collide, and the renewal could never restore it.
+        var plan = AddPlan(rolloverCap: 0);
+        var latest = AddSubscription(plan, balance: 0);
+        latest.CreditsFrozenAt = Now.AddDays(-40);
+        latest.FrozenCredits = 0;
+
+        await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 1_000, "Top-up", Guid.NewGuid(), "vnd", Now));
+
+        latest.CreditsFrozenAt.Should().Be(Now);
+        latest.FrozenCredits.Should().Be(1_000);
+    }
+
+    [Fact]
+    public async Task A_purchase_on_a_row_not_split_yet_leaves_the_split_to_the_worker()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var latest = AddSubscription(plan, balance: 200);
+        latest.CreditsFrozenAt = null;
+
+        await _service.StageFrozenPurchaseAsync(
+            new FrozenPurchase(_workspaceId, Guid.NewGuid(), 1_000, "Top-up", Guid.NewGuid(), "vnd", Now));
+
+        latest.CreditsFrozenAt.Should().BeNull("setting it would stop the split worker freezing the 200 still spendable");
+        latest.FrozenCredits.Should().Be(1_000);
+        latest.CreditsRemaining.Should().Be(200);
+    }
+
+    [Fact]
     public async Task A_workspace_that_never_subscribed_has_nowhere_to_hold_it()
     {
         var holder = await _service.StageFrozenPurchaseAsync(

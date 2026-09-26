@@ -429,6 +429,16 @@ public sealed class CreditFreezeService : ICreditFreezeService
             return null;
         }
 
+        // A row whose earlier freeze was already released (FrozenCredits back at 0) starts a new
+        // freeze episode. The release is idempotency-keyed on (row, CreditsFrozenAt), so reusing
+        // the old instant would collide with the release that already happened and the renewal
+        // could never restore these credits. A row not split yet (null) is left for the split
+        // worker, which adds its remaining balance on top of what is staged here.
+        if (holder.CreditsFrozenAt is not null && holder.FrozenCredits == 0)
+        {
+            holder.CreditsFrozenAt = purchase.NowUtc;
+        }
+
         holder.FrozenCredits += purchase.Credits;
         // A frozen purchase is a fresh reason to keep the balance visible: it is not dormant.
         holder.FrozenCreditsDormantAt = null;

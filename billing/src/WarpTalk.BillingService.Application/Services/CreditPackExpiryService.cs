@@ -123,8 +123,9 @@ public sealed class CreditPackExpiryService : ICreditPackExpiryService
             return (owner, true);
         }
 
-        // Ended but not split yet: the credits are still in its spendable balance.
-        if (owner is not null && owner.CreditsFrozenAt is null && owner.CreditsRemaining > 0)
+        // Ended but not split yet: the credits are still in its spendable balance (the same rule as
+        // before backend#467, which only moved the frozen check ahead of it).
+        if (owner is not null && owner.CreditsFrozenAt is null)
         {
             return (owner, false);
         }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
@@ -108,9 +109,11 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
             {
                 await AddPurchaseAsync(context, pack, frozenPurchaseId, holder.Id, sessionId, baseCredits, bonus, DateTime.UtcNow, cancellationToken);
                 context.Subscription = holder;
+                PaidCreditsMetrics.RecordFrozen(PaymentConstants.PaymentTypes.CreditPack);
                 return Result.Success();
             }
 
+            PaidCreditsMetrics.RecordUnheld(PaymentConstants.PaymentTypes.CreditPack);
             _logger.LogError(
                 "credit_pack_no_subscription: StripeSessionId={SessionId} WorkspaceId={WorkspaceId}. Paid, and nothing to credit.",
                 sessionId, context.WorkspaceId);
