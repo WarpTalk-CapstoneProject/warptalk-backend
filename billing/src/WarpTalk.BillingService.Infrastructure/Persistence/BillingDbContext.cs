@@ -127,8 +127,11 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.StripeProductId)
                 .HasMaxLength(255)
                 .HasColumnName("stripe_product_id");
+            // The column default mirrors the migration's, so a row inserted without it (seed SQL,
+            // an older writer) is '{}' rather than a NOT NULL violation.
             entity.Property(e => e.StripePriceIds)
                 .HasColumnType("jsonb")
+                .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnName("stripe_price_ids");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
