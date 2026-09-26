@@ -401,6 +401,25 @@ public class CreditFreezeServiceTests
     }
 
     [Fact]
+    public async Task A_frozen_purchase_is_not_counted_as_purchased_when_its_row_is_split_later()
+    {
+        // It already sits in FrozenCredits. Counting it as purchased in the spendable balance
+        // would shield plan credits from the forfeit they are owed.
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 500);
+        Grant(ended, 500, TransactionConstants.TransactionTypes.TopUp, TransactionConstants.ReferenceTypes.StripePayment,
+            "Subscription Plan Activation: Plan");
+        ended.FrozenCredits = 1_000;
+        Grant(ended, 1_000, TransactionConstants.TransactionTypes.TopUp, TransactionConstants.ReferenceTypes.FrozenPurchase,
+            "Credit top-up: 1000 credits purchased (kept frozen: no live subscription)");
+
+        await _service.SplitEndedSubscriptionsAsync(Now, PolicyInForce);
+
+        ended.CreditsRemaining.Should().Be(0);
+        ended.FrozenCredits.Should().Be(1_000, "the 500 plan credits above a rollover cap of 0 are forfeited");
+    }
+
+    [Fact]
     public async Task A_workspace_that_never_subscribed_has_nowhere_to_hold_it()
     {
         var holder = await _service.StageFrozenPurchaseAsync(

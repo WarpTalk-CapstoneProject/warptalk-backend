@@ -282,6 +282,9 @@ public sealed class CreditFreezeService : ICreditFreezeService
         || t.ReferenceType == TransactionConstants.ReferenceTypes.ManualAdjustment
         || t.Type == TransactionConstants.TransactionTypes.CreditUnfreeze
         || (t.Type == TransactionConstants.TransactionTypes.TopUp
+            // backend#467: a purchase booked FROZEN is already in FrozenCredits, not in the
+            // spendable balance being split; counting it would shield plan credits from forfeit.
+            && t.ReferenceType != TransactionConstants.ReferenceTypes.FrozenPurchase
             && t.Description != null
             && t.Description.StartsWith(TopUpDescriptionPrefix, StringComparison.Ordinal));
 
