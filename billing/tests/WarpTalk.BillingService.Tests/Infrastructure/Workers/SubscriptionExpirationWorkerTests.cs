@@ -36,7 +36,7 @@ public class SubscriptionExpirationWorkerTests
 
         var subscriptionRepository = new Mock<ISubscriptionRepository>();
         subscriptionRepository
-            .Setup(r => r.GetExpiredActiveSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.GetExpiredActiveSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<TimeSpan>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { subscription });
 
         var unitOfWork = new Mock<IUnitOfWork>();
@@ -95,7 +95,7 @@ public class SubscriptionExpirationWorkerTests
 
         var subscriptionRepository = new Mock<ISubscriptionRepository>();
         subscriptionRepository
-            .Setup(r => r.GetExpiredActiveSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.GetExpiredActiveSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<TimeSpan>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { subscription });
 
         var unitOfWork = new Mock<IUnitOfWork>();
@@ -143,7 +143,7 @@ public class SubscriptionExpirationWorkerTests
 
         var subscriptionRepository = new Mock<ISubscriptionRepository>();
         subscriptionRepository
-            .Setup(r => r.GetExpiredActiveSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.GetExpiredActiveSubscriptionsAsync(It.IsAny<DateTime>(), It.IsAny<TimeSpan>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { subscription });
 
         var unitOfWork = new Mock<IUnitOfWork>();
