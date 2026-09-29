@@ -125,10 +125,10 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
         asInvitee.Should().ContainSingle();
         asInvitee[0].Content.Should().Be(SummaryJson);
 
-        // An uninvited stranger gets the metadata row but no body.
-        var asStranger = await GetArtifactsAsync(roomId, Guid.NewGuid(), uninvitedEmail);
-        asStranger.Should().ContainSingle();
-        asStranger[0].Content.Should().BeNull();
+        // An uninvited stranger does not even have room-read access (fails closed as 404).
+        var strangerResponse = await SendAsync(
+            HttpMethod.Get, $"/api/v1/translation-rooms/{roomId}/artifacts", Guid.NewGuid(), uninvitedEmail);
+        strangerResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]
