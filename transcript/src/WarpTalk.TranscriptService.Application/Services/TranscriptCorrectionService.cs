@@ -181,6 +181,10 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             }
 
             segment.IsCorrected = true;
+            // WT-850: stamp UpdatedAt on the segment so frontend summary staleness detection
+            // (isSummaryStale: lastCorrectionAt > summaryWrittenAt) knows the transcript was modified
+            // and surfaces the [Regenerate summary] notice.
+            segment.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.TranscriptSegments.Update(segment);
             await _unitOfWork.TranscriptCorrections.AddAsync(correction, cancellationToken);

@@ -321,6 +321,39 @@ public class TranscriptCorrectionPropagationTests
         Assert.Null(context.SavedCorrection);
     }
 
+    [Fact]
+    public async Task AnSttCorrection_StampsSegmentUpdatedAt_SoSummaryStalenessDetectsEdits()
+    {
+        // WT-850: summary-staleness relies on segment.UpdatedAt > artifact.CreatedAt/UpdatedAt.
+        // If UpdatedAt is not stamped on correction, the summary staleness notice and
+        // [Regenerate summary] button never appear for the host.
+        var context = Build([]);
+        var beforeCorrection = DateTime.UtcNow.AddSeconds(-1);
+        context.Segment.UpdatedAt = beforeCorrection.AddMinutes(-10);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(context.Segment.IsCorrected);
+        Assert.True(context.Segment.UpdatedAt >= beforeCorrection);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_StampsSegmentUpdatedAt()
+    {
+        var context = Build([Link("en")]);
+        var beforeCorrection = DateTime.UtcNow.AddSeconds(-1);
+        context.Segment.UpdatedAt = beforeCorrection.AddMinutes(-10);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en-US"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(context.Segment.IsCorrected);
+        Assert.True(context.Segment.UpdatedAt >= beforeCorrection);
+    }
+
     private static Context Build(
         IReadOnlyList<SegmentTranslationLink> links,
         string transcriptStatus = "COMPLETED",
