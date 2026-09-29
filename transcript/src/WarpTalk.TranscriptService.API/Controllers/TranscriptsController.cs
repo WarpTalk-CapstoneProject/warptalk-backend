@@ -122,7 +122,7 @@ public class TranscriptsController : ControllerBase
         if (!TryGetUserId(out var userId))
             return Unauthorized();
 
-        var result = await _transcriptRecordingService.GetPauseWindowsAsync(translationRoomId, userId, cancellationToken);
+        var result = await _transcriptRecordingService.GetPauseWindowsAsync(translationRoomId, userId, User.GetEmail(), cancellationToken);
         return ToActionResult(result);
     }
 
