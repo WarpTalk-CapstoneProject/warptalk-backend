@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.Shared.Extensions;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 
@@ -35,7 +36,7 @@ public class TranscriptsController : ControllerBase
         if (!TryGetUserId(out var userId))
             return Unauthorized();
 
-        var result = await _transcriptQueryService.GetTranscriptAsync(id, userId, cancellationToken);
+        var result = await _transcriptQueryService.GetTranscriptAsync(id, userId, User.GetEmail(), cancellationToken);
         return ToActionResult(result);
     }
 
@@ -45,7 +46,7 @@ public class TranscriptsController : ControllerBase
         if (!TryGetUserId(out var userId))
             return Unauthorized();
 
-        var result = await _transcriptQueryService.GetTranscriptByTranslationRoomAsync(translationRoomId, userId, cancellationToken);
+        var result = await _transcriptQueryService.GetTranscriptByTranslationRoomAsync(translationRoomId, userId, User.GetEmail(), cancellationToken);
         return ToActionResult(result);
     }
 

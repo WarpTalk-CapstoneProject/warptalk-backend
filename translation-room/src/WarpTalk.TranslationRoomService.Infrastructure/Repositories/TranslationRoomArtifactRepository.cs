@@ -29,6 +29,8 @@ public class TranslationRoomArtifactRepository : GenericRepository<TranslationRo
         return await _dbSet
             .Include(a => a.TranslationRoom)
             .ThenInclude(r => r.TranslationRoomParticipants)
+            .Include(a => a.TranslationRoom)
+            .ThenInclude(r => r.TranslationRoomInvitations)
             .FirstOrDefaultAsync(a => a.Id == artifactId && a.DeletedAt == null, ct);
     }
 

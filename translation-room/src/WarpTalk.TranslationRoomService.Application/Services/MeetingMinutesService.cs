@@ -228,6 +228,7 @@ public class MeetingMinutesService : IMeetingMinutesService
             ReadTemplateKey(content),
             wanted,
             bearerToken,
+            userEmail,
             ct);
 
         // WT-703: a language this meeting does not offer is a refusal of the REQUEST, not a state

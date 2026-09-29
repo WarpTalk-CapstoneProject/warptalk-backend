@@ -3409,6 +3409,30 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <summary>
+    /// WT-849: which rooms on a page hold a standing invitation for this caller — the invitation
+    /// half of <see cref="ArtifactAccessHelper.IsParticipantOrInvited"/>, asked once for the whole
+    /// page instead of loading the navigation per room. Same email normalisation and the same
+    /// status allow-list as the single-room gate, so the list and the download endpoint agree.
+    /// </summary>
+    private async Task<HashSet<Guid>> LoadRoomsInvitingCallerAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        string? userEmail,
+        CancellationToken ct)
+    {
+        var email = RoomReadAccess.NormalizeEmail(userEmail);
+        if (email is null || roomIds.Count == 0) return new HashSet<Guid>();
+
+        return (await _unitOfWork.TranslationRoomInvitationRepository
+                .Query()
+                .Where(i => roomIds.Contains(i.TranslationRoomId)
+                    && i.Email.ToLower() == email
+                    && RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status))
+                .Select(i => i.TranslationRoomId)
+                .ToListAsync(ct))
+            .ToHashSet();
+    }
+
+    /// <summary>
     /// One page of rooms with their roster and artifacts, shared by the workspace archive
     /// (<see cref="GetTranslationRoomHistoryAsync"/>) and the personal timeline
     /// (<see cref="GetMyMeetingsAsync"/>).
@@ -3492,6 +3516,7 @@ public class TranslationRoomService : ITranslationRoomService
         var participantUserIdsByRoom = participantEntities
             .GroupBy(p => p.TranslationRoomId)
             .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+        var roomsInvitingCaller = await LoadRoomsInvitingCallerAsync(roomIds, userEmail, ct);
 
         var artifactsByRoom = artifactEntities
             .GroupBy(a => a.TranslationRoomId)
@@ -3503,7 +3528,8 @@ public class TranslationRoomService : ITranslationRoomService
                     var includeContent = ArtifactAccessHelper.HasAccessToRoomArtifacts(
                         room.HostId,
                         room.Settings,
-                        participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true,
+                        participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true
+                            || roomsInvitingCaller.Contains(g.Key),
                         userId);
 
                     return g.Select(a => ToArtifactDto(a, includeContent)).ToList();
@@ -3679,6 +3705,7 @@ public class TranslationRoomService : ITranslationRoomService
                     .ToListAsync(ct))
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+            var roomsInvitingCaller = await LoadRoomsInvitingCallerAsync(roomIds, userEmail, ct);
 
             // Which of the meetings ON THIS PAGE already have minutes — asked once for the page
             // rather than per card. This is what lets the grid offer "draw up the minutes" on a
@@ -3719,7 +3746,8 @@ public class TranslationRoomService : ITranslationRoomService
                 var canOpen = ArtifactAccessHelper.HasAccessToRoomArtifacts(
                     room.HostId,
                     room.Settings,
-                    participantUserIdsByRoom.GetValueOrDefault(room.Id)?.Contains(userId) == true,
+                    participantUserIdsByRoom.GetValueOrDefault(room.Id)?.Contains(userId) == true
+                        || roomsInvitingCaller.Contains(room.Id),
                     userId);
 
                 var minutesUnavailableReason = ResolveMinutesUnavailableReason(
@@ -3843,9 +3871,9 @@ public class TranslationRoomService : ITranslationRoomService
             // same predicate rather than letting the list be the looser of the two.
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == translationRoomId,
-                "TranslationRoomParticipants",
+                "TranslationRoomParticipants,TranslationRoomInvitations",
                 ct);
-            var includeContent = room != null && ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId);
+            var includeContent = room != null && ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail);
 
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()

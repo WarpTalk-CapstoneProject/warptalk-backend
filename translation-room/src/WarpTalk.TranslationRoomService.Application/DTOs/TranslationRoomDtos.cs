@@ -249,7 +249,21 @@ public record TranslationRoomDto(
     ///
     /// Trailing and defaulted so every existing positional construction site still compiles.
     /// </summary>
-    RoomArtifactLanguagesDto? ArtifactLanguages = null
+    RoomArtifactLanguagesDto? ArtifactLanguages = null,
+    /// <summary>
+    /// WT-849: whether the caller named by a <c>requesterEmail</c> passed into
+    /// <c>ITranslationRoomDirectoryService.GetRoomAsync</c> holds a live (PENDING or ACCEPTED)
+    /// invitation to this room — the same relation <c>ArtifactAccessHelper.IsParticipantOrInvited</c>
+    /// asks on the HTTP side, computed here for the mesh (<c>TranscriptReadAccess</c> is the first
+    /// consumer, over <c>GetTranslationRoomResponse.is_requester_invited</c>).
+    ///
+    /// <c>null</c> when no <c>requesterEmail</c> was supplied to the read — the caller did not ask,
+    /// so this is "not computed", not "not invited". Never widen a <c>null</c> here into <c>false</c>
+    /// or vice versa; that is exactly the field-presence distinction WT-587's <c>save_transcript</c>
+    /// documents for the same reason. Trailing and defaulted so every existing positional
+    /// construction site still compiles.
+    /// </summary>
+    bool? IsRequesterInvited = null
 );
 
 /// <summary>

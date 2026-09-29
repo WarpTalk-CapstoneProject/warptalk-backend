@@ -46,7 +46,7 @@ public class RoomArtifactsController : ControllerBase
         if (userId == null) return Unauthorized();
 
         var asAttachment = string.Equals(disposition, "attachment", StringComparison.OrdinalIgnoreCase);
-        var result = await _artifactService.GetArtifactDownloadAsync(id, userId.Value, asAttachment, ct);
+        var result = await _artifactService.GetArtifactDownloadAsync(id, userId.Value, User.GetEmail(), asAttachment, ct);
 
         if (!result.IsSuccess)
         {
@@ -83,7 +83,7 @@ public class RoomArtifactsController : ControllerBase
         var bearerToken = Request.Headers["Authorization"].ToString();
 
         var result = await _artifactService.GetOrQueueSummaryVariantAsync(
-            roomId, userId.Value, template ?? "general", language, bearerToken, ct);
+            roomId, userId.Value, template ?? "general", language, bearerToken, User.GetEmail(), ct);
 
         if (!result.IsSuccess)
         {
@@ -110,7 +110,7 @@ public class RoomArtifactsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _artifactService.GetSummaryVariantsAsync(roomId, userId.Value, ct);
+        var result = await _artifactService.GetSummaryVariantsAsync(roomId, userId.Value, User.GetEmail(), ct);
 
         if (!result.IsSuccess)
         {
@@ -145,6 +145,7 @@ public class RoomArtifactsController : ControllerBase
             request?.TemplateKey ?? "general",
             request?.Language,
             bearerToken,
+            User.GetEmail(),
             ct);
 
         if (!result.IsSuccess)
@@ -181,7 +182,7 @@ public class RoomArtifactsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _artifactService.GetSummaryRewriteStatusAsync(roomId, userId.Value, requestId, ct);
+        var result = await _artifactService.GetSummaryRewriteStatusAsync(roomId, userId.Value, requestId, User.GetEmail(), ct);
 
         if (!result.IsSuccess)
         {
