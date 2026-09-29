@@ -99,11 +99,12 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
     }
 
     [Fact]
-    public async Task ArtifactList_OnAllParticipantsRoom_GivesTheSummaryBodyToParticipantsButNotToAnInvitee()
+    public async Task ArtifactList_OnAllParticipantsRoom_GivesTheSummaryBodyToParticipantsAndInvitedUsers()
     {
         var host = Guid.NewGuid();
         var participant = Guid.NewGuid();
         const string inviteeEmail = "invitee-2@example.com";
+        const string uninvitedEmail = "stranger@example.com";
 
         var roomId = await CreateRoomAsync(host, invitedEmails: new List<string> { inviteeEmail });
         await JoinAsync(roomId, participant);
@@ -118,11 +119,16 @@ public class ArtifactAccessIntegrationTests : BaseIntegrationTest
         var asParticipant = await GetArtifactsAsync(roomId, participant);
         asParticipant[0].Content.Should().Be(SummaryJson);
 
-        // ALL_PARTICIPANTS means participants, not "anyone the room-read gate lets through". An
-        // unaccepted invitation is not attendance.
+        // WT-849: invited-but-absent participants holding an invitation CAN read the summary body
+        // once the host configures ArtifactAccess to ALL_PARTICIPANTS.
         var asInvitee = await GetArtifactsAsync(roomId, Guid.NewGuid(), inviteeEmail);
         asInvitee.Should().ContainSingle();
-        asInvitee[0].Content.Should().BeNull();
+        asInvitee[0].Content.Should().Be(SummaryJson);
+
+        // An uninvited stranger gets the metadata row but no body.
+        var asStranger = await GetArtifactsAsync(roomId, Guid.NewGuid(), uninvitedEmail);
+        asStranger.Should().ContainSingle();
+        asStranger[0].Content.Should().BeNull();
     }
 
     [Fact]
