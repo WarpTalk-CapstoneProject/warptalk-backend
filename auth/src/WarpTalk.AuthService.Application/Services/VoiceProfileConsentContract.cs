@@ -21,7 +21,10 @@ public static class VoiceProfileConsentContract
         "2. I allow WarpTalk to use this voice profile for AI speech translation. " +
         "3. I understand generated speech may sound like me in supported languages. " +
         "4. I will not use this voice profile to impersonate, deceive, or mislead others. " +
-        "5. I understand I can delete or revoke this voice profile later.";
+        "5. I understand I can delete or revoke this voice profile later. " +
+        "6. I understand that during meetings, WarpTalk continuously captures my speech to improve " +
+        "the accuracy of my voice clone (Passive In-Session Voice Adaptation). This capture occurs " +
+        "only while voice cloning is enabled and I have granted this consent.";
 
     public static bool IsValidConsentRequest(CreateVoiceProfileRequest? request)
     {
