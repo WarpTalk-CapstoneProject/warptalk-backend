@@ -369,6 +369,111 @@ public class AdminWorkspaceBillingServiceTests
         _calls.Should().BeEmpty();
     }
 
+    // ── mark invoice paid: WT-878 suspension lift ───────────────────────────────────────────
+
+    private (AdminWorkspaceBillingService Service, Mock<IAiServiceStateStore> AiState, Subscription Subscription, List<Invoice> Invoices)
+        GivenOverdueSuspendedWorkspace()
+    {
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = _workspaceId,
+            UserId = Guid.NewGuid(),
+            IsActive = true,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            ServiceState = SubscriptionConstants.ServiceStates.Suspended,
+            SuspendedReason = SubscriptionConstants.SuspendedReasons.InvoiceOverdue,
+            CreditsRemaining = 100,
+            Plan = new Plan { InvoiceGraceHours = 0 },
+        };
+        var invoices = new List<Invoice>();
+        _invoices
+            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<Invoice, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<Invoice, bool>> predicate, string _, CancellationToken _) =>
+                Task.FromResult<IReadOnlyList<Invoice>>(invoices.Where(predicate.Compile()).ToList()));
+
+        var aiState = new Mock<IAiServiceStateStore>();
+        aiState
+            .Setup(s => s.SetAiServiceStateAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        var lift = new SuspensionLiftService(
+            _unitOfWork.Object, NullLogger<SuspensionLiftService>.Instance, aiState.Object, new Mock<IBillingMessagePublisher>().Object);
+
+        var creditService = new CreditService(
+            _unitOfWork.Object,
+            NullLogger<CreditService>.Instance,
+            new Mock<IUsageSettlementService>().Object,
+            new Mock<IWorkspaceClient>().Object);
+        var service = new AdminWorkspaceBillingService(
+            _unitOfWork.Object, creditService, _resolver.Object, _pricing.Object, _audit.Object,
+            NullLogger<AdminWorkspaceBillingService>.Instance, new FixedClock(Now), suspensionLift: lift);
+        return (service, aiState, subscription, invoices);
+    }
+
+    private static Invoice OverdueInvoice(Subscription subscription, List<Invoice> invoices)
+    {
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            InvoiceNumber = "INV-2026-" + invoices.Count,
+            Status = InvoiceConstants.InvoiceStatuses.Issued,
+            Total = 500_000m,
+            Currency = "VND",
+            DueAt = Now.AddDays(-5),
+            Payment = new Payment
+            {
+                Id = Guid.NewGuid(),
+                Status = PaymentConstants.PaymentStatuses.Pending,
+                Currency = "VND",
+                Subscription = subscription,
+            },
+        };
+        invoices.Add(invoice);
+        return invoice;
+    }
+
+    [Fact]
+    public async Task Mark_paid_on_the_only_overdue_invoice_lifts_the_invoice_overdue_suspension()
+    {
+        var (service, aiState, subscription, invoices) = GivenOverdueSuspendedWorkspace();
+        var invoice = OverdueInvoice(subscription, invoices);
+        _invoices
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Invoice, bool>>>(), "Payment.Subscription", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(invoice);
+
+        var result = await service.MarkInvoicePaidAsync(
+            _workspaceId, invoice.Id, new AdminMarkInvoicePaidRequest("Bank transfer"), _actor);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        invoice.Status.Should().Be(InvoiceConstants.InvoiceStatuses.Paid);
+        subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        subscription.SuspendedReason.Should().BeNull();
+        _calls.Should().Equal("audit:succeeded", "save");
+        aiState.Verify(s => s.SetAiServiceStateAsync(
+            _workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Mark_paid_keeps_the_suspension_while_another_invoice_is_still_overdue()
+    {
+        var (service, aiState, subscription, invoices) = GivenOverdueSuspendedWorkspace();
+        var invoice = OverdueInvoice(subscription, invoices);
+        OverdueInvoice(subscription, invoices);
+        _invoices
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Invoice, bool>>>(), "Payment.Subscription", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(invoice);
+
+        var result = await service.MarkInvoicePaidAsync(
+            _workspaceId, invoice.Id, new AdminMarkInvoicePaidRequest("Bank transfer"), _actor);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        invoice.Status.Should().Be(InvoiceConstants.InvoiceStatuses.Paid);
+        subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Suspended);
+        subscription.SuspendedReason.Should().Be(SubscriptionConstants.SuspendedReasons.InvoiceOverdue);
+        aiState.Verify(s => s.SetAiServiceStateAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     // ── the burn chart ──────────────────────────────────────────────────────────────────────
 
     [Fact]
