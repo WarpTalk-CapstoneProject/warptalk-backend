@@ -42,15 +42,18 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
     private readonly ILogger<CreditTopUpPaymentEventHandler> _logger;
 
     private readonly ICreditFreezeService? _creditFreeze;
+    private readonly ISuspensionLiftService? _suspensionLift;
 
     public CreditTopUpPaymentEventHandler(
         IUnitOfWork unitOfWork,
         ILogger<CreditTopUpPaymentEventHandler> logger,
-        ICreditFreezeService? creditFreeze = null)
+        ICreditFreezeService? creditFreeze = null,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _creditFreeze = creditFreeze;
+        _suspensionLift = suspensionLift;
     }
 
     public bool CanHandle(PaymentEventContext context)
@@ -133,8 +136,14 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
                 ErrorCodes.InvalidState);
         }
 
+        var now = DateTime.UtcNow;
         subscription.CreditsRemaining += credits;
-        subscription.UpdatedAt = DateTime.UtcNow;
+        subscription.UpdatedAt = now;
+
+        // WT-878: paying must lift the suspension it paid for. Staged here so the lift commits
+        // with the credits; PaymentAppService pushes the new state to AI after the commit
+        // (SubscriptionChanged below), the same push a renewal uses.
+        var lift = _suspensionLift?.StageAfterCreditGrant(subscription, now) ?? SuspensionLiftOutcome.None;
         _unitOfWork.SubscriptionRepository.Update(subscription);
 
         await _unitOfWork.CreditTransactionRepository.AddAsync(new CreditTransaction
@@ -159,13 +168,20 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         // consumers see the new balance without waiting for the hourly reconcile.
         context.Subscription = subscription;
         context.SubscriptionChanged = true;
+        if (_suspensionLift is { } liftService)
+        {
+            // WT-878: billing.credits_updated had no publisher. After the commit, so the balance it
+            // announces is the one a refetch will read.
+            context.AfterCommit.Add(ct => liftService.PublishCreditsUpdatedAsync(subscription, lift.Lifted, ct));
+        }
 
         _logger.LogInformation(
-            "credit_topup_granted: Credits={Credits} WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} BalanceAfter={BalanceAfter}",
+            "credit_topup_granted: Credits={Credits} WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} BalanceAfter={BalanceAfter} Lifted={Lifted}",
             credits,
             context.WorkspaceId,
             subscription.Id,
-            subscription.CreditsRemaining);
+            subscription.CreditsRemaining,
+            lift.LiftedReason);
 
         return Result.Success();
     }

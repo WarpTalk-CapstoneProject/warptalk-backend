@@ -92,6 +92,10 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     // WT-429: without this, "CreditTopUp" matched no handler and the payment completed having
     // granted nothing — the incident that switched the top-up button off.
     builder.Services.AddScoped<IPaymentEventHandler, CreditTopUpPaymentEventHandler>();
+    // WT-878: paying an invoice lifts invoice_overdue. After CancellationPaymentEventHandler, so a
+    // cancelled/refunded invoice payment keeps its existing routing.
+    builder.Services.AddScoped<IPaymentEventHandler, InvoicePaymentEventHandler>();
+    builder.Services.AddScoped<ISuspensionLiftService, SuspensionLiftService>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 
     builder.Services.AddScoped<IUsageService, UsageService>();
