@@ -977,6 +977,21 @@ public class MeetingRoomService : IMeetingRoomService
         // "__MEETING_END__" text segment (see AIAssistantWorker.process/_generate_summary) —
         // this mirrors that exact existing async-worker trigger instead of adding a new one.
         // Best-effort: a failed publish must not fail EndMeetingAsync itself.
+        //
+        // WT-870: not for a meeting that keeps no transcript. Live captions keep STT running, so
+        // the worker has every line anyway, and this marker is what turns them into a summary the
+        // host said the meeting should not have. HasSaveTranscript, like TranscriptService: absent
+        // means a translation-room that predates the field (or a cache entry written by one), and
+        // that fails OPEN here because translation-room's finalizer re-checks the setting from its
+        // own database and refuses to store a summary for such a room regardless.
+        if (roomDetails.HasSaveTranscript && !roomDetails.SaveTranscript)
+        {
+            _logger.LogInformation(
+                "Room {RoomId} does not save its transcript; not requesting an AI summary.",
+                translationRoomId);
+            return Result.Success(true);
+        }
+
         try
         {
             await _redisService.PublishStreamMessageAsync("stt:results", new Dictionary<string, string>

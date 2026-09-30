@@ -287,6 +287,17 @@ public class ArtifactsReconciliationWorker : BackgroundService
                 continue;
             }
 
+            // WT-870. A meeting that kept no transcript gets no summary — not even one that shows
+            // up late. The key is dropped rather than left, so this sweep does not meet it again.
+            if (!TranscriptRetention.IsSaved(room))
+            {
+                await db.KeyDeleteAsync(summaryKey);
+                _logger.LogInformation(
+                    "Discarded a late AI summary for room {RoomId}: the meeting does not save its transcript.",
+                    room.Id);
+                continue;
+            }
+
             var artifact = room.TranslationRoomArtifacts.FirstOrDefault(
                 a => string.Equals(a.ArtifactType, ArtifactType.SUMMARY_EXPORT.ToString(), StringComparison.OrdinalIgnoreCase));
             if (artifact == null)

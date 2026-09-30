@@ -138,7 +138,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         }
     }
 
-    private async Task FinalizeRoomArtifactsAsync(
+    internal async Task FinalizeRoomArtifactsAsync(
         Guid roomId,
         string? templateKey = null,
         string? summaryLanguage = null,
@@ -153,11 +153,19 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         {
             try
             {
+                // WT-870. Read inside the retry loop on purpose: a database hiccup here retries
+                // like every other failure below, instead of being mistaken for either answer.
+                var keepsRecord = await RoomKeepsTranscriptAsync(roomId, ct);
+
                 // Meeting owns recording artifacts from its signed
                 // recording_completed event. This finalizer owns transcript
                 // and summary outputs only.
                 var transcriptTask = FinalizeTranscriptAsync(roomId, ct);
-                var summaryTask = FinalizeSummaryAsync(roomId, ct);
+                // No summary at all for a meeting that kept no transcript: not waited for, not
+                // saved, not re-requested, not indexed. See TranscriptRetention.
+                var summaryTask = keepsRecord
+                    ? FinalizeKeptSummaryAsync(roomId, ct)
+                    : Task.FromResult<SummaryFinalization?>(null);
 
                 await Task.WhenAll(transcriptTask, summaryTask);
 
@@ -169,21 +177,37 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 var artifactRepo = _unitOfWork.TranslationRoomArtifactRepository;
 
                 await artifactRepo.AddAsync(transcript.Artifact, ct);
-                await artifactRepo.AddAsync(summary.Artifact, ct);
+                if (summary is { } kept)
+                {
+                    await artifactRepo.AddAsync(kept.Artifact, ct);
+                }
 
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // Only now, with the summary durably stored, is it worth indexing. Publishing
-                // before the save would index a summary a later rollback erased.
-                await PublishSummaryToKnowledgeAsync(roomId, summary.Artifact.Content, ct);
-
-                // The placeholder is saved and the transcript is in hand — so ask for the summary
-                // that never came, sending the transcript rather than waiting for the worker to
-                // find one. See RequestSummaryFromTranscriptAsync.
-                if (summary.TimedOut)
+                if (summary is { } saved)
                 {
-                    await RequestSummaryFromTranscriptAsync(
-                        roomId, transcript.CitedTranscript, templateKey, summaryLanguage, ct);
+                    // Only now, with the summary durably stored, is it worth indexing. Publishing
+                    // before the save would index a summary a later rollback erased.
+                    await PublishSummaryToKnowledgeAsync(roomId, saved.Artifact.Content, ct);
+
+                    // The placeholder is saved and the transcript is in hand — so ask for the summary
+                    // that never came, sending the transcript rather than waiting for the worker to
+                    // find one. See RequestSummaryFromTranscriptAsync.
+                    if (saved.TimedOut)
+                    {
+                        await RequestSummaryFromTranscriptAsync(
+                            roomId, transcript.CitedTranscript, templateKey, summaryLanguage, ct);
+                    }
+                }
+                else
+                {
+                    // Anything the AI worker wrote for this meeting anyway (an older trigger, a
+                    // worker that does not know the setting) must not outlive the meeting: the
+                    // late-summary recovery would otherwise find it and have to refuse it again.
+                    await _redisStateRepo.KeyDeleteAsync(SummaryKey(roomId));
+                    _logger.LogInformation(
+                        "Room {RoomId} does not save its transcript; finalized without a summary.",
+                        roomId);
                 }
 
                 _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
@@ -245,6 +269,31 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 await Task.Delay(baseDelayMs + jitterMs, ct);
             }
         }
+    }
+
+    private static string SummaryKey(Guid roomId) => $"meeting:{roomId}:summary";
+
+    private async Task<SummaryFinalization?> FinalizeKeptSummaryAsync(Guid roomId, CancellationToken ct) =>
+        await FinalizeSummaryAsync(roomId, ct);
+
+    /// <summary>
+    /// WT-870: whether this meeting keeps a record at all. Fails CLOSED on a missing room — there
+    /// is nothing to attach a summary to, and a meeting whose setting cannot be established must
+    /// not be the one that gets summarised against the host's choice. A lookup that THROWS is not
+    /// an answer and propagates to the retry loop.
+    /// </summary>
+    private async Task<bool> RoomKeepsTranscriptAsync(Guid roomId, CancellationToken ct)
+    {
+        var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+        if (room == null)
+        {
+            _logger.LogWarning(
+                "Room {RoomId} could not be found while finalizing; no summary will be produced for it.",
+                roomId);
+            return false;
+        }
+
+        return TranscriptRetention.IsSaved(room);
     }
 
     /// <summary>
@@ -555,7 +604,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         try
         {
             // Try to fetch AI-generated summary from Redis hash key "meeting:{roomId}:summary"
-            string summaryKey = $"meeting:{roomId}:summary";
+            string summaryKey = SummaryKey(roomId);
 
             // WT-13: ai_assistant_worker also writes a structured JSON version of the same
             // summary/decisions/action-items when it can (see MeetingAssistant.generate_structured_summary).
