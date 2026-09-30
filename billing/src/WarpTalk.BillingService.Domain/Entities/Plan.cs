@@ -72,6 +72,19 @@ public partial class Plan
 
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// #466: the Stripe Product a recurring plan checkout sells, created on the first auto-renew
+    /// checkout of this plan. Never deleted in Stripe; see <see cref="StripePriceIds"/>.
+    /// </summary>
+    public string? StripeProductId { get; set; }
+
+    /// <summary>
+    /// #466: jsonb map of price key (<c>monthly_vnd</c>, <c>yearly_usd</c>, …) → recurring Stripe
+    /// Price id. Stripe prices are immutable: a changed plan price creates a new Price and archives
+    /// the old one, and live subscriptions keep the price they were sold at.
+    /// </summary>
+    public string StripePriceIds { get; set; } = "{}";
+
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }

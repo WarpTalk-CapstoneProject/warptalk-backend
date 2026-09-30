@@ -18,6 +18,20 @@ public static class NotificationValidator
         public Dictionary<string, JsonValueKind> OptionalFields { get; set; } = new();
     }
 
+    // The five keys AssistantService's PluginRequestNotifications sends for every plugin-request
+    // type. All required: the web client needs the workspace and the plugin to render any of them.
+    private static PayloadSchema PluginRequestSchema() => new()
+    {
+        RequiredFields =
+        {
+            { "workspace_id", JsonValueKind.String },
+            { "workspace_name", JsonValueKind.String },
+            { "plugin_key", JsonValueKind.String },
+            { "plugin_label", JsonValueKind.String },
+            { "request_id", JsonValueKind.String }
+        }
+    };
+
     private static readonly Dictionary<string, PayloadSchema> Schemas = new(StringComparer.OrdinalIgnoreCase)
     {
         {
@@ -52,6 +66,15 @@ public static class NotificationValidator
             // and ArtifactsFinalizationWorker put in Metadata. Registered as REQUIRED because a
             // notification about a meeting with no meeting on it is not worth delivering.
             NotificationConstants.TypeMeetingStarted, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
+            // WT-612. Same two fields as MEETING_STARTED, because the client resolves both
+            // through one payload reader — the difference between them is where the click goes,
+            // not what they carry.
+            NotificationConstants.TypeMeetingOpened, new PayloadSchema
             {
                 RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
             }
@@ -117,6 +140,18 @@ public static class NotificationValidator
             }
         },
         {
+            // The admin workspace page's "send a notice to the owner". The notice text is the
+            // title and body; the payload only says which workspace it is about.
+            NotificationConstants.TypeWorkspaceAdminNotice, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
+                }
+            }
+        },
+        {
             NotificationConstants.TypeWorkspaceReactivated, new PayloadSchema
             {
                 RequiredFields =
@@ -158,6 +193,9 @@ public static class NotificationValidator
                 }
             }
         },
+        { NotificationConstants.TypePluginRequested, PluginRequestSchema() },
+        { NotificationConstants.TypePluginRequestApproved, PluginRequestSchema() },
+        { NotificationConstants.TypePluginRequestDeclined, PluginRequestSchema() },
         {
             NotificationConstants.TypeWorkspaceLeaveRejected, new PayloadSchema
             {

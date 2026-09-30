@@ -3,6 +3,7 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Application.Services;
 
 namespace WarpTalk.AuthService.API.GrpcServices;
 
@@ -11,15 +12,64 @@ public class UserServiceGrpc : UserService.UserServiceBase
     private readonly IUserDirectoryService _userDirectory;
     private readonly IVoiceConsentService _voiceConsent;
     private readonly IVoiceProfileService _voiceProfiles;
+    private readonly IStaffAccessService? _staffAccess;
 
     public UserServiceGrpc(
         IUserDirectoryService userDirectory,
         IVoiceConsentService voiceConsent,
-        IVoiceProfileService voiceProfiles)
+        IVoiceProfileService voiceProfiles,
+        IStaffAccessService? staffAccess = null)
     {
         _userDirectory = userDirectory;
         _voiceConsent = voiceConsent;
         _voiceProfiles = voiceProfiles;
+        _staffAccess = staffAccess;
+    }
+
+    /// <summary>
+    /// G10: every other service's admin permission check lands here (through its own short cache).
+    /// Answered from the database on every call — caching is the caller's job, so that the one
+    /// place holding the truth never serves a stale copy of it. An unparseable id is "not staff";
+    /// a database failure throws, which the caller treats as "refuse, and do not cache".
+    /// </summary>
+    public override async Task<GetStaffAccessResponse> GetStaffAccess(GetUserRequest request, ServerCallContext context)
+    {
+        if (_staffAccess is null || !Guid.TryParse(request.Id, out var userId))
+            return new GetStaffAccessResponse { IsStaff = false };
+
+        var access = await _staffAccess.GetAccessAsync(userId, context?.CancellationToken ?? default);
+        var response = new GetStaffAccessResponse
+        {
+            IsStaff = access.IsStaff,
+            RoleSlug = access.RoleSlug ?? string.Empty,
+            RoleName = access.RoleName ?? string.Empty,
+            IsSuperAdmin = access.IsSuperAdmin,
+        };
+        if (access.IsStaff && !access.IsSuperAdmin)
+            response.Permissions.AddRange(access.Permissions.OrderBy(code => code, StringComparer.Ordinal));
+        return response;
+    }
+
+    /// <summary>
+    /// WT-699 / TC4104: the BROADCAST audience, a page at a time. A malformed token restarts from
+    /// the beginning rather than failing — the caller dedupes, and throwing would only turn a bad
+    /// token into a notification that reaches nobody.
+    /// </summary>
+    public override async Task<ListActiveUserIdsResponse> ListActiveUserIds(
+        ListActiveUserIdsRequest request,
+        ServerCallContext context)
+    {
+        Guid? after = Guid.TryParse(request.PageToken, out var parsed) ? parsed : null;
+        var result = await _userDirectory.ListActiveUserIdsAsync(after, request.PageSize, CancellationTokenOf(context));
+        if (!result.IsSuccess)
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Could not list users."));
+
+        var response = new ListActiveUserIdsResponse
+        {
+            NextPageToken = result.Value.NextAfterId?.ToString() ?? string.Empty
+        };
+        response.UserIds.AddRange(result.Value.UserIds.Select(id => id.ToString()));
+        return response;
     }
 
     /// <summary>
@@ -169,7 +219,10 @@ public class UserServiceGrpc : UserService.UserServiceBase
         Email = user.Email,
         FullName = user.FullName,
         AvatarUrl = user.AvatarUrl ?? "",
-        PreferredLanguage = user.PreferredLanguage ?? "en"
+        PreferredLanguage = user.PreferredLanguage ?? "en",
+        CreatedAt = user.CreatedAt is { } created
+            ? DateTime.SpecifyKind(created, DateTimeKind.Utc).ToString("O")
+            : string.Empty,
     };
 
     private static GetRoleResponse ToRoleResponse(RoleDto role) => new()

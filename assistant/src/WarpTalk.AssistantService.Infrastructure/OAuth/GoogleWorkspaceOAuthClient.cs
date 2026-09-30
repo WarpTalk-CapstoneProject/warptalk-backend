@@ -67,7 +67,10 @@ public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
         query["scope"] = string.Join(" ", IdentityScopes.Concat(scopes).Distinct(StringComparer.Ordinal));
         query["state"] = state;
         query["access_type"] = "offline";
-        query["prompt"] = "consent";
+        // select_account as well as consent: with consent alone Google silently uses whichever
+        // account the browser is signed into, so a user on a shared or developer machine connects
+        // someone else's Google account without ever being asked which one.
+        query["prompt"] = "select_account consent";
         query["include_granted_scopes"] = "true";
         return $"{_options.AuthorizationEndpoint}?{query}";
     }

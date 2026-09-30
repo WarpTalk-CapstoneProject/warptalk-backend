@@ -1,3 +1,4 @@
+using WarpTalk.Gateway.Tests.Helpers;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -21,7 +22,6 @@ public class TranslationRoomRedisSubscriberServiceTests
     private readonly Mock<IHubClients> _clients = new();
     private readonly Mock<IClientProxy> _proxy = new();
     private readonly Mock<IDatabase> _database = new();
-    private readonly TranscriptPauseState _transcriptPause;
     private readonly TranslationRoomRedisSubscriberService _service;
 
     private Func<RedisChannel, RedisValue, Task>? _handler;
@@ -49,15 +49,11 @@ public class TranslationRoomRedisSubscriberServiceTests
         hubContext.Setup(c => c.Clients).Returns(_clients.Object);
         _clients.Setup(c => c.Group(It.IsAny<string>())).Returns(_proxy.Object);
 
-        _transcriptPause = new TranscriptPauseState(
-            redis.Object,
-            new Mock<ILogger<TranscriptPauseState>>().Object);
-
         _service = new TranslationRoomRedisSubscriberService(
             redis.Object,
             hubContext.Object,
-            _transcriptPause,
-            new Mock<ILogger<TranslationRoomRedisSubscriberService>>().Object);
+            new Mock<ILogger<TranslationRoomRedisSubscriberService>>().Object,
+            new TestPubSubLeadership());
     }
 
     // ── Pause Transcript (WT-605) ─────────────────────────────
@@ -110,35 +106,6 @@ public class TranslationRoomRedisSubscriberServiceTests
         _proxy.Verify(
             p => p.SendCoreAsync("TranscriptResumed", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
             Times.Once);
-    }
-
-    /// <summary>
-    /// The relay is also what makes the Gateway's own transcript gate react to the button.
-    ///
-    /// AiResultConsumerService caches "is this room paused" for a few seconds so a busy room does
-    /// not cost one Redis read per sentence. That cache is only safe because this event clears it:
-    /// without the invalidation, Resume would move the banner for everyone and leave the transcript
-    /// empty until the cache aged out, which is the same bug this ticket fixed pointing the other
-    /// way.
-    /// </summary>
-    [Fact]
-    public async Task TranscriptResumed_InvalidatesTheGatewaysCachedPauseAnswer()
-    {
-        var roomId = Guid.NewGuid();
-        var handler = await SubscribeAsync();
-
-        var paused = true;
-        _database
-            .Setup(d => d.KeyExistsAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(() => paused);
-
-        Assert.True(await _transcriptPause.IsPausedAsync(roomId.ToString(), CancellationToken.None));
-
-        paused = false;
-        await handler(RedisChannel.Literal(Channel), Command("TranscriptResumed", roomId));
-        await WaitForGroupAsync($"translationRoom:{roomId}");
-
-        Assert.False(await _transcriptPause.IsPausedAsync(roomId.ToString(), CancellationToken.None));
     }
 
     [Fact]
@@ -252,13 +219,16 @@ public class TranslationRoomRedisSubscriberServiceTests
             new RedisValue(JsonSerializer.Serialize(new { Command = "RoomEnded", RoomId = roomId.ToString() })));
 
         await WaitForGroupAsync($"translationRoom:{roomId}");
+        // WT-699 / TC1806: and to anybody still knocking, who is in the lobby group.
+        await WaitForGroupAsync($"translationRoom:{roomId}:lobby");
+        await WaitForSendsAsync("TranslationRoomEnded", 2);
 
         _proxy.Verify(
             p => p.SendCoreAsync(
                 "TranslationRoomEnded",
                 It.IsAny<object[]>(),
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.Exactly(2));
     }
 
     /// <summary>
@@ -285,16 +255,110 @@ public class TranslationRoomRedisSubscriberServiceTests
             })));
 
         await WaitForGroupAsync($"translationRoom:{roomId}");
+        // WT-699 / TC1806: the knocking connection is in the LOBBY group now, so that is where the
+        // admission has to arrive.
+        await WaitForGroupAsync($"translationRoom:{roomId}:lobby");
+        await WaitForSendsAsync("ParticipantAdmitted", 2);
 
-        var sent = _proxy.Invocations
+        var sends = _proxy.Invocations
             .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
                         && (string)i.Arguments[0] == "ParticipantAdmitted")
             .Select(i => (object[])i.Arguments[1])
-            .Single();
+            .ToList();
 
         // The client compares this against its own user id to decide whether to re-join, so a
         // broadcast that dropped or reshaped it would either release nobody or release everybody.
-        Assert.Equal(admittedUserId.ToString(), Assert.Single(sent));
+        Assert.All(sends, sent => Assert.Equal(admittedUserId.ToString(), Assert.Single(sent)));
+    }
+
+    /// <summary>
+    /// WT-699 / TC2402: the lobby's "no". Reaches only the lobby group — nobody inside the meeting
+    /// needs to hear who was turned away at the door.
+    /// </summary>
+    [Fact]
+    public async Task ParticipantRejected_BroadcastsToTheLobbyGroupOnly()
+    {
+        var roomId = Guid.NewGuid();
+        var rejectedUserId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "ParticipantRejected",
+                RoomId = roomId.ToString(),
+                UserId = rejectedUserId.ToString()
+            })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}:lobby");
+        await WaitForSendsAsync("ParticipantRejected", 1);
+
+        _clients.Verify(c => c.Group($"translationRoom:{roomId}"), Times.Never);
+        var sent = _proxy.Invocations
+            .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                        && (string)i.Arguments[0] == "ParticipantRejected")
+            .Select(i => (object[])i.Arguments[1])
+            .Single();
+        Assert.Equal(rejectedUserId.ToString(), Assert.Single(sent));
+    }
+
+    /// <summary>
+    /// WT-699 / TC3705. billing_worker publishes this when a charge is refused; every client in the
+    /// room must learn that translation stopped and why, rather than watching it go quiet.
+    /// </summary>
+    [Fact]
+    public async Task TranslationCreditsExhausted_BroadcastsTheReasonToTheRoomGroup()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "TranslationCreditsExhausted",
+                RoomId = roomId.ToString(),
+                Reason = "overage_cap"
+            })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+        await WaitForSendsAsync("TranslationCreditsExhausted", 1);
+
+        var sent = _proxy.Invocations
+            .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                        && (string)i.Arguments[0] == "TranslationCreditsExhausted")
+            .Select(i => (object[])i.Arguments[1])
+            .Single();
+        Assert.Equal(new object[] { roomId.ToString(), "overage_cap" }, sent);
+    }
+
+    [Fact]
+    public async Task TranslationCreditsRestored_BroadcastsToTheRoomGroup()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new { Command = "TranslationCreditsRestored", RoomId = roomId.ToString() })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+        await WaitForSendsAsync("TranslationCreditsRestored", 1);
+    }
+
+    private async Task WaitForSendsAsync(string eventName, int count)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            if (_proxy.Invocations.Count(i =>
+                    i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                    && (string)i.Arguments[0] == eventName) >= count)
+                return;
+            await Task.Delay(10);
+        }
+
+        throw new Xunit.Sdk.XunitException($"Expected {count} {eventName} sends.");
     }
 
     [Fact]

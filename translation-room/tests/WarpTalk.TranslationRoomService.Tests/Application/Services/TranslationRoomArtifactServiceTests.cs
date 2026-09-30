@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
@@ -97,6 +98,137 @@ public sealed class TranslationRoomArtifactServiceTests
         Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
     }
 
+    /// <summary>
+    /// rec-loss: a FAILED recording row has no file and never will. Behind a consent hold the old
+    /// answer was "consent is required" — an invitation to ask the host for something that does
+    /// not exist — and without one it was "not available yet", which promises it is coming.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_SaysAFailedRecordingHasNoFile()
+    {
+        var userId = Guid.NewGuid();
+        var artifact = CreateArtifact(userId);
+        artifact.ArtifactType = "OPTIONAL_RECORDING";
+        artifact.Status = "FAILED";
+        artifact.ConsentRequired = true;
+        artifact.ContainsRawAudio = true;
+
+        var service = CreateService(artifact);
+        var result = await service.GetArtifactDownloadAsync(artifact.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
+        Assert.Contains("failed", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A recording still in progress is refused without crashing on its null FileUrl.</summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_RefusesARecordingStillProcessing()
+    {
+        var userId = Guid.NewGuid();
+        var artifact = CreateArtifact(userId);
+        artifact.ArtifactType = "OPTIONAL_RECORDING";
+        artifact.Status = "PROCESSING";
+        artifact.ContainsRawAudio = true;
+
+        var service = CreateService(artifact);
+        var result = await service.GetArtifactDownloadAsync(artifact.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
+    }
+
+    /// <summary>
+    /// WT-849: somebody invited by email who never joined reads the outputs once the host has
+    /// shared them with ALL_PARTICIPANTS — the same person the room page already admits. The
+    /// email claim arrives in whatever case the identity provider issued it.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_AdmitsAnInviteeWhoNeverJoined_WhenTheHostSharedTheOutputs()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.AllParticipants);
+        Invite(artifact, "Alice@Example.com", "PENDING");
+
+        var result = await CreateService(artifact)
+            .GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid(), "alice@example.COM");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Contains("Real transcript", result.Value!.Content);
+    }
+
+    /// <summary>
+    /// HOST_ONLY is still HOST_ONLY for an invitee — and the refusal says so, rather than telling
+    /// them they were never part of the meeting.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_RefusesAnInviteeOnAHostOnlyRoom_AndPointsAtTheHost()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.HostOnly);
+        Invite(artifact, "alice@example.com", "ACCEPTED");
+
+        var result = await CreateService(artifact)
+            .GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid(), "alice@example.com");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+        Assert.Equal(ArtifactAccessHelper.DescribeArtifactDenial(isParticipantOrInvited: true), result.Error);
+    }
+
+    /// <summary>
+    /// An invitation outside RoomReadAccess.InvitationStatusesGrantingRead is no relation at all —
+    /// neither for the gate nor for the wording of the refusal. The refusal used to be computed
+    /// with its own lookup that ignored status, so a revoked invitee was told "ask the host".
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_TreatsARevokedInvitationAsNoRelation()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.AllParticipants);
+        Invite(artifact, "alice@example.com", "REVOKED");
+
+        var result = await CreateService(artifact)
+            .GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid(), "alice@example.com");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+        Assert.Equal(ArtifactAccessHelper.DescribeArtifactDenial(isParticipantOrInvited: false), result.Error);
+    }
+
+    /// <summary>A caller with no email claim cannot match an invitation, so is refused as a stranger.</summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_RefusesACallerWithoutAnEmailClaim()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.AllParticipants);
+        Invite(artifact, "alice@example.com", "PENDING");
+
+        var result = await CreateService(artifact).GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+    }
+
+    // Serialised from the value object itself rather than written by hand: the wire key is
+    // "artifact_access", and a hand-typed "artifactAccess" silently reads back as HOST_ONLY.
+    private static string SettingsWith(string artifactAccess)
+        => System.Text.Json.JsonSerializer.Serialize(
+            new WarpTalk.TranslationRoomService.Domain.ValueObjects.TranslationRoomSettings { ArtifactAccess = artifactAccess });
+
+    private static void Invite(TranslationRoomArtifact artifact, string email, string status)
+        => artifact.TranslationRoom.TranslationRoomInvitations.Add(new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = artifact.TranslationRoomId,
+            Email = email,
+            Status = status
+        });
+
     private static TranslationRoomArtifactService CreateService(TranslationRoomArtifact artifact)
     {
         var repository = new Mock<ITranslationRoomArtifactRepository>();
@@ -113,14 +245,16 @@ public sealed class TranslationRoomArtifactServiceTests
             .Setup(item => item.CreateDownloadUrlAsync(
                 It.IsAny<string>(),
                 It.IsAny<TimeSpan>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string url, TimeSpan _, CancellationToken _) => url);
+            .ReturnsAsync((string url, TimeSpan _, string? _, CancellationToken _) => url);
         return new TranslationRoomArtifactService(
             unitOfWork.Object,
             NullLogger<TranslationRoomArtifactService>.Instance,
             signer.Object,
             new Mock<IRedisStateRepository>().Object,
-            new Mock<IArtifactsFinalizationQueue>().Object);
+            new Mock<IArtifactsFinalizationQueue>().Object,
+            SummaryLanguageVariantTests.AllowingPolicy().Object);
     }
 
     /// <summary>
@@ -178,6 +312,72 @@ public sealed class TranslationRoomArtifactServiceTests
         queue.Verify(
             item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
             Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// WT-870: a meeting held with "Save the meeting transcript" off has nothing to summarise.
+    /// Both of the rewrite's branches are refused with their own code — the redirect to
+    /// finalization (no artifacts) as well as the published request (a summary left over from
+    /// before this fix) — and nothing is queued on either.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RegenerateSummaryAsync_RefusesAMeetingThatKeptNoTranscript(bool hasLeftoverSummary)
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.Settings = "{\"save_transcript\":false}";
+        if (hasLeftoverSummary)
+        {
+            room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+            {
+                Id = Guid.NewGuid(),
+                TranslationRoomId = room.Id,
+                ArtifactType = "SUMMARY_EXPORT",
+                Status = "COMPLETED"
+            });
+        }
+
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+
+        var service = CreateServiceForRoom(room, redis, queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(TranscriptRetention.ErrorCodeTranscriptNotSaved, result.ErrorCode);
+        queue.Verify(
+            item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
+            Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>WT-870, the other half: an explicit TRUE changes nothing about the rewrite.</summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_StillPublishes_WhenTheRoomSavesItsTranscript()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.Settings = "{\"save_transcript\":true}";
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
+
+        Assert.True(result.IsSuccess);
         redis.Verify(
             item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
             Times.Once);
@@ -429,6 +629,114 @@ public sealed class TranslationRoomArtifactServiceTests
         redis.Verify(item => item.StringGetAsync(It.IsAny<string>()), Times.Never);
     }
 
+    /// <summary>
+    /// WT-703: a rewrite in a language the meeting does not offer is refused before EITHER
+    /// generating branch — the finalization redirect writes a summary in that language too.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_RefusesALanguageTheMeetingDoesNotOffer_OnBothPaths()
+    {
+        var hostId = Guid.NewGuid();
+        var neverFinalized = CreateEndedRoom(hostId);
+        var finalized = CreateEndedRoom(hostId);
+        finalized.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = finalized.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        foreach (var room in new[] { neverFinalized, finalized })
+        {
+            var queue = new Mock<IArtifactsFinalizationQueue>();
+            var redis = new Mock<IRedisStateRepository>();
+            var service = CreateServiceForRoom(room, redis, queue, SummaryLanguageVariantTests.RefusingPolicy("fr"));
+
+            var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "fr", "Bearer token");
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+            queue.Verify(
+                item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
+                Times.Never);
+            redis.Verify(
+                item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+                Times.Never);
+        }
+    }
+
+    /// <summary>
+    /// WT-703: rewriting REPLACES the meeting's official summary, so it is the host's act. A
+    /// participant the artifact gate admits (ALL_PARTICIPANTS) may read, not overwrite.
+    /// </summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_RefusesAParticipantWhoIsNotTheHost()
+    {
+        var hostId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.Settings = "{\"artifact_access\":\"ALL_PARTICIPANTS\"}";
+        room.TranslationRoomParticipants.Add(new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            UserId = participantId
+        });
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateServiceForRoom(room, redis, queue);
+
+        var result = await service.RegenerateSummaryAsync(room.Id, participantId, "general", "en", "Bearer token");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+        queue.Verify(
+            item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
+            Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>The host, in a language the meeting offers, is queued exactly as before.</summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_QueuesTheHostsRewriteInAnOfferedLanguage()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+        var policy = SummaryLanguageVariantTests.RefusingPolicy("fr");
+        var service = CreateServiceForRoom(room, redis, queue, policy);
+
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", "en", "Bearer token");
+
+        Assert.True(result.IsSuccess, $"{result.ErrorCode}: {result.Error}");
+        policy.Verify(item => item.EnsureCanGenerateAsync(room, "en", It.IsAny<CancellationToken>()), Times.Once);
+        redis.Verify(
+            item => item.StreamAddAsync(
+                "assistant:summary_requests",
+                It.Is<Dictionary<string, string>>(fields => fields["summary_language"] == "en")),
+            Times.Once);
+    }
+
     private static TranslationRoom CreateEndedRoom(Guid hostId) => new()
     {
         Id = Guid.NewGuid(),
@@ -442,7 +750,8 @@ public sealed class TranslationRoomArtifactServiceTests
     private static TranslationRoomArtifactService CreateServiceForRoom(
         TranslationRoom room,
         Mock<IRedisStateRepository> redis,
-        Mock<IArtifactsFinalizationQueue> queue)
+        Mock<IArtifactsFinalizationQueue> queue,
+        Mock<IRoomArtifactLanguagePolicy>? policy = null)
     {
         var roomRepository = new Mock<ITranslationRoomRepository>();
         roomRepository
@@ -460,7 +769,8 @@ public sealed class TranslationRoomArtifactServiceTests
             NullLogger<TranslationRoomArtifactService>.Instance,
             new Mock<IArtifactUrlSigner>().Object,
             redis.Object,
-            queue.Object);
+            queue.Object,
+            (policy ?? SummaryLanguageVariantTests.AllowingPolicy()).Object);
     }
 
     private static TranslationRoomArtifact CreateArtifact(Guid hostId)

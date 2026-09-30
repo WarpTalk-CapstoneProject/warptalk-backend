@@ -17,6 +17,8 @@ public class UsageRateCardRepository : IUsageRateCardRepository
 {
     private const string DefaultCurrency = PaymentConstants.Currencies.VndAccounting;
     private const string UpsertNotes = "Updated from admin pricing controls";
+    private const string CreditCurrency = "CRD";
+    private const string ProviderCostNote = "Provider cost set from admin pricing controls";
 
     private readonly BillingDbContext _context;
     private IDbContextTransaction? _currentTransaction;
@@ -138,6 +140,74 @@ public class UsageRateCardRepository : IUsageRateCardRepository
 
         await _context.SaveChangesAsync(cancellationToken);
         return ToDto(row);
+    }
+
+    public async Task<RateCardProviderCostOutcome?> SetCreditRateCardProviderCostAsync(
+        Guid id, decimal providerUnitCostUsd, CancellationToken cancellationToken = default)
+    {
+        var row = await _context.UsageRateCards
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
+
+        if (row is null)
+            return null;
+
+        // Only an open, unit-bearing CRD card. A VND card's credit price is derived from its cost,
+        // so changing one without the other belongs to the full editor; a retired card prices
+        // nothing new; and a cost with no unit is a number nobody can multiply.
+        if (!string.Equals(row.Currency.Trim(), CreditCurrency, StringComparison.OrdinalIgnoreCase) ||
+            !row.IsActive || row.EffectiveTo is not null || string.IsNullOrWhiteSpace(row.Unit))
+        {
+            return new RateCardProviderCostOutcome(RateCardProviderCostChange.Refused, ToDto(row));
+        }
+
+        if (row.ProviderUnitCost == providerUnitCostUsd)
+            return new RateCardProviderCostOutcome(RateCardProviderCostChange.Unchanged, ToDto(row));
+
+        var note = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{ProviderCostNote}: {providerUnitCostUsd} USD/{row.Unit.Trim()}");
+
+        // A missing cost is a fact that was never written down, not a price change: recording it on
+        // the card is what makes the usage already settled on it costable (Insights read the cost of
+        // the card each transaction references). Nothing that settlement reads is touched.
+        if (row.ProviderUnitCost is null)
+        {
+            row.ProviderUnitCost = providerUnitCostUsd;
+            row.Notes = string.IsNullOrEmpty(row.Notes) ? note : $"{row.Notes} | {note}";
+            await _context.SaveChangesAsync(cancellationToken);
+            return new RateCardProviderCostOutcome(RateCardProviderCostChange.Recorded, ToDto(row));
+        }
+
+        // A different cost is a price change from now on. Supersede, exactly as UpsertRateCardAsync
+        // does, so the transactions already settled on this card keep the cost that applied to them.
+        // The copy keeps the credit price and the whole identity, so billing_worker's lookup
+        // (charge type + currency + languages + newest open window) resolves the copy at the same
+        // price. Close first and flush, for the partial unique index.
+        var supersededAt = DateTime.UtcNow;
+        row.IsActive = false;
+        row.EffectiveTo = supersededAt;
+        await _context.SaveChangesAsync(cancellationToken);
+
+        var copy = new UsageRateCard
+        {
+            ChargeType = row.ChargeType,
+            Unit = row.Unit,
+            Currency = row.Currency,
+            Provider = row.Provider,
+            Model = row.Model,
+            SourceLanguageCode = row.SourceLanguageCode,
+            TargetLanguageCode = row.TargetLanguageCode,
+            UnitPrice = row.UnitPrice,
+            ProviderUnitCost = providerUnitCostUsd,
+            MarkupMultiplier = row.MarkupMultiplier,
+            EffectiveFrom = supersededAt,
+            IsActive = true,
+            Notes = note,
+        };
+        _context.UsageRateCards.Add(copy);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return new RateCardProviderCostOutcome(RateCardProviderCostChange.Superseded, ToDto(copy));
     }
 
     public async Task<decimal> ReadPricingConfigValueAsync(string key, decimal defaultValue, CancellationToken cancellationToken = default)

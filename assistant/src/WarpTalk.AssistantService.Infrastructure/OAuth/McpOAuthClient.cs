@@ -152,7 +152,7 @@ public class McpOAuthClient : IPluginOAuthClient
                 $"Token exchange failed for plugin '{plugin.PluginKey}' with {(int)response.StatusCode}: {Summarise(body)}");
         }
 
-        var token = ParseTokenResponse(body);
+        var token = ParseTokenResponse(body, flowState.RequestedScopes);
         if (string.IsNullOrWhiteSpace(token.AccessToken))
             throw new InvalidOperationException($"Token response for plugin '{plugin.PluginKey}' carried no access token.");
 
@@ -192,7 +192,7 @@ public class McpOAuthClient : IPluginOAuthClient
 
             if (response.IsSuccessStatusCode)
             {
-                var token = ParseTokenResponse(body);
+                var token = ParseTokenResponse(body, requestedScopes: null);
                 return string.IsNullOrWhiteSpace(token.AccessToken)
                     ? PluginOAuthRefreshResultMapper.ProviderUnavailable("The refresh response carried no access token.")
                     : PluginOAuthRefreshResultMapper.Succeeded(token);
@@ -338,13 +338,21 @@ public class McpOAuthClient : IPluginOAuthClient
 
     // ---- parsing -----------------------------------------------------------------------------
 
-    private static PluginOAuthTokenDto ParseTokenResponse(string body)
+    /// <param name="requestedScopes">
+    /// What the authorization request asked for. WT-710: RFC 6749 §5.1 lets a server leave
+    /// <c>scope</c> out of the token response when it granted exactly that, so an absent field means
+    /// these, not "nothing". An explicitly empty <c>scope</c> is still read as empty.
+    /// </param>
+    private static PluginOAuthTokenDto ParseTokenResponse(string body, IReadOnlyList<string>? requestedScopes)
     {
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
 
         var accessToken = ReadString(root, "access_token") ?? string.Empty;
-        var scope = ReadString(root, "scope") ?? string.Empty;
+        var scope = ReadString(root, "scope")
+            ?? (root.TryGetProperty("scope", out _) || requestedScopes is null
+                ? string.Empty
+                : string.Join(' ', requestedScopes));
         var expiresIn = root.TryGetProperty("expires_in", out var expires) && expires.TryGetInt32(out var seconds)
             ? seconds
             : (int?)null;

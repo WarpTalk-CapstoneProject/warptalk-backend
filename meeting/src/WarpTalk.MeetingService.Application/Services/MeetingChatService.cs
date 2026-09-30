@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.MeetingService.Application.DTOs;
+using WarpTalk.MeetingService.Application.Helpers;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Mappers;
 using WarpTalk.Shared;
@@ -50,6 +51,24 @@ public class MeetingChatService : IMeetingChatService
 
         if (room.CreatedBy != userId && !isParticipant)
             return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Not a participant.", "FORBIDDEN");
+
+        // WT-699 / TC2504: "ever joined" is not "may still read". A participant row survives a
+        // kick — KickParticipantAsync only deactivates it — so the check above let a removed
+        // person keep polling the room's chat for as long as they liked, including everything
+        // said about them after they were thrown out. The kick (and a lobby reject) is recorded
+        // here as a REVOKED session grant, the same record the join path refuses on, so it is
+        // the one to ask. Somebody who merely LEFT keeps their read access: leaving is not a
+        // sanction, and the room's own wrap-up page reads this history.
+        if (room.CreatedBy != userId
+            && await _unitOfWork.RtcSessionRevocationRepository.AnyAsync(
+                r => r.MeetingRoomId == room.Id
+                    && r.InviteeUserId == userId
+                    && r.Status == MeetingChatConstants.RevokedSessionStatus,
+                ct))
+        {
+            return Result.Failure<IEnumerable<MeetingChatMessageDto>>(
+                "You were removed from this meeting and can no longer read its chat.", "FORBIDDEN");
+        }
 
         var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == room.Id, ct: ct);
 
@@ -241,8 +260,15 @@ public class MeetingChatService : IMeetingChatService
             });
         }
 
+        // WarpBot's own answers carry a machine-readable note of the meeting it created, which the
+        // browser turns into a card. It is not prose: sent through the translator it comes back
+        // reworded or dropped, so the reader of a translated answer loses the card or is shown its
+        // JSON. The note is stripped here and the card keeps coming from the original message.
         var translationResult = await _chatTranslator.TranslateAsync(
-            message.OriginalText, message.OriginalLanguage, request.TargetLanguage, ct);
+            MeetingChatMarkers.WithoutMeetingMarkers(message.OriginalText),
+            message.OriginalLanguage,
+            request.TargetLanguage,
+            ct);
 
         if (!translationResult.IsSuccess)
             return Result.Failure<MeetingChatTranslationDto>(

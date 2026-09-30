@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace WarpTalk.AssistantService.Application.DTOs;
 
@@ -28,7 +29,23 @@ public record PluginDefinitionDto(
     /// <summary>Operator-curated presentation. See the same members on <see cref="PluginCatalogItemDto"/>.</summary>
     bool IsFeatured = false,
     int SortOrder = 0,
-    string? Category = null);
+    string? Category = null,
+    /// <summary><c>oauth</c> or <c>api_key</c>; see <c>PluginConstants.AuthMode</c>.</summary>
+    string AuthMode = "oauth",
+    /// <summary>
+    /// The workspace that owns a PRIVATE plugin; null for a marketplace or native row.
+    /// </summary>
+    /// <remarks>
+    /// Carried here because it is a trust level, not just an owner. A marketplace row's server was
+    /// vetted by an operator; a private row's server is whatever a workspace Owner typed in, so
+    /// anything it says about itself - <c>readOnlyHint</c> above all - is a claim, not a fact. See
+    /// <see cref="IsPrivate"/>.
+    /// </remarks>
+    Guid? OwnerWorkspaceId = null)
+{
+    /// <summary>A workspace Owner's own MCP server rather than an operator-vetted catalog row.</summary>
+    public bool IsPrivate => OwnerWorkspaceId is not null;
+}
 
 public record PluginCatalogItemDto(
     string Key,
@@ -77,7 +94,39 @@ public record PluginCatalogItemDto(
     /// <summary>Ascending. Ties are the client's to break, by label.</summary>
     int SortOrder = 0,
     /// <summary>Null on every row today; grouping by it is only worth it once rows carry one.</summary>
-    string? Category = null);
+    string? Category = null,
+    /// <summary>
+    /// <c>added</c>, <c>private</c> or <c>not_added</c> for the workspace the catalog was listed for;
+    /// null when it was listed without one. See <c>WorkspacePluginConstants.Availability</c>.
+    /// </summary>
+    /// <remarks>
+    /// What the member page branches on: Connect for a usable row, Request for a not-added one, and
+    /// "Added by your workspace" for a private one. <see cref="WorkspacePolicyBlockReason"/> still
+    /// carries the sentence for a refused row, for clients that predate the marketplace.
+    /// </remarks>
+    string? WorkspaceAvailability = null,
+    /// <summary><c>pending</c> when the caller has asked this workspace's Owner for the plugin.</summary>
+    string? RequestStatus = null,
+    /// <summary>
+    /// <c>oauth</c>: Connect sends the user to the provider. <c>api_key</c>: Connect asks the user
+    /// for their own API key and posts it to <c>{key}/api-key</c>.
+    /// </summary>
+    string AuthMode = "oauth",
+    /// <summary>
+    /// True when the caller is the Owner of the workspace the catalog was listed for and this is a
+    /// marketplace plugin that workspace has not added: the page offers Add (the workspace's
+    /// <c>POST marketplace/{key}</c>) instead of Request. False everywhere else, including every
+    /// row of a listing made without a workspace.
+    /// </summary>
+    /// <remarks>
+    /// Per row rather than one "caller is Owner" flag because the listing is a bare array with no
+    /// envelope to put one on, and because the row is where the decision is: an Owner still gets
+    /// Connect on an added row and nothing extra on a private one.
+    /// </remarks>
+    bool CanAdd = false);
+
+/// <summary>A user's own API key for an <c>api_key</c> row. Never echoed back by any endpoint.</summary>
+public record ConnectPluginApiKeyRequest(string? ApiKey);
 
 public record InstallPluginRequest();
 
@@ -88,6 +137,17 @@ public record PluginConnectionStatusDto(
     IReadOnlyList<string> GrantedScopes);
 
 public record PluginConnectUrlDto(string Url);
+
+/// <summary>
+/// The answer to "connect this plugin": either it is already connected, or here is where to consent.
+/// </summary>
+/// <remarks>
+/// <see cref="Connected"/> is true when the provider's existing grant already covers the plugin, so
+/// it was connected on the spot and <see cref="Url"/> is null. Otherwise <see cref="Url"/> is the
+/// provider's consent page, exactly as <see cref="PluginConnectUrlDto"/> carries it.
+/// </remarks>
+/// <param name="ApiKeyRequired">An <c>api_key</c> row: there is no consent page, the user pastes a key on the plugins page.</param>
+public record PluginConnectResultDto(bool Connected, string? Url, bool ApiKeyRequired = false);
 
 /// <summary>
 /// What has to survive the browser round trip between building an authorization URL and handling
@@ -120,7 +180,13 @@ public record PluginOAuthStateDto(
     string PluginKey,
     string? CodeVerifier = null,
     string? Issuer = null,
-    string? Client = null);
+    string? Client = null,
+    /// <summary>
+    /// The scopes the authorization request asked for. WT-710. RFC 6749 §5.1 lets a token response
+    /// omit <c>scope</c> when it is identical to what was requested, so the exchange needs this to
+    /// know what was granted; reading an omitted scope as "nothing" marked every such grant partial.
+    /// </summary>
+    IReadOnlyList<string>? RequestedScopes = null);
 
 /// <summary>
 /// What a finished OAuth callback has to say, in the terms the redirect needs.
@@ -235,7 +301,17 @@ public record McpToolDescriptorDto(
     string Description,
     string Effect,
     IReadOnlyList<string> RequiredScopes,
-    JsonObject Parameters);
+    JsonObject Parameters,
+    /// <summary>
+    /// The calling user's choice for this tool (<c>PluginConstants.ToolPolicy</c>), resolved. WT-687.
+    /// </summary>
+    /// <remarks>
+    /// Per user, so it is filled in only on the way out to a user - the catalog and the tool list -
+    /// and never stored in <c>tools_json</c>, which is one manifest shared by everyone. Null there,
+    /// and omitted when written, so a manifest round trip does not start carrying it.
+    /// </remarks>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Policy = null);
 
 public record McpToolExecutionRequest(
     Guid? WorkspaceId,
@@ -244,7 +320,19 @@ public record McpToolExecutionRequest(
     JsonObject? Arguments,
     Guid? ConversationId,
     Guid? AssistantMessageId,
-    string? ConfirmationToken);
+    string? ConfirmationToken,
+    /// <summary>
+    /// The user answered a confirmation card with "Always allow". WT-687. Honoured only together
+    /// with a confirmation token that validates, so it can record a choice the user made on a real
+    /// card and nothing else.
+    /// </summary>
+    bool AlwaysAllow = false);
+
+/// <summary>
+/// Tool name to <c>allow</c>, <c>approval</c> or <c>blocked</c>. Tools not named keep their current
+/// choice; names the plugin does not have are ignored. WT-687.
+/// </summary>
+public record UpdatePluginToolPolicyRequest(Dictionary<string, string> Tools);
 
 public record McpToolExecutionResult(
     bool IsSuccess,
@@ -256,4 +344,11 @@ public record McpToolExecutionResult(
     string? PluginKey = null,
     string? PluginLabel = null,
     string? ConnectionStatus = null,
-    string? ConnectedAccountEmail = null);
+    string? ConnectedAccountEmail = null,
+    /// <summary>
+    /// The tool policy this call CHANGED, or null when it changed none. Set to
+    /// <c>PluginConstants.ToolPolicy.Allow</c> when the user answered the card with "Always
+    /// allow": the tool has stopped asking, and nothing else on the way back says so — the
+    /// assistant needs to be able to tell the user that the next one will just run.
+    /// </summary>
+    string? AppliedToolPolicy = null);

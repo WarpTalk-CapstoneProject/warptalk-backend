@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Entitlements;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Services;
@@ -18,6 +20,10 @@ public class PaymentAppService : IPaymentAppService
     private readonly IReadOnlyList<IPaymentEventHandler> _paymentEventHandlers;
     private readonly IWorkspaceClient _workspaceClient;
     private readonly IUsageRateCardRepository _rateCards;
+    private readonly ICustomerCatalogService? _catalog;
+    private readonly IEntitlementChangePublisher? _entitlements;
+    private readonly IAiServiceStateStore? _aiServiceStateStore;
+    private readonly IStripeRecurringGateway? _recurring;
 
     /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
     private const string CreditValueConfigKey = "credit_value_vnd";
@@ -35,15 +41,46 @@ public class PaymentAppService : IPaymentAppService
         IBillingMessagePublisher messagePublisher,
         IEnumerable<IPaymentEventHandler> paymentEventHandlers,
         IWorkspaceClient workspaceClient,
-        IUsageRateCardRepository rateCards)
+        IUsageRateCardRepository rateCards,
+        ICustomerCatalogService? catalog = null,
+        IEntitlementChangePublisher? entitlements = null,
+        IAiServiceStateStore? aiServiceStateStore = null,
+        IStripeRecurringGateway? recurring = null)
     {
+        _aiServiceStateStore = aiServiceStateStore;
+        _recurring = recurring;
         _rateCards = rateCards;
+        _catalog = catalog;
+        _entitlements = entitlements;
         _stripePaymentService = stripePaymentService;
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _paymentEventHandlers = paymentEventHandlers.ToList();
         _workspaceClient = workspaceClient;
+    }
+
+    private static bool IsExtraCreditsPurchase(string? paymentType) =>
+        string.Equals(paymentType, PaymentConstants.PaymentTypes.CreditTopUp, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(paymentType, PaymentConstants.PaymentTypes.CreditPack, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A subscription the workspace is using right now — <see cref="Subscription.GrantsPlanEntitlements"/>,
+    /// spelled out so EF can translate it: the same three facts the entitlement snapshot, the
+    /// paywall and the catalog's <c>hasActivePlan</c> are built from, so the checkout cannot sell
+    /// what the billing page hides (or the reverse). A cancelled-at-period-end plan still counts
+    /// (its status stays active until the period ends), and so does an overage suspension, which
+    /// is a service state rather than a status — a top-up is exactly how that one is cleared.
+    /// </summary>
+    private async Task<bool> HasLiveSubscriptionAsync(Guid workspaceId)
+    {
+        var now = DateTime.UtcNow;
+        return await _unitOfWork.SubscriptionRepository.AnyAsync(
+            s => s.WorkspaceId == workspaceId
+                && s.DeletedAt == null
+                && s.IsActive
+                && s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                && s.CurrentPeriodEnd >= now);
     }
 
     public async Task<Result<string>> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request)
@@ -55,6 +92,81 @@ public class PaymentAppService : IPaymentAppService
                 return Result.Failure<string>(
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
+            }
+
+            // #466: a plan is priced by the server and sold either as a recurring Stripe
+            // Subscription (auto-renew on) or as one paid period (auto-renew off).
+            if (string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.Subscription, StringComparison.OrdinalIgnoreCase))
+            {
+                return await CreatePlanCheckoutAsync(request);
+            }
+
+            // backend#467 — EXTRA CREDITS ARE SOLD ONLY ON TOP OF A PLAN. Checked before anything
+            // is priced or any Stripe session exists: a top-up or pack paid for by a workspace with
+            // no live subscription used to be charged and then grant nothing, because the handlers
+            // that credit it look for the active subscription after the money is taken.
+            if (IsExtraCreditsPurchase(request.PaymentType)
+                && !await HasLiveSubscriptionAsync(request.WorkspaceId))
+            {
+                _logger.LogInformation(
+                    "checkout_refused_no_subscription: WorkspaceId={WorkspaceId} PaymentType={PaymentType}",
+                    request.WorkspaceId,
+                    request.PaymentType);
+                return Result.Failure<string>(
+                    BillingMessageConstants.ErrorMessages.PurchaseRequiresSubscription,
+                    ErrorCodes.BillingPurchaseRequiresSubscription);
+            }
+
+            // G11: a catalog checkout — credit pack, add-on, or a plan with a coupon — is priced by
+            // the catalog, server-side, from the item the request names. Whatever Amount the
+            // client sent is discarded, exactly as for a top-up below.
+            var isCatalogType =
+                string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.CreditPack, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.AddOn, StringComparison.OrdinalIgnoreCase);
+            if (isCatalogType || !string.IsNullOrWhiteSpace(request.CouponCode)
+                || string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.Subscription, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_catalog is null)
+                {
+                    if (isCatalogType || !string.IsNullOrWhiteSpace(request.CouponCode))
+                    {
+                        return Result.Failure<string>(PackageCatalogConstants.Errors.NotAvailable, ErrorCodes.ValidationError);
+                    }
+                }
+                else
+                {
+                    var prepared = await _catalog.PrepareCheckoutAsync(request);
+                    if (!prepared.IsSuccess)
+                    {
+                        return Result.Failure<string>(prepared.Error!, prepared.ErrorCode ?? ErrorCodes.ValidationError);
+                    }
+
+                    var (pricedRequest, extras) = prepared.Value;
+                    if (extras.Line is not null || extras.StripeCouponId is not null || extras.StripePromotionCodeId is not null)
+                    {
+                        var catalogResult = await _stripePaymentService.CreateCatalogCheckoutSessionAsync(pricedRequest, extras);
+                        if (!catalogResult.IsSuccess)
+                        {
+                            _logger.LogError(
+                                "{Message}. WorkspaceId: {WorkspaceId}, PaymentType: {PaymentType}, Package: {PackageId}, Amount: {Amount} {Currency}, Reason: {Reason} ({ErrorCode})",
+                                BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession,
+                                pricedRequest.WorkspaceId,
+                                pricedRequest.PaymentType,
+                                pricedRequest.PackageId,
+                                pricedRequest.Amount,
+                                pricedRequest.Currency,
+                                catalogResult.Error,
+                                catalogResult.ErrorCode);
+                            return Result.Failure<string>(
+                                catalogResult.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                                ErrorCodes.InternalServerError);
+                        }
+
+                        return Result.Success(catalogResult.Value!);
+                    }
+
+                    request = pricedRequest;
+                }
             }
 
             // WT-429: a top-up is priced HERE, from the credit count, against the admin-editable
@@ -228,8 +340,10 @@ public class PaymentAppService : IPaymentAppService
                     session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.Credits, string.Empty),
                     System.Globalization.NumberStyles.Integer,
                     System.Globalization.CultureInfo.InvariantCulture,
-                    out var sessionCredits) ? sessionCredits : 0
-            ));
+                    out var sessionCredits) ? sessionCredits : 0,
+                StripeSubscriptionId: session.SubscriptionId ?? string.Empty,
+                StripeCustomerId: session.CustomerId ?? string.Empty
+            ).WithCatalogMetadata(session.Metadata));
             
             if (!processResult.IsSuccess)
             {
@@ -313,8 +427,12 @@ public class PaymentAppService : IPaymentAppService
 
             await PersistPaymentRecordAsync(context);
             await CreateInvoiceForPaidPaymentAsync(context);
+            await RecordCouponRedemptionAsync(context);
             await _unitOfWork.SaveChangesAsync();
+            await RunAfterCommitAsync(context);
             await PublishSubscriptionUpdateAsync(context);
+            await PublishEntitlementsAsync(context);
+            await PushAiServiceStateAsync(context);
 
             return Result.Success();
         }
@@ -339,6 +457,194 @@ public class PaymentAppService : IPaymentAppService
                 ErrorCodes.InternalServerError);
         }
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Deliberately NOT routed through <see cref="ProcessPaymentEventAsync"/>. That path persists a
+    /// payment row for whatever it is handed, raises invoices for paid ones, and dispatches on
+    /// status to handlers — Cancelled in particular ends the workspace's subscription. An expired
+    /// checkout is none of those things: nothing was paid, nothing is owed, and the subscription
+    /// is untouched. The only fact to record is that the payment waiting on this session will
+    /// never arrive.
+    ///
+    /// Only a PENDING payment moves. A payment that is already Paid (the buyer completed a second
+    /// session, or the completion and the expiry raced) must not be downgraded, and Failed or
+    /// Expired already say something at least as final. Plan and top-up checkouts record no row
+    /// until they complete, so for them there is nothing to mark and this acknowledges.
+    /// </remarks>
+    public async Task<Result> ExpireCheckoutSessionAsync(string stripeSessionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(stripeSessionId))
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed,
+                ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var payment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(
+                p => p.ProviderTransactionId == stripeSessionId);
+
+            if (payment is null)
+            {
+                _logger.LogInformation(
+                    "checkout_session_expired: no payment recorded for {SessionId}; nothing to expire.",
+                    stripeSessionId);
+                return Result.Success();
+            }
+
+            if (payment.Status != PaymentConstants.PaymentStatuses.Pending)
+            {
+                _logger.LogInformation(
+                    "checkout_session_expired: payment {PaymentId} for {SessionId} is already {Status}; left unchanged.",
+                    payment.Id,
+                    stripeSessionId,
+                    payment.Status);
+                return Result.Success();
+            }
+
+            payment.Status = PaymentConstants.PaymentStatuses.Expired;
+            payment.FailureReason = CheckoutSessionExpiredReason;
+            payment.UpdatedAt = DateTime.UtcNow;
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "checkout_session_expired: payment {PaymentId} for {SessionId} marked {Status}.",
+                payment.Id,
+                stripeSessionId,
+                payment.Status);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "checkout_session_expired: could not record expiry of {SessionId}", stripeSessionId);
+            return Result.Failure(
+                $"{BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed}: {ex.GetBaseException().Message}",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// #466: a plan checkout. The PRICE is the server's (<see cref="PlanPricing"/>) — a recurring
+    /// Price is charged every cycle without the browser, so it cannot be the client's number — and
+    /// the MODE follows the buyer's auto-renew choice:
+    ///   * on (default): mode=subscription on the plan's recurring Stripe Price, created on first
+    ///     use. Stripe saves the card and charges it each cycle; invoice.paid renews the row.
+    ///   * off: mode=payment for exactly one period. Nothing renews it; it ends at period end.
+    /// A coupon rides as a Stripe discount exactly as before (G11).
+    /// </summary>
+    private async Task<Result<string>> CreatePlanCheckoutAsync(CreateCheckoutSessionRequest request)
+    {
+        var slug = (request.PlanSlug ?? string.Empty).Trim().ToLowerInvariant();
+        var plan = string.IsNullOrEmpty(slug)
+            ? null
+            : await _unitOfWork.Plans.FirstOrDefaultAsync(p => p.Slug.ToLower() == slug && p.DeletedAt == null);
+        if (plan is null || !plan.IsActive)
+        {
+            return Result.Failure<string>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
+        }
+
+        var cycle = PlanPricing.NormalizeCycle(request.BillingCycle);
+        var amount = PlanPricing.PeriodTotal(plan, cycle);
+        var currency = PlanPricing.StripeCurrency(plan);
+        if (Math.Abs(request.Amount - amount) > 0.01m)
+        {
+            _logger.LogWarning(
+                "plan_checkout_amount_overridden: Plan={PlanSlug} Cycle={Cycle} ClientAmount={ClientAmount} ServerAmount={ServerAmount} {Currency}",
+                plan.Slug, cycle, request.Amount, amount, currency);
+        }
+
+        var autoRenew = request.AutoRenew ?? true;
+        request = request with { Amount = amount, Currency = currency, BillingCycle = cycle, PlanSlug = plan.Slug, AutoRenew = autoRenew };
+
+        var extras = CheckoutExtras.None;
+        if (_catalog is not null)
+        {
+            var prepared = await _catalog.PrepareCheckoutAsync(request);
+            if (!prepared.IsSuccess)
+            {
+                return Result.Failure<string>(prepared.Error!, prepared.ErrorCode ?? ErrorCodes.ValidationError);
+            }
+
+            (request, extras) = prepared.Value;
+        }
+
+        string? priceId = null;
+        if (autoRenew && _recurring is not null)
+        {
+            var price = await _recurring.EnsurePlanPriceAsync(plan, cycle, amount, currency);
+            if (!price.IsSuccess)
+            {
+                _logger.LogError(
+                    "plan_recurring_price_unavailable: Plan={PlanSlug} Cycle={Cycle} Reason={Reason}",
+                    plan.Slug, cycle, price.Error);
+                return Result.Failure<string>(
+                    BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                    ErrorCodes.InternalServerError);
+            }
+
+            priceId = price.Value;
+            // The ids are the plan's from now on; persisted before the session exists so a second
+            // checkout reuses them instead of looking the price up again.
+            await _unitOfWork.SaveChangesAsync();
+        }
+
+        var metadata = new Dictionary<string, string>(extras.Metadata)
+        {
+            [PaymentConstants.StripeMetadata.AutoRenew] = autoRenew ? "true" : "false",
+        };
+        var line = new CatalogCheckoutLine(
+            plan.Name,
+            string.IsNullOrWhiteSpace(plan.StripeProductId) ? null : plan.StripeProductId,
+            priceId,
+            amount,
+            currency,
+            1,
+            autoRenew ? BillingCycleResolver.ToPriceInterval(cycle) : null);
+
+        var result = await _stripePaymentService.CreateCatalogCheckoutSessionAsync(
+            request,
+            extras with { Line = line, Metadata = metadata });
+        if (!result.IsSuccess)
+        {
+            _logger.LogError(
+                "{Message}. WorkspaceId: {WorkspaceId}, Plan: {PlanSlug}, Cycle: {BillingCycle}, AutoRenew: {AutoRenew}, Amount: {Amount} {Currency}, Reason: {Reason} ({ErrorCode})",
+                BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession,
+                request.WorkspaceId,
+                plan.Slug,
+                cycle,
+                autoRenew,
+                amount,
+                currency,
+                result.Error,
+                result.ErrorCode);
+            return Result.Failure<string>(
+                result.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                ErrorCodes.InternalServerError);
+        }
+
+        return Result.Success(result.Value!);
+    }
+
+    /// <summary>#466: see <see cref="PaymentEventContext.AfterCommit"/>. Never fails the committed event.</summary>
+    private async Task RunAfterCommitAsync(PaymentEventContext context)
+    {
+        foreach (var action in context.AfterCommit)
+        {
+            try
+            {
+                await action(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "payment_event_after_commit_failed: WorkspaceId={WorkspaceId}", context.WorkspaceId);
+            }
+        }
+    }
+
+    private const string CheckoutSessionExpiredReason =
+        "The Stripe Checkout session expired before it was paid.";
 
     private async Task<Result<PaymentEventContext>> CreatePaymentEventContextAsync(StripePaymentEventRequest request)
     {
@@ -425,6 +731,119 @@ public class PaymentAppService : IPaymentAppService
             PdfUrl: context.Request.InvoicePdf));
 
         await _unitOfWork.InvoiceRepository.AddAsync(invoice);
+    }
+
+    /// <summary>
+    /// G11: a paid checkout that used a coupon is one redemption — written in the same save as the
+    /// payment, once per Stripe session, so the coupon's limits count money that actually moved.
+    /// </summary>
+    private async Task RecordCouponRedemptionAsync(PaymentEventContext context)
+    {
+        if (context.ParsedPaymentStatus != PaymentConstants.PaymentStatuses.Paid
+            || !Guid.TryParse(context.Request.CouponId, out var couponId)
+            || string.IsNullOrWhiteSpace(context.Request.StripeSessionId)
+            || _unitOfWork.CouponRedemptions is null
+            || await _unitOfWork.CouponRedemptions.ExistsForSessionAsync(context.Request.StripeSessionId))
+        {
+            return;
+        }
+
+        var itemType = context.Request.PaymentType switch
+        {
+            PaymentConstants.PaymentTypes.CreditPack => PackageCatalogConstants.ItemTypes.CreditPack,
+            PaymentConstants.PaymentTypes.AddOn => PackageCatalogConstants.ItemTypes.Addon,
+            _ => PackageCatalogConstants.ItemTypes.Plan,
+        };
+
+        Guid? itemId = Guid.TryParse(context.Request.PackageId, out var packageId) ? packageId : null;
+        if (itemId is null && itemType == PackageCatalogConstants.ItemTypes.Plan && !string.IsNullOrWhiteSpace(context.Request.PlanSlug))
+        {
+            var slug = context.Request.PlanSlug.ToLower();
+            itemId = (await _unitOfWork.Plans.FirstOrDefaultAsync(p => p.Slug.ToLower() == slug))?.Id;
+        }
+
+        var listPrice = context.Request.ListPrice > 0 ? context.Request.ListPrice : context.Request.Amount;
+        await _unitOfWork.CouponRedemptions.AddAsync(new CouponRedemption
+        {
+            Id = Guid.NewGuid(),
+            CouponId = couponId,
+            WorkspaceId = context.WorkspaceId,
+            UserId = context.UserId,
+            ItemType = itemType,
+            ItemId = itemId,
+            StripeSessionId = context.Request.StripeSessionId,
+            PaymentId = context.ExistingPayment?.Id ?? context.PaymentId,
+            Currency = (context.Request.Currency ?? string.Empty).ToLowerInvariant(),
+            DiscountAmount = Math.Max(0, listPrice - context.Request.Amount),
+            RedeemedAt = DateTime.UtcNow,
+        });
+    }
+
+    /// <summary>
+    /// G11: republish the entitlement snapshot after an add-on change. After the commit on
+    /// purpose — the resolver reads committed rows. A failure here is logged, not raised: the
+    /// payment is already recorded, and the hourly reconcile republishes every workspace anyway.
+    /// </summary>
+    private async Task PublishEntitlementsAsync(PaymentEventContext context)
+    {
+        // SubscriptionChanged too, not only add-ons. A plan bought or renewed through checkout set
+        // only SubscriptionChanged, so the workspace's snapshot kept saying whatever it said before
+        // — for a workspace renewing after expiry, "no active subscription" — and the WT-515 paywall
+        // refused the customer who had just paid until the hourly reconcile came round.
+        if ((!context.EntitlementsChanged && !context.SubscriptionChanged) || _entitlements is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _entitlements.EnqueueAsync(
+                context.WorkspaceId,
+                context.EntitlementsChanged
+                    ? EntitlementConstants.Reasons.AddonChanged
+                    : EntitlementConstants.Reasons.SubscriptionChanged);
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "addon_entitlements_publish_failed: WorkspaceId={WorkspaceId}; the hourly reconcile will republish.", context.WorkspaceId);
+        }
+    }
+
+    /// <summary>
+    /// Tells the AI pipeline the workspace's service state after a payment changed its subscription.
+    /// The expiry sweep marks an expired workspace suspended ('subscription_expired') in Redis, and
+    /// Start Translation refuses on that mark — so a renewal has to lift it, now, not when its 24h
+    /// TTL runs out. Pushes whatever the live subscription says, which for a top-up on an overage
+    /// suspension is still "suspended". Never fails the payment: it is committed already.
+    /// </summary>
+    private async Task PushAiServiceStateAsync(PaymentEventContext context)
+    {
+        if (!context.SubscriptionChanged
+            || _aiServiceStateStore is null
+            || context.Subscription is not { IsActive: true } subscription)
+        {
+            return;
+        }
+
+        try
+        {
+            var pushed = await _aiServiceStateStore.SetAiServiceStateAsync(
+                subscription.WorkspaceId,
+                subscription.ServiceState,
+                subscription.SuspendedReason);
+            if (!pushed.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "payment_ai_state_push_failed: WorkspaceId={WorkspaceId} Error={Error}",
+                    subscription.WorkspaceId,
+                    pushed.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "payment_ai_state_push_failed: WorkspaceId={WorkspaceId}", subscription.WorkspaceId);
+        }
     }
 
     private async Task PublishSubscriptionUpdateAsync(PaymentEventContext context)

@@ -5,6 +5,7 @@ using StackExchange.Redis;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
@@ -13,25 +14,34 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 /// Keeps the participant row in step with the hub socket: participant-offline marks a dropped
 /// socket DISCONNECTED, participant-online restores it when the socket comes back. Both are
 /// published by the Gateway's TranslationRoomHub.
+///
+/// Multi-replica: every replica receives every pub/sub message, and both handlers are status-guarded
+/// read-modify-writes with no concurrency token — a lagging replica could apply an old "offline"
+/// after another had applied the matching "online" and leave a connected user DISCONNECTED. Only
+/// the elected replica handles them (<see cref="IPubSubLeadership"/>), which restores the ordering
+/// a single replica had.
 /// </summary>
 public class ParticipantOfflineConsumerWorker : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ParticipantOfflineConsumerWorker> _logger;
+    private readonly IPubSubLeadership _leadership;
 
     public ParticipantOfflineConsumerWorker(
         IConnectionMultiplexer redis,
         IServiceProvider serviceProvider,
-        ILogger<ParticipantOfflineConsumerWorker> logger)
+        ILogger<ParticipantOfflineConsumerWorker> logger,
+        IPubSubLeadership leadership)
     {
         _redis = redis;
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _leadership = leadership;
     }
 
-    private const string ParticipantOfflineChannel = "translationRoom:participant-offline";
-    private const string ParticipantOnlineChannel = "translationRoom:participant-online";
+    public const string ParticipantOfflineChannel = "translationRoom:participant-offline";
+    public const string ParticipantOnlineChannel = "translationRoom:participant-online";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -56,6 +66,8 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
                     RedisChannel.Literal(ParticipantOnlineChannel),
                     async (channel, message) => await HandleParticipantOnlineAsync(message, stoppingToken));
 
+                _leadership.MarkSubscribed(ParticipantOfflineChannel);
+                _leadership.MarkSubscribed(ParticipantOnlineChannel);
                 _logger.LogInformation(
                     "ParticipantOfflineConsumerWorker started subscribing to '{OfflineChannel}' and '{OnlineChannel}'.",
                     ParticipantOfflineChannel,
@@ -78,6 +90,8 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
     {
         try
         {
+            if (!_leadership.ShouldHandle) return;
+
             if (!TryParse(message, "participant-offline", out var roomId, out var userId)) return;
 
             _logger.LogInformation("Processing offline event for Room: {RoomId}, User: {UserId}", roomId, userId);
@@ -106,6 +120,8 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
     {
         try
         {
+            if (!_leadership.ShouldHandle) return;
+
             if (!TryParse(message, "participant-online", out var roomId, out var userId)) return;
 
             using var scope = _serviceProvider.CreateScope();

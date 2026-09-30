@@ -97,6 +97,9 @@ public class TranslationRoomParticipantsController : ControllerBase
                 return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-699 / TC2103: already kicked.
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

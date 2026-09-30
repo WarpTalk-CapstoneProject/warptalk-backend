@@ -11,7 +11,9 @@ public record AdminNotificationSummaryDto(
     string TargetAudienceMode,
     Guid CreatedBy,
     DateTime CreatedAt,
-    DateTime UpdatedAt
+    DateTime UpdatedAt,
+    DateTime? SentAt,
+    int DeliveredCount
 );
 
 public record AdminNotificationDetailDto(
@@ -25,7 +27,9 @@ public record AdminNotificationDetailDto(
     string Payload, // JSON string
     Guid CreatedBy,
     DateTime CreatedAt,
-    DateTime UpdatedAt
+    DateTime UpdatedAt,
+    DateTime? SentAt,
+    int DeliveredCount
 );
 
 public record AdminNotificationPaginatedResponse(

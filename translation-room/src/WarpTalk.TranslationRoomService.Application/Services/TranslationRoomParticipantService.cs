@@ -359,6 +359,12 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant.UserId is { } participantUserId && room.IsHostedBy(participantUserId))
                 return Result.Failure(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
 
+            // WT-699 / TC2103: a second kick used to write KICKED again, re-publish the Kick
+            // command and answer 204 — the host was told they had removed somebody who had been
+            // gone for minutes. Nothing is written and the answer says what is actually true.
+            if (participant.Status == TranslationRoomParticipantStatuses.Kicked)
+                return Result.Failure(TranslationRoomConstants.ErrorParticipantAlreadyKicked, ErrorCodes.Conflict);
+
             participant.Status = TranslationRoomParticipantStatuses.Kicked;
             participant.UpdatedAt = DateTime.UtcNow;
 
@@ -396,6 +402,21 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             var participant = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
             if (participant == null)
                 return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
+
+            // WT-699 / TC2106: KICKED and REJECTED are TERMINAL, and pressing Leave must not
+            // launder them. This branch used to fall through to the LEFT write below, and LEFT is
+            // what TranslationRoomParticipantMapper.UpdateFrom reads as "already admitted" — so a
+            // kicked participant whose tab called Leave on its way out (the client does exactly
+            // that on ParticipantKicked) could simply join again and walk straight back in, the
+            // kick undone by their own departure. The host's decision outranks the guest's.
+            //
+            // Success rather than an error: the caller is leaving, and from their side the
+            // meeting is over either way. Nothing is written.
+            if (participant.Status is TranslationRoomParticipantStatuses.Kicked
+                or TranslationRoomParticipantStatuses.Rejected)
+            {
+                return Result.Success();
+            }
 
             var leftAt = DateTime.UtcNow;
 

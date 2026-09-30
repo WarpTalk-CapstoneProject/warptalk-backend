@@ -82,4 +82,11 @@ public interface IVoiceProfileService
     ///     cannot be used to discover which profile ids exist.
     /// </summary>
     Task<Result<VoiceSampleContent>> GetSampleAsync(Guid userId, Guid profileId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Re-queue a recording whose clone failed, from the stored copy — so a failure that was not
+    /// the recording's fault (the provider account, a provider outage) does not demand a new take.
+    /// Only valid while the profile is "clone_failed".
+    /// </summary>
+    Task<Result<VoiceProfileDto>> RetryCloneAsync(Guid userId, Guid profileId, CancellationToken ct = default);
 }

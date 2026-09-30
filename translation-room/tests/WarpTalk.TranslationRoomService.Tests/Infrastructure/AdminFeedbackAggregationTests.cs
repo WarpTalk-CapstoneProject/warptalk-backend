@@ -290,4 +290,45 @@ public sealed class AdminFeedbackAggregationTests : IAsyncLifetime
             .Should()
             .NotContain("UserId");
     }
+
+    [Fact]
+    public async Task Comment_search_matches_text_or_room_title_and_the_rating_range_narrows()
+    {
+        // Commented ratings in the window: 5 "The dub kept up…" on room A1, 5 "Good." on room B1.
+        var (byText, byTextTotal) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(Search: "DUB KEPT"));
+        byTextTotal.Should().Be(1);
+        byText[0].TranslationRoomId.Should().Be(_roomA1);
+
+        var roomB1Title = $"Room {_roomB1.ToString("N")[..4]}";
+        var (byTitle, _) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(Search: roomB1Title.ToLowerInvariant()));
+        byTitle.Should().ContainSingle().Which.TranslationRoomId.Should().Be(_roomB1);
+
+        var (_, unhappyTotal) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(MinRating: 1, MaxRating: 4));
+        unhappyTotal.Should().Be(0);
+
+        var (_, fiveTotal) = await _repository.GetAdminCommentsAsync(
+            Window, 1, 20, criteria: new AdminFeedbackCommentCriteria(MinRating: 5, MaxRating: 5));
+        fiveTotal.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task WT694_Lowest_rated_first_orders_by_overall_rating_then_newest()
+    {
+        // Seeded commented ratings in the window: 5 ("The dub kept up…", day 1) and 5 ("Good.",
+        // day 3). Add a 2 and a 1 so the order is decided by rating, not by time.
+        _context.TranslationRoomFeedbacks.AddRange(
+            Feedback(_roomA2, overall: 2, comment: "Audio dropped twice.", at: Anchor.AddDays(2).AddHours(3)),
+            Feedback(_roomB1, overall: 1, comment: "The dub lagged by seconds.", at: Anchor.AddDays(3).AddHours(2)));
+        await _context.SaveChangesAsync();
+
+        var (comments, total) = await _repository.GetAdminCommentsAsync(Window, 1, 20, lowestRatedFirst: true);
+
+        total.Should().Be(4);
+        comments.Select(c => c.OverallRating).Should().Equal(1, 2, 5, 5);
+        // Within one rating, newest first.
+        comments[2].Comment.Should().Be("Good.");
+    }
 }

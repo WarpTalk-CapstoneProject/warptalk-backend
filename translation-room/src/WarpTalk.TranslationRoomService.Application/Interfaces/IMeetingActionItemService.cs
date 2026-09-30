@@ -25,6 +25,17 @@ public interface IMeetingActionItemService
     Task<Result<List<MeetingActionItemDto>>> GetMineAsync(
         Guid workspaceId, Guid userId, string? status, CancellationToken ct = default);
 
+    /// <summary>
+    /// Create a task in a meeting on the caller's behalf. Anybody who can read the meeting may add
+    /// one; see <see cref="CreateActionItemRequest"/> for how its owner is decided.
+    /// </summary>
+    Task<Result<MeetingActionItemDto>> CreateAsync(
+        Guid roomId,
+        Guid userId,
+        string? userEmail,
+        CreateActionItemRequest request,
+        CancellationToken ct = default);
+
     Task<Result<MeetingActionItemDto>> UpdateStatusAsync(
         Guid itemId, Guid userId, string status, DateOnly? dueDate, CancellationToken ct = default);
 }

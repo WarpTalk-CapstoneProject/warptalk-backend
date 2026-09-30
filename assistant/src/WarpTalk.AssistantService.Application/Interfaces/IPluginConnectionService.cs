@@ -24,6 +24,37 @@ public interface IPluginConnectionService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Connects a plugin, going through the provider only when it has to.
+    /// </summary>
+    /// <remarks>
+    /// When the user already holds a live grant from this plugin's provider that covers every scope
+    /// the plugin needs - Meet after Calendar, say - the plugin is connected on the spot and no URL
+    /// is returned. Otherwise this is <see cref="GetConnectUrlAsync"/>, with the same gates.
+    /// A plugin that is already connected always goes to the provider: asking again is a reconnect.
+    /// </remarks>
+    Task<Result<PluginConnectResultDto>> ConnectAsync(
+        string pluginKey,
+        Guid userId,
+        string? client = null,
+        Guid? workspaceId = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Connects an <c>api_key</c> row with the user's own key.
+    /// </summary>
+    /// <remarks>
+    /// The key is verified by listing the server's tools with it before anything is stored, so a
+    /// wrong key is refused in the dialog it was typed into. On success it is kept encrypted in the
+    /// user's connection, the plugin is marked connected and its tool list is synced.
+    /// </remarks>
+    Task<Result<PluginCatalogItemDto>> ConnectWithApiKeyAsync(
+        string pluginKey,
+        Guid userId,
+        string? apiKey,
+        Guid? workspaceId = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Completes a callback that arrived on the legacy per-plugin path,
     /// <c>{pluginKey}/oauth/callback</c>.
     /// </summary>

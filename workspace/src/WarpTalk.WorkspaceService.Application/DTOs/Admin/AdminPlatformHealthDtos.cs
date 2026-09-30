@@ -30,7 +30,58 @@ public sealed record AdminPlatformHealthResponse(
     IReadOnlyList<AdminHealthDeadLetter> DeadLetters,
     IReadOnlyList<AdminHealthStageLatency> StageLatencies,
     IReadOnlyList<AdminHealthAlert> Alerts,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings)
+{
+    /// <summary>
+    /// The headline: how many meetings worked over the last 24 hours. Null when the counters have
+    /// no series yet (a fresh deploy, or the translation-room service not exporting), which is not
+    /// the same as zero meetings.
+    /// </summary>
+    public AdminHealthMeetingOutcomes? Meetings { get; init; }
+
+    /// <summary>STT, MT and TTS attempt outcomes over the last hour, one row per stage.</summary>
+    public IReadOnlyList<AdminHealthStageOutcome> StageOutcomes { get; init; } = [];
+
+    /// <summary>
+    /// Workspace outbox events that exhausted their retries. Null when it could not be read. The
+    /// admin page that listed them was retired; the count stays here so they cannot pile up unseen.
+    /// </summary>
+    public AdminHealthOutboxDeadLetters? OutboxDeadLetters { get; init; }
+
+    /// <summary>
+    /// Same-origin path the embedded Grafana is served under (e.g. <c>/grafana</c>), or null where
+    /// no Grafana is published — local and CI, where the screen simply leaves the charts out.
+    /// </summary>
+    public string? GrafanaEmbedPath { get; init; }
+}
+
+/// <summary>
+/// Meeting outcomes over a window. "Reached live" means at least two people joined AND a caption
+/// was delivered to the room; a meeting that ended without both counts as failed.
+/// </summary>
+/// <param name="EndedNormally">Reached live and the host ended it.</param>
+/// <param name="EndedAbandoned">Reached live, then everybody left and the sweep ended it.</param>
+/// <param name="Failed">Ended without ever reaching live.</param>
+/// <param name="SuccessRate">ReachedLive / ended, 0..1; null when nothing ended in the window.</param>
+/// <param name="LiveRooms">Rooms in a live status at the last sweep (≤ 12 min old); null if unknown.</param>
+/// <param name="OccupiedRooms">Of those, rooms with at least one person in them.</param>
+public sealed record AdminHealthMeetingOutcomes(
+    string Window,
+    long Started,
+    long Ended,
+    long ReachedLive,
+    long EndedNormally,
+    long EndedAbandoned,
+    long Failed,
+    double? SuccessRate,
+    long? LiveRooms,
+    long? OccupiedRooms);
+
+/// <param name="Failed">error + timeout + vendor_error attempts.</param>
+/// <param name="SuccessRate">Ok / (Ok + Failed), 0..1; null with no attempts in the window.</param>
+public sealed record AdminHealthStageOutcome(string Stage, long Ok, long Failed, long DeadLettered, double? SuccessRate);
+
+public sealed record AdminHealthOutboxDeadLetters(long Count, DateTime? OldestAt);
 
 /// <summary>One Prometheus scrape target: an exporter or an application job.</summary>
 public sealed record AdminHealthTarget(string Job, string Instance, bool IsUp);

@@ -15,17 +15,20 @@ public class NotificationHub : Hub
 {
     private readonly IConnectionManager _connectionManager;
     private readonly IPresenceNotifier _presence;
+    private readonly IPresenceQueryService _presenceQuery;
     private readonly ILogger<NotificationHub> _logger;
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient _grpcClient;
 
     public NotificationHub(
         IConnectionManager connectionManager,
         IPresenceNotifier presence,
+        IPresenceQueryService presenceQuery,
         ILogger<NotificationHub> logger,
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient)
     {
         _connectionManager = connectionManager;
         _presence = presence;
+        _presenceQuery = presenceQuery;
         _logger = logger;
         _grpcClient = grpcClient;
     }
@@ -166,6 +169,39 @@ public class NotificationHub : Hub
         if (string.IsNullOrWhiteSpace(workspaceId)) return;
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, WorkspaceGroupName(workspaceId));
         _logger.LogDebug("NotificationHub: Connection {ConnectionId} left group {GroupName}", Context.ConnectionId, WorkspaceGroupName(workspaceId));
+    }
+
+    /// <summary>
+    /// The starting presence for a set of users, over the socket the client already holds.
+    ///
+    /// Live changes already arrive here as <c>UserPresenceChanged</c>; this is the snapshot they
+    /// apply on top of, and it replaces the web client's <c>POST /api/v1/presence/query</c> (which
+    /// stays for older clients). Same answer from the same <see cref="IPresenceQueryService"/>:
+    /// only users who share a workspace with the caller are looked up, everyone else — and every
+    /// id past <see cref="PresenceQueryService.MaxUsersPerQuery"/> is simply not answered — reads as
+    /// Offline, and the result is keyed by the ids exactly as the caller sent them.
+    ///
+    /// Strings rather than <see cref="Guid"/>s so the shape matches the REST request and one
+    /// malformed id cannot fail the binding of a whole batch that other components' ids ride in.
+    ///
+    /// Safe across gateway replicas: the return value goes straight back on the caller's own
+    /// connection (no group send, no backplane, no leader-elected relay involved), and both inputs
+    /// — Redis presence and WorkspaceService membership — are shared, so any replica answers the same.
+    /// </summary>
+    public async Task<PresenceQueryResponse> QueryPresence(IReadOnlyList<string>? userIds)
+    {
+        var userId = GetUserId();
+
+        // Hub invocations never pass through the HTTP rate limiter; see PresenceQueryThrottle.
+        if (!PresenceQueryThrottle.For(Context.Items).TryAcquire(DateTimeOffset.UtcNow))
+        {
+            _logger.LogWarning(
+                "NotificationHub: QueryPresence throttled for {UserId} (ConnectionId: {ConnectionId})",
+                userId, Context.ConnectionId);
+            throw new HubException("Presence query rate limit exceeded. Retry later.");
+        }
+
+        return await _presenceQuery.QueryAsync(userId, userIds, Context.ConnectionAborted);
     }
 
     // ── Helpers ────────────────────────────────────────────

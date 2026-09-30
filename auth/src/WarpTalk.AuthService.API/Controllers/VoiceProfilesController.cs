@@ -144,6 +144,26 @@ public class VoiceProfilesController : ControllerBase
         return File(sample.Content, sample.ContentType);
     }
 
+    /// <summary>
+    /// Clone a recording again after its clone failed, from the stored copy — the way out of
+    /// "Couldn't clone" when the recording was never the problem. Calling it on a profile that is
+    /// not "clone_failed" is an INVALID_STATE 400, never a second paid clone.
+    /// </summary>
+    [Authorize]
+    [HttpPost("{profileId:guid}/clone/retry")]
+    public async Task<IActionResult> RetryClone(Guid profileId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.RetryCloneAsync(userId.Value, profileId, ct);
+        if (!result.IsSuccess)
+        {
+            return StatusCode(ApiErrorStatus.For(result.ErrorCode), new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [Authorize]
     [HttpDelete("{profileId:guid}")]
     public async Task<IActionResult> DeleteProfile(Guid profileId, CancellationToken ct)

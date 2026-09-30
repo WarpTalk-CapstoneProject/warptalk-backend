@@ -64,16 +64,21 @@ public class AdminWorkspacesControllerTests
         LifecycleHistory: Array.Empty<AdminWorkspaceLifecycleEventDto>());
 
     [Fact]
-    public void Controller_IsGatedOnTheSharedSystemAdminPolicy()
+    public void ReadsNeedWorkspacesRead_AndLifecycleChangesNeedWorkspacesLifecycle()
     {
-        var authorize = typeof(AdminWorkspacesController)
-            .GetCustomAttributes<AuthorizeAttribute>(inherit: true)
-            .SingleOrDefault();
-
-        Assert.NotNull(authorize);
-        Assert.Equal(SystemAdminAuthorization.PolicyName, authorize!.Policy);
-        // The shared policy is the single gate — no per-controller role string alongside it.
-        Assert.Null(authorize.Roles);
+        // G10: one staff permission per action, and no role string anywhere on the controller.
+        Assert.Empty(typeof(AdminWorkspacesController).GetCustomAttributes<AuthorizeAttribute>(inherit: true));
+        foreach (var (action, permission) in new[]
+        {
+            (nameof(AdminWorkspacesController.GetDirectory), AdminPermissions.WorkspacesRead),
+            (nameof(AdminWorkspacesController.GetDetail), AdminPermissions.WorkspacesRead),
+            (nameof(AdminWorkspacesController.Suspend), AdminPermissions.WorkspacesLifecycle),
+            (nameof(AdminWorkspacesController.Delete), AdminPermissions.WorkspacesLifecycle),
+        })
+        {
+            Assert.Equal(permission, typeof(AdminWorkspacesController).GetMethod(action)!
+                .GetCustomAttribute<RequirePermissionAttribute>()!.Permission);
+        }
     }
 
     [Fact]

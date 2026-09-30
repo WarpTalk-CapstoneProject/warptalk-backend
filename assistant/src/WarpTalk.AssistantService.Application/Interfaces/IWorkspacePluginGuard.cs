@@ -1,52 +1,77 @@
+using WarpTalk.AssistantService.Application.Helpers;
+using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.Shared;
 
 namespace WarpTalk.AssistantService.Application.Interfaces;
 
 /// <summary>
-/// The one workspace-level plugin rule, applied wherever a plugin is reached for. WT-646.
+/// The workspace plugin rule, applied wherever a plugin is reached for.
 /// </summary>
 /// <remarks>
-/// A workspace owner configures exactly one thing: whether members may use plugins in that
-/// workspace at all. This is where that boolean is read and turned into a refusal, so the
-/// no-workspace case and the wording of the refusal are written once rather than at each of the
-/// four call sites - the catalog, an install, a connect, and the tool list and execution.
+/// WT-646 made this one boolean per workspace (AllowAnyPlugins). The marketplace (2026-09-17) makes
+/// it per plugin: a plugin is usable in a workspace iff that workspace has added it, or it is a
+/// private plugin the workspace owns. See <see cref="WorkspacePluginAvailability"/> for how a
+/// workspace that has never curated its list is still judged by the old switch.
 /// </remarks>
 public interface IWorkspacePluginGuard
 {
     /// <summary>
-    /// Whether plugins may be used in this workspace.
+    /// What a workspace has, with no check on who is asking. For callers that have already
+    /// authorised the caller themselves.
     /// </summary>
-    /// <remarks>
-    /// A null <paramref name="workspaceId"/> succeeds without any round trip. That is every
-    /// personal call - the plugins settings page, an install, a connect - made outside a workspace
-    /// context, and it must permit everything: workspace policy governs what a workspace's members
-    /// may do IN that workspace, and a request naming no workspace has none to apply.
-    /// </remarks>
-    Task<Result> CanUsePluginsAsync(Guid? workspaceId, CancellationToken ct = default);
+    Task<WorkspacePluginAvailability> GetAvailabilityAsync(Guid workspaceId, CancellationToken ct = default);
 
     /// <summary>
-    /// The same rule for a call that is <em>inside</em> a workspace, where a missing or borrowed
-    /// workspace id is a refusal rather than an absence.
+    /// What a workspace has, for an active member of it. Fails closed on a missing workspace and on
+    /// a caller who does not belong to the one they named.
     /// </summary>
     /// <remarks>
-    /// Two things separate this from <see cref="CanUsePluginsAsync"/>, and both exist because the
-    /// workspace id arrives as an ordinary field of a request the caller composes.
-    /// <para>
-    /// It fails closed on null. The permissive null branch above is correct for the personal
-    /// surfaces - the plugins settings page genuinely has no workspace - but on the tool paths it
-    /// meant the workspace's one plugin control could be defeated by omitting a field. A tool call
-    /// always happens inside a conversation, and ChatRequestMessage.workspace_id is non-optional,
-    /// so nothing legitimate arrives here without one.
-    /// </para>
-    /// <para>
-    /// And it checks that the caller actually belongs to the workspace they named. Otherwise the id
-    /// is not an identity but a choice of policy: a member of a locked-down workspace could name
-    /// their own permissive one and be judged by it, and could stamp any workspace's id onto the
-    /// audit rows its Owner reads.
-    /// </para>
+    /// The workspace id arrives as a field of a request the caller composes. Without the membership
+    /// check it would not be an identity but a choice of policy: a member of a workspace without a
+    /// plugin could name one that has it and be judged by that one instead.
     /// </remarks>
-    Task<Result> CanUsePluginsInWorkspaceAsync(
+    Task<Result<WorkspacePluginAvailability>> GetAvailabilityForMemberAsync(
         Guid? workspaceId,
         Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The personal surfaces: install and connect, from the plugins page.
+    /// </summary>
+    /// <remarks>
+    /// A null <paramref name="workspaceId"/> permits any marketplace plugin, as before: installing
+    /// and connecting are personal, and the plugin is stopped where it is used - at tool execution,
+    /// inside a workspace. A PRIVATE plugin is different, because merely being able to see and
+    /// connect it reveals another workspace's MCP server: it is permitted only to an active member
+    /// of the workspace that owns it, and never under another workspace's id.
+    /// <para>
+    /// A workspace id, when one IS sent, is held to the same standard as on the tool path: the
+    /// caller must be an active member of it before its list is consulted, for a marketplace plugin
+    /// as much as a private one. Only the absence of an id is the legacy case.
+    /// </para>
+    /// <para>
+    /// That legacy case is a known, deliberate gap rather than an oversight. The personal plugins
+    /// page and clients older than the marketplace send no workspace, and a user may belong to
+    /// several workspaces with different lists, so there is no single list to judge them by. What
+    /// it costs is small and bounded: a user can install and connect a marketplace plugin none of
+    /// their workspaces has added, but can never run it - execution goes through
+    /// <see cref="CanUsePluginInWorkspaceAsync"/>, which refuses a missing workspace outright.
+    /// Closing it means making every client send a workspace first.
+    /// </para>
+    /// </remarks>
+    Task<Result> CanUsePluginAsync(
+        Guid? workspaceId,
+        Guid userId,
+        Plugin plugin,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The same rule for a call that is <em>inside</em> a workspace - running a tool - where a
+    /// missing or borrowed workspace id is a refusal rather than an absence.
+    /// </summary>
+    Task<Result> CanUsePluginInWorkspaceAsync(
+        Guid? workspaceId,
+        Guid userId,
+        Plugin plugin,
         CancellationToken ct = default);
 }

@@ -46,10 +46,18 @@ public static class AdminSubscriptionRevenue
     /// an MRR figure comes out flattering and wrong, so the trial window is excluded explicitly
     /// rather than by hoping the status covers it.
     /// </summary>
-    public static bool IsRecurring(AdminSubscriptionRow row)
+    public static bool IsRecurring(AdminSubscriptionRow row) => IsRecurring(row, DateTime.UtcNow);
+
+    /// <summary>
+    /// <see cref="IsRecurring(AdminSubscriptionRow)"/> against a caller's clock. Insights takes its
+    /// time from an injected <see cref="TimeProvider"/>; judging the trial window by the wall clock
+    /// instead made its MRR disagree with its own "right now" — and turned a fixed-time test into
+    /// one that failed once the real date passed the seeded trial's end.
+    /// </summary>
+    public static bool IsRecurring(AdminSubscriptionRow row, DateTime now)
         => row.Status == SubscriptionConstants.SubscriptionStatuses.Active
            && row.CancelledAt == null
-           && (row.TrialEndsAt == null || row.TrialEndsAt <= DateTime.UtcNow);
+           && (row.TrialEndsAt == null || row.TrialEndsAt <= now);
 
     /// <summary>
     /// What one subscription is worth per month, in its own currency.

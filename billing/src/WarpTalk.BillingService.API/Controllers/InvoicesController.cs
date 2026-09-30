@@ -1,12 +1,19 @@
 using System;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -17,9 +24,12 @@ public class InvoicesController : ControllerBase
 {
     private readonly IInvoiceService _invoiceService;
 
-    public InvoicesController(IInvoiceService invoiceService)
+    private readonly IStaffAccessResolver? _staffAccess;
+
+    public InvoicesController(IInvoiceService invoiceService, IStaffAccessResolver? staffAccess = null)
     {
         _invoiceService = invoiceService;
+        _staffAccess = staffAccess;
     }
 
     [HttpGet("workspace/{workspaceId}")]
@@ -38,9 +48,9 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetGlobalInvoices(
-        [FromQuery] PaginationQuery query,
+        [FromQuery] GlobalInvoiceQuery query,
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);
@@ -51,23 +61,47 @@ public class InvoicesController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// WT-260: plain [Authorize], deliberately. A workspace Owner is not a JWT claim, and the only
+    /// route value is an invoice id, which RequireWorkspaceRole would mistake for a workspace id.
+    /// The service resolves the invoice's workspace and checks the caller's role there.
+    /// </summary>
     [HttpPost("{invoiceId}/checkout")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
     public async Task<ActionResult<object>> CreateInvoiceCheckout(
         Guid invoiceId,
         CancellationToken cancellationToken)
     {
-        var result = await _invoiceService.CreateInvoiceCheckoutSessionAsync(invoiceId, cancellationToken);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var caller = new InvoiceCheckoutCaller(
+            userId.Value,
+            User.FindFirstValue(ClaimTypes.Email) ?? string.Empty,
+            // G10: paying somebody else's invoice is a subscription action, not a read.
+            _staffAccess is not null
+                && await _staffAccess.StaffOverrideAllowsAsync(User, AdminPermissions.BillingSubscriptionsManage, cancellationToken));
+
+        var result = await _invoiceService.CreateInvoiceCheckoutSessionAsync(invoiceId, caller, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            var error = new ApiErrorResponse(
+                result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                result.ErrorCode);
+            return result.ErrorCode switch
+            {
+                ErrorCodes.NotFound => NotFound(error),
+                ErrorCodes.Forbidden => StatusCode(StatusCodes.Status403Forbidden, error),
+                ErrorCodes.InternalServerError => StatusCode(StatusCodes.Status500InternalServerError, error),
+                _ => BadRequest(error),
+            };
         }
 
         return Ok(new { url = result.Value });
     }
 
     [HttpPost("{invoiceId}/mark-paid")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditWorkspaceActions.InvoiceMarkedPaid, AdminAuditEntityTypes.Invoice, typeof(Invoice), EntityRouteKey = "invoiceId")]
+    [RequirePermission(AdminPermissions.BillingPaymentsManage)]
     public async Task<ActionResult<InvoiceDto>> MarkInvoicePaid(
         Guid invoiceId,
         CancellationToken cancellationToken)

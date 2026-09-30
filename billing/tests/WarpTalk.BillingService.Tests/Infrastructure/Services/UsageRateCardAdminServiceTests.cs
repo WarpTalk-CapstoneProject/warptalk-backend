@@ -332,6 +332,13 @@ public class UsageRateCardAdminServiceTests
                 It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .Callback<string, decimal, CancellationToken>((key, _, _) => writtenKeys.Add(key))
             .Returns(Task.CompletedTask);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00003m);
+        // The stored rate differs from the request's, so the request is an explicit override and is written.
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
 
         var result = await service.UpdatePricingConfigAsync(request);
 
@@ -339,15 +346,138 @@ public class UsageRateCardAdminServiceTests
         result.Value!.CreditValueVnd.Should().Be(request.CreditValueVnd);
         result.Value.FxRateUsdVnd.Should().Be(request.FxRateUsdVnd);
 
-        // Every configured key is written, each exactly once, inside a single transaction.
-        writtenKeys.Should().HaveCount(12).And.OnlyHaveUniqueItems();
+        // Every configured key is written, each exactly once, inside a single transaction. The
+        // request left the Cartesia price out, so it is not written — and not reset — but echoed.
+        writtenKeys.Should().HaveCount(12).And.OnlyHaveUniqueItems().And.NotContain("cartesia_usd_per_credit");
+        result.Value.CartesiaUsdPerCredit.Should().Be(0.00003m);
         calls.Should().Equal("begin", "commit");
+    }
+
+    /// <summary>
+    /// WT-690: the admin UI no longer sends the credit value or the per-credit price floor. Both
+    /// are money-critical (top-up pricing, plan/contract floor), so leaving them out must neither
+    /// write them nor reset them to a default — the stored values are echoed back untouched.
+    /// </summary>
+    [Fact]
+    public async Task UpdatePricingConfigAsync_WithoutCreditValueOrPriceFloor_KeepsTheStoredValues()
+    {
+        var (service, repository, calls) = CreateService();
+        var written = new Dictionary<string, decimal>();
+        repository
+            .Setup(r => r.UpsertPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
+            .Returns(Task.CompletedTask);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("credit_value_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(312m);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("minimum_price_per_credit_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2.6m);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00003m);
+        // The stored rate differs from the request's, so the request is an explicit override and is written.
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
+
+        var result = await service.UpdatePricingConfigAsync(
+            ValidPricingConfig() with { CreditValueVnd = null, MinimumPricePerCreditVnd = null });
+
+        result.IsSuccess.Should().BeTrue();
+        written.Should().NotContainKey("credit_value_vnd").And.NotContainKey("minimum_price_per_credit_vnd");
+        written.Should().HaveCount(10);
+        result.Value!.CreditValueVnd.Should().Be(312m);
+        result.Value.MinimumPricePerCreditVnd.Should().Be(2.6m);
+        calls.Should().Equal("begin", "commit");
+    }
+
+    [Fact]
+    public async Task UpdatePricingConfigAsync_NonPositivePriceFloor_WhenSent_IsStillRejected()
+    {
+        var (service, _, calls) = CreateService();
+
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { MinimumPricePerCreditVnd = 0m });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task UpdatePricingConfigAsync_WithCartesiaPrice_WritesIt()
+    {
+        var (service, repository, _) = CreateService();
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
+        var written = new Dictionary<string, decimal>();
+        repository
+            .Setup(r => r.UpsertPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
+            .Returns(Task.CompletedTask);
+
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { CartesiaUsdPerCredit = 0.0000392m });
+
+        result.IsSuccess.Should().BeTrue();
+        written.Should().HaveCount(13);
+        written["cartesia_usd_per_credit"].Should().Be(0.0000392m);
+        result.Value!.CartesiaUsdPerCredit.Should().Be(0.0000392m);
+    }
+
+    [Theory]
+    [InlineData(-0.0001)]
+    [InlineData(2)]
+    public async Task UpdatePricingConfigAsync_ImplausibleCartesiaPrice_IsRejected(double price)
+    {
+        var (service, _, calls) = CreateService();
+
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { CartesiaUsdPerCredit = (decimal)price });
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The FX rate is Stripe's now. A client echoing the whole form back sends the rate it was shown;
+    /// that must not be read as an override (and must not write the key), or one unrelated save would
+    /// switch Stripe off for good.
+    /// </summary>
+    [Fact]
+    public async Task UpdatePricingConfigAsync_SameFxRateAsStored_IsNotAnOverride()
+    {
+        var (service, repository, _) = CreateService();
+        var written = new Dictionary<string, decimal>();
+        repository
+            .Setup(r => r.UpsertPricingConfigValueAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
+            .Returns(Task.CompletedTask);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(25_000m);
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00003m);
+
+        var echoed = await service.UpdatePricingConfigAsync(ValidPricingConfig());
+        var omitted = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { FxRateUsdVnd = null });
+
+        echoed.IsSuccess.Should().BeTrue();
+        omitted.IsSuccess.Should().BeTrue();
+        written.Should().NotContainKey("fx_rate_usd_vnd");
+        omitted.Value!.FxRateUsdVnd.Should().Be(25_000m);
     }
 
     [Fact]
     public async Task UpdatePricingConfigAsync_WriteThrowsMidway_RollsBackTheWholeBatch()
     {
         var (service, repository, calls) = CreateService();
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync("fx_rate_usd_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(26_300m);
         var request = ValidPricingConfig();
         var written = 0;
 
@@ -396,13 +526,15 @@ public class UsageRateCardAdminServiceTests
         var result = await service.GetPricingConfigAsync();
 
         result.IsSuccess.Should().BeTrue();
-        requestedDefaults.Should().HaveCount(12);
+        requestedDefaults.Should().HaveCount(13);
 
         var config = result.Value!;
         config.FxRateUsdVnd.Should().BePositive();
         config.CreditValueVnd.Should().BePositive();
         config.Formula.Should().NotBeNullOrWhiteSpace();
         config.ResolverKey.Should().NotBeNullOrWhiteSpace();
+        // No row yet: the Startup plan's $49 / 1,250,000 credits.
+        config.CartesiaUsdPerCredit.Should().Be(0.0000392m);
     }
 
     [Fact]
@@ -502,6 +634,86 @@ public class UsageRateCardAdminServiceTests
         result.ErrorCode.Should().Be(ErrorCodes.InternalServerError);
         result.Error.Should().NotContain("deadlock detected");
         calls.Should().Equal("begin", "deactivate", "rollback");
+    }
+
+    // ---------------------------------------------------------------------
+    // SetProviderCostAsync — the provider cost of a credit-unit (CRD) card
+    // ---------------------------------------------------------------------
+
+    private static UsageRateCardDto CrdCard(decimal? cost = null, bool active = true) =>
+        new(Guid.NewGuid(), "AUDIO_DUBBING_STANDARD", "second", "", "", null, null, 0.25m, "CRD", cost, null,
+            DateTime.UtcNow, active ? null : DateTime.UtcNow, active);
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0.0)]
+    [InlineData(-0.0001)]
+    public async Task SetProviderCostAsync_MissingZeroOrNegativeCost_IsRejectedBeforeOpeningATransaction(double? cost)
+    {
+        var (service, _, calls) = CreateService();
+
+        var result = await service.SetProviderCostAsync(
+            Guid.NewGuid(), new SetRateCardProviderCostRequest(cost is null ? null : (decimal)cost.Value));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SetProviderCostAsync_UnknownId_RollsBackAndReportsNotFound()
+    {
+        var (service, repository, calls) = CreateService();
+        var id = Guid.NewGuid();
+        repository
+            .Setup(r => r.SetCreditRateCardProviderCostAsync(id, 0.00049m, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("set"))
+            .ReturnsAsync((RateCardProviderCostOutcome?)null);
+
+        var result = await service.SetProviderCostAsync(id, new SetRateCardProviderCostRequest(0.00049m));
+
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        calls.Should().Equal("begin", "set", "rollback");
+    }
+
+    [Theory]
+    [InlineData("VND", true, "Only credit-unit (CRD) cards")]
+    [InlineData("CRD", false, "retired")]
+    public async Task SetProviderCostAsync_RefusedCard_RollsBackWithTheReason(string currency, bool active, string reason)
+    {
+        var (service, repository, calls) = CreateService();
+        var card = CrdCard(active: active) with { Currency = currency };
+        repository
+            .Setup(r => r.SetCreditRateCardProviderCostAsync(card.Id, 0.00049m, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("set"))
+            .ReturnsAsync(new RateCardProviderCostOutcome(RateCardProviderCostChange.Refused, card));
+
+        var result = await service.SetProviderCostAsync(card.Id, new SetRateCardProviderCostRequest(0.00049m));
+
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Contain(reason);
+        calls.Should().Equal("begin", "set", "rollback");
+    }
+
+    [Theory]
+    [InlineData(RateCardProviderCostChange.Recorded)]
+    [InlineData(RateCardProviderCostChange.Superseded)]
+    [InlineData(RateCardProviderCostChange.Unchanged)]
+    public async Task SetProviderCostAsync_AcceptedChange_CommitsAndReturnsTheCardInEffect(RateCardProviderCostChange change)
+    {
+        var (service, repository, calls) = CreateService();
+        var id = Guid.NewGuid();
+        var inEffect = CrdCard(cost: 0.00049m);
+        repository
+            .Setup(r => r.SetCreditRateCardProviderCostAsync(id, 0.00049m, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("set"))
+            .ReturnsAsync(new RateCardProviderCostOutcome(change, inEffect));
+
+        var result = await service.SetProviderCostAsync(id, new SetRateCardProviderCostRequest(0.00049m));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(inEffect);
+        calls.Should().Equal("begin", "set", "commit");
     }
 
     // ---------------------------------------------------------------------

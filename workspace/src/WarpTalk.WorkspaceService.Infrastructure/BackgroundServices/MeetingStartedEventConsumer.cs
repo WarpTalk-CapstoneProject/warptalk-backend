@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.Shared.Events;
@@ -111,9 +112,16 @@ public class MeetingStartedEventConsumer : BackgroundService
         var storage = scope.ServiceProvider.GetRequiredService<IWorkspaceDocumentStorage>();
 
         // 1. Get all AiEligible documents for this workspace
-        var documents = await unitOfWork.WorkspaceDocumentRepository.FindAsync(
+        //
+        // AiEligible says the document WAS indexed; IsIndexEligible says it may still be used.
+        // They drift apart the moment a document is rejected, made private, restricted, has AI
+        // switched off or is staged for deletion, and this snapshot is handed to the model
+        // verbatim — so it asks the same question the embedding pipeline does. WT-872.
+        var documents = (await unitOfWork.WorkspaceDocumentRepository.FindAsync(
             d => d.WorkspaceId == workspaceId && d.AiEligible && d.DeletedAt == null && d.IngestionStatus == "completed" && d.LastIndexedAt != null,
-            ct: ct);
+            ct: ct))
+            .Where(d => d.IsIndexEligible())
+            .ToList();
 
         if (!documents.Any())
         {

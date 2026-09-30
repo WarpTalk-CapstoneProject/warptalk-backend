@@ -59,19 +59,27 @@ public class SharedMinutesController : ControllerBase
     /// </summary>
     [HttpGet("{token}/export.docx")]
     public Task<IActionResult> ExportDocx(
-        string token, [FromQuery] string? template = null, CancellationToken ct = default) =>
-        ExportAsync(token, template, "docx", ct);
+        string token,
+        [FromQuery] string? template = null,
+        [FromQuery] string? lang = null,
+        [FromQuery] string? mode = null,
+        CancellationToken ct = default) =>
+        ExportAsync(token, template, "docx", lang, mode, ct);
 
     [HttpGet("{token}/export.pdf")]
     public Task<IActionResult> ExportPdf(
-        string token, [FromQuery] string? template = null, CancellationToken ct = default) =>
-        ExportAsync(token, template, "pdf", ct);
+        string token,
+        [FromQuery] string? template = null,
+        [FromQuery] string? lang = null,
+        [FromQuery] string? mode = null,
+        CancellationToken ct = default) =>
+        ExportAsync(token, template, "pdf", lang, mode, ct);
 
     private async Task<IActionResult> ExportAsync(
-        string token, string? template, string format, CancellationToken ct)
+        string token, string? template, string format, string? lang, string? mode, CancellationToken ct)
     {
         var result = await _minutesService.ExportSharedAsync(
-            token, User.GetUserId(), User.GetEmail(), template, format, ct);
+            token, User.GetUserId(), User.GetEmail(), template, format, lang, mode, ct);
 
         return result.IsSuccess
             ? File(result.Value!.Bytes, result.Value!.ContentType, result.Value!.FileName)

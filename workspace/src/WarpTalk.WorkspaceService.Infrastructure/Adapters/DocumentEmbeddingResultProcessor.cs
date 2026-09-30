@@ -18,15 +18,18 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
+    private readonly IKnowledgeChunkWriter _chunkWriter;
     private readonly ILogger<DocumentEmbeddingResultProcessor> _logger;
 
     public DocumentEmbeddingResultProcessor(
         IUnitOfWork unitOfWork,
         IWorkspaceDocumentEventPublisher eventPublisher,
+        IKnowledgeChunkWriter chunkWriter,
         ILogger<DocumentEmbeddingResultProcessor> logger)
     {
         _unitOfWork = unitOfWork;
         _eventPublisher = eventPublisher;
+        _chunkWriter = chunkWriter;
         _logger = logger;
     }
 
@@ -91,6 +94,27 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishLifecycleAsync(document, WorkspaceDocumentConstants.LifecycleEvents.Completed, ct);
+
+            // THE LATE RESULT. Indexing is asynchronous, so a document can be made private (or
+            // have AI switched off) while its job is still in the embedding worker — and the
+            // worker writes the vectors before this result arrives. The row above already says
+            // AiEligible=false; the chunks it just reported are the part that would outlive the
+            // decision. Remove them here, for the same reason the revoke path removes them
+            // directly: nothing else ever consumes the invalidation event.
+            if (!document.IsIndexEligible())
+            {
+                try
+                {
+                    await _chunkWriter.DeleteDocumentChunksAsync(document.WorkspaceId, document.Id, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Could not delete chunks indexed for document {DocumentId}, which is no longer index-eligible.",
+                        document.Id);
+                }
+            }
 
             await _unitOfWork.AuditAsync(
                 document.Id,

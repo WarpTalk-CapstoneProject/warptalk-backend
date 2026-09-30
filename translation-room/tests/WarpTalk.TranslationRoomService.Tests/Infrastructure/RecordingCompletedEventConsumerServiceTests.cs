@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
@@ -55,6 +56,40 @@ public sealed class RecordingCompletedEventConsumerServiceTests
             "1-0"), Times.Once);
     }
 
+    /// <summary>
+    /// rec-loss: nothing reads the DLQ stream on its own, so a dead-lettered recording event used to
+    /// be a recording that vanished without a word. It is now said at Error, with the ids an
+    /// operator needs to find the meeting.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeBatchAsync_LogsAnErrorNamingTheEgress_BeforeDeadLettering()
+    {
+        var repository = CreateRepositoryWithOneNewMessage(
+            "meeting.recording_failed",
+            """{"payload":{"translation_room_id":"0199a000-0000-7000-8000-000000000001","egress_id":"EG_LOST"}}""");
+        var handler = new Mock<IRecordingCompletedStreamMessageHandler>();
+        handler.Setup(service => service.HandleAsync(
+                It.IsAny<RedisStreamMessage>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure("database unavailable"));
+        var logger = new Mock<ILogger<RecordingCompletedEventConsumerService>>();
+        var sut = CreateService(repository.Object, handler.Object, logger.Object);
+
+        await sut.ConsumeBatchAsync("consumer-1", CancellationToken.None);
+
+        logger.Verify(log => log.Log(
+            LogLevel.Error,
+            It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((state, _) =>
+                state.ToString()!.Contains("meeting.recording_failed") &&
+                state.ToString()!.Contains("1-0") &&
+                state.ToString()!.Contains("EG_LOST") &&
+                state.ToString()!.Contains("0199a000-0000-7000-8000-000000000001") &&
+                state.ToString()!.Contains("database unavailable")),
+            It.IsAny<Exception?>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+    }
+
     [Fact]
     public async Task ConsumeBatchAsync_DoesNotAcknowledge_WhenDlqWriteFails()
     {
@@ -79,7 +114,9 @@ public sealed class RecordingCompletedEventConsumerServiceTests
             It.IsAny<string>()), Times.Never);
     }
 
-    private static Mock<IRedisStreamRepository> CreateRepositoryWithOneNewMessage()
+    private static Mock<IRedisStreamRepository> CreateRepositoryWithOneNewMessage(
+        string eventType = "meeting.recording_completed",
+        string envelope = "{}")
     {
         var repository = new Mock<IRedisStreamRepository>();
         repository.Setup(service => service.ClaimStaleAsync(
@@ -101,8 +138,8 @@ public sealed class RecordingCompletedEventConsumerServiceTests
                     Id = "1-0",
                     Values = new Dictionary<string, string>
                     {
-                        ["event_type"] = "meeting.recording_completed",
-                        ["envelope"] = "{}"
+                        ["event_type"] = eventType,
+                        ["envelope"] = envelope
                     }
                 }
             ]);
@@ -120,7 +157,8 @@ public sealed class RecordingCompletedEventConsumerServiceTests
 
     private static RecordingCompletedEventConsumerService CreateService(
         IRedisStreamRepository repository,
-        IRecordingCompletedStreamMessageHandler handler)
+        IRecordingCompletedStreamMessageHandler handler,
+        ILogger<RecordingCompletedEventConsumerService>? logger = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(handler);
@@ -128,6 +166,6 @@ public sealed class RecordingCompletedEventConsumerServiceTests
         return new RecordingCompletedEventConsumerService(
             repository,
             provider.GetRequiredService<IServiceScopeFactory>(),
-            NullLogger<RecordingCompletedEventConsumerService>.Instance);
+            logger ?? NullLogger<RecordingCompletedEventConsumerService>.Instance);
     }
 }

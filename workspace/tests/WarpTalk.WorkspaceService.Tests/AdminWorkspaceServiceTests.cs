@@ -223,6 +223,74 @@ public class AdminWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task GetDirectoryAsync_RejectsACreatedFromLaterThanCreatedTo()
+    {
+        var result = await _service.GetDirectoryAsync(new AdminWorkspaceDirectoryQuery
+        {
+            CreatedFrom = Now,
+            CreatedTo = Now.AddDays(-1),
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _workspaceRepository.DidNotReceive()
+            .GetAdminDirectoryAsync(Arg.Any<WorkspaceDirectoryFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetDirectoryAsync_ForwardsCreatedBoundsAsUtc()
+    {
+        WorkspaceDirectoryFilter? captured = null;
+        _workspaceRepository
+            .GetAdminDirectoryAsync(Arg.Do<WorkspaceDirectoryFilter>(f => captured = f), Arg.Any<CancellationToken>())
+            .Returns((new List<WorkspaceDirectoryRow>(), 0));
+
+        // A date-only query-string value binds as Unspecified; it must mean UTC midnight, not
+        // midnight wherever the host happens to run.
+        var from = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Unspecified);
+        var to = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var result = await _service.GetDirectoryAsync(
+            new AdminWorkspaceDirectoryQuery { CreatedFrom = from, CreatedTo = to });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc), captured!.CreatedFrom);
+        Assert.Equal(DateTimeKind.Utc, captured.CreatedFrom!.Value.Kind);
+        Assert.Equal(to, captured.CreatedTo);
+    }
+
+    [Fact]
+    public async Task GetDirectoryAsync_LeavesCreatedBoundsUnsetByDefault()
+    {
+        WorkspaceDirectoryFilter? captured = null;
+        _workspaceRepository
+            .GetAdminDirectoryAsync(Arg.Do<WorkspaceDirectoryFilter>(f => captured = f), Arg.Any<CancellationToken>())
+            .Returns((new List<WorkspaceDirectoryRow>(), 0));
+
+        await _service.GetDirectoryAsync(new AdminWorkspaceDirectoryQuery());
+
+        Assert.Null(captured!.CreatedFrom);
+        Assert.Null(captured.CreatedTo);
+    }
+
+    [Theory]
+    [InlineData("updated_asc")]
+    [InlineData("UPDATED_ASC")]
+    [InlineData("updated_desc")]
+    public async Task GetDirectoryAsync_AcceptsBothUpdatedSorts(string sort)
+    {
+        WorkspaceDirectoryFilter? captured = null;
+        _workspaceRepository
+            .GetAdminDirectoryAsync(Arg.Do<WorkspaceDirectoryFilter>(f => captured = f), Arg.Any<CancellationToken>())
+            .Returns((new List<WorkspaceDirectoryRow>(), 0));
+
+        var result = await _service.GetDirectoryAsync(new AdminWorkspaceDirectoryQuery { Sort = sort });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(sort.ToLowerInvariant(), captured!.Sort);
+    }
+
+    [Fact]
     public async Task GetDirectoryAsync_ResolvesEachOwnerOnceAndMapsSummaries()
     {
         var sharedOwnerId = Guid.NewGuid();

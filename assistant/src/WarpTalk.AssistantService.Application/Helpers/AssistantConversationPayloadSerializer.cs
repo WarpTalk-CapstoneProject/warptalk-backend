@@ -66,6 +66,28 @@ internal static class AssistantConversationPayloadSerializer
         return sanitized.Count == 0 ? null : JsonSerializer.Serialize(sanitized);
     }
 
+    /// <summary>Most plugin keys one turn will carry. The catalog is far smaller; this only bounds a hostile client.</summary>
+    private const int MaxDisabledPluginKeys = 64;
+
+    /// <summary>
+    /// WT-687: the plugins switched off for this turn, as a JSON array of distinct keys, or null
+    /// when none are.
+    /// </summary>
+    internal static string? SerializeDisabledPluginKeys(List<string>? pluginKeys)
+    {
+        if (pluginKeys == null || pluginKeys.Count == 0)
+            return null;
+
+        var keys = pluginKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Take(MaxDisabledPluginKeys)
+            .ToList();
+
+        return keys.Count == 0 ? null : JsonSerializer.Serialize(keys);
+    }
+
     private static bool IsSupportedAttachment(string dataUrl)
     {
         var semicolon = dataUrl.IndexOf(';', StringComparison.Ordinal);

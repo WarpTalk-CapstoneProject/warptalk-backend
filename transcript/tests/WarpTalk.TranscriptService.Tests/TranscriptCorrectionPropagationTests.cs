@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using WarpTalk.Shared;
 using WarpTalk.TranscriptService.Application.Authorization;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
@@ -42,9 +43,27 @@ public class TranscriptCorrectionPropagationTests
             TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
 
         Assert.True(result.IsSuccess);
-        await context.Backfill.Received(1).RequestRetranslationAsync(SegmentId, Arg.Any<CancellationToken>());
+        await context.Backfill.Received(1).RequestRetranslationAsync(SegmentId, UserId, Arg.Any<CancellationToken>());
         Assert.Equal("what was actually said", context.Segment.OriginalText);
         Assert.True(context.Segment.IsCorrected);
+    }
+
+    [Fact]
+    public async Task AnSttCorrection_DropsTheCleanTextThatWasCleanedFromTheOldWords()
+    {
+        // WT-716. Clean is the DEFAULT view: a stale clean_text would keep showing the machine's
+        // words over the human's fix. Null is "not cleaned", so readers fall back to the correction.
+        var context = Build([]);
+        context.Segment.CleanText = "what machine heard";
+        context.Segment.CleanFlags = ["fillers_removed"];
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("what was actually said", context.Segment.OriginalText);
+        Assert.Null(context.Segment.CleanText);
+        Assert.Null(context.Segment.CleanFlags);
     }
 
     [Fact]
@@ -56,7 +75,7 @@ public class TranscriptCorrectionPropagationTests
             TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
 
         Assert.True(result.IsSuccess);
-        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
 
         // And it says so. This column was hardcoded true on every correction ever made, while
         // nothing retranslated anything.
@@ -85,7 +104,7 @@ public class TranscriptCorrectionPropagationTests
             TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en-US"));
 
         Assert.True(result.IsSuccess);
-        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await context.Backfill.DidNotReceive().RequestRetranslationAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
 
         var content = Assert.Single(context.AddedContents);
         Assert.Equal("the wording a person chose", content.TranslatedText);
@@ -142,6 +161,121 @@ public class TranscriptCorrectionPropagationTests
         Assert.Equal("BAD_REQUEST", result.ErrorCode);
     }
 
+    [Fact]
+    public async Task AnSttCorrection_MarksEveryTranslationOfTheLineOutdated_AndStillAsksForOneRetranslation()
+    {
+        // WT-704: every translation of the line now describes a sentence nobody said — including
+        // "ko", which this meeting no longer allows and so will never be retranslated. It stays
+        // visibly outdated instead of silently wrong. Which languages are redone is the backfill's
+        // call, so the correction still asks exactly once.
+        var context = Build([Link("en"), Link("ko")]);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.All(context.Links, link => Assert.True(link.IsStale));
+        Assert.All(context.Links, link => Assert.True(link.IsCurrent));
+        await context.Backfill.Received(1).RequestRetranslationAsync(SegmentId, UserId, Arg.Any<CancellationToken>());
+        Assert.True(context.SavedCorrection!.TriggeredRetranslation);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_ByAnyoneButTheHost_IsRefusedAndWritesNothing()
+    {
+        // Reading the transcript is not enough to rewrite what it says in another language.
+        var context = Build([Link("en")], hostId: Guid.NewGuid());
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("UNAUTHORIZED", result.ErrorCode);
+        AssertNothingWritten(context);
+        Assert.True(context.Links[0].IsCurrent);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_InALanguageTheMeetingDoesNotAllow_IsRefusedAndWritesNothing()
+    {
+        // The line may still carry a "ko" translation from before the policy tightened; it stays
+        // readable, but nobody may write new "ko" content for this meeting.
+        var context = Build([Link("ko")]);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "ko-KR"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(TranscriptLanguageErrors.LanguageNotAllowed, result.ErrorCode);
+        AssertNothingWritten(context);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_WhenTheRoomCannotBeResolved_PassesTheFailureOnAndWritesNothing()
+    {
+        var context = Build([Link("en")], policyFailure: Result.Failure<TranscriptRoomLanguageSnapshot>("Translation room not found.", "NOT_FOUND"));
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("NOT_FOUND", result.ErrorCode);
+        AssertNothingWritten(context);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_ByTheHost_WritesATranslationThatIsNotOutdated()
+    {
+        // Even on a line an STT correction left outdated: the person wrote this against the line
+        // as it reads now.
+        var stale = Link("en");
+        stale.IsStale = true;
+        var context = Build([stale]);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en"));
+
+        Assert.True(result.IsSuccess);
+        var added = Assert.Single(context.AddedLinks);
+        Assert.True(added.IsCurrent);
+        Assert.False(added.IsStale);
+        Assert.False(context.Links[0].IsCurrent);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_ThatConfirmsTheCurrentWording_ClearsItsOutdatedMark()
+    {
+        var stale = Link("en");
+        stale.IsStale = true;
+        var context = Build([stale]);
+        context.AddedContents.Add(new TranslationContent
+        {
+            Id = stale.TranslationContentId,
+            WorkspaceId = WorkspaceId,
+            TextHash = TranslationTextHash.Of("already right"),
+            TargetLanguage = "en",
+            TranslatedText = "already right",
+            TranslatorModel = "model",
+        });
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "already right", "en"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(context.AddedLinks);
+        Assert.True(stale.IsCurrent);
+        Assert.False(stale.IsStale);
+    }
+
+    private static void AssertNothingWritten(Context context)
+    {
+        Assert.Null(context.SavedCorrection);
+        Assert.Empty(context.AddedContents);
+        Assert.Empty(context.AddedLinks);
+        Assert.False(context.Segment.IsCorrected);
+        context.UnitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
     private static CreateCorrectionDto Correction(string type, string corrected, string? language = null) =>
         new(UserId, "what the machine heard", corrected, type, language);
 
@@ -156,6 +290,7 @@ public class TranscriptCorrectionPropagationTests
     private sealed class Context
     {
         public TranscriptCorrectionService Service { get; set; } = null!;
+        public IUnitOfWork UnitOfWork { get; set; } = null!;
         public ITranscriptTranslationBackfillService Backfill { get; init; } = null!;
         public TranscriptSegment Segment { get; init; } = null!;
         public List<SegmentTranslationLink> Links { get; init; } = [];
@@ -186,7 +321,45 @@ public class TranscriptCorrectionPropagationTests
         Assert.Null(context.SavedCorrection);
     }
 
-    private static Context Build(IReadOnlyList<SegmentTranslationLink> links, string transcriptStatus = "COMPLETED")
+    [Fact]
+    public async Task AnSttCorrection_StampsSegmentUpdatedAt_SoSummaryStalenessDetectsEdits()
+    {
+        // WT-850: summary-staleness relies on segment.UpdatedAt > artifact.CreatedAt/UpdatedAt.
+        // If UpdatedAt is not stamped on correction, the summary staleness notice and
+        // [Regenerate summary] button never appear for the host.
+        var context = Build([]);
+        var beforeCorrection = DateTime.UtcNow.AddSeconds(-1);
+        context.Segment.UpdatedAt = beforeCorrection.AddMinutes(-10);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(context.Segment.IsCorrected);
+        Assert.True(context.Segment.UpdatedAt >= beforeCorrection);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_StampsSegmentUpdatedAt()
+    {
+        var context = Build([Link("en")]);
+        var beforeCorrection = DateTime.UtcNow.AddSeconds(-1);
+        context.Segment.UpdatedAt = beforeCorrection.AddMinutes(-10);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en-US"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(context.Segment.IsCorrected);
+        Assert.True(context.Segment.UpdatedAt >= beforeCorrection);
+    }
+
+    private static Context Build(
+        IReadOnlyList<SegmentTranslationLink> links,
+        string transcriptStatus = "COMPLETED",
+        Guid? hostId = null,
+        IReadOnlyList<string>? allowedLanguages = null,
+        Result<TranscriptRoomLanguageSnapshot>? policyFailure = null)
     {
         var segment = new TranscriptSegment
         {
@@ -204,6 +377,7 @@ public class TranscriptCorrectionPropagationTests
         };
 
         var unitOfWork = Substitute.For<IUnitOfWork>();
+        context.UnitOfWork = unitOfWork;
 
         var segments = Substitute.For<ITranscriptSegmentRepository>();
         segments.GetByIdAsync(SegmentId, Arg.Any<CancellationToken>()).Returns(segment);
@@ -255,12 +429,21 @@ public class TranscriptCorrectionPropagationTests
         var readAccess = Substitute.For<ITranscriptReadAccess>();
         readAccess.CanReadRoomTranscriptAsync(RoomId, UserId, Arg.Any<CancellationToken>()).Returns(true);
 
+        // WT-704: by default the caller is the effective host and the meeting allows vi/en/ja, so
+        // the propagation tests above run through an open door; the gate has its own tests.
+        var languagePolicy = Substitute.For<ITranscriptRoomLanguagePolicy>();
+        languagePolicy.GetAsync(RoomId, Arg.Any<CancellationToken>()).Returns(
+            policyFailure ?? Result.Success(new TranscriptRoomLanguageSnapshot(
+                hostId ?? UserId,
+                allowedLanguages ?? ["vi", "en", "ja"])));
+
         // The room gRPC client is only reached by FinalizeTranscriptAsync, which none of these
         // exercise; a null here fails loudly if that ever stops being true.
         context.Service = new TranscriptCorrectionService(
             unitOfWork,
             readAccess,
             null!,
+            languagePolicy,
             context.Backfill,
             NullLogger<TranscriptCorrectionService>.Instance);
 

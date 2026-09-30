@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
 using System.Text.Json;
@@ -12,21 +13,28 @@ namespace WarpTalk.Gateway.Services;
 /// Background service acting as a Redis Pub/Sub subscriber.
 /// Listens for new notifications from the Notification Service 
 /// and broadcasts them in real-time to the appropriate user's SignalR group.
+///
+/// Every gateway replica subscribes, but only the relay leader forwards (each handler starts with
+/// <see cref="IPubSubLeadership.ShouldHandle"/>): the SignalR Redis backplane already carries
+/// one <c>Clients.Group</c> send to every pod, so N forwarding pods meant N copies per client.
 /// </summary>
 public class NotificationRedisSubscriberService : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly ILogger<NotificationRedisSubscriberService> _logger;
+    private readonly IPubSubLeadership _relay;
 
     public NotificationRedisSubscriberService(
         IConnectionMultiplexer redis,
         IHubContext<NotificationHub> hubContext,
-        ILogger<NotificationRedisSubscriberService> logger)
+        ILogger<NotificationRedisSubscriberService> logger,
+        IPubSubLeadership relay)
     {
         _redis = redis;
         _hubContext = hubContext;
         _logger = logger;
+        _relay = relay;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -38,6 +46,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         {
             try
             {
+                if (!_relay.ShouldHandle) return;
                 if (message.IsNullOrEmpty) return;
 
                 var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
@@ -66,6 +75,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         {
             try
             {
+                if (!_relay.ShouldHandle) return;
                 if (message.IsNullOrEmpty) return;
 
                 using var doc = JsonDocument.Parse(message.ToString());
@@ -108,6 +118,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         {
             try
             {
+                if (!_relay.ShouldHandle) return;
                 if (message.IsNullOrEmpty) return;
                 var envelope =
                     JsonSerializer.Deserialize<EventEnvelope<MeetingStartedEventPayload>>(
@@ -140,6 +151,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         {
             try
             {
+                if (!_relay.ShouldHandle) return;
                 if (message.IsNullOrEmpty) return;
                 using var doc = JsonDocument.Parse(message.ToString());
                 var root = doc.RootElement;
@@ -185,6 +197,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         {
             try
             {
+                if (!_relay.ShouldHandle) return;
                 if (message.IsNullOrEmpty) return;
                 using var doc = JsonDocument.Parse(message.ToString());
                 var root = doc.RootElement;
@@ -250,6 +263,7 @@ public class NotificationRedisSubscriberService : BackgroundService
             try
             {
                 await subscriber.SubscribeAsync(RedisChannel.Literal(channel), handler);
+                _relay.MarkSubscribed(RealtimeRelay.Key(nameof(NotificationRedisSubscriberService), channel));
                 _logger.LogInformation("NotificationRedisSubscriberService subscribed to '{Channel}'.", channel);
                 return;
             }

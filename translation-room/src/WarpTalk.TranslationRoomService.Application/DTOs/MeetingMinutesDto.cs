@@ -39,9 +39,30 @@ public record MeetingMinutesDto(
     int EditCountVsDraft,
     string Content,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt)
+{
+    /// <summary>
+    /// What THIS reader may do with the document, decided here so the web never re-derives it.
+    ///
+    /// Edit: the room's host authority (host, or a workspace Owner/Admin) or the secretary the host
+    /// designated — and never once approved. Designate: host authority, until somebody has signed.
+    /// Approve (and revise, and share): host authority alone, because the chair's acceptance is a
+    /// different act from the secretary's responsibility for the words.
+    ///
+    /// Init properties rather than positional ones so every existing construction of this record
+    /// stays valid; a DTO built without them answers false, the least privileged reading.
+    /// </summary>
+    public bool CanEdit { get; init; }
+
+    public bool CanDesignateSecretary { get; init; }
+
+    public bool CanApprove { get; init; }
+}
 
 public record UpdateMinutesContentRequest(string Content);
+
+/// <summary>Name the secretary of record, or clear it with null.</summary>
+public record DesignateMinutesSecretaryRequest(Guid? ParticipantId);
 
 /// <summary>A rendered minutes file, ready to be handed to the browser.</summary>
 public record MinutesExportFile(byte[] Bytes, string FileName, string ContentType);

@@ -72,4 +72,16 @@ public interface ITranslationRoomParticipantRepository : IGenericRepository<Tran
     /// turned up, and somebody who dropped and rejoined turned up once.
     /// </summary>
     Task<int> CountEverJoinedAsync(Guid roomId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every participant of <paramref name="roomIds"/> that ever joined: its room and its LAST
+    /// join and leave (a rejoin overwrites both), for the LiveKit participant minutes of the admin
+    /// Providers page.
+    /// </summary>
+    Task<IReadOnlyList<MediaUsageParticipantSpan>> GetMediaUsageParticipantsAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        CancellationToken ct = default);
 }
+
+/// <summary>One participant's last stay in a room. <paramref name="LeftAt"/> null: still in, or never recorded.</summary>
+public sealed record MediaUsageParticipantSpan(Guid RoomId, DateTime JoinedAt, DateTime? LeftAt);

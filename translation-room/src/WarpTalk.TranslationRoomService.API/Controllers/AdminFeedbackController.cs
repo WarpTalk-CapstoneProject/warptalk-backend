@@ -18,7 +18,7 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/feedback")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.MeetingsRead)]
 public class AdminFeedbackController : ControllerBase
 {
     private readonly IAdminFeedbackService _adminFeedbackService;

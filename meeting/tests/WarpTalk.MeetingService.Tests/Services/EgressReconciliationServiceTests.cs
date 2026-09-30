@@ -7,6 +7,7 @@ using WarpTalk.MeetingService.Application.Services;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.MeetingService.Tests.Services;
 
@@ -64,6 +65,7 @@ public sealed class EgressReconciliationServiceTests
     {
         // Terminal, so the room is no longer recording and must stop saying it is — but there is
         // no file, so publishing a RecordingCompleted would promise a video that does not exist.
+        // rec-loss: what IS published is RecordingFailed, so the ending is visible downstream.
         var room = Room(egressId: "EG_123");
         var (sut, _, redis) = Build(room, Egress("EG_123", "EGRESS_FAILED", fileUrl: null));
 
@@ -71,7 +73,8 @@ public sealed class EgressReconciliationServiceTests
 
         Assert.Equal(1, result.Value);
         Assert.Null(room.ActiveEgressId);
-        redis.VerifyNoOtherCalls();
+        VerifyPublished(redis, MeetingEventTypes.RecordingFailed, Times.Once());
+        VerifyPublished(redis, MeetingEventTypes.RecordingCompleted, Times.Never());
     }
 
     [Fact]
@@ -120,16 +123,75 @@ public sealed class EgressReconciliationServiceTests
     public async Task AnEgressStillUnknownAfterTheGraceWindowStopsHoldingTheRoom()
     {
         // Past the window the only remaining reading is "aged out", so the room must stop claiming
-        // to record — the exact state five production rooms sat in for five days. Nothing is
-        // published: we never learned of a file.
+        // to record — the exact state five production rooms sat in for five days. No Completed:
+        // we never learned of a file.
+        //
+        // rec-loss: but not SILENTLY. This branch used to null the id and publish nothing, so the
+        // record page could only show "never recorded". It must now say the recording failed.
         var room = Room(egressId: "EG_123", updatedAt: Now.AddHours(-3));
         var (sut, _, redis) = Build(room, unknownEgress: true);
+        var published = CapturePublished(redis);
 
         var result = await sut.ReconcileAsync(Now);
 
         Assert.Equal(1, result.Value);
         Assert.Null(room.ActiveEgressId);
-        redis.VerifyNoOtherCalls();
+        VerifyPublished(redis, MeetingEventTypes.RecordingCompleted, Times.Never());
+        var failed = Assert.Single(published);
+        Assert.Equal(MeetingEventTypes.RecordingFailed, failed["event_type"]);
+        var envelope = JsonSerializer.Deserialize<EventEnvelope<MeetingRecordingFailedEventPayload>>(failed["envelope"])!;
+        Assert.Equal(room.TranslationRoomId, envelope.Payload.TranslationRoomId);
+        Assert.Equal("EG_123", envelope.Payload.EgressId);
+        Assert.Equal("The recording could not be recovered from LiveKit.", envelope.Payload.Reason);
+        Assert.Null(envelope.Payload.LiveKitStatus);
+    }
+
+    [Fact]
+    public async Task AnUnknownEgressWhoseFailureCannotBePublishedKeepsHoldingTheRoom()
+    {
+        // rec-loss: the clear must follow the publish. A room cleared before a publish that threw
+        // is never swept again, so its Failed event would be lost for good.
+        var room = Room(egressId: "EG_123", updatedAt: Now.AddHours(-3));
+        var (sut, unitOfWork, redis) = Build(room, unknownEgress: true);
+        redis
+            .Setup(r => r.PublishStreamMessageAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(Result.Failure("redis unavailable", "REDIS_ERROR"));
+
+        var result = await sut.ReconcileAsync(Now);
+
+        Assert.Equal(0, result.Value);
+        Assert.Equal("EG_123", room.ActiveEgressId);
+        unitOfWork.Verify(work => work.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AFailedPublishForOneRoomIsNotPersistedAsClearedByAnotherRoomsSuccess()
+    {
+        // rec-loss: the sweep saves once per batch. Before the fix EgressCompletion cleared the
+        // room in memory BEFORE publishing, so when this room's publish threw, the good room's
+        // SaveChanges persisted the clear anyway and the recording's event was gone.
+        var failing = Room(egressId: "EG_failing");
+        var good = Room(egressId: "EG_good");
+        var egressService = new Mock<ILiveKitEgressService>();
+        egressService
+            .Setup(s => s.GetEgressAsync("EG_failing", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<JsonElement?>(Egress("EG_failing", "EGRESS_FAILED", fileUrl: null)));
+        egressService
+            .Setup(s => s.GetEgressAsync("EG_good", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<JsonElement?>(Egress("EG_good", "EGRESS_COMPLETE", "s3://recordings/good.mp4")));
+        var (sut, unitOfWork, redis) = Build(egressService, failing, good);
+        redis
+            .Setup(r => r.PublishStreamMessageAsync(
+                It.IsAny<string>(),
+                It.Is<Dictionary<string, string>>(f => f["event_type"] == MeetingEventTypes.RecordingFailed)))
+            .ReturnsAsync(Result.Failure("redis unavailable", "REDIS_ERROR"));
+
+        var result = await sut.ReconcileAsync(Now);
+
+        Assert.Equal(1, result.Value);
+        Assert.Equal("EG_failing", failing.ActiveEgressId);
+        Assert.Null(good.ActiveEgressId);
+        unitOfWork.Verify(work => work.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -173,6 +235,23 @@ public sealed class EgressReconciliationServiceTests
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────────────────
+
+    private static void VerifyPublished(Mock<IRedisService> redis, string eventType, Times times) =>
+        redis.Verify(
+            r => r.PublishStreamMessageAsync(
+                "meeting:domain-events",
+                It.Is<Dictionary<string, string>>(fields => fields["event_type"] == eventType)),
+            times);
+
+    private static List<Dictionary<string, string>> CapturePublished(Mock<IRedisService> redis)
+    {
+        var published = new List<Dictionary<string, string>>();
+        redis
+            .Setup(r => r.PublishStreamMessageAsync("meeting:domain-events", It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, fields) => published.Add(fields))
+            .ReturnsAsync(Result.Success());
+        return published;
+    }
 
     private static MeetingRoom Room(string egressId, DateTime? updatedAt = null) => new()
     {

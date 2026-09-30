@@ -52,6 +52,19 @@ public interface IKnowledgeChunkWriter
     /// page pressing Delete is an ordinary race, and the second one's intent was satisfied.
     /// </summary>
     Task DeleteAsync(Guid workspaceId, string chunkId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes every chunk indexed from one workspace document, whichever producer wrote it.
+    ///
+    /// Synchronous, and that is the point. The `workspace.document_invalidated` event the
+    /// document service publishes has NO consumer — the event catalog lists `consumers: []` and
+    /// nothing in warptalk-ai reads `workspace-document-events` — so publishing it removes
+    /// nothing. A caller that is revoking access needs the vectors gone, not announced.
+    ///
+    /// Implementations MUST NOT throw when nothing was indexed (no collection, no matching
+    /// points): a document that never reached the index is already in the state asked for.
+    /// </summary>
+    Task DeleteDocumentChunksAsync(Guid workspaceId, Guid documentId, CancellationToken ct = default);
 }
 
 /// <summary>What an Owner may change about a chunk. Everything else is the source's to say.</summary>

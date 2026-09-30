@@ -20,6 +20,28 @@ public record AdminUserDirectoryQuery : AdminPageRequest
     /// <summary>A platform role name. Null lists every role.</summary>
     public string? Role { get; init; }
 
+    /// <summary>Inclusive lower bound on <c>created_at</c> (UTC; a value without an offset is read as UTC).</summary>
+    public DateTime? CreatedFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>created_at</c>. Must not be earlier than <see cref="CreatedFrom"/>.</summary>
+    public DateTime? CreatedTo { get; init; }
+
+    /// <summary>
+    /// Inclusive lower bound on <c>last_login_at</c>. Accounts that never signed in have no
+    /// last login and therefore never match a last-login bound.
+    /// </summary>
+    public DateTime? LastLoginFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>last_login_at</c>. Must not be earlier than <see cref="LastLoginFrom"/>.</summary>
+    public DateTime? LastLoginTo { get; init; }
+
+    /// <summary>
+    /// true: only accounts that have never signed in (<c>last_login_at IS NULL</c>). false: only
+    /// accounts that have. Null (default): no constraint. true cannot be combined with a
+    /// last-login bound — no row could match both.
+    /// </summary>
+    public bool? NeverSignedIn { get; init; }
+
     /// <summary>
     /// created_desc | created_asc | name_asc | name_desc | last_login_desc | last_login_asc.
     /// Defaults to created_desc.
@@ -85,3 +107,44 @@ public record AdminUserSessionDto(
 /// client-supplied actor would make the trail forgeable.
 /// </summary>
 public record AdminUserActionRequest(string Reason);
+
+/// <summary>
+/// Force sign-out from the admin workspace page: one member, or every member the page lists. The
+/// workspace is named by the ROUTE, not here, and is what files each entry on that workspace's
+/// timeline.
+/// </summary>
+public record AdminWorkspaceSignOutRequest(IReadOnlyList<Guid> UserIds, string Reason);
+
+public record AdminWorkspaceSignOutFailureDto(Guid UserId, string Error);
+
+/// <summary>Per account: signed out, or why not. One refusal never undoes the others.</summary>
+public record AdminWorkspaceSignOutResultDto(
+    Guid WorkspaceId,
+    IReadOnlyList<Guid> SignedOut,
+    IReadOnlyList<AdminWorkspaceSignOutFailureDto> Failed);
+
+/// <summary>One point of a per-day series. <paramref name="Date"/> is a local day of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.</summary>
+public record AdminDailyCountDto(string Date, int Count);
+
+/// <summary>
+/// <c>GET /api/v1/admin/users/insights</c>: metrics <c>newUsers</c> and <c>activeUsers</c>, plus
+/// sign-ups per local day (of the request's <c>tz</c>) across the current range (zero-filled).
+/// </summary>
+public record AdminUserInsightsDto(
+    AdminInsightRange Range,
+    AdminInsightRange PreviousRange,
+    IReadOnlyList<AdminInsightMetric> Metrics,
+    IReadOnlyList<AdminDailyCountDto> NewUsersByDay,
+    IReadOnlyList<AdminUserMonthDto>? UsersByMonth = null,
+    string? UsersByMonthNote = null);
+
+/// <summary>
+/// WT-692: one local calendar month (of the request's <c>tz</c>, <c>yyyy-MM</c>) of user growth,
+/// over the six months ending with the month of <c>to</c> — the same months as billing's
+/// <c>revenueByMonth</c>.
+/// </summary>
+/// <param name="NewUsers">Accounts created in the month, soft-deleted ones included.</param>
+/// <param name="TotalUsers">Accounts that existed at the END of the month: created before it and not deleted by then.</param>
+/// <param name="ActiveUsers">Distinct accounts issued a refresh token in the month (same definition as <c>activeUsers</c>).</param>
+public record AdminUserMonthDto(string Month, int NewUsers, int TotalUsers, int ActiveUsers);
+

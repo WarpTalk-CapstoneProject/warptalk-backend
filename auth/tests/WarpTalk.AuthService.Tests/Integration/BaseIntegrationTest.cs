@@ -12,6 +12,7 @@ using Testcontainers.PostgreSql;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Infrastructure.Persistence;
 using Xunit;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.AuthService.Tests.Integration;
 
@@ -39,6 +40,10 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     "test-only-internal-grpc-secret-32-characters");
                 builder.ConfigureTestServices(services =>
                 {
+                    // G10: admin endpoints ask the auth service who is staff; here the token's
+                    // "admin" hint stands in for its answer (Super Admin), as before G10.
+                    services.UseTokenHintAsStaffAccessForTests();
+
                     // Swap DbContext to use Testcontainer Postgres
                     var dbDescriptor = services.SingleOrDefault(
                         d => d.ServiceType == typeof(DbContextOptions<AuthDbContext>));

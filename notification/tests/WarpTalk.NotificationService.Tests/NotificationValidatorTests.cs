@@ -200,6 +200,10 @@ public class NotificationValidatorTests
         """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
     [InlineData(NotificationConstants.TypeWorkspaceRoleChanged,
         """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","old_role":"Member","new_role":"Admin"}""")]
+    // The admin workspace page's notice to the owner — exactly the metadata
+    // AdminWorkspaceActionService.SendNoticeAsync sends.
+    [InlineData("WORKSPACE_ADMIN_NOTICE",
+        """{"workspace_id":"019f0d00-0de0-7000-9000-0000000000aa","workspace_name":"WarpTalk Demo"}""")]
     public void Validate_WorkspaceMembershipPayload_IsAccepted(string type, string payload)
     {
         var result = NotificationValidator.Validate(type, "Title", "Content", "/warptalk-demo/members", payload);
@@ -250,5 +254,44 @@ public class NotificationValidatorTests
             NotificationConstants.TypeWorkspaceRoleChanged, "Title", "Content", "/warptalk-demo", payload);
 
         Assert.True(result.IsSuccess);
+    }
+
+    [Theory]
+    [InlineData("PLUGIN_REQUESTED")]
+    [InlineData("PLUGIN_REQUEST_APPROVED")]
+    [InlineData("PLUGIN_REQUEST_DECLINED")]
+    public void Validate_PluginRequestPayload_IsAccepted(string type)
+    {
+        // The exact type strings and metadata keys AssistantService's PluginRequestNotifications
+        // sends (WorkspacePluginConstants.NotificationTypes). A new type is two edits in two
+        // services; this is the half that lives here.
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
+            workspace_name = "WarpTalk Demo",
+            plugin_key = "linear",
+            plugin_label = "Linear",
+            request_id = "019f0d00-0de0-7000-9000-0000000000cc"
+        });
+
+        var result = NotificationValidator.Validate(type, "Title", "Content", "/warptalk-demo/settings/plugins", payload);
+
+        Assert.True(result.IsSuccess, result.Error);
+    }
+
+    [Fact]
+    public void Validate_PluginRequestPayload_WithoutThePlugin_IsRefused()
+    {
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            workspace_id = "019f0d00-0de0-7000-9000-0000000000aa",
+            workspace_name = "WarpTalk Demo"
+        });
+
+        var result = NotificationValidator.Validate(
+            NotificationConstants.TypePluginRequested, "Title", "Content", null, payload);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }
 }

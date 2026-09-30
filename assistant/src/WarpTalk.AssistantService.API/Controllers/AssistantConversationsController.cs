@@ -33,6 +33,10 @@ public class AssistantSkillsController : ControllerBase
         new("get_transcript", "Meeting transcript", "Get the transcribed segments for a specific meeting."),
         new("search_documents", "Find documents", "Find workspace documents by name, or list what documents exist."),
         new("get_document", "Document details", "Get metadata and a text excerpt for a specific workspace document."),
+        new("create_meeting", "Schedule a meeting", "Create a meeting or a follow-up, one-off or repeating, and invite people."),
+        new("create_action_item", "Add an action item", "Save a task to a meeting — assigned to you or a participant, with an optional deadline."),
+        new("add_glossary_term", "Add a glossary term", "Add a term and its preferred translation to this workspace's glossary."),
+        new("share_meeting_minutes", "Share the minutes", "Give someone access to a meeting's minutes by email."),
     };
 
     [HttpGet("skills")]
@@ -76,7 +80,7 @@ public class AssistantConversationsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> CreateConversation([FromBody] CreateAssistantConversationRequest request, CancellationToken ct)
     {
-        var result = await _conversationService.CreateConversationAsync(request.WorkspaceId, CurrentUserId, ct);
+        var result = await _conversationService.CreateConversationAsync(CurrentUserId, request, ct);
         if (!result.IsSuccess) return BadRequest(result.Error);
         return Ok(result.Value);
     }

@@ -89,6 +89,23 @@ public static class WorkspaceConstants
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
         public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 1 and 3650.";
         public const string VerifiedDomainsRequired = "Verified domains are required when internal members must use verified domains.";
+
+        /// <summary>
+        /// WT-706. Format arg is the code exactly as the caller wrote it — naming it is the whole
+        /// point, because the old behaviour was to store anything at all, and a workspace that
+        /// saved a code no room can carry ended up unable to create a meeting with a setting that
+        /// looked perfectly correct on screen.
+        /// </summary>
+        public const string AllowedTargetLanguageNotRecognizedFormat = "'{0}' is not a language code. Use a two- or three-letter code such as vi, en or ja.";
+
+        /// <summary>
+        /// WT-706. Emptying the list used to switch a restricted workspace to unrestricted without
+        /// saying so — the opposite of what unticking the last language means.
+        /// </summary>
+        public const string AllowedTargetLanguagesRequiredWhenRestricted = "Keep at least one allowed language, or turn off the language restriction to allow all languages.";
+
+        /// <summary>WT-706. Format arg is the workspace's default language.</summary>
+        public const string DefaultLanguageNotAllowedFormat = "The default language '{0}' must be one of the workspace's allowed languages.";
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
@@ -138,7 +155,9 @@ public static class WorkspaceConstants
         public const string ExternalCollaborationNotAllowed = "Workspace does not allow external collaboration.";
         public const string InvalidRoleSpecified = "Invalid role specified.";
         public const string OnlyOwnerAdminCanViewInvitations = "Only Owner or Admin can view invitations.";
+        public const string OnlyOwnerAdminCanViewAuditLog = "Only Owner or Admin can view the workspace audit log.";
         public const string OnlyOwnerAdminCanRevoke = "Only Owner or Admin can revoke invitations.";
+        public const string OnlyOwnerAdminCanApproveDocuments = "Only Owner or Admin can approve or reject documents.";
         public const string InvitationNotFound = "Invitation not found.";
         public const string OnlyPendingCanBeRevoked = "Only pending invitations can be revoked.";
         public const string InvalidOrExpiredToken = "Invalid or expired invitation token.";
@@ -185,6 +204,8 @@ public static class WorkspaceConstants
         public const string AccessDeniedByPolicy = "Access denied by policy (DENY).";
         public const string AccessDeniedSensitive = "Access denied. Sensitive document.";
         public const string AccessDeniedDefault = "Access denied. Default action blocks access.";
+        public const string AccessDeniedPrivate = "Access denied. This document is private.";
+        public const string DocumentNotAiEligible = "This document is not available to WarpBot. It is pending approval, rejected, private, restricted, or AI use is turned off for it.";
     }
 
     // Configuration Keys

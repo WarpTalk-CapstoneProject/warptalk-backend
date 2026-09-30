@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Coordination;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -16,18 +17,24 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 public sealed class InvoiceOverdueSweeper : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<InvoiceOverdueSweeper> _logger;
     private readonly BillingWorkerOptions _options;
 
     public InvoiceOverdueSweeper(
         IServiceProvider serviceProvider,
         ILogger<InvoiceOverdueSweeper> logger,
-        IOptions<BillingWorkerOptions> options)
+        IOptions<BillingWorkerOptions> options,
+        IDistributedLockProvider locks)
     {
+        _locks = locks;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
     }
+
+    /// <summary>Lease name this worker's ticks run under (one replica at a time).</summary>
+    public const string LockResource = "billing:invoice-overdue";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -37,7 +44,14 @@ public sealed class InvoiceOverdueSweeper : BackgroundService
         {
             try
             {
-                await SweepAsync(stoppingToken);
+                // SINGLE RUNNER. Reminders are already de-duplicated (SET NX) and suspensions guarded by xmin;
+                // the lease stops concurrent replicas from racing into those guards every tick.
+                await _locks.TryRunExclusiveAsync(
+                    LockResource,
+                    TimeSpan.FromMinutes(5),
+                    ct => SweepAsync(ct),
+                    _logger,
+                    stoppingToken);
             }
             catch (Exception ex)
             {

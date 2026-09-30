@@ -13,6 +13,7 @@ using FluentValidation;
 using WarpTalk.NotificationService.API.Validators;
 using WarpTalk.NotificationService.API.Consumers;
 using WarpTalk.NotificationService.API.HostedServices;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -47,8 +48,22 @@ builder.Services.AddControllers()
     });
 
 
-builder.Services.AddDbContext<NotificationDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddDbContext<NotificationDbContext>((provider, options) =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+        // [AdminAudited] announcement sends record their row before it commits.
+        .AddAdminAuditInterceptor(provider));
+
+// Announcements go into the platform audit log, hosted by the workspace service — the same
+// address the audience resolver below uses (production and compose supply it). Without it the
+// attribute stays inert and an announcement is recorded only in admin_notifications, as before:
+// a missing address must not take every other endpoint down with it.
+var adminAuditUrl = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"];
+if (!string.IsNullOrWhiteSpace(adminAuditUrl))
+{
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o => o.Address = new Uri(adminAuditUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.NotificationService);
+}
 builder.Services.AddWarpTalkServiceHealthChecks<NotificationDbContext>(
     "notification-database");
 
@@ -86,11 +101,73 @@ builder.Services.AddTransient<IEmailSender, WarpTalk.NotificationService.Infrast
 
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
+builder.Services.AddScoped<IAdminNotificationDeliveryService, AdminNotificationDeliveryService>();
+
+// The email CMS. This service owns the store: its own senders (and the GetEmailTemplate RPC every
+// other sender calls) read the published content through EmailPublishedResolver, and every send is
+// counted through DbEmailDeliveryRecorder (directly, or over RecordEmailDelivery).
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateSource, WarpTalk.NotificationService.Application.Services.EmailCms.EmailPublishedResolver>();
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailTemplateComposer, WarpTalk.Shared.Email.EmailTemplateComposer>();
+builder.Services.AddScoped<WarpTalk.Shared.Email.IEmailDeliveryRecorder, WarpTalk.NotificationService.Application.Services.EmailCms.DbEmailDeliveryRecorder>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailContentService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailContentService>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailBlockService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailBlockService>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailDefinitionProvider, WarpTalk.NotificationService.Application.Services.EmailCms.EmailDefinitionProvider>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailCustomTemplateService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailCustomTemplateService>();
+// Email CMS v3: the From line previews show, read from this service's own sender identity.
+builder.Services.AddSingleton(WarpTalk.NotificationService.Application.Services.EmailCms.EmailEnvelope.Parse(
+    builder.Configuration["Resend:FromEmail"], builder.Configuration["Resend:FromName"]));
+// Audience sends of custom templates, and the worker that sends them at a steady rate.
+var emailCampaignOptions = new WarpTalk.NotificationService.Application.Services.EmailCms.EmailCampaignOptions();
+builder.Configuration.GetSection("EmailCampaigns").Bind(emailCampaignOptions);
+builder.Services.AddSingleton(emailCampaignOptions);
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailAudienceResolver, WarpTalk.NotificationService.Application.Services.EmailCms.EmailAudienceResolver>();
+builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailCampaignService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailCampaignService>();
+// Multi-replica: the send worker runs each tick on one replica at a time, under the shared Redis
+// lease (renewed while the tick runs) — see EmailCampaignWorker.
+WarpTalk.Shared.Coordination.CoordinationServiceCollectionExtensions.AddWarpTalkDistributedLocks(builder.Services);
+builder.Services.AddHostedService<WarpTalk.NotificationService.API.HostedServices.EmailCampaignWorker>();
+builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
+// G12: the pending-work inbox source for content.
+builder.Services.AddScoped<IContentInboxSourceService, ContentInboxSourceService>();
+
+
+// WT-699 / TC4104: BROADCAST and SEGMENT announcements resolve their audience through AuthService
+// and WorkspaceService. Optional configuration on purpose — without the two addresses those modes
+// are refused with a sentence saying so, and SPECIFIC_USERS keeps working exactly as before.
+var authServiceUrl = builder.Configuration["GrpcUrls:AuthServiceUrl"];
+var workspaceServiceUrl = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"];
+if (!string.IsNullOrWhiteSpace(workspaceServiceUrl))
+{
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o => o.Address = new Uri(workspaceServiceUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    // Plan- and workspace-targeted announcements ask the workspace service who the viewer is.
+    builder.Services.AddScoped<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcViewerAudienceResolver>();
+}
+else
+{
+    builder.Services.AddSingleton<IViewerAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredViewerAudienceResolver>();
+}
+if (!string.IsNullOrWhiteSpace(authServiceUrl))
+{
+    // Also read by GrpcViewerAudienceResolver, for "new users" announcement targeting.
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.UserService.UserServiceClient>(o => o.Address = new Uri(authServiceUrl))
+        .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+}
+if (!string.IsNullOrWhiteSpace(authServiceUrl) && !string.IsNullOrWhiteSpace(workspaceServiceUrl))
+{
+    builder.Services.AddScoped<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.GrpcAdminAudienceResolver>();
+    builder.Services.AddScoped<IEmailRecipientDirectory, WarpTalk.NotificationService.API.Audience.GrpcEmailRecipientDirectory>();
+}
+else
+{
+    builder.Services.AddSingleton<IAdminAudienceResolver, WarpTalk.NotificationService.API.Audience.UnconfiguredAdminAudienceResolver>();
+    builder.Services.AddSingleton<IEmailRecipientDirectory, WarpTalk.NotificationService.API.Audience.UnconfiguredEmailRecipientDirectory>();
+}
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 // abortConnect=false: the notification read APIs are served from Postgres and must keep
@@ -102,6 +179,18 @@ builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
         (builder.Configuration["Redis:ConnectionString"]
         ?? throw new InvalidOperationException("Redis:ConnectionString is not configured."))
         + ",abortConnect=false"));
+
+// Platform settings (/admin/settings): sender name, address and reply-to are read per e-mail.
+WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(builder.Services);
+WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.AddWarpTalkIntegrationStatus(builder.Services, "notification", sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    return WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.Snapshot(
+        (WarpTalk.Shared.PlatformSettings.IntegrationKeys.Resend, new WarpTalk.Shared.PlatformSettings.IntegrationReport(
+            WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, null, "Resend:ApiKey").Configured
+            || WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, null, "RESEND_API_KEY").Configured,
+            "notification e-mail")));
+});
 
 builder.Services.AddSingleton<WarpTalk.NotificationService.Domain.Interfaces.IMessagePublisher, WarpTalk.NotificationService.Infrastructure.Messaging.RedisMessagePublisher>();
 

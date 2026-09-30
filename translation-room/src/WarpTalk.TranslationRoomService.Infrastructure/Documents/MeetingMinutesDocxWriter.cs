@@ -829,6 +829,9 @@ public class MeetingMinutesDocxWriter
         "decisions" => "Các quyết định",
         "actionItems" => "Công việc được giao",
         "openQuestions" => "Vấn đề còn bỏ ngỏ",
+        // Added by the minutes editor for points a secretary writes in by hand (warptalk-web
+        // DISCUSSION_KEY), not by a summary template.
+        "discussion" => "Nội dung thảo luận",
         "progress" => "Tiến độ",
         "plans" => "Kế hoạch",
         "blockers" => "Vướng mắc",

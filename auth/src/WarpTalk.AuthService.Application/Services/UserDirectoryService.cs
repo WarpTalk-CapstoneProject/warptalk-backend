@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,6 +23,18 @@ public class UserDirectoryService : IUserDirectoryService
         _unitOfWork = unitOfWork;
     }
 
+    /// <summary>WT-699 / TC4104: the most ids one broadcast page may carry.</summary>
+    public const int MaxUserIdPageSize = 1000;
+
+    public async Task<Result<(IReadOnlyList<Guid> UserIds, Guid? NextAfterId)>> ListActiveUserIdsAsync(
+        Guid? afterId, int pageSize, CancellationToken ct = default)
+    {
+        var size = Math.Clamp(pageSize <= 0 ? MaxUserIdPageSize : pageSize, 1, MaxUserIdPageSize);
+        var ids = await _unitOfWork.UserRepository.GetActiveUserIdsPageAsync(afterId, size, ct);
+        Guid? next = ids.Count == size ? ids[^1] : null;
+        return Result.Success<(IReadOnlyList<Guid>, Guid?)>((ids, next));
+    }
+
     public async Task<Result<UserIdentityDto>> GetUserByIdAsync(Guid userId, CancellationToken ct = default)
     {
         var user = await _unitOfWork.UserRepository.GetByIdAsync(userId, ct);
@@ -33,7 +46,8 @@ public class UserDirectoryService : IUserDirectoryService
             user.Email,
             user.FullName,
             user.AvatarUrl,
-            user.PreferredLanguage));
+            user.PreferredLanguage,
+            user.CreatedAt));
     }
 
     public async Task<Result<UserIdentityDto>> GetUserByEmailAsync(string email, CancellationToken ct = default)
@@ -50,7 +64,8 @@ public class UserDirectoryService : IUserDirectoryService
             user.Email,
             user.FullName,
             user.AvatarUrl,
-            user.PreferredLanguage));
+            user.PreferredLanguage,
+            user.CreatedAt));
     }
 
     public async Task<Result<UserLanguageDefaultsDto?>> GetLanguageDefaultsAsync(Guid userId, CancellationToken ct = default)

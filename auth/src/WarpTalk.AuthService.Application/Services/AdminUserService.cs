@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.AuthService.Application.DTOs.Admin;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
@@ -17,6 +18,13 @@ namespace WarpTalk.AuthService.Application.Services;
 /// <inheritdoc cref="IAdminUserService"/>
 public class AdminUserService : IAdminUserService
 {
+    /// <summary>The largest roster one workspace sign-out takes in a single request.</summary>
+    public const int MaxWorkspaceSignOutUsers = 500;
+
+    /// <summary>What <c>usersByMonth</c> means at its edges, sent with it rather than implied.</summary>
+    public const string UsersByMonthNote =
+        "The latest month is month-to-date. Active = signed in or refreshed a session that month; totals exclude accounts deleted by the month's end.";
+
     /// <summary>
     /// The statuses the directory accepts. An unknown one is rejected rather than ignored: a
     /// caller who filters on a typo and gets the unfiltered list back reads it as "these are all
@@ -33,12 +41,17 @@ public class AdminUserService : IAdminUserService
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AdminUserService> _logger;
 
+    // G10: optional so hand-built instances in tests keep compiling; DI always supplies it.
+    private readonly IStaffAccessService? _staffAccess;
+
     public AdminUserService(
         IUnitOfWork unitOfWork,
         IAdminAuditRecorder audit,
         ILogger<AdminUserService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IStaffAccessService? staffAccess = null)
     {
+        _staffAccess = staffAccess;
         _unitOfWork = unitOfWork;
         _audit = audit;
         _logger = logger;
@@ -64,6 +77,23 @@ public class AdminUserService : IAdminUserService
                 ErrorCodes.ValidationError);
         }
 
+        var rangeError =
+            AdminDateFilter.ValidateRange(query.CreatedFrom, query.CreatedTo, "createdFrom", "createdTo")
+            ?? AdminDateFilter.ValidateRange(query.LastLoginFrom, query.LastLoginTo, "lastLoginFrom", "lastLoginTo");
+        if (rangeError is not null)
+        {
+            return Result.Failure<AdminPagedResult<AdminUserSummaryDto>>(rangeError, ErrorCodes.ValidationError);
+        }
+
+        // Rejected rather than answered with an empty page: "never signed in, but last signed in
+        // this week" is a contradiction, and an empty result reads as "nobody matches".
+        if (query.NeverSignedIn == true && (query.LastLoginFrom is not null || query.LastLoginTo is not null))
+        {
+            return Result.Failure<AdminPagedResult<AdminUserSummaryDto>>(
+                "neverSignedIn=true cannot be combined with lastLoginFrom or lastLoginTo.",
+                ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize) = query.Normalize();
 
         try
@@ -72,7 +102,12 @@ public class AdminUserService : IAdminUserService
                 Search: Normalize(query.Search),
                 Status: status,
                 Role: Normalize(query.Role),
-                Sort: sort);
+                Sort: sort,
+                CreatedFrom: AdminDateFilter.ToUtc(query.CreatedFrom),
+                CreatedTo: AdminDateFilter.ToUtc(query.CreatedTo),
+                LastLoginFrom: AdminDateFilter.ToUtc(query.LastLoginFrom),
+                LastLoginTo: AdminDateFilter.ToUtc(query.LastLoginTo),
+                NeverSignedIn: query.NeverSignedIn);
 
             var (rows, total) = await _unitOfWork.UserRepository.GetDirectoryAsync(
                 filter, page, pageSize, ct);
@@ -116,6 +151,87 @@ public class AdminUserService : IAdminUserService
         }
     }
 
+    /// <summary>
+    /// Metric definitions:
+    /// <list type="bullet">
+    /// <item><c>newUsers</c> — accounts whose <c>created_at</c> is in the window, including ones
+    /// soft-deleted since, so a past period's figure never shrinks after the fact.</item>
+    /// <item><c>activeUsers</c> — distinct accounts issued a refresh token in the window. Every
+    /// sign-in (password or Google) and every access-token refresh inserts a
+    /// <c>refresh_tokens</c> row, and rows are never deleted, so this is an event history.
+    /// <c>users.last_login_at</c> was rejected: it keeps only the LATEST sign-in, so anyone who
+    /// signed in during a past window and again later disappears from it.
+    /// Limitation: someone whose whole visit fit inside an access token issued before the window
+    /// (&lt; 30 minutes by default) is not counted in it, and an open tab that silently refreshes
+    /// counts as active. There is no per-request activity log to do better from.</item>
+    /// </list>
+    /// </summary>
+    public async Task<Result<AdminUserInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default)
+    {
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
+        {
+            return Result.Failure<AdminUserInsightsDto>(error!, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var users = _unitOfWork.UserRepository;
+            var tokens = _unitOfWork.RefreshTokenRepository;
+
+            // Sequential: one DbContext cannot run two queries at once.
+            var newUsers = await users.CountCreatedBetweenAsync(window.From, window.To, ct);
+            var newUsersBefore = await users.CountCreatedBetweenAsync(window.PreviousFrom, window.PreviousTo, ct);
+            var activeUsers = await tokens.CountDistinctUsersIssuedBetweenAsync(window.From, window.To, ct);
+            var activeUsersBefore = await tokens.CountDistinctUsersIssuedBetweenAsync(
+                window.PreviousFrom, window.PreviousTo, ct);
+            // Bucketed on the local days of the request's tz, not UTC days: a Vietnam sign-up at
+            // 23:30 local is 16:30Z, and a UTC bucket would file it under the right day only by luck.
+            var days = window.Days();
+            var counts = new int[days.Count];
+            foreach (var createdAt in await users.GetCreatedAtBetweenAsync(window.From, window.To, ct))
+            {
+                var index = AdminComparisonRange.IndexOfDay(days, createdAt);
+                if (index >= 0) counts[index]++;
+            }
+
+            var series = days
+                .Select((day, i) => new AdminDailyCountDto(day.Key, counts[i]))
+                .ToList();
+
+            // WT-692: six local months of growth for the investor view on /admin/billing. Sequential
+            // on purpose (one DbContext); 18 cheap indexed counts.
+            var months = new List<AdminUserMonthDto>(AdminComparisonRange.GrowthMonths);
+            foreach (var month in AdminComparisonRange.MonthsEnding(window.To, window.TimeZone))
+            {
+                months.Add(new AdminUserMonthDto(
+                    month.Key,
+                    await users.CountCreatedBetweenAsync(month.Start, month.End, ct),
+                    await users.CountExistingAtAsync(month.End, ct),
+                    await tokens.CountDistinctUsersIssuedBetweenAsync(month.Start, month.End, ct)));
+            }
+
+            return Result.Success(new AdminUserInsightsDto(
+                window.Range,
+                window.PreviousRange,
+                [
+                    new AdminInsightMetric("newUsers", newUsers, newUsersBefore, AdminInsightUnits.Count, true),
+                    new AdminInsightMetric("activeUsers", activeUsers, activeUsersBefore, AdminInsightUnits.Count, true),
+                ],
+                series,
+                months,
+                UsersByMonthNote));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin user insights read failed.");
+            return Result.Failure<AdminUserInsightsDto>(
+                "An unexpected error occurred while reading user insights.",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
     public Task<Result<AdminUserDetailDto>> RevokeSessionsAsync(
         Guid userId,
         AdminActorContext actor,
@@ -135,13 +251,84 @@ public class AdminUserService : IAdminUserService
             },
             ct);
 
-    public Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
+    public async Task<Result<AdminWorkspaceSignOutResultDto>> RevokeSessionsForWorkspaceAsync(
+        Guid workspaceId,
+        AdminWorkspaceSignOutRequest request,
+        AdminActorContext actor,
+        CancellationToken ct = default)
+    {
+        if (Normalize(request?.Reason) is null)
+        {
+            return Result.Failure<AdminWorkspaceSignOutResultDto>(
+                "A reason is required. It is the only record of why this was done.",
+                ErrorCodes.ValidationError);
+        }
+
+        var userIds = (request!.UserIds ?? Array.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (userIds.Count == 0)
+        {
+            return Result.Failure<AdminWorkspaceSignOutResultDto>(
+                "Name at least one member to sign out.", ErrorCodes.ValidationError);
+        }
+
+        if (userIds.Count > MaxWorkspaceSignOutUsers)
+        {
+            return Result.Failure<AdminWorkspaceSignOutResultDto>(
+                $"At most {MaxWorkspaceSignOutUsers} members can be signed out at once.", ErrorCodes.ValidationError);
+        }
+
+        // One account at a time, each through the same change-record-commit as the single
+        // revoke: one account whose record fails is left untouched and reported, and never takes
+        // the others down with it — nor goes unrecorded.
+        var signedOut = new List<Guid>();
+        var failed = new List<AdminWorkspaceSignOutFailureDto>();
+        var perUser = new AdminUserActionRequest(request.Reason);
+        foreach (var userId in userIds)
+        {
+            var result = await PerformAsync(
+                userId,
+                actor,
+                perUser,
+                AdminAuditUserActions.SessionsRevoked,
+                async (user, before) =>
+                {
+                    await _unitOfWork.RefreshTokenRepository.RevokeAllForUserAsync(user.Id, ct);
+                    return new Dictionary<string, string?> { ["active_sessions"] = "0" };
+                },
+                ct,
+                workspaceId);
+
+            if (result.IsSuccess)
+            {
+                signedOut.Add(userId);
+            }
+            else
+            {
+                failed.Add(new AdminWorkspaceSignOutFailureDto(userId, result.Error ?? "Not signed out."));
+            }
+        }
+
+        return Result.Success(new AdminWorkspaceSignOutResultDto(workspaceId, signedOut, failed));
+    }
+
+    public async Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
         Guid userId,
         bool isActive,
         AdminActorContext actor,
         AdminUserActionRequest request,
         CancellationToken ct = default)
-        => PerformAsync(
+    {
+        if (!isActive)
+        {
+            var guarded = await GuardStaffDeactivationAsync(userId, actor, ct);
+            if (!guarded.IsSuccess)
+                return Result.Failure<AdminUserDetailDto>(guarded.Error!, guarded.ErrorCode);
+        }
+
+        return await PerformAsync(
             userId,
             actor,
             request,
@@ -169,6 +356,7 @@ public class AdminUserService : IAdminUserService
                 return after;
             },
             ct);
+    }
 
     public Task<Result<AdminUserDetailDto>> UnlockAsync(
         Guid userId,
@@ -201,6 +389,29 @@ public class AdminUserService : IAdminUserService
             ct);
 
     /// <summary>
+    /// G10: deactivating an ACCOUNT is also a way to take away someone's staff access, so the staff
+    /// guard rails apply here too. accounts.manage (which Support holds) must not be a back door to
+    /// switching off a Super Admin, and nobody — including a Super Admin deactivating their own
+    /// account — may switch off the last active one: that is a platform nobody can administer.
+    /// </summary>
+    private async Task<Result> GuardStaffDeactivationAsync(Guid userId, AdminActorContext actor, CancellationToken ct)
+    {
+        var target = await _unitOfWork.StaffMemberRepository.GetByUserIdAsync(userId, ct);
+        if (target is null || target.Status != StaffConstants.Statuses.Active) return Result.Success();
+
+        var targetIsSuper = string.Equals(target.Role?.Slug, BuiltInStaffRoles.SuperAdmin, StringComparison.Ordinal);
+        if (actor.ActorId != userId)
+        {
+            var actorAccess = _staffAccess is null ? StaffAccess.None : await _staffAccess.GetAccessAsync(actor.ActorId, ct);
+            var manage = StaffGuards.CanManage(actorAccess, targetIsSuper, target.Role is null ? [] : StaffAccessService.EffectiveCodes(target.Role));
+            if (!manage.IsSuccess) return manage;
+        }
+
+        var others = await _unitOfWork.StaffMemberRepository.CountActiveWithRoleSlugAsync(BuiltInStaffRoles.SuperAdmin, userId, ct);
+        return StaffGuards.KeepsASuperAdmin(targetIsSuper, false, others);
+    }
+
+    /// <summary>
     /// The shape all three privileged actions share: change, record, and only then commit.
     ///
     /// The ordering is the point. `mutate` runs and is flushed inside a transaction, the audit
@@ -219,7 +430,8 @@ public class AdminUserService : IAdminUserService
         AdminUserActionRequest request,
         string action,
         Func<Domain.Entities.User, IReadOnlyDictionary<string, string?>, Task<Dictionary<string, string?>>> mutate,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? workspaceId = null)
     {
         var reason = Normalize(request?.Reason);
         if (reason is null)
@@ -255,6 +467,7 @@ public class AdminUserService : IAdminUserService
                 actor.ActorId,
                 reason,
                 actor.CorrelationId,
+                workspaceId,
                 before,
                 after,
                 ct);

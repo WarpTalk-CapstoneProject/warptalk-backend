@@ -16,6 +16,22 @@ namespace WarpTalk.BillingService.Application.Entitlements;
 /// </summary>
 public sealed record ResolvedEntitlement(string Key, string Value, string Source)
 {
+    /// <summary>
+    /// When <see cref="Source"/> is <c>workspace_override</c>: the value the three layers ABOVE the
+    /// workspace settled on — the most the owner could have allowed. Null for every other source,
+    /// because then <see cref="Value"/> already IS the ceiling.
+    ///
+    /// Carried so a reader can show "your plan allows 20, your owner capped it at 5" from the
+    /// replicated snapshot alone. Without it, an applied override erases the ceiling from every
+    /// consumer's view and the only way to recover it is to re-run the resolution order downstream —
+    /// the exact duplication this layer exists to prevent.
+    /// </summary>
+    public string? Ceiling { get; init; }
+
+    /// <summary>Provenance of <see cref="Ceiling"/>, e.g. <c>plan:enterprise</c>. Null when
+    /// <see cref="Ceiling"/> is.</summary>
+    public string? CeilingSource { get; init; }
+
     public static ResolvedEntitlement Number(string key, long value, string source) =>
         new(key, value.ToString(CultureInfo.InvariantCulture), source);
 
@@ -54,11 +70,17 @@ public sealed record ResolvedEntitlement(string Key, string Value, string Source
 /// Self-service values chosen by the workspace owner. These may only TIGHTEN; see
 /// <see cref="EntitlementResolver"/>.
 /// </param>
+/// <param name="AddonGrants">
+/// G11: what the workspace's purchased add-ons raise. Applied on top of the plan and below the
+/// contract, and only while the plan itself is in force — an add-on sits on a plan, it does not
+/// replace one.
+/// </param>
 public sealed record EntitlementResolutionInputs(
     Plan? Plan,
     bool HasActiveSubscription,
     IReadOnlyDictionary<string, string> ContractOverrides,
-    IReadOnlyDictionary<string, string> WorkspaceOverrides)
+    IReadOnlyDictionary<string, string> WorkspaceOverrides,
+    IReadOnlyList<AddonGrant>? AddonGrants = null)
 {
     public static EntitlementResolutionInputs None { get; } = new(
         null,
@@ -66,6 +88,13 @@ public sealed record EntitlementResolutionInputs(
         new Dictionary<string, string>(StringComparer.Ordinal),
         new Dictionary<string, string>(StringComparer.Ordinal));
 }
+
+/// <summary>
+/// G11: one purchased add-on's contribution to one entitlement key. <paramref name="Amount"/> is
+/// what it ADDS to a numeric limit (units per quantity × quantity); for a boolean capability any
+/// grant switches it on and the amount is ignored.
+/// </summary>
+public sealed record AddonGrant(string Key, long Amount, string AddonSlug);
 
 /// <summary>The resolved map for one workspace: every key in
 /// <see cref="EntitlementConstants.Keys.All"/>, each with a value and a provenance.</summary>

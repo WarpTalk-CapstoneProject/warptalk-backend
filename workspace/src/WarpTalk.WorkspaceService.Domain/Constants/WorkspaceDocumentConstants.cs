@@ -2,9 +2,33 @@ namespace WarpTalk.WorkspaceService.Domain.Constants;
 
 public static class WorkspaceDocumentConstants
 {
+    /// <summary>
+    /// The upload size when platform setting limits.document_upload_mb is not set. The live limit
+    /// is that setting (per workspace, per plan, platform), read on every upload.
+    /// </summary>
+    public const int DefaultMaxUploadMb = 10;
+
+    /// <summary>
+    /// The request-level ceiling: the setting's maximum (100 MB) plus multipart framing. The
+    /// per-workspace limit is enforced below it by the service, which can say which limit applied.
+    /// </summary>
+    public const long MaxUploadRequestBytes = 101L * 1024 * 1024;
+
     public const string SensitiveConfidentialityLevel = "restricted";
     public const string NonSensitiveConfidentialityLevel = "public_internal";
     public const string RetentionStateActive = "active";
+
+    /// <summary>
+    /// The error code the extracted-text read answers with when the caller may see the document
+    /// but WarpBot may not use it — pending approval, rejected, private, AI switched off,
+    /// restricted or staged for deletion. WT-872.
+    /// </summary>
+    /// <remarks>
+    /// Its own code rather than a bare FORBIDDEN so the assistant can tell the user WHY it has no
+    /// text ("this document is not available to WarpBot yet") instead of reporting an ACL denial
+    /// or an empty document. Still a 403: the answer is "no", not "not found".
+    /// </remarks>
+    public const string DocumentNotAiEligibleErrorCode = "DOCUMENT_NOT_AI_ELIGIBLE";
 
     /// <summary>
     /// How many AI-retrievable document ids one lookup returns by default.
@@ -158,6 +182,12 @@ public static class WorkspaceDocumentConstants
         public const string DeleteDocument = "DeleteDocument";
         public const string ArchiveDocument = "ArchiveDocument";
         public const string RestoreDocument = "RestoreDocument";
+
+        /// <summary>A published document was taken back: public → private.</summary>
+        public const string UnpublishDocument = "UnpublishDocument";
+
+        /// <summary>A private document was published again (or resubmitted for approval).</summary>
+        public const string PublishDocument = "PublishDocument";
         public const string SecurityScanCompleted = "SecurityScanCompleted";
         public const string EmbeddingIndexed = "EmbeddingIndexed";
         public const string EmbeddingFailed = "EmbeddingFailed";
@@ -176,6 +206,8 @@ public static class WorkspaceDocumentConstants
         public const string Failed = "DocumentFailed";
         public const string Archived = "DocumentArchived";
         public const string Restored = "DocumentRestored";
+        public const string Unpublished = "DocumentUnpublished";
+        public const string Published = "DocumentPublished";
         public const string Deleted = "DocumentDeleted";
     }
 }

@@ -8,6 +8,7 @@ public class WorkspaceConfiguration
     private string _defaultLanguage = WorkspaceConstants.DefaultWorkspaceLanguage;
     private string _timezone = WorkspaceConstants.DefaultWorkspaceTimezone;
     private List<string> _allowedTargetLanguages = new();
+    private bool? _restrictLanguages;
     private int _maxActiveRooms = WorkspaceConstants.DefaultWorkspaceMaxActiveRooms;
     private int _artifactRetentionDays = WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays;
     private int _invitationExpiryDays = WorkspaceConstants.DefaultInvitationExpiryDays;
@@ -27,9 +28,42 @@ public class WorkspaceConfiguration
     }
 
     // 2. Translation & Audio Policies
+
+    /// <summary>
+    /// Whether <see cref="AllowedTargetLanguages"/> is a whitelist at all — the "Allow all
+    /// languages" switch, inverted (WT-706).
+    ///
+    /// WHY A SEPARATE FLAG. The list alone cannot tell "this workspace permits every language"
+    /// from "this workspace permits none", and every reader had to pick one: empty means
+    /// unrestricted. That reading is right for a workspace that never configured languages, and
+    /// it made unticking the LAST language in a restricted workspace silently switch the whole
+    /// tenant to unrestricted — the opposite of what the owner was doing. With this flag the two
+    /// states are distinct, and a restricted workspace that empties its list is refused on save
+    /// instead (WorkspaceSettingsValidator).
+    ///
+    /// BACK-COMPAT. Absent from every settings JSON written before WT-706, so it derives from the
+    /// stored list: a non-empty list was restricted, an empty one was not. That is exactly what
+    /// the old readers concluded, so existing data keeps its meaning without a data migration.
+    /// The derived value is what gets serialized, so the flag becomes explicit on the next save.
+    /// </summary>
+    public bool RestrictLanguages
+    {
+        get => _restrictLanguages ?? _allowedTargetLanguages.Count > 0;
+        set => _restrictLanguages = value;
+    }
+
+    /// <summary>
+    /// The whitelist, normalized to lower-case primary subtags ("vi", not "vi-VN") on save.
+    ///
+    /// EMPTY STILL MEANS UNRESTRICTED ON THE WIRE, and deliberately so: the gRPC settings
+    /// response, translation-room's room-edit gate and the gateway's RoomLanguagePolicy all read
+    /// it that way, and teaching every consumer about <see cref="RestrictLanguages"/> would be a
+    /// four-service change for no behaviour difference. Instead the getter keeps the invariant
+    /// those consumers rely on — no restriction, no entries — whatever a stale document holds.
+    /// </summary>
     public List<string> AllowedTargetLanguages
     {
-        get => _allowedTargetLanguages;
+        get => RestrictLanguages ? _allowedTargetLanguages : new List<string>();
         set => _allowedTargetLanguages = value ?? new List<string>();
     }
 

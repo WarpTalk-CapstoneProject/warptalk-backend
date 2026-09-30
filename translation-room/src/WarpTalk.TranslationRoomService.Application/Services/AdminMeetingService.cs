@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.TranslationRoomService.Application.DTOs.Admin;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -55,7 +56,7 @@ public class AdminMeetingService : IAdminMeetingService
         if (status != null && !Statuses.Contains(status, StringComparer.OrdinalIgnoreCase))
         {
             return Result.Failure<AdminPagedResult<AdminMeetingSummaryDto>>(
-                $"Unknown status. Expected one of: {string.Join(", ", Statuses)}.",
+                $"Unknown status. Expected all or one of: {string.Join(", ", Statuses)}.",
                 ErrorCodes.ValidationError);
         }
 
@@ -141,6 +142,59 @@ public class AdminMeetingService : IAdminMeetingService
         }
     }
 
+    public async Task<Result<AdminMeetingInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default,
+        Guid? workspaceId = null)
+    {
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
+        {
+            return Result.Failure<AdminMeetingInsightsDto>(error!, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var rooms = _unitOfWork.TranslationRoomRepository;
+
+            // One read covering both windows (previousMonth of a long window can overlap the
+            // current one), then clipped per window in memory.
+            var spanFrom = window.PreviousFrom < window.From ? window.PreviousFrom : window.From;
+            var spanTo = window.PreviousTo > window.To ? window.PreviousTo : window.To;
+            var spans = await rooms.GetAdminMeetingSpansAsync(spanFrom, spanTo, ct, workspaceId);
+
+            var current = AdminMeetingInsightsCalculator.Totals(spans, window.From, window.To, now);
+            var previous = AdminMeetingInsightsCalculator.Totals(spans, window.PreviousFrom, window.PreviousTo, now);
+            var byDay = AdminMeetingInsightsCalculator.ByDay(spans, window.From, window.To, now, window.TimeZone);
+
+            // Same definitions as GET /admin/meetings/counts, but "today" is the local day of the
+            // request's tz: a Vietnam admin's today began at 17:00Z yesterday.
+            var todayStart = AdminComparisonRange.LocalDayOf(now, window.TimeZone).Start;
+            var (live, startedToday) = await rooms.GetAdminCountsAsync(todayStart, ct);
+
+            return Result.Success(new AdminMeetingInsightsDto(
+                window.Range,
+                window.PreviousRange,
+                [
+                    new AdminInsightMetric(
+                        "meetingsHeld", current.MeetingsHeld, previous.MeetingsHeld, AdminInsightUnits.Count, true),
+                    new AdminInsightMetric(
+                        "hoursTranslated", current.Hours, previous.Hours, AdminInsightUnits.Hours, true,
+                        AdminMeetingInsightsCalculator.HoursNote(current, previous)),
+                ],
+                byDay.Select(d => new AdminMeetingDayDto(d.Date, d.Meetings, d.Hours)).ToList(),
+                live,
+                startedToday));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin meeting insights read failed.");
+            return Result.Failure<AdminMeetingInsightsDto>(
+                "An unexpected error occurred while reading meeting insights.",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
     private AdminMeetingSummaryDto ToSummary(AdminMeetingRow row, int attended)
         => new(
             row.Id,
@@ -182,6 +236,18 @@ public class AdminMeetingService : IAdminMeetingService
     }
 
 
+    /// <summary>
+    /// Blank and "all" both mean "no status filter".
+    ///
+    /// WT-693: the directory's default tab is "all" and the page sent it verbatim. Validating it
+    /// as a status answered 400 to the first request of every visit, so the page never loaded.
+    /// "all" is a filter value, not a status, and it is accepted as one here rather than relying on
+    /// every client to remember to drop it.
+    /// </summary>
     private static string? Normalize(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim();
+        return trimmed.Equals("all", StringComparison.OrdinalIgnoreCase) ? null : trimmed;
+    }
 }

@@ -16,6 +16,10 @@ public static class AudioRouteConstants
     public const string ErrorFailedToProcessTelemetry = "Failed to process telemetry";
     public const string ErrorParticipantNotInRoom = "Caller is not a participant of this translation room.";
 
+    /// <summary>WT-699 / TC1905: the per-route voice-clone switch belongs to the route's speaker.</summary>
+    public const string ErrorNotRouteSpeaker =
+        "Only the speaker whose voice this route carries can change its voice cloning.";
+
     /// <summary>
     /// Says what to do about it, not just what went wrong. The person has not refused anything —
     /// they have most likely never been asked, and the fix is a page they can reach.

@@ -21,3 +21,17 @@ public record AuthResponse(string AccessToken, string RefreshToken, DateTime Exp
 /// a null reference at the cookie write, not a session made of blanks.
 /// </summary>
 public record RegisterResponse(bool EmailVerificationRequired, AuthResponse? Auth);
+
+/// <summary>
+/// One of the caller's own signed-in sessions. <paramref name="Id"/> is the refresh-token family
+/// id — stable across rotation, so a Revoke button rendered before a refresh still names the same
+/// session after it. <paramref name="IsCurrent"/> marks the session making this request.
+/// </summary>
+public record UserSessionDto(
+    Guid Id,
+    string? DeviceInfo,
+    string? IpAddress,
+    DateTime SignedInAt,
+    DateTime LastActiveAt,
+    DateTime ExpiresAt,
+    bool IsCurrent);

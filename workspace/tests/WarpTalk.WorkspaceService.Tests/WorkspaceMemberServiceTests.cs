@@ -1286,6 +1286,100 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(newOwnerId, workspace.OwnerId);
     }
 
+    // ── the platform admin's transfer (admin workspace page) ──────────────────────────────
+
+    private WorkspaceMemberService CreateAdminTransferService(IAdminAuditLogRepository? auditLog) =>
+        new(
+            _unitOfWork,
+            Substitute.For<ILogger<WorkspaceMemberService>>(),
+            _authIdentity,
+            _eventPublisher,
+            CreatePreviewSigningConfiguration(),
+            notificationClient: null,
+            adminAuditLog: auditLog);
+
+    [Fact]
+    public async Task AdminTransferOwnership_hands_over_a_workspace_whose_owner_left_and_records_it_in_the_same_save()
+    {
+        // The usual reason an admin is asked to do this at all: the owner is gone.
+        var workspaceId = Guid.NewGuid();
+        var departedOwnerId = Guid.NewGuid();
+        var newOwnerId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, OwnerId = departedOwnerId };
+        var newOwnerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = newOwnerId, MembershipType = "Internal" };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(newOwnerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(newOwnerMember);
+        StubRoleId("Owner", ownerRoleId);
+        StubRoleId("Admin", Guid.NewGuid());
+
+        var auditLog = Substitute.For<IAdminAuditLogRepository>();
+        var service = CreateAdminTransferService(auditLog);
+
+        var result = await service.AdminTransferOwnershipAsync(
+            workspaceId, newOwnerId, actorId, "Owner left the company", "corr-7");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(newOwnerId, workspace.OwnerId);
+        Assert.Equal(ownerRoleId, newOwnerMember.RoleId);
+        await auditLog.Received(1).AppendAsync(
+            Arg.Is<WorkspaceAdminAction>(a =>
+                a.Action == WarpTalk.Shared.Events.AdminAuditWorkspaceActions.OwnershipTransferred
+                && a.WorkspaceId == workspaceId
+                && a.PerformedBy == actorId
+                && a.Reason == "Owner left the company"
+                && a.CorrelationId == "corr-7"),
+            Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AdminTransferOwnership_needs_a_reason_and_changes_nothing_without_one()
+    {
+        var auditLog = Substitute.For<IAdminAuditLogRepository>();
+        var service = CreateAdminTransferService(auditLog);
+
+        var result = await service.AdminTransferOwnershipAsync(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "  ", null);
+
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await auditLog.DidNotReceiveWithAnyArgs().AppendAsync(default!, default);
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(default);
+    }
+
+    [Fact]
+    public async Task AdminTransferOwnership_keeps_the_owner_rules_an_external_member_cannot_own()
+    {
+        var workspaceId = Guid.NewGuid();
+        var newOwnerId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, OwnerId = Guid.NewGuid() };
+        var external = new WorkspaceMember { WorkspaceId = workspaceId, UserId = newOwnerId, MembershipType = "External" };
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(external);
+
+        var auditLog = Substitute.For<IAdminAuditLogRepository>();
+        var result = await CreateAdminTransferService(auditLog)
+            .AdminTransferOwnershipAsync(workspaceId, newOwnerId, Guid.NewGuid(), "reason", null);
+
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await auditLog.DidNotReceiveWithAnyArgs().AppendAsync(default!, default);
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(default);
+    }
+
+    [Fact]
+    public async Task AdminTransferOwnership_fails_closed_when_the_audit_log_is_not_wired()
+    {
+        var result = await CreateAdminTransferService(auditLog: null)
+            .AdminTransferOwnershipAsync(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "reason", null);
+
+        Assert.False(result.IsSuccess);
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(default);
+    }
+
     #endregion
 
     #region UpdateMemberAsync Tests

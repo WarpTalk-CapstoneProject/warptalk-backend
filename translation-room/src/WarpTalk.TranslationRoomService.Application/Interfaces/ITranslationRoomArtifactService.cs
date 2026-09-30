@@ -9,8 +9,21 @@ namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 
 public interface ITranslationRoomArtifactService
 {
-    Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, CancellationToken ct = default);
-    Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(Guid artifactId, Guid userId, CancellationToken ct = default);
+    Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, string? userEmail = null, CancellationToken ct = default);
+    /// <param name="asAttachment">
+    /// True when the caller is SAVING the artifact, false when it is going to play or render it in
+    /// the page. It decides one thing: whether the signed link answers with
+    /// <c>Content-Disposition: attachment</c> and the meeting's own file name. The record page
+    /// asks for the same recording to put in a &lt;video&gt; element, and that one must come back
+    /// as the plain object — hence a flag rather than always attaching. The returned
+    /// <c>FileName</c> is the same either way, for the client that writes the file itself.
+    /// </param>
+    Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(
+        Guid artifactId,
+        Guid userId,
+        string? userEmail = null,
+        bool asAttachment = false,
+        CancellationToken ct = default);
     Task<Result> ApproveArtifactConsentAsync(Guid artifactId, Guid userId, CancellationToken ct = default);
 
     /// <summary>
@@ -52,6 +65,7 @@ public interface ITranslationRoomArtifactService
         string templateKey,
         string? language,
         string? bearerToken,
+        string? userEmail = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -61,6 +75,7 @@ public interface ITranslationRoomArtifactService
     Task<Result<List<SummaryVariantSummaryDto>>> GetSummaryVariantsAsync(
         Guid roomId,
         Guid userId,
+        string? userEmail = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -76,6 +91,7 @@ public interface ITranslationRoomArtifactService
         string templateKey,
         string? summaryLanguage,
         string? bearerToken,
+        string? userEmail = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -88,5 +104,6 @@ public interface ITranslationRoomArtifactService
         Guid roomId,
         Guid userId,
         string requestId,
+        string? userEmail = null,
         CancellationToken ct = default);
 }

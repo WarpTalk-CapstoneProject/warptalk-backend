@@ -97,6 +97,9 @@ public class MeetingsController : ControllerBase
         return Ok(new { message = "AI Triggered" });
     }
 
+    // WT-699 / TC2402: {participantId} is the participant's USER id — the same identifier kick,
+    // mute and transfer-host take on this controller. The web client used to send the room
+    // service's participant ROW id here, which matched nobody.
     [HttpPost("rooms/{translationRoomId}/participants/{participantId}/reject")]
     public async Task<IActionResult> RejectParticipant(Guid translationRoomId, Guid participantId)
     {
@@ -115,6 +118,10 @@ public class MeetingsController : ControllerBase
 
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            // WT-699 / TC2402: e.g. the person was already admitted — the host's to fix, not ours.
+            if (result.ErrorCode == ErrorCodes.ValidationError)
+                return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
@@ -196,6 +203,11 @@ public class MeetingsController : ControllerBase
 
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            // WT-699 / TC2103: a second Kick for somebody already out. Distinct from success so
+            // the host is not told they removed somebody again.
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
 
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }

@@ -112,12 +112,28 @@ public sealed class AbandonedRoomSweepWorkerTests
         harness.Ended.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task TheSweepEndsARoomAsAbandoned_SoTheSuccessRateCanTellItFromAHostEnding()
+    {
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Left));
+        harness.Redis.ObservedEmpty(EmptyKey(room), PastGrace);
+
+        await harness.SweepAsync();
+
+        harness.EndReasons.Should().Equal(MeetingLifecycleMetrics.EndReasonAbandoned);
+        MeetingLifecycleMetrics.CurrentEndReason.Should().Be(
+            MeetingLifecycleMetrics.EndReasonHost,
+            "the scope must not leak past the sweep's own call");
+    }
+
     private sealed class Harness
     {
         private readonly AbandonedRoomSweepWorker _worker;
 
         public FakeRedisKeys Redis { get; } = new();
         public List<Guid> Ended { get; } = new();
+        public List<string> EndReasons { get; } = new();
 
         public Harness(TranslationRoom room, params TranslationRoomParticipant[] participants)
         {
@@ -152,6 +168,7 @@ public sealed class AbandonedRoomSweepWorkerTests
                 .ReturnsAsync((Guid roomId, Guid _, CancellationToken _) =>
                 {
                     Ended.Add(roomId);
+                    EndReasons.Add(MeetingLifecycleMetrics.CurrentEndReason);
                     return Result.Success();
                 });
 
@@ -162,7 +179,8 @@ public sealed class AbandonedRoomSweepWorkerTests
             _worker = new AbandonedRoomSweepWorker(
                 services.BuildServiceProvider(),
                 Redis.Multiplexer,
-                NullLogger<AbandonedRoomSweepWorker>.Instance);
+                NullLogger<AbandonedRoomSweepWorker>.Instance,
+                new WarpTalk.Shared.Coordination.DistributedLockProvider(new WarpTalk.Shared.Coordination.InProcessLeaseStore(TimeProvider.System), TimeProvider.System));
 
             Dictionary<Guid, int> Count(IReadOnlyCollection<Guid> ids, Func<TranslationRoomParticipant, bool> counts) =>
                 participants

@@ -48,7 +48,9 @@ public static class AdminNotificationMapper
             entity.TargetAudienceMode,
             entity.CreatedBy,
             entity.CreatedAt,
-            entity.UpdatedAt
+            entity.UpdatedAt,
+            entity.SentAt,
+            entity.DeliveredCount
         );
     }
 
@@ -65,7 +67,9 @@ public static class AdminNotificationMapper
             entity.Payload,
             entity.CreatedBy,
             entity.CreatedAt,
-            entity.UpdatedAt
+            entity.UpdatedAt,
+            entity.SentAt,
+            entity.DeliveredCount
         );
     }
 }

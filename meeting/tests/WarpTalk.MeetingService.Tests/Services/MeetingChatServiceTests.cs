@@ -31,6 +31,8 @@ public class MeetingChatServiceTests
     private readonly Mock<IMeetingChatTranslationRepository> _translationRepoMock;
     private readonly Mock<IChatTranslator> _chatTranslatorMock;
     private readonly Mock<IMeetingChatFileStorage> _fileStorageMock;
+    private readonly Mock<IRtcSessionRevocationRepository> _revocationRepoMock = new();
+    private readonly List<RtcSessionRevocation> _revocations = new();
     private readonly MeetingChatService _sut;
 
     private readonly Guid _roomId = Guid.NewGuid();
@@ -57,6 +59,11 @@ public class MeetingChatServiceTests
         _unitOfWorkMock.Setup(u => u.MeetingChatAssistantRequestRepository).Returns(_assistantRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatModerationEventRepository).Returns(_moderationRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatTranslationRepository).Returns(_translationRepoMock.Object);
+        _unitOfWorkMock.Setup(u => u.RtcSessionRevocationRepository).Returns(_revocationRepoMock.Object);
+        _revocationRepoMock
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<RtcSessionRevocation, bool>>>(), It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<RtcSessionRevocation, bool>> predicate, CancellationToken _) =>
+                Task.FromResult(_revocations.Any(predicate.Compile())));
 
         // SendMessageAsync always looks up the cached room to resolve WorkspaceId; an
         // unconfigured mock returns null (Result<T> is a class), which NREs on .Value.
@@ -632,5 +639,240 @@ public class MeetingChatServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal("notes.pdf", result.Value!.FileName);
         Assert.Equal("application/pdf", result.Value!.ContentType);
+    }
+
+    // --- GetRoomMessages Tests ---
+
+    private MeetingChatMessage CreateMessage(string text, DateTime createdAt, bool isHidden = false) => new()
+    {
+        Id = Guid.NewGuid(),
+        MeetingRoomId = _roomId,
+        WorkspaceId = Guid.NewGuid(),
+        SenderUserId = _hostId,
+        SenderDisplayName = "Host",
+        SenderType = "user",
+        MessageType = "text",
+        OriginalLanguage = "en",
+        OriginalText = text,
+        IsHidden = isHidden,
+        CreatedAt = createdAt,
+        Mentions = string.Empty
+    };
+
+    /// <summary>
+    /// Backs the three repository lookups GetRoomMessagesAsync makes with in-memory lists and evaluates
+    /// the service's own predicates, so the TranslationRoomId / MeetingRoomId / UserId filters are exercised.
+    /// Returns the TranslationRoomId the caller should pass as the route room id.
+    /// </summary>
+    private Guid SetupRoomMessages(MeetingRoom? room, IEnumerable<RtcStreamParticipant> participants, IEnumerable<MeetingChatMessage> messages)
+    {
+        var translationRoomId = room?.TranslationRoomId ?? Guid.NewGuid();
+        var rooms = room == null ? new List<MeetingRoom>() : new List<MeetingRoom> { room };
+        var participantList = participants.ToList();
+        var messageList = messages.ToList();
+
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<MeetingRoom, bool>> predicate, string _, CancellationToken _) =>
+                Task.FromResult(rooms.FirstOrDefault(predicate.Compile())));
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<RtcStreamParticipant, bool>> predicate, string _, CancellationToken _) =>
+                Task.FromResult(participantList.FirstOrDefault(predicate.Compile())));
+        _chatMessageRepoMock.Setup(m => m.FindAsync(It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((Expression<Func<MeetingChatMessage, bool>> predicate, string _, CancellationToken _) =>
+                Task.FromResult<IReadOnlyList<MeetingChatMessage>>(messageList.Where(predicate.Compile()).ToList()));
+
+        return translationRoomId;
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_HostWithVisibleMessages_ReturnsMessages()
+    {
+        var now = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            Array.Empty<RtcStreamParticipant>(),
+            new[] { CreateMessage("hello", now.AddMinutes(-2)), CreateMessage("world", now.AddMinutes(-1)) });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _hostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { "hello", "world" }, result.Value!.Select(m => m.OriginalText));
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_RoomNotFound_ReturnsNotFound()
+    {
+        var translationRoomId = SetupRoomMessages(null, Array.Empty<RtcStreamParticipant>(), Array.Empty<MeetingChatMessage>());
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("NOT_FOUND", result.ErrorCode);
+        _chatMessageRepoMock.Verify(m => m.FindAsync(
+            It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_ParticipantWithVisibleMessages_ReturnsMessages()
+    {
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            new[] { CreateParticipant(_userId) },
+            new[] { CreateMessage("hello", DateTime.UtcNow) });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("hello", Assert.Single(result.Value!).OriginalText);
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_ParticipantWhoLeft_StillReturnsMessages()
+    {
+        var leftParticipant = CreateParticipant(_userId, isActive: false);
+        leftParticipant.LeftAt = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            new[] { leftParticipant },
+            new[] { CreateMessage("hello", DateTime.UtcNow) });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Single(result.Value!);
+    }
+
+    /// <summary>
+    /// WT-699 / TC2504. The participant row survives a kick (it is only deactivated), so "ever
+    /// joined" let a removed person keep reading the room's chat. The kick's REVOKED grant is what
+    /// the read now refuses on.
+    /// </summary>
+    [Fact]
+    public async Task GetRoomMessagesAsync_KickedParticipant_ReturnsForbidden()
+    {
+        var room = CreateRoom(_hostId);
+        var kicked = CreateParticipant(_userId, isActive: false);
+        kicked.LeftAt = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            room,
+            new[] { kicked },
+            new[] { CreateMessage("said after the kick", DateTime.UtcNow) });
+        _revocations.Add(new RtcSessionRevocation
+        {
+            MeetingRoomId = room.Id,
+            InviteeUserId = _userId,
+            Status = "REVOKED",
+        });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+        _chatMessageRepoMock.Verify(m => m.FindAsync(
+            It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>A revocation for somebody else in the same room does not touch this reader.</summary>
+    [Fact]
+    public async Task GetRoomMessagesAsync_AnotherParticipantsRevocation_DoesNotBlockThisReader()
+    {
+        var room = CreateRoom(_hostId);
+        var translationRoomId = SetupRoomMessages(
+            room,
+            new[] { CreateParticipant(_userId) },
+            new[] { CreateMessage("hello", DateTime.UtcNow) });
+        _revocations.Add(new RtcSessionRevocation
+        {
+            MeetingRoomId = room.Id,
+            InviteeUserId = Guid.NewGuid(),
+            Status = "REVOKED",
+        });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_RequesterNotParticipant_ReturnsForbidden()
+    {
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            new[] { CreateParticipant(Guid.NewGuid()) },
+            new[] { CreateMessage("hello", DateTime.UtcNow) });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+        _chatMessageRepoMock.Verify(m => m.FindAsync(
+            It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_HostAndHiddenMessage_HostSeesHiddenMessage()
+    {
+        var now = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            Array.Empty<RtcStreamParticipant>(),
+            new[] { CreateMessage("visible", now.AddMinutes(-2)), CreateMessage("moderated", now.AddMinutes(-1), isHidden: true) });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _hostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { "visible", "moderated" }, result.Value!.Select(m => m.OriginalText));
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_ParticipantAndHiddenMessage_HiddenMessageExcluded()
+    {
+        var now = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            new[] { CreateParticipant(_userId) },
+            new[] { CreateMessage("visible", now.AddMinutes(-2)), CreateMessage("moderated", now.AddMinutes(-1), isHidden: true) });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("visible", Assert.Single(result.Value!).OriginalText);
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_ParticipantAndNoMessages_ReturnsEmptyList()
+    {
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            new[] { CreateParticipant(_userId) },
+            Array.Empty<MeetingChatMessage>());
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(result.Value!);
+    }
+
+    [Fact]
+    public async Task GetRoomMessagesAsync_MessagesStoredOutOfOrder_ReturnsOrderedByCreatedAt()
+    {
+        var now = DateTime.UtcNow;
+        var translationRoomId = SetupRoomMessages(
+            CreateRoom(_hostId),
+            Array.Empty<RtcStreamParticipant>(),
+            new[]
+            {
+                CreateMessage("third", now),
+                CreateMessage("first", now.AddMinutes(-10)),
+                CreateMessage("second", now.AddMinutes(-5))
+            });
+
+        var result = await _sut.GetRoomMessagesAsync(translationRoomId, _hostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { "first", "second", "third" }, result.Value!.Select(m => m.OriginalText));
     }
 }

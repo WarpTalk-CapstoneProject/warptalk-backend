@@ -8,6 +8,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -23,8 +24,17 @@ public class CreditsController : ControllerBase
         _creditService = creditService;
     }
 
+    /// <summary>
+    /// The workspace's credit balance. WT-700.
+    ///
+    /// Readable by every active internal member, not just Owner/Admin: members spend these
+    /// credits in meetings and need to see how much is left. External members are guests from
+    /// another organisation and have no business reading this workspace's balance. History and
+    /// usage-by-member stay behind the Owner/Admin gate — the balance is one number, those show
+    /// what was spent and by whom (WT-413).
+    /// </summary>
     [HttpGet("workspace/{workspaceId}")]
-    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    [RequireInternalWorkspaceMember]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
@@ -32,26 +42,24 @@ public class CreditsController : ControllerBase
     }
 
     /// <summary>
-    /// Manual credit adjustment, platform admin only. The service method existed, unit-tested,
-    /// for weeks with no route in front of it — the portal's Adjust Credit button posted here and
-    /// 404'd. The actor comes from the token, never the body, because the adjustment is written
-    /// into the audit trail under their id.
+    /// Credits the workspace kept from a subscription that ended — "X credits kept, renew to use
+    /// them" on the billing page. Same audience as the balance: every internal member spends these
+    /// credits once the plan is renewed. Answers 200 with zero when nothing is frozen, and for a
+    /// workspace with no live subscription, which the balance endpoint above cannot.
     /// </summary>
-    [HttpPost("workspace/{workspaceId}/adjust")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<CreditTransactionDto>> AdjustWorkspaceCredits(
-        Guid workspaceId,
-        [FromBody] AdjustCreditsRequest request,
-        CancellationToken cancellationToken)
+    [HttpGet("workspace/{workspaceId}/frozen")]
+    [RequireInternalWorkspaceMember]
+    public async Task<ActionResult<FrozenCreditsDto>> GetFrozenCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
-        var adminUserId = User.GetUserId();
-        if (adminUserId == null)
-            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
-
-        var result = await _creditService.AdjustWorkspaceCreditsAsync(
-            workspaceId, request, adminUserId.Value, cancellationToken);
+        var result = await _creditService.GetFrozenCreditsAsync(workspaceId, cancellationToken);
         return this.ToActionResult(result);
     }
+
+    // Manual credit adjustment moved to POST ~/api/v1/admin/billing/workspaces/{id}/credits/adjust
+    // (AdminWorkspaceBillingController): system-admin POLICY rather than Roles = "Admin, admin"
+    // (which admits the global Admin row), a bounded amount, and an entry in the platform audit log
+    // recorded before the adjustment is saved. This route did none of the three, so it is gone
+    // rather than kept as a second, unaudited door to the same balance.
 
     [HttpGet("workspace/{workspaceId}/history")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
@@ -64,9 +72,9 @@ public class CreditsController : ControllerBase
     /// <summary>
     /// Who in this workspace has spent what. WT-413.
     ///
-    /// Same role gate as the balance and history endpoints beside it — an ordinary member must
-    /// not be able to read the whole workspace's spend, and RequireWorkspaceRole is what the
-    /// two neighbours already use, so this cannot drift from them.
+    /// Same role gate as the history endpoint beside it — an ordinary member must not be able to
+    /// read the whole workspace's spend. The balance endpoint is deliberately looser (WT-700);
+    /// do not align this one with it.
     /// </summary>
     [HttpGet("workspace/{workspaceId}/usage-by-member")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
@@ -81,8 +89,8 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("history/global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
+    [RequirePermission(AdminPermissions.BillingRead)]
+    public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] GlobalCreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
         return this.ToActionResult(result);

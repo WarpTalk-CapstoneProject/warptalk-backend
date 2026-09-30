@@ -9,4 +9,20 @@ public class GoogleWorkspaceApiOptions
     public int MaxDriveFileCharacters { get; set; } = 12_000;
 
     public string CalendarEventsEndpointFormat { get; set; } = "https://www.googleapis.com/calendar/v3/calendars/{0}/events";
+
+    /// <summary>
+    /// Google attaches a Meet conference asynchronously: the insert can answer with
+    /// conferenceData.createRequest.status "pending" and no link yet. The gateway re-reads the
+    /// event this many times, this far apart, before giving up and reporting the link as pending.
+    /// </summary>
+    public int MeetConferencePollAttempts { get; set; } = 3;
+
+    public int MeetConferencePollDelayMilliseconds { get; set; } = 700;
+
+    /// <summary>
+    /// The zone a date-time without one is read in. Google refuses "2026-09-24T10:00:00" with
+    /// neither an offset nor a timeZone, and a model told the local date sends exactly that. This
+    /// is also the zone WarpBot's confirmation card prints, so the card and the booking agree.
+    /// </summary>
+    public string DefaultTimeZone { get; set; } = "Asia/Ho_Chi_Minh";
 }

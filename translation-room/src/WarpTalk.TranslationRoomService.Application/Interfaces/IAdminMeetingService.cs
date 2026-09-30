@@ -21,4 +21,17 @@ public interface IAdminMeetingService
         CancellationToken ct = default);
 
     Task<Result<AdminMeetingCountsDto>> GetCountsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Meetings held and hours over a window, compared with the window before it. A backwards,
+    /// oversized or unknown-compare window is a <see cref="ErrorCodes.ValidationError"/>.
+    /// </summary>
+    /// <param name="workspaceId">
+    /// Scopes the held-meetings and hours metrics (and the per-day series) to one workspace — the
+    /// admin workspace page's meetings count and hours. The live counts stay platform-wide.
+    /// </param>
+    Task<Result<AdminMeetingInsightsDto>> GetInsightsAsync(
+        AdminInsightsQuery query,
+        CancellationToken ct = default,
+        Guid? workspaceId = null);
 }

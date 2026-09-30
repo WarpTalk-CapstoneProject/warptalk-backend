@@ -11,8 +11,101 @@ public partial class WorkspaceDbContext
     /// <summary>WT-263: the replicated entitlement snapshot (migration 050).</summary>
     public virtual DbSet<WorkspaceEntitlementSnapshot> WorkspaceEntitlementSnapshots { get; set; } = null!;
 
+    /// <summary>Internal admin notes on a workspace (migration 20260924090000).</summary>
+    public virtual DbSet<WorkspaceAdminNote> WorkspaceAdminNotes { get; set; } = null!;
+
+    /// <summary>G12 pending-work inbox triage (migration 20260925180000).</summary>
+    public virtual DbSet<AdminInboxItemState> AdminInboxItemStates { get; set; } = null!;
+    public virtual DbSet<AdminInboxNote> AdminInboxNotes { get; set; } = null!;
+
+    /// <summary>Platform settings console: stored values and their history (migration 20260925210000).</summary>
+    public virtual DbSet<PlatformSettingValue> PlatformSettingValues { get; set; } = null!;
+    public virtual DbSet<PlatformSettingChange> PlatformSettingChanges { get; set; } = null!;
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // G12: every column mapped by name — this context has no naming convention.
+        modelBuilder.Entity<AdminInboxItemState>(entity =>
+        {
+            entity.HasKey(e => e.ItemKey).HasName("admin_inbox_item_states_pkey");
+            entity.ToTable("admin_inbox_item_states", "workspace");
+            entity.Property(e => e.ItemKey).HasColumnName("item_key").HasMaxLength(200);
+            entity.Property(e => e.ItemType).HasColumnName("item_type").HasMaxLength(60);
+            entity.Property(e => e.AssigneeId).HasColumnName("assignee_id");
+            entity.Property(e => e.AssignedBy).HasColumnName("assigned_by");
+            entity.Property(e => e.AssignedAt).HasColumnName("assigned_at");
+            entity.Property(e => e.SnoozedUntil).HasColumnName("snoozed_until");
+            entity.Property(e => e.SnoozedBy).HasColumnName("snoozed_by");
+            entity.Property(e => e.DoneAt).HasColumnName("done_at");
+            entity.Property(e => e.DoneBy).HasColumnName("done_by");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<AdminInboxNote>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("admin_inbox_notes_pkey");
+            entity.ToTable("admin_inbox_notes", "workspace");
+            entity.HasIndex(e => new { e.ItemKey, e.CreatedAt }, "idx_admin_inbox_notes_item");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.ItemKey).HasColumnName("item_key").HasMaxLength(200);
+            entity.Property(e => e.Body).HasColumnName("body");
+            entity.Property(e => e.AuthorId).HasColumnName("author_id");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+        });
+
+        // Platform settings: every column mapped by name, as above.
+        modelBuilder.Entity<PlatformSettingValue>(entity =>
+        {
+            entity.HasKey(e => new { e.SettingKey, e.ScopeType, e.ScopeId }).HasName("platform_setting_values_pkey");
+            entity.ToTable("platform_setting_values", "workspace");
+            entity.Property(e => e.SettingKey).HasColumnName("setting_key").HasMaxLength(120);
+            entity.Property(e => e.ScopeType).HasColumnName("scope_type").HasMaxLength(20);
+            entity.Property(e => e.ScopeId).HasColumnName("scope_id").HasMaxLength(80);
+            entity.Property(e => e.ValueJson).HasColumnType("jsonb").HasColumnName("value");
+            // The UPDATE carries WHERE version = <read>, so two admins saving at once cannot both win.
+            entity.Property(e => e.Version).HasColumnName("version").IsConcurrencyToken();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<PlatformSettingChange>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("platform_setting_changes_pkey");
+            entity.ToTable("platform_setting_changes", "workspace");
+            entity.HasIndex(e => new { e.SettingKey, e.ChangedAt }, "idx_platform_setting_changes_key");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.SettingKey).HasColumnName("setting_key").HasMaxLength(120);
+            entity.Property(e => e.ScopeType).HasColumnName("scope_type").HasMaxLength(20);
+            entity.Property(e => e.ScopeId).HasColumnName("scope_id").HasMaxLength(80);
+            entity.Property(e => e.Action).HasColumnName("action").HasMaxLength(20);
+            entity.Property(e => e.OldValueJson).HasColumnType("jsonb").HasColumnName("old_value");
+            entity.Property(e => e.NewValueJson).HasColumnType("jsonb").HasColumnName("new_value");
+            entity.Property(e => e.Version).HasColumnName("version");
+            entity.Property(e => e.Reason).HasColumnName("reason");
+            entity.Property(e => e.ChangedBy).HasColumnName("changed_by");
+            entity.Property(e => e.ChangedByEmail).HasColumnName("changed_by_email").HasMaxLength(320);
+            entity.Property(e => e.ChangedByName).HasColumnName("changed_by_name").HasMaxLength(200);
+            entity.Property(e => e.ChangedAt).HasDefaultValueSql("now()").HasColumnName("changed_at");
+            entity.Property(e => e.CorrelationId).HasColumnName("correlation_id").HasMaxLength(100);
+            entity.Property(e => e.RevertOf).HasColumnName("revert_of");
+        });
+
+        modelBuilder.Entity<WorkspaceAdminNote>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workspace_admin_notes_pkey");
+            entity.ToTable("workspace_admin_notes", "workspace");
+            entity.HasIndex(e => new { e.WorkspaceId, e.CreatedAt }, "idx_workspace_admin_notes_workspace");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.Body).HasColumnName("body");
+            entity.Property(e => e.AuthorId).HasColumnName("author_id");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+        });
+
         modelBuilder.Entity<WorkspaceEntitlementSnapshot>(entity =>
         {
             entity.HasKey(e => e.WorkspaceId).HasName("workspace_entitlement_snapshots_pkey");
@@ -80,6 +173,13 @@ public partial class WorkspaceDbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("performed_at");
             entity.Property(e => e.CorrelationId).HasMaxLength(100).HasColumnName("correlation_id");
+            entity.Property(e => e.ActorEmail).HasMaxLength(320).HasColumnName("actor_email");
+            entity.Property(e => e.ActorName).HasMaxLength(200).HasColumnName("actor_name");
+            entity.Property(e => e.EntityKey).HasMaxLength(100).HasColumnName("entity_key");
+            entity.Property(e => e.EntityLabel).HasMaxLength(200).HasColumnName("entity_label");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.IpAddress).HasMaxLength(64).HasColumnName("ip_address");
+            entity.Property(e => e.UserAgent).HasMaxLength(512).HasColumnName("user_agent");
         });
     }
 }

@@ -26,6 +26,7 @@ public class UnitOfWork : IUnitOfWork
     private ISegmentTranslationLinkRepository? _segmentTranslationLinks;
     private IAudioDubbingRepository? _audioDubbings;
     private ITranscriptPauseWindowRepository? _transcriptPauseWindows;
+    private ITranscriptCleanSentenceRepository? _transcriptCleanSentences;
 
     public UnitOfWork(TranscriptDbContext context)
     {
@@ -67,6 +68,9 @@ public class UnitOfWork : IUnitOfWork
 
     public ITranscriptPauseWindowRepository TranscriptPauseWindows =>
         _transcriptPauseWindows ??= new TranscriptPauseWindowRepository(_context);
+
+    public ITranscriptCleanSentenceRepository TranscriptCleanSentences =>
+        _transcriptCleanSentences ??= new TranscriptCleanSentenceRepository(_context);
 
     public async Task<int> AdvanceTranscriptForNewSegmentAsync(Guid transcriptId, int endTimeMs, CancellationToken cancellationToken = default)
     {

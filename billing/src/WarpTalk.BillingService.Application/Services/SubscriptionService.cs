@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,6 +30,8 @@ public class SubscriptionService : ISubscriptionService
     private readonly IWorkspaceClient _workspaceClient;
     private readonly IEntitlementChangePublisher? _entitlementChangePublisher;
 
+    private readonly IPlatformSettings? _platformSettings;
+
     public SubscriptionService(
         IUnitOfWork unitOfWork,
         ILogger<SubscriptionService> logger,
@@ -37,8 +40,10 @@ public class SubscriptionService : ISubscriptionService
         IUsageRateCardAdminService pricingConfigService,
         IWorkspaceClient workspaceClient,
         IAiServiceStateStore? aiServiceStateStore = null,
-        IEntitlementChangePublisher? entitlementChangePublisher = null)
+        IEntitlementChangePublisher? entitlementChangePublisher = null,
+        IPlatformSettings? platformSettings = null)
     {
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
@@ -253,7 +258,14 @@ public class SubscriptionService : ISubscriptionService
             if (existingTrialForDomain is not null)
                 return Result.Failure<SubscriptionDto>(BillingMessageConstants.ApiErrorMessages.BillingTrialAlreadyExistsForOwnerDomain, ErrorCodes.BillingSubscriptionConflict);
 
-            var subscription = request.ToTrialEntity(plan, ownerDomain);
+            // Trial length and credits from /admin/settings, read per trial; running trials keep theirs.
+            var trialDays = _platformSettings is null
+                ? SubscriptionConstants.TrialDefaults.DurationDays
+                : await _platformSettings.GetInt32Async(PlatformSettingsCatalog.TrialDays, SubscriptionConstants.TrialDefaults.DurationDays, ct: cancellationToken);
+            var trialCredits = _platformSettings is null
+                ? SubscriptionConstants.TrialDefaults.Credits
+                : await _platformSettings.GetInt32Async(PlatformSettingsCatalog.TrialCredits, SubscriptionConstants.TrialDefaults.Credits, ct: cancellationToken);
+            var subscription = request.ToTrialEntity(plan, ownerDomain, trialDays, trialCredits);
 
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);

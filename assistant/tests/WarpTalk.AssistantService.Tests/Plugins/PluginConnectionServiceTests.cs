@@ -190,7 +190,8 @@ public class PluginConnectionServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns([
-                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
+                // Drive is connected, so losing its scope is a loss the outcome has to report.
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow, ConnectedAt = DateTime.UtcNow },
                 new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
             ]);
         _pluginRepository.FindAsync(
@@ -743,16 +744,49 @@ public class PluginConnectionServiceTests
     }
 
     [Fact]
-    public async Task GetStatusAsync_ReportsTheSharedGoogleGrant_ForAGooglePluginThatDidNotStartIt()
+    public async Task GetStatusAsync_DoesNotLendTheSharedGrantToAPluginTheUserNeverConnected()
     {
-        // Meet was installed after the user consented through Drive. If this reported
-        // not_connected the tile would offer a connect button for a grant the user already has.
+        // The regression: the user connected Calendar, and Meet - same scope, same grant - reported
+        // itself connected without the user ever connecting it.
         var meet = GoogleMeetPlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(meet);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow });
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ConnectedConnection());
+
+        var result = await CreateSut().GetStatusAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ConnectionStatus.NotConnected, result.Value!.Status);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_ReadsTheSharedGrant_ForAPluginTheUserConnected()
+    {
+        // Connected through its own Connect, after Drive started the grant: the lookup is still by
+        // provider, never by the plugin id the grant was first obtained through.
+        var meet = GoogleMeetPlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(meet);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow, ConnectedAt = DateTime.UtcNow });
         _connectionRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<PluginConnection, bool>>>(),
                 Arg.Any<string>(),
@@ -1007,11 +1041,58 @@ public class PluginConnectionServiceTests
     }
 
     [Fact]
-    public async Task DisconnectAsync_EndsTheProviderGrant_NotJustTheOnePluginsView()
+    public async Task DisconnectAsync_KeepsTheGrant_WhileAnotherPluginIsStillConnectedOnIt()
     {
-        // Disconnecting Meet ends the Google grant that Drive and Calendar also ride on. Google
-        // revokes per grant, so the alternative would leave rows we believe are healthy pointing
-        // at a dead grant.
+        // Disconnecting Meet disconnects Meet. Calendar, which the user connected on its own, keeps
+        // working: revoking here would take it down with a plugin the user did not touch.
+        var meet = GoogleMeetPlugin();
+        var connection = ConnectedConnection();
+        var meetInstallation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow, ConnectedAt = DateTime.UtcNow };
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(meet);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(meetInstallation);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                meetInstallation,
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow, ConnectedAt = DateTime.UtcNow },
+            ]);
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([GoogleCalendarPlugin()]);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var result = await CreateSut().DisconnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(meetInstallation.ConnectedAt);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, connection.Status);
+        Assert.NotNull(connection.EncryptedRefreshToken);
+        await _oauthClient.DidNotReceive()
+            .RevokeTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DisconnectAsync_EndsTheProviderGrant_WithTheLastConnectedPlugin()
+    {
+        // Nothing else connected rides on the grant, so it is revoked rather than left holding
+        // access nobody uses. Looked up by provider, not by the plugin id it was obtained through.
         var meet = GoogleMeetPlugin();
         var connection = ConnectedConnection();
         _pluginRepository.FirstOrDefaultAsync(
@@ -1039,6 +1120,175 @@ public class PluginConnectionServiceTests
                 })),
             Arg.Any<string>(),
             Arg.Any<CancellationToken>());
+    }
+
+    // ---- Connected is per plugin; the grant is per provider ----------------------------------
+
+    [Fact]
+    public async Task ConnectAsync_ConnectsOnTheSpot_WhenTheProvidersGrantAlreadyCoversThePlugin()
+    {
+        // Calendar is connected and its grant carries calendar.events, which is all Meet needs.
+        // Connecting Meet is a decision the user makes, but not one that needs Google again.
+        var meet = GoogleMeetPlugin();
+        var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
+        var connection = ConnectedConnection();
+        connection.ScopesJson = """["https://www.googleapis.com/auth/calendar.events"]""";
+        ConfigureConnect(meet, installation, connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.Connected);
+        Assert.Null(result.Value.Url);
+        Assert.NotNull(installation.ConnectedAt);
+        _installationRepository.Received(1).Update(installation);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+        _oauthClient.DidNotReceive().BuildAuthorizationUrl(
+            Arg.Any<Plugin>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>());
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SendsTheUserToTheProvider_WhenTheGrantDoesNotCoverThePlugin()
+    {
+        // The grant covers Drive only. Meet needs a scope Google has not granted, so this is a
+        // consent, and nothing is marked connected until the callback says it happened.
+        var meet = GoogleMeetPlugin();
+        var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
+        ConfigureConnect(meet, installation, ConnectedConnection());
+
+        var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.Connected);
+        Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+        Assert.Null(installation.ConnectedAt);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_GoesToTheProvider_ForAPluginThatIsAlreadyConnected()
+    {
+        // Asking to connect a connected plugin is a reconnect, and a reconnect exists to reach the
+        // provider - short-circuiting it would make "reconnect" a button that does nothing.
+        var meet = GoogleMeetPlugin();
+        var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow, ConnectedAt = DateTime.UtcNow };
+        var connection = ConnectedConnection();
+        connection.ScopesJson = """["https://www.googleapis.com/auth/calendar.events"]""";
+        ConfigureConnect(meet, installation, connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.Connected);
+        Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_RefusesAPluginThatIsNotInstalled()
+    {
+        var meet = GoogleMeetPlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(meet);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginInstallation?)null);
+
+        var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PluginNotInstalled, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ConnectsOnlyThePluginTheConsentWasFor()
+    {
+        // The user consents through Calendar. Calendar becomes connected; Meet, which rides on the
+        // same scope, is not touched - that it used to be is the bug.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Is<Expression<Func<PluginInstallation, bool>>>(predicate =>
+                    predicate.Compile().Invoke(installation)
+                    && !predicate.Compile().Invoke(new PluginInstallation { UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed })),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(calendar, ["https://www.googleapis.com/auth/calendar.events"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.NotNull(installation.ConnectedAt);
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_DoesNotReportPartial_ForASiblingTheUserNeverConnected()
+    {
+        // Drive is installed but was never connected. A Calendar consent that carries no Drive
+        // scope took nothing from the user, so it is a plain success.
+        var calendar = GoogleCalendarPlugin();
+        ConfigureInstalledPlugin(calendar, GoogleCalendarKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
+                new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = CalendarPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow },
+            ]);
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([GoogleDrivePlugin(), calendar]);
+        ConfigureExchange(calendar, ["https://www.googleapis.com/auth/calendar.events"]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+    }
+
+    private void ConfigureConnect(Plugin plugin, PluginInstallation installation, PluginConnection connection)
+    {
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+        _stateProtector.Protect(Arg.Any<PluginOAuthStateDto>()).Returns("state-token");
+        _oauthClient.BuildAuthorizationUrl(
+                plugin,
+                Arg.Any<IReadOnlyList<string>>(),
+                "state-token",
+                Arg.Any<PluginOAuthStateDto>())
+            .Returns("https://accounts.google.test/oauth");
     }
 
     private void ConfigureExchange(Plugin plugin, string[] grantedScopes)
@@ -1397,12 +1647,245 @@ public class PluginConnectionServiceTests
     {
         return new PluginConnectionService(
             _unitOfWork,
-            new TestPluginProviderResolver(oauthClient: _oauthClient),
+            new TestPluginProviderResolver(_gateway, _oauthClient),
             _stateProtector,
             _credentialProtector,
             NullLogger<PluginConnectionService>.Instance,
             new TestMcpClientProvisioner(),
             TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
+    }
+
+    /// <summary>Null unless a test needs the tool sync to reach a gateway; the sync swallows its absence.</summary>
+    private IMcpToolGateway? _gateway;
+
+    // ---- API-key auth ---------------------------------------------------------------------------
+
+    private Plugin ArrangeApiKeyPlugin(PluginInstallation? installation = null)
+    {
+        var remote = RemoteMcpPlugin();
+        remote.OAuthClientSource = PluginConstants.OAuthClientSource.ApiKey;
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(remote);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation ?? new PluginInstallation
+            {
+                Id = Guid.NewGuid(),
+                UserId = UserId,
+                PluginId = RemotePluginId,
+                Status = PluginConstants.InstallationStatus.Installed,
+                InstalledAt = DateTime.UtcNow,
+            });
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _gateway = Substitute.For<IMcpToolGateway>();
+        return remote;
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_VerifiesTheKey_ThenStoresItEncrypted_AndSyncsTools()
+    {
+        var remote = ArrangeApiKeyPlugin();
+        _gateway!.ListToolsAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Is<PluginConnection>(c => c.EncryptedAccessToken == "protected:lin_api_123"),
+                Arg.Any<CancellationToken>())
+            .Returns([new McpToolDescriptorDto("list_issues", RemoteAppKey, "List issues", "", "read", [], new System.Text.Json.Nodes.JsonObject())]);
+
+        // Pasted as a header value: the prefix is not part of the key.
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "  Bearer lin_api_123 ");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.ConnectionStatus);
+        Assert.Contains("list_issues", remote.ToolsJson);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(c =>
+                c.Status == PluginConstants.ConnectionStatus.Connected
+                && c.EncryptedAccessToken == "protected:lin_api_123"
+                && c.EncryptedRefreshToken == null
+                && c.AccessTokenExpiresAt == null),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_RefusesAKeyTheServerRejects_AndStoresNothing()
+    {
+        ArrangeApiKeyPlugin();
+        _gateway!.ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new PluginProviderException(PluginConstants.ErrorCodes.ConnectionRequired, "401"));
+
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "lin_api_wrong");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidApiKey, result.ErrorCode);
+        await _connectionRepository.DidNotReceive().AddAsync(Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectWithApiKeyAsync_RefusesARowThatSignsInWithOAuth()
+    {
+        var remote = ArrangeApiKeyPlugin();
+        remote.OAuthClientSource = PluginConstants.OAuthClientSource.Unresolved;
+
+        var result = await CreateSut().ConnectWithApiKeyAsync(RemoteAppKey, UserId, "lin_api_123");
+
+        Assert.False(result.IsSuccess);
+        await _gateway!.DidNotReceive().ListToolsAsync(Arg.Any<PluginDefinitionDto>(), Arg.Any<PluginConnection>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SendsAnApiKeyRowToTheKeyField_InsteadOfAConsentPage()
+    {
+        ArrangeApiKeyPlugin();
+
+        var result = await CreateSut().ConnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(result.Value!.Connected);
+        Assert.Null(result.Value.Url);
+        Assert.True(result.Value.ApiKeyRequired);
+    }
+
+    [Fact]
+    public async Task DisconnectAsync_ClearsAnApiKey_WithoutSendingItToARevocationEndpoint()
+    {
+        ArrangeApiKeyPlugin();
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "protected:lin_api_123",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var result = await CreateSut().DisconnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.ConnectionStatus.Revoked, connection.Status);
+        Assert.Null(connection.EncryptedAccessToken);
+        await _oauthClient.DidNotReceive()
+            .RevokeTokenAsync(Arg.Any<Plugin>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _credentialProtector.DidNotReceive().Unprotect(Arg.Any<string>());
+    }
+
+    // ---- WT-710: remote MCP servers as they actually behave ------------------------------------
+
+    [Fact]
+    public async Task CompleteMcpOAuthCallbackAsync_Connects_WhenTheServerIssuesNoRefreshToken()
+    {
+        var remote = RemoteMcpPlugin();
+        ConfigureInstalledPlugin(remote, RemoteAppKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        _oauthClient.ExchangeCodeAsync(remote, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(null, null, [], "access-token", null, DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut().CompleteMcpOAuthCallbackAsync("oauth-code", "state-token");
+
+        // Usable now; when the access token runs out, the refresh path finds nothing to refresh with
+        // and asks the user to connect again.
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        await _connectionRepository.Received(1).AddAsync(
+            Arg.Is<PluginConnection>(connection =>
+                connection.Status == PluginConstants.ConnectionStatus.Connected
+                && connection.EncryptedAccessToken == "protected:access-token"
+                && connection.EncryptedRefreshToken == null),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CompleteMcpOAuthCallbackAsync_DropsTheDeadRefreshToken_WhenReconnectingAnExpiredConnection()
+    {
+        var remote = RemoteMcpPlugin();
+        ConfigureInstalledPlugin(remote, RemoteAppKey);
+        var expired = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = RemotePluginId,
+            Provider = RemoteAppKey,
+            Status = PluginConstants.ConnectionStatus.Expired,
+            EncryptedRefreshToken = "protected:revoked-refresh-token",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(expired);
+        _oauthClient.ExchangeCodeAsync(remote, "oauth-code", Arg.Any<PluginOAuthStateDto>(), Arg.Any<PluginOAuthCallbackRoute>(), Arg.Any<CancellationToken>())
+            .Returns(new PluginOAuthTokenDto(null, null, [], "new-access-token", null, DateTime.UtcNow.AddHours(1)));
+
+        var result = await CreateSut().CompleteMcpOAuthCallbackAsync("oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.Equal(PluginConstants.ConnectionStatus.Connected, expired.Status);
+        Assert.Equal("protected:new-access-token", expired.EncryptedAccessToken);
+        Assert.Null(expired.EncryptedRefreshToken);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SyncsTools_WhenAnExistingGrantConnectsThePluginOnTheSpot()
+    {
+        var remote = RemoteMcpPlugin();
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(remote);
+        var installation = new PluginInstallation
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = RemotePluginId,
+            Status = PluginConstants.InstallationStatus.Installed,
+            InstalledAt = DateTime.UtcNow,
+        };
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation);
+        var connection = new PluginConnection
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = RemotePluginId,
+            Provider = RemoteAppKey,
+            Status = PluginConstants.ConnectionStatus.Connected,
+            EncryptedAccessToken = "protected:access-token",
+            ScopesJson = "[]",
+        };
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+        _gateway = Substitute.For<IMcpToolGateway>();
+        _gateway.ListToolsAsync(Arg.Any<PluginDefinitionDto>(), connection, Arg.Any<CancellationToken>())
+            .Returns([new McpToolDescriptorDto("remote_search", RemoteAppKey, "Search", "", "read", [], new System.Text.Json.Nodes.JsonObject())]);
+
+        var result = await CreateSut().ConnectAsync(RemoteAppKey, UserId);
+
+        Assert.True(result.Value!.Connected);
+        Assert.Contains("remote_search", remote.ToolsJson);
+        Assert.NotNull(remote.ToolsSyncedAt);
     }
 
     private static Plugin GoogleDrivePlugin()

@@ -7,6 +7,7 @@ using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AssistantService.Tests.Plugins;
 
@@ -27,6 +28,7 @@ public class PluginInstallationServiceTests
     private readonly IPluginRepository _pluginRepository = Substitute.For<IPluginRepository>();
     private readonly IPluginInstallationRepository _installationRepository = Substitute.For<IPluginInstallationRepository>();
     private readonly IPluginConnectionRepository _connectionRepository = Substitute.For<IPluginConnectionRepository>();
+    private readonly IAdminAuditRecorder _auditRecorder = Substitute.For<IAdminAuditRecorder>();
 
     // WT-646. The workspace policy every test runs under, defaulting to what a workspace service
     // older than the ticket reports: no allowlist, plugins permitted, member installs permitted.
@@ -34,12 +36,20 @@ public class PluginInstallationServiceTests
     // pre-WT-646 tests keep asserting pre-WT-646 behaviour.
     private bool _workspaceAllowsPlugins = true;
 
+    // The caller's role in that workspace. A plain Member unless a test is about the Owner.
+    private string _callerRole = "Member";
+
     public PluginInstallationServiceTests()
     {
         _unitOfWork.PluginRepository.Returns(_pluginRepository);
         _unitOfWork.PluginInstallationRepository.Returns(_installationRepository);
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
+        _auditRecorder.RecordPluginActionAsync(
+                Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(), Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
     }
 
     [Fact]
@@ -63,6 +73,7 @@ public class PluginInstallationServiceTests
                     PluginId = PluginId,
                     Status = PluginConstants.InstallationStatus.Installed,
                     InstalledAt = DateTime.UtcNow,
+                    ConnectedAt = DateTime.UtcNow,
                 }
             ]);
         _connectionRepository.FindAsync(
@@ -104,15 +115,12 @@ public class PluginInstallationServiceTests
     }
 
     [Fact]
-    public async Task InstallAsync_ReportsTheProvidersExistingConnection_NotNotConnected()
+    public async Task InstallAsync_IsNotConnected_ButCarriesTheProvidersExistingGrant()
     {
-        // Installing Calendar while the shared Google grant is already live. The response used to
-        // pass a hardcoded null connection, so it answered "not_connected" for a provider the user
-        // had already consented to - and a client that patches its tile from this response rather
-        // than refetching the catalog then offered Connect and sent them through a second consent.
-        //
-        // That second trip is not just wasted: consent replaces the shared grant's whole scope set,
-        // so it is also where Drive's access can be dropped.
+        // Installing a plugin while the shared Google grant is already live. Installing is not
+        // connecting, so the row says not_connected - reporting connected here is how a sibling
+        // used to switch itself on. The grant's account and scopes still travel, so a client can
+        // see that Connect will reuse them instead of sending the user back through consent.
         var plugin = GoogleDrivePlugin();
         _pluginRepository.FirstOrDefaultAsync(
                 Arg.Any<Expression<Func<Plugin, bool>>>(),
@@ -142,7 +150,7 @@ public class PluginInstallationServiceTests
         var result = await CreateSut().InstallAsync(GoogleDriveKey, UserId);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(PluginConstants.ConnectionStatus.Connected, result.Value!.ConnectionStatus);
+        Assert.Equal(PluginConstants.ConnectionStatus.NotConnected, result.Value!.ConnectionStatus);
         Assert.Equal("user@example.com", result.Value.ConnectedAccountEmail);
         // The granted scopes travel too, so a client can apply the same subset test the catalog
         // listing does instead of trusting the status alone.
@@ -208,6 +216,8 @@ public class PluginInstallationServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(PluginConstants.InstallationStatus.Disabled, installation.Status);
         Assert.NotNull(installation.DisabledAt);
+        // Removed is not connected: a reinstall must not come back already connected.
+        Assert.Null(installation.ConnectedAt);
         _installationRepository.Received(1).Update(installation);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
@@ -215,11 +225,11 @@ public class PluginInstallationServiceTests
     // ---- WT-646: three Google rows, one grant ------------------------------------------------
 
     [Fact]
-    public async Task ListCatalogAsync_ShowsEveryGoogleRowConnected_OffTheOneGrant()
+    public async Task ListCatalogAsync_ReportsOnlyTheConnectedGoogleRowConnected_OffTheOneGrant()
     {
-        // The tile-level regression this ticket exists to prevent: with the connection matched on
-        // plugin id, whichever Google tile did not happen to start the consent would render a
-        // "Connect" button for an account the user has already connected.
+        // One grant, two installed rows, one of them connected. Both rows read the grant - that is
+        // what lets the unconnected one reuse the account - but only the row the user connected
+        // says connected. Reporting both is how connecting Calendar used to switch Meet on.
         var drive = GoogleDrivePlugin();
         var calendar = GoogleCalendarPlugin();
         _pluginRepository.FindAsync(
@@ -232,7 +242,7 @@ public class PluginInstallationServiceTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns([
-                Installation(PluginId),
+                Installation(PluginId, connected: true),
                 Installation(CalendarPluginId),
             ]);
         _connectionRepository.FindAsync(
@@ -259,9 +269,14 @@ public class PluginInstallationServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(
+            PluginConstants.ConnectionStatus.Connected,
+            Assert.Single(result.Value, item => item.Key == GoogleDriveKey).ConnectionStatus);
+        Assert.Equal(
+            PluginConstants.ConnectionStatus.NotConnected,
+            Assert.Single(result.Value, item => item.Key == GoogleCalendarKey).ConnectionStatus);
         Assert.All(result.Value, item =>
         {
-            Assert.Equal(PluginConstants.ConnectionStatus.Connected, item.ConnectionStatus);
             Assert.Equal("user@example.com", item.ConnectedAccountEmail);
             // And installing Calendar did not invent a calendar scope: the tile reports exactly
             // what Google granted, so the UI can still tell the user a reconnect is needed.
@@ -340,6 +355,81 @@ public class PluginInstallationServiceTests
         await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task CreateMcpPluginAsync_IsRecordedInThePlatformAuditLog()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp"),
+            UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        await _auditRecorder.Received(1).RecordPluginActionAsync(
+            AdminAuditPluginActions.Created,
+            Arg.Any<Guid>(),
+            UserId,
+            Arg.Is<IReadOnlyDictionary<string, string?>?>(before => before == null),
+            Arg.Is<IReadOnlyDictionary<string, string?>?>(after => after != null && after["plugin_key"] == "linear"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_ThatTheAuditLogCannotRecord_IsNotCreated()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _auditRecorder.RecordPluginActionAsync(
+                Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<Guid>(),
+                Arg.Any<IReadOnlyDictionary<string, string?>?>(), Arg.Any<IReadOnlyDictionary<string, string?>?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("audit log down", ErrorCodes.ServiceUnavailable));
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp"),
+            UserId);
+
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
+        await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_MarksAnApiKeyRow_SoConnectAsksForAKey()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest("linear", "Linear", "Issues.", "https://mcp.linear.app/mcp", AuthMode: "api_key"),
+            UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(PluginConstants.AuthMode.ApiKey, result.Value!.AuthMode);
+        await _pluginRepository.Received(1).AddAsync(
+            Arg.Is<Plugin>(plugin => plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateMcpPluginAsync_RefusesAnApiKeyRowThatAlsoCarriesAnOAuthClient()
+    {
+        _pluginRepository.AnyAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var result = await CreateSut().CreateMcpPluginAsync(
+            new CreateMcpPluginRequest(
+                "linear", "Linear", "Issues.", "https://mcp.linear.app/mcp",
+                OAuth: new CreateMcpPluginOAuthRequest("client-1"),
+                AuthMode: "api_key"),
+            UserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidCatalogUpdate, result.ErrorCode);
+        await _pluginRepository.DidNotReceive().AddAsync(Arg.Any<Plugin>(), Arg.Any<CancellationToken>());
+    }
+
     // ---- WT-646: workspace plugin policy ------------------------------------------------------
 
     private static readonly Guid WorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
@@ -376,13 +466,79 @@ public class PluginInstallationServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, result.Value!.Count);
+        // A workspace still on AllowAnyPlugins=false has added nothing: each row reads not_added,
+        // which is what the member page turns into a Request button.
         Assert.All(result.Value, item =>
-            Assert.Equal(PluginConstants.WorkspacePolicyMessages.PluginsDisabled, item.WorkspacePolicyBlockReason));
+        {
+            Assert.Equal(WorkspacePluginConstants.Messages.NotAdded, item.WorkspacePolicyBlockReason);
+            Assert.Equal(WorkspacePluginConstants.Availability.NotAdded, item.WorkspaceAvailability);
+        });
 
         // Still reported as installed. The rows are untouched; the block is a verdict, not a
         // rewrite of what the user has.
         var calendar = Assert.Single(result.Value, item => item.Key == GoogleCalendarKey);
         Assert.Equal(PluginConstants.InstallationStatus.Installed, calendar.InstallationStatus);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_ListsAPrivatePluginOnlyInsideItsOwnWorkspace()
+    {
+        var mine = WorkspacePluginGuardTests.Private("ws_mine_00000000", WorkspaceId);
+        var theirs = WorkspacePluginGuardTests.Private("ws_theirs_00000000", Guid.NewGuid());
+        ConfigureCatalog(GoogleDrivePlugin(), mine, theirs);
+        _workspaceAllowsPlugins = true;
+
+        var inWorkspace = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        var personal = (await CreateSut().ListCatalogAsync(UserId)).Value!;
+
+        Assert.Equal([GoogleDriveKey, "ws_mine_00000000"], inWorkspace.Select(i => i.Key).Order());
+        Assert.Equal(
+            WorkspacePluginConstants.Availability.Private,
+            inWorkspace.Single(i => i.Key == "ws_mine_00000000").WorkspaceAvailability);
+        Assert.Equal(
+            WorkspacePluginConstants.Availability.Added,
+            inWorkspace.Single(i => i.Key == GoogleDriveKey).WorkspaceAvailability);
+        // No workspace: no private rows at all, and no workspace verdict on the rest.
+        var row = Assert.Single(personal);
+        Assert.Null(row.WorkspaceAvailability);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_TheOwnerCanAddANotAddedMarketplacePlugin_AMemberCannot()
+    {
+        // Gap 9: the Owner's own member page offered Request on plugins they could simply add.
+        var mine = WorkspacePluginGuardTests.Private("ws_mine_00000000", WorkspaceId);
+        ConfigureCatalog(GoogleDrivePlugin(), GoogleCalendarPlugin(), mine);
+        _workspaceAllowsPlugins = false;
+
+        _callerRole = "Owner";
+        var owner = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        _callerRole = "Admin";
+        var admin = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        _callerRole = "Member";
+        var member = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+        var personal = (await CreateSut().ListCatalogAsync(UserId)).Value!;
+
+        Assert.True(owner.Single(i => i.Key == GoogleDriveKey).CanAdd);
+        Assert.True(owner.Single(i => i.Key == GoogleCalendarKey).CanAdd);
+        // Already in the workspace: nothing to add.
+        Assert.False(owner.Single(i => i.Key == "ws_mine_00000000").CanAdd);
+        // Only the Owner decides the list; an Admin asks like anyone else.
+        Assert.All(admin, item => Assert.False(item.CanAdd));
+        Assert.All(member, item => Assert.False(item.CanAdd));
+        Assert.All(personal, item => Assert.False(item.CanAdd));
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_TheOwnerHasNothingToAdd_WhenTheWorkspaceHasItAlready()
+    {
+        ConfigureCatalog(GoogleDrivePlugin());
+        _workspaceAllowsPlugins = true;
+        _callerRole = "Owner";
+
+        var result = (await CreateSut().ListCatalogAsync(UserId, WorkspaceId)).Value!;
+
+        Assert.False(Assert.Single(result).CanAdd);
     }
 
     [Fact]
@@ -487,7 +643,7 @@ public class PluginInstallationServiceTests
             .Returns((PluginInstallation?)null);
     }
 
-    private static PluginInstallation Installation(Guid pluginId) =>
+    private static PluginInstallation Installation(Guid pluginId, bool connected = false) =>
         new()
         {
             Id = Guid.NewGuid(),
@@ -495,6 +651,7 @@ public class PluginInstallationServiceTests
             PluginId = pluginId,
             Status = PluginConstants.InstallationStatus.Installed,
             InstalledAt = DateTime.UtcNow,
+            ConnectedAt = connected ? DateTime.UtcNow : null,
         };
 
     private static Plugin GoogleCalendarPlugin()
@@ -534,12 +691,131 @@ public class PluginInstallationServiceTests
         };
     }
 
+    // ---- WT-687: per-tool choices --------------------------------------------------------------
+
+    [Fact]
+    public async Task UpdateToolPolicyAsync_MergesKnownToolsIntoTheCallersInstallation_AndKeepsOtherConfig()
+    {
+        var plugin = DriveWithTools();
+        var installation = InstalledDrive("""{"installedFrom":"assistant_plugins","toolPolicy":{"drive_get_file":"blocked"}}""");
+        ConfigurePolicyTarget(plugin, installation);
+
+        var result = await CreateSut().UpdateToolPolicyAsync(
+            GoogleDriveKey,
+            UserId,
+            new Dictionary<string, string> { ["drive_search"] = "approval", ["no_such_tool"] = "blocked" });
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains("\"installedFrom\":\"assistant_plugins\"", installation.ConfigJson);
+        var stored = WarpTalk.AssistantService.Application.Helpers.PluginToolPolicyStore.Read(installation.ConfigJson);
+        Assert.Equal("approval", stored["drive_search"]);
+        // Untouched by the update, and the unknown name was dropped rather than stored.
+        Assert.Equal("blocked", stored["drive_get_file"]);
+        Assert.False(stored.ContainsKey("no_such_tool"));
+        Assert.Equal("approval", result.Value!.Tools.Single(tool => tool.Name == "drive_search").Policy);
+        _installationRepository.Received(1).Update(installation);
+    }
+
+    [Fact]
+    public async Task UpdateToolPolicyAsync_RefusesAValueThatIsNotAToolSetting()
+    {
+        var installation = InstalledDrive(null);
+        ConfigurePolicyTarget(DriveWithTools(), installation);
+
+        var result = await CreateSut().UpdateToolPolicyAsync(
+            GoogleDriveKey,
+            UserId,
+            new Dictionary<string, string> { ["drive_search"] = "always" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidToolPolicy, result.ErrorCode);
+        Assert.Null(installation.ConfigJson);
+    }
+
+    [Fact]
+    public async Task UpdateToolPolicyAsync_RefusesAPluginTheCallerHasNotInstalled()
+    {
+        ConfigurePolicyTarget(DriveWithTools(), installation: null);
+
+        var result = await CreateSut().UpdateToolPolicyAsync(
+            GoogleDriveKey,
+            UserId,
+            new Dictionary<string, string> { ["drive_search"] = "blocked" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PluginNotInstalled, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ListCatalogAsync_DefaultsEachToolFromItsEffect_WhenTheUserHasChosenNothing()
+    {
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([DriveWithTools()]);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<PluginInstallation>());
+        _connectionRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<PluginConnection>());
+
+        var result = await CreateSut().ListCatalogAsync(UserId);
+
+        var tools = Assert.Single(result.Value!).Tools;
+        Assert.Equal("allow", tools.Single(tool => tool.Name == "drive_search").Policy);
+        Assert.Equal("approval", tools.Single(tool => tool.Name == "drive_get_file").Policy);
+    }
+
+    private static Plugin DriveWithTools()
+    {
+        var plugin = GoogleDrivePlugin();
+        // One read and one write tool; the write one only so the effect default has two answers.
+        plugin.ToolsJson = """
+            [
+              { "name": "drive_search", "pluginKey": "google_drive", "label": "Search", "description": "", "effect": "read", "requiredScopes": [], "parameters": {} },
+              { "name": "drive_get_file", "pluginKey": "google_drive", "label": "Get file", "description": "", "effect": "write", "requiredScopes": [], "parameters": {} }
+            ]
+            """;
+        return plugin;
+    }
+
+    private static PluginInstallation InstalledDrive(string? configJson) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = UserId,
+        PluginId = PluginId,
+        Status = PluginConstants.InstallationStatus.Installed,
+        InstalledAt = DateTime.UtcNow,
+        ConfigJson = configJson,
+    };
+
+    private void ConfigurePolicyTarget(Plugin plugin, PluginInstallation? installation)
+    {
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(plugin);
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(installation);
+    }
+
     private PluginInstallationService CreateSut()
     {
         return new PluginInstallationService(
             _unitOfWork,
             Substitute.For<IPluginCredentialProtector>(),
-            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins));
+            TestWorkspacePluginPolicy.Guard(_workspaceAllowsPlugins, isActiveMember: true, _callerRole),
+            _auditRecorder);
     }
 
     private static Plugin GoogleDrivePlugin()

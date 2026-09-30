@@ -15,6 +15,30 @@ public static class WorkspaceDocumentExtensions
     }
 
     /// <summary>
+    /// Is this document published to the whole workspace?
+    /// </summary>
+    /// <remarks>
+    /// `active` is the column's DDL default and predates the enum; the evaluator has always read
+    /// it as published, so this does too.
+    /// </remarks>
+    public static bool IsPublic(this WorkspaceDocument document)
+    {
+        return string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(document.Status, LegacyPublishedStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Was this document taken back from the workspace after being published?
+    /// </summary>
+    public static bool IsPrivate(this WorkspaceDocument document)
+    {
+        return string.Equals(document.Status, WorkspaceDocumentStatus.@private.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The status the DDL default writes; read as published everywhere.</summary>
+    public const string LegacyPublishedStatus = "active";
+
+    /// <summary>
     /// May this document's text be placed in the vector index?
     /// </summary>
     /// <remarks>

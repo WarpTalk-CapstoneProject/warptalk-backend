@@ -9,6 +9,7 @@ using WarpTalk.Shared.Extensions;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.API.Controllers;
 
@@ -26,7 +27,9 @@ public class WorkspaceDocumentsController : ControllerBase
     [Authorize]
     [HttpPost]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(10 * 1024 * 1024)] // Enforce 10MB limit at request level
+    // Ceiling only: the live per-workspace limit (platform setting limits.document_upload_mb) is
+    // enforced by the service, which can name it in the error.
+    [RequestSizeLimit(WorkspaceDocumentConstants.MaxUploadRequestBytes)]
     public async Task<IActionResult> UploadDocument(
         Guid workspaceId,
         [FromForm] UploadDocumentApiRequest request,
@@ -79,7 +82,7 @@ public class WorkspaceDocumentsController : ControllerBase
     [Authorize]
     [HttpPost("{documentId:guid}/revision")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(10 * 1024 * 1024)]
+    [RequestSizeLimit(WorkspaceDocumentConstants.MaxUploadRequestBytes)]
     public async Task<IActionResult> ReuploadDocument(
         Guid workspaceId,
         Guid documentId,
@@ -337,6 +340,42 @@ public class WorkspaceDocumentsController : ControllerBase
         return ToNoContentResult(result);
     }
 
+    /// <summary>
+    /// Takes a published document back from the workspace (public → private). Returns the
+    /// updated document so the page can show the new state without a second round trip.
+    /// </summary>
+    [Authorize]
+    [HttpPost("{documentId:guid}/unpublish")]
+    public async Task<IActionResult> UnpublishDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
+    /// Shares a private document with the workspace again — directly for an Owner/Admin, back
+    /// through approval for the uploader.
+    /// </summary>
+    [Authorize]
+    [HttpPost("{documentId:guid}/publish")]
+    public async Task<IActionResult> PublishDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.PublishDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
     private IActionResult ToActionResult<T>(Result<T> result)
     {
         if (result.IsSuccess)
@@ -346,6 +385,8 @@ public class WorkspaceDocumentsController : ControllerBase
         {
             ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            // WT-872: a refusal like FORBIDDEN, with its own code so WarpBot can say why.
+            WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))

@@ -4,6 +4,21 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.MeetingService.Application.Interfaces;
 
+/// <summary>
+/// WT-699: what a kick or reject did on the room service's roster. All three are successes.
+/// </summary>
+public enum RoomRosterRemoval
+{
+    /// <summary>No roster row for that person — nothing to terminate.</summary>
+    NotOnRoster,
+
+    /// <summary>This call wrote the terminal status.</summary>
+    Removed,
+
+    /// <summary>The terminal status was already there; nothing was written.</summary>
+    AlreadyRemoved,
+}
+
 public interface ITranslationRoomGrpcService
 {
     Task<Result<Shared.Protos.GetTranslationRoomResponse>> GetRoomDetailsAsync(Guid translationRoomId);
@@ -26,7 +41,20 @@ public interface ITranslationRoomGrpcService
     /// Without it a kicked participant is only disconnected, and the rejoin path there reads a
     /// disconnected roster row as proof they were already admitted.
     /// </summary>
-    Task<Result<bool>> KickRoomParticipantAsync(
+    /// <remarks>
+    /// WT-699 / TC2103: answers which of three things happened, so a second press can be reported
+    /// as "already removed" instead of as a fresh kick.
+    /// </remarks>
+    Task<Result<RoomRosterRemoval>> KickRoomParticipantAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid participantUserId);
+
+    /// <summary>
+    /// WT-699 / TC2402: carry a lobby Reject to the room service, where the waiting-room row lives.
+    /// Without it the knock stayed WAITING — still listed, still admittable.
+    /// </summary>
+    Task<Result<RoomRosterRemoval>> RejectRoomParticipantAsync(
         Guid translationRoomId,
         Guid requestedByUserId,
         Guid participantUserId);
