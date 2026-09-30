@@ -91,6 +91,15 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             if (!room.IsHostedBy(userId))
                 return Result.Failure<string>("Only the meeting's host can rewrite its summary.", ErrorCodes.Unauthorized);
 
+            // WT-870. With no saved transcript there is nothing to write a summary FROM — and
+            // before BOTH branches below, because the finalization redirect would produce one
+            // just as surely as the rewrite. Said with its own code, not left to the worker to
+            // discover by reading an empty transcript after a model call has been queued.
+            if (!TranscriptRetention.IsSaved(room))
+                return Result.Failure<string>(
+                    TranscriptRetention.ErrorTranscriptNotSaved,
+                    TranscriptRetention.ErrorCodeTranscriptNotSaved);
+
             // Before BOTH branches below: the finalization redirect writes a summary in this
             // language just as surely as the rewrite does, so neither may be reached with a
             // language the meeting does not offer.
@@ -433,6 +442,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // unreadable. Only from here on does this GET create something new, so this is the
             // one place the meeting's languages get a say, and it must come before the claim so a
             // refusal leaves no in-flight key behind.
+            //
+            // WT-870 applies at the same point for the same reason: whatever already exists stays
+            // readable, but a meeting that kept no transcript gets nothing NEW written about it.
+            if (!TranscriptRetention.IsSaved(room))
+                return Result.Failure<SummaryVariantDto>(
+                    TranscriptRetention.ErrorTranscriptNotSaved,
+                    TranscriptRetention.ErrorCodeTranscriptNotSaved);
+
             var languageAllowed = await _languagePolicy.EnsureCanGenerateAsync(room, wantedLanguage, ct);
             if (!languageAllowed.IsSuccess)
                 return Result.Failure<SummaryVariantDto>(languageAllowed.Error!, languageAllowed.ErrorCode);

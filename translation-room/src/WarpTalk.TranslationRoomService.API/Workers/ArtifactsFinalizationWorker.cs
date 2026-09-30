@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
@@ -121,6 +122,13 @@ public class ArtifactsFinalizationWorker : BackgroundService
                 ct);
             var room = rooms.FirstOrDefault();
             if (room == null)
+            {
+                return;
+            }
+
+            // WT-870: a meeting that kept no transcript has no summary to announce, and a
+            // "summary and transcript are ready" message would send people to look for both.
+            if (!TranscriptRetention.IsSaved(room))
             {
                 return;
             }
