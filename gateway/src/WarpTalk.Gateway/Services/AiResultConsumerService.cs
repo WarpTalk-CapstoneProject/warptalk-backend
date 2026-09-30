@@ -69,6 +69,38 @@ public sealed class AiResultConsumerService : BackgroundService
 
     private readonly MeetingCaptionMetrics _captionMetrics;
 
+    // ── Pending-list hygiene (WarpTalkAiPendingStuck) ────────
+    //
+    // Every stream this service reads, for the housekeeping pass. Kept in step with the consume
+    // loops by StalePendingHousekeepingTests.
+    public static readonly IReadOnlyList<string> ConsumedStreams =
+    [
+        "stt:results",
+        "transcript:clean",
+        "translate:results",
+        "tts:results",
+        "voice:clone:state",
+        "ai_assistant:results",
+    ];
+
+    // Everything here is a live broadcast: a caption or a summary minutes old is worthless to the
+    // room, so an entry pending this long is retired, not redelivered.
+    private static readonly TimeSpan StalePendingAge = TimeSpan.FromMinutes(5);
+
+    // A live consumer polls several times a second, so an hour of silence means its process is
+    // gone. Deliberately far above anything a Redis blip or a slow deploy could produce.
+    private static readonly TimeSpan DeadConsumerIdle = TimeSpan.FromHours(1);
+
+    private static readonly TimeSpan HousekeepingInterval = TimeSpan.FromMinutes(5);
+
+    // Lets the consume loops create their groups first, so the first pass does not trip NOGROUP.
+    private static readonly TimeSpan HousekeepingStartDelay = TimeSpan.FromSeconds(30);
+
+    // Unroutable entries are logged at Warning at most once a minute per stream, Debug otherwise:
+    // a producer that drops meeting_id on stt:results would otherwise log every sentence spoken.
+    private static readonly long UnroutableWarningIntervalMs = (long)TimeSpan.FromMinutes(1).TotalMilliseconds;
+    private readonly ConcurrentDictionary<string, long> _unroutableWarnedAt = new();
+
     public AiResultConsumerService(
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
@@ -101,7 +133,8 @@ public sealed class AiResultConsumerService : BackgroundService
                 ConsumeTTSResultsAsync(stoppingToken),
                 ConsumeAiAssistantResultsAsync(stoppingToken),
                 ConsumeCleanSentencesAsync(stoppingToken),
-                ConsumeVoiceCloneStateAsync(stoppingToken));
+                ConsumeVoiceCloneStateAsync(stoppingToken),
+                HousekeepConsumerGroupsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
         {
@@ -176,6 +209,96 @@ public sealed class AiResultConsumerService : BackgroundService
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Acknowledge an entry no room can receive (no meeting_id, or a payload the client cannot
+    /// render), and say so.
+    /// </summary>
+    /// <remarks>
+    /// WarpTalkAiPendingStuck. Four loops used to <c>continue</c> past such an entry without
+    /// XACK, so it stayed pending on this consumer forever — and, once the pod was replaced, on a
+    /// consumer nobody would ever read as again. On 30 Sep ai_assistant:results held 62 of them
+    /// (summaries and action items published without a meeting_id) across 12 dead pods. Retrying
+    /// is pointless: an entry with no room can never become routable.
+    /// </remarks>
+    private async Task AcknowledgeUnroutableAsync(string streamKey, StreamEntry entry)
+    {
+        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+
+        var now = Environment.TickCount64;
+        var warn = !_unroutableWarnedAt.TryGetValue(streamKey, out var last)
+            || now - last >= UnroutableWarningIntervalMs;
+        if (warn) _unroutableWarnedAt[streamKey] = now;
+
+        _logger.Log(
+            warn ? LogLevel.Warning : LogLevel.Debug,
+            "Acknowledged unroutable entry {EntryId} on {Stream} (type={Type}) without delivering it: "
+            + "no meeting_id or no usable payload, so no room can receive it.",
+            entry.Id.ToString(), streamKey, RedisStreamService.GetField(entry, "type") ?? "(none)");
+    }
+
+    /// <summary>
+    /// Periodically retire stale pending entries and remove dead consumers from this service's
+    /// group on every stream it reads. WarpTalkAiPendingStuck.
+    /// </summary>
+    /// <remarks>
+    /// Acking every entry in the loops is not enough on its own: an exception mid-entry (a
+    /// SignalR send, say) or a pod killed between read and XACK still leaves entries pending on a
+    /// consumer that never comes back, because each process reads under a fresh random name and
+    /// nothing reclaims another's. The group also collected one consumer per process ever started
+    /// (97 on 30 Sep). Both are cleaned here.
+    ///
+    /// Runs on every replica with no leader: a claim resets the idle time of what it claims, XACK
+    /// is idempotent, and a consumer idle for an hour with nothing pending is dead on any replica's
+    /// view. A failure only logs — like EnsureConsumerGroupWithRetryAsync, nothing here may throw
+    /// out of ExecuteAsync and stop the host — and the next pass tries again.
+    /// </remarks>
+    private async Task HousekeepConsumerGroupsAsync(CancellationToken ct)
+    {
+        await Task.Delay(HousekeepingStartDelay, ct);
+
+        while (!ct.IsCancellationRequested)
+        {
+            foreach (var streamKey in ConsumedStreams)
+            {
+                await HousekeepConsumerGroupAsync(streamKey);
+            }
+
+            await Task.Delay(HousekeepingInterval, ct);
+        }
+    }
+
+    private async Task HousekeepConsumerGroupAsync(string streamKey)
+    {
+        try
+        {
+            // Claim first: it moves stale entries off dead consumers, which is what lets the
+            // deletion below remove them in the same pass.
+            var retired = await _streamService.AcknowledgeStalePendingAsync(
+                streamKey, ConsumerGroupName, _consumerName, StalePendingAge);
+            if (retired > 0)
+            {
+                _logger.LogWarning(
+                    "Retired {Count} entries pending longer than {Age} on {Stream}/{Group} without delivering them.",
+                    retired, StalePendingAge, streamKey, ConsumerGroupName);
+            }
+
+            var removed = await _streamService.DeleteDeadConsumersAsync(
+                streamKey, ConsumerGroupName, _consumerName, DeadConsumerIdle);
+            if (removed.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Removed {Count} dead consumer(s) idle longer than {Idle} from {Stream}/{Group}.",
+                    removed.Count, DeadConsumerIdle, streamKey, ConsumerGroupName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Pending-list housekeeping failed on {Stream}/{Group}; retrying next pass.",
+                streamKey, ConsumerGroupName);
+        }
     }
 
     // ── Profanity Masking ────────────────────────────────────
@@ -319,8 +442,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
-
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "text") ?? "";
                     // WT-716 tier 1. Masked under the same switch as the raw text: Clean is the
@@ -468,7 +594,7 @@ public sealed class AiResultConsumerService : BackgroundService
                     // group dead-letters it with its payload; that is where it gets looked at.
                     if (string.IsNullOrEmpty(translationRoomId) || sentence is null)
                     {
-                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
                         continue;
                     }
 
@@ -609,7 +735,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "original_text") ?? "";
                     var translatedText = RedisStreamService.GetField(entry, "translated_text") ?? "";
@@ -677,7 +807,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
                     var audioDto = new TranslatedAudioDto(
                         SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
@@ -761,7 +895,7 @@ public sealed class AiResultConsumerService : BackgroundService
                     // and stop every later message for every room.
                     if (string.IsNullOrEmpty(translationRoomId) || string.IsNullOrEmpty(reason))
                     {
-                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
                         continue;
                     }
 
@@ -829,7 +963,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     // Inline transcript suggestions ride this same stream but are a different
                     // client event with a different shape. Route them out FIRST and leave the
