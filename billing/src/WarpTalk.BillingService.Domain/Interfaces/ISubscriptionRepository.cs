@@ -119,4 +119,14 @@ public interface ISubscriptionRepository : IGenericRepository<Subscription>
     /// </summary>
     Task<IReadOnlyList<Subscription>> GetUnlinkedCardSubscriptionsAsync(int limit, CancellationToken cancellationToken = default);
     Task<Subscription?> GetActiveByWorkspaceIdAsync(Guid workspaceId, bool includePlan = true, bool requireActivePeriod = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// WT-878: "the workspace's subscription" for a reader that must still see something when
+    /// nothing is live (entitlements, feature access, the row just cancelled). The LIVE row wins —
+    /// see <see cref="Services.SubscriptionSelection.OrderCurrentFirst"/> — and only when the
+    /// workspace has no active row is the newest inactive one returned. Soft-deleted rows never.
+    /// A workspace that re-subscribed after expiry or changed plan has several rows; an unordered
+    /// FirstOrDefault could return a dead one and drop every entitlement to the platform floor.
+    /// </summary>
+    Task<Subscription?> GetCurrentForWorkspaceAsync(Guid workspaceId, bool includePlan = false, CancellationToken cancellationToken = default);
 }

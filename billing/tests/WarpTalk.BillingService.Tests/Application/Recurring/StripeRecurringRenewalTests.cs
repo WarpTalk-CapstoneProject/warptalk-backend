@@ -47,7 +47,9 @@ public class StripeRecurringRenewalTests
         sub.CurrentPeriodStart.Should().Be(PeriodEnd);
         sub.CreditsRemaining.Should().Be(2_000 + 100_000, "rollover cap carried, then exactly one cycle granted");
         world.GrantedCredits(sub).Should().Be(100_000, "one ledger row for one invoice");
-        world.Ledger.Single().IdempotencyKey.Should().Be("stripe_invoice:in_test_cycle_1:cycle_grant");
+        world.Ledger.Single(t => t.Type == TransactionConstants.TransactionTypes.TopUp).IdempotencyKey.Should().Be("stripe_invoice:in_test_cycle_1:cycle_grant");
+        // WT-878: the 3,000 plan credits above the 2,000 cap are no longer dropped silently.
+        world.Ledger.Single(t => t.Type == TransactionConstants.TransactionTypes.CreditForfeit).Amount.Should().Be(-3_000);
         world.Payments.Should().ContainSingle(p => p.ProviderTransactionId == "in_test_cycle_1" && p.Status == PaymentConstants.PaymentStatuses.Paid);
         world.Invoices.Should().ContainSingle();
     }

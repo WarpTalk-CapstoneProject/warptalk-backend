@@ -195,10 +195,17 @@ public sealed partial class SubscriptionPaymentEventHandler
             newEnd = subscription.CurrentPeriodEnd;
         }
 
-        // The same end-of-cycle rule the cycle close applies (rollover cap, then the new cycle's
-        // credits, overage and suspension cleared), so a card customer and an invoice customer
-        // renew identically.
-        _domainService.RenewCycle(subscription);
+        // The same end-of-cycle rule the cycle close applies (rollover cap on plan leftover only —
+        // purchased credits carry over whole, WT-878 — then the new cycle's credits, overage and
+        // suspension cleared), so a card customer and an invoice customer renew identically. A cap
+        // that removes anything writes a credit_forfeit row keyed on this invoice.
+        await CycleRenewalCredits.RenewAsync(
+            _unitOfWork,
+            _domainService,
+            subscription,
+            CycleRenewalCredits.StripeInvoiceForfeitKey(request.PaymentIntentId),
+            now,
+            ct);
         subscription.CurrentPeriodStart = newStart < newEnd ? newStart : subscription.CurrentPeriodStart;
         subscription.CurrentPeriodEnd = newEnd;
         subscription.Status = SubscriptionConstants.SubscriptionStatuses.Active;

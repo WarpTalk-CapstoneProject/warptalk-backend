@@ -101,9 +101,15 @@ public sealed class EntitlementResolver : IEntitlementResolver
 
     private async Task<EntitlementResolutionInputs> GatherAsync(Guid workspaceId, DateTime nowUtc, CancellationToken ct)
     {
-        var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            candidate => candidate.WorkspaceId == workspaceId && candidate.DeletedAt == null,
-            ct);
+        // WT-878: the LIVE row, not whichever row the database returned first. A workspace that
+        // re-subscribed after expiry or changed plan has old inactive rows beside the new one; an
+        // unordered pick could resolve against a dead row and drop everything to the platform floor
+        // while billing showed an active plan. With no live row the newest inactive one is still
+        // read, because its contract overrides apply even without an active subscription (layer 3).
+        var subscription = await _unitOfWork.SubscriptionRepository.GetCurrentForWorkspaceAsync(
+            workspaceId,
+            includePlan: false,
+            cancellationToken: ct);
 
         Plan? plan = null;
         if (subscription != null)
