@@ -3311,8 +3311,14 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var historyRequest = request with { Status = request.Status ?? "ENDED,CANCELLED" };
 
+            // Only ever NARROWS: RoomTimelineScope.Mine is the ordinary read boundary every
+            // non-Owner already gets (see BuildListableRoomsQueryAsync).
+            var scope = string.Equals(request.Scope?.Trim(), "mine", StringComparison.OrdinalIgnoreCase)
+                ? RoomTimelineScope.Mine
+                : RoomTimelineScope.Workspace;
+
             return Result.Success(await BuildRoomTimelinePageAsync(
-                historyRequest, userId, userEmail, RoomTimelineOrder.EndedFirst, RoomTimelineScope.Workspace, ct));
+                historyRequest, userId, userEmail, RoomTimelineOrder.EndedFirst, scope, ct));
         }
         catch (Exception ex)
         {
