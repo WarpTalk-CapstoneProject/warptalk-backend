@@ -19,6 +19,18 @@ public static class WorkspaceDocumentConstants
     public const string RetentionStateActive = "active";
 
     /// <summary>
+    /// The error code the extracted-text read answers with when the caller may see the document
+    /// but WarpBot may not use it — pending approval, rejected, private, AI switched off,
+    /// restricted or staged for deletion. WT-872.
+    /// </summary>
+    /// <remarks>
+    /// Its own code rather than a bare FORBIDDEN so the assistant can tell the user WHY it has no
+    /// text ("this document is not available to WarpBot yet") instead of reporting an ACL denial
+    /// or an empty document. Still a 403: the answer is "no", not "not found".
+    /// </remarks>
+    public const string DocumentNotAiEligibleErrorCode = "DOCUMENT_NOT_AI_ELIGIBLE";
+
+    /// <summary>
     /// How many AI-retrievable document ids one lookup returns by default.
     /// </summary>
     /// <remarks>
