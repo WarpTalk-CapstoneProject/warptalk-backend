@@ -19,11 +19,16 @@ public class SubscriptionsController : ControllerBase
 {
     private readonly ISubscriptionService _subscriptionService;
     private readonly IStripeSubscriptionLifecycleService _lifecycle;
+    private readonly IStaffAccessResolver _staffAccess;
 
-    public SubscriptionsController(ISubscriptionService subscriptionService, IStripeSubscriptionLifecycleService lifecycle)
+    public SubscriptionsController(
+        ISubscriptionService subscriptionService,
+        IStripeSubscriptionLifecycleService lifecycle,
+        IStaffAccessResolver staffAccess)
     {
         _subscriptionService = subscriptionService;
         _lifecycle = lifecycle;
+        _staffAccess = staffAccess;
     }
 
     [HttpPost("contract")]
@@ -89,7 +94,11 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-878: Stripe refused, so nothing changed — the same 502 the auto-renew toggle answers.
+            var error = new ApiErrorResponse(result.Error, result.ErrorCode);
+            return result.ErrorCode == ErrorCodes.BillingExternalServiceError
+                ? StatusCode(StatusCodes.Status502BadGateway, error)
+                : BadRequest(error);
         }
 
         return NoContent();
@@ -112,13 +121,25 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(
+            var error = new ApiErrorResponse(
                 result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
-                result.ErrorCode));
+                result.ErrorCode);
+            return result.ErrorCode switch
+            {
+                StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutCode => Conflict(error),
+                ErrorCodes.BillingExternalServiceError => StatusCode(StatusCodes.Status502BadGateway, error),
+                _ => BadRequest(error),
+            };
         }
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Lift a ServiceState suspension. WT-878: a workspace Owner/Admin may lift only
+    /// <c>overage_cap</c> (and only with room under the cap); any other reason answers 403
+    /// BILLING_RESUME_NOT_ALLOWED. Platform staff with billing.subscriptions_manage — the same
+    /// check the SystemAdmin override on this endpoint uses — may still lift any reason.
+    /// </summary>
     [HttpPost("workspace/{workspaceId}/resume")]
     [AdminAudited(AdminAuditBillingActions.SubscriptionResumed, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
@@ -127,10 +148,22 @@ public class SubscriptionsController : ControllerBase
         [FromBody] ResumeSubscriptionRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, request, cancellationToken);
+        var isPlatformStaff = await _staffAccess.StaffOverrideAllowsAsync(
+            User,
+            AdminPermissions.BillingSubscriptionsManage,
+            cancellationToken);
+
+        var result = await _subscriptionService.ResumeSubscriptionAsync(
+            workspaceId,
+            request,
+            liftAnyReason: isPlatformStaff,
+            cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+            var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+            return result.ErrorCode == SubscriptionService.ResumeNotAllowedCode
+                ? StatusCode(StatusCodes.Status403Forbidden, error)
+                : BadRequest(error);
         }
         return Ok(result.Value);
     }

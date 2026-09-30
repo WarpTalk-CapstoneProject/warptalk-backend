@@ -178,7 +178,10 @@ public class SubscriptionServiceTests
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, "No longer needed");
 
         result.IsSuccess.Should().BeTrue();
-        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Cancelled);
+        // WT-878: cancel-at-period-end is AutoRenew off; Status stays active so the plan's
+        // entitlements run to the end of the paid period.
+        subscription.AutoRenew.Should().BeFalse();
+        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Active);
         subscription.IsActive.Should().BeTrue(); // Still has access until period_end
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
     }
@@ -348,7 +351,8 @@ public class SubscriptionServiceTests
             .Setup(r => r.SetAiServiceStateAsync(workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, default))
             .ReturnsAsync(Result.Success());
 
-        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, new ResumeSubscriptionRequest("paid overdue invoice"));
+        // WT-878: invoice_overdue is liftable only by platform staff, which is what this call is.
+        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, new ResumeSubscriptionRequest("paid overdue invoice"), liftAnyReason: true);
 
         result.IsSuccess.Should().BeTrue();
         subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
