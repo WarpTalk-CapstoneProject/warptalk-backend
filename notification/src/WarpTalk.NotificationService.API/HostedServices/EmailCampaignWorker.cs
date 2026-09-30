@@ -1,4 +1,4 @@
-using StackExchange.Redis;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.NotificationService.Application.Services.EmailCms;
 
 namespace WarpTalk.NotificationService.API.HostedServices;
@@ -8,44 +8,49 @@ namespace WarpTalk.NotificationService.API.HostedServices;
 /// send and hands at most SendsPerMinute/12 emails to the provider, so a large audience is spread
 /// out instead of bursting past the provider's limits.
 ///
-/// Replicas share the work through a Redis lock held for the tick — two replicas processing the
-/// same send would email people twice. When Redis is unreachable the tick is skipped: better late
-/// than twice. Every failure is caught and logged; a send worker must never take the service down
-/// (see the Redis consumer workers that did).
+/// Replicas share the work through the shared Redis lease (<see cref="IDistributedLockProvider"/>)
+/// held for the tick — two replicas processing the same send would email people twice, because a
+/// send picks its next pending recipients and only marks them sent afterwards. The lease is
+/// RENEWED while the tick runs: the lock this replaced was a fixed 30-second LockTake, so a batch
+/// whose provider calls took longer than that let the other replica's 5-second timer start the
+/// same batch over. If the lease is lost mid-tick the tick is cancelled rather than overlapping.
+/// When Redis is unreachable the tick is skipped: better late than twice. Every failure is caught
+/// and logged; a send worker must never take the service down (see the Redis consumer workers
+/// that did).
 /// </summary>
 public sealed class EmailCampaignWorker : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan LockTtl = TimeSpan.FromSeconds(30);
-    private const string LockKey = "notification:email-campaigns:worker-lock";
+    private static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(30);
+    internal const string LockResource = "notification:email-campaigns";
 
     private readonly IServiceScopeFactory _scopes;
-    private readonly IConnectionMultiplexer _redis;
+    private readonly IDistributedLockProvider _locks;
     private readonly EmailCampaignOptions _options;
     private readonly ILogger<EmailCampaignWorker> _logger;
-    private readonly string _owner = $"{Environment.MachineName}-{Environment.ProcessId}-{Guid.NewGuid():N}";
 
     public EmailCampaignWorker(
         IServiceScopeFactory scopes,
-        IConnectionMultiplexer redis,
+        IDistributedLockProvider locks,
         EmailCampaignOptions options,
         ILogger<EmailCampaignWorker> logger)
     {
         _scopes = scopes;
-        _redis = redis;
+        _locks = locks;
         _options = options;
         _logger = logger;
     }
 
+    private int BatchSize => Math.Max(1, (int)Math.Ceiling(_options.SendsPerMinute / (60.0 / Tick.TotalSeconds)));
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var batch = Math.Max(1, (int)Math.Ceiling(_options.SendsPerMinute / (60.0 / Tick.TotalSeconds)));
         using var timer = new PeriodicTimer(Tick);
         do
         {
             try
             {
-                await RunOnceAsync(batch, stoppingToken);
+                await RunTickAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -59,37 +64,18 @@ public sealed class EmailCampaignWorker : BackgroundService
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
-    private async Task RunOnceAsync(int batch, CancellationToken ct)
-    {
-        IDatabase database;
-        try
-        {
-            database = _redis.GetDatabase();
-            if (!await database.LockTakeAsync(LockKey, _owner, LockTtl)) return;
-        }
-        catch (RedisException ex)
-        {
-            _logger.LogWarning(ex, "Email sends paused: the worker lock is unavailable.");
-            return;
-        }
-
-        try
-        {
-            await using var scope = _scopes.CreateAsyncScope();
-            var sends = scope.ServiceProvider.GetRequiredService<IEmailCampaignService>();
-            // Resolving a due send is one step and sending a batch is another; both count as the tick.
-            await sends.ProcessNextAsync(batch, ct);
-        }
-        finally
-        {
-            try
+    /// <summary>One tick, on whichever replica holds the lease. Internal for the tests.</summary>
+    internal Task<ExclusiveTickOutcome> RunTickAsync(CancellationToken stoppingToken) =>
+        _locks.TryRunExclusiveAsync(
+            LockResource,
+            LeaseDuration,
+            async ct =>
             {
-                await database.LockReleaseAsync(LockKey, _owner);
-            }
-            catch (RedisException)
-            {
-                // The lock expires on its own.
-            }
-        }
-    }
+                await using var scope = _scopes.CreateAsyncScope();
+                var sends = scope.ServiceProvider.GetRequiredService<IEmailCampaignService>();
+                // Resolving a due send is one step and sending a batch is another; both count as the tick.
+                await sends.ProcessNextAsync(BatchSize, ct);
+            },
+            _logger,
+            stoppingToken);
 }

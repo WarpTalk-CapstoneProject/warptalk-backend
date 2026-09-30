@@ -22,4 +22,31 @@ public class MeetingRoomRepository : GenericRepository<MeetingRoom>, IMeetingRoo
                     .SetProperty(r => r.UpdatedAt, now),
                 ct);
     }
+
+    public async Task<bool> TryMarkFinishedAsync(Guid meetingRoomId, DateTime endedAtUtc, CancellationToken ct = default)
+    {
+        var claimed = await _dbSet
+            .Where(r => r.Id == meetingRoomId && r.EndedAt == null)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(r => r.Status, FinishedStatus)
+                    .SetProperty(r => r.EndedAt, (DateTime?)endedAtUtc)
+                    .SetProperty(r => r.UpdatedAt, endedAtUtc),
+                ct);
+        if (claimed > 0)
+        {
+            return true;
+        }
+
+        await _dbSet
+            .Where(r => r.Id == meetingRoomId && r.Status != FinishedStatus)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(r => r.Status, FinishedStatus)
+                    .SetProperty(r => r.UpdatedAt, endedAtUtc),
+                ct);
+        return false;
+    }
+
+    private const string FinishedStatus = "FINISHED";
 }

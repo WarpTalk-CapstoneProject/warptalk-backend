@@ -15,6 +15,7 @@ using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using NotificationClient = WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient;
 using NotificationRequest = WarpTalk.Shared.Protos.SendNotificationRequest;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
 
@@ -40,11 +41,22 @@ public class ReminderNotificationWorker : BackgroundService
     private readonly IServiceProvider _serviceProvider;
     private readonly NotificationClient _notificationClient;
     private readonly IConnectionMultiplexer _redis;
+    private readonly IDistributedLockProvider _locks;
     private readonly ILogger<ReminderNotificationWorker> _logger;
     private readonly string _frontendBaseUrl;
     private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(1);
 
     private const string NotificationType = "MEETING_REMINDER";
+
+    /// <summary>
+    /// k8s multi-replica dedupe: the whole sweep runs on one replica at a time, the same shared
+    /// lease every other periodic translation-room worker takes. The per-(room, window) lock and
+    /// the per-recipient markers below only covered the SEND; the sweep itself read every due room
+    /// on both replicas, and the replica that lost the race still wrote its stale copy of the room
+    /// back (Update marks every column), overwriting whatever the winner — or anything else —
+    /// had changed in between.
+    /// </summary>
+    internal const string SweepLockResource = "translation-room:reminder-sweep";
 
     /// <summary>
     /// WT-326. How long a per-recipient "already reminded" marker lives. Only has to outlive the
@@ -58,9 +70,11 @@ public class ReminderNotificationWorker : BackgroundService
         ILogger<ReminderNotificationWorker> logger,
         IOptions<AppSettings> appSettings,
         NotificationClient notificationClient,
-        IConnectionMultiplexer redis)
+        IConnectionMultiplexer redis,
+        IDistributedLockProvider locks)
     {
         _serviceProvider = serviceProvider;
+        _locks = locks;
         _logger = logger;
         _frontendBaseUrl = appSettings.Value.FrontendBaseUrl;
         _notificationClient = notificationClient;
@@ -75,7 +89,7 @@ public class ReminderNotificationWorker : BackgroundService
         {
             try
             {
-                await CheckAndSendRemindersAsync(stoppingToken);
+                await RunTickAsync(stoppingToken);
             }
             catch (Exception ex)
             {
@@ -85,6 +99,15 @@ public class ReminderNotificationWorker : BackgroundService
             await Task.Delay(_checkInterval, stoppingToken);
         }
     }
+
+    /// <summary>One tick: the poll, if this replica holds the sweep lease.</summary>
+    internal Task<ExclusiveTickOutcome> RunTickAsync(CancellationToken stoppingToken) =>
+        _locks.TryRunExclusiveAsync(
+            SweepLockResource,
+            TimeSpan.FromMinutes(2),
+            CheckAndSendRemindersAsync,
+            _logger,
+            stoppingToken);
 
     /// <summary>One poll. Internal so the tests can drive it directly — see InternalsVisibleTo.</summary>
     internal async Task CheckAndSendRemindersAsync(CancellationToken ct)

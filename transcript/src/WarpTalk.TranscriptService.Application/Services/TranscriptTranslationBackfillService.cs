@@ -138,12 +138,8 @@ public class TranscriptTranslationBackfillService : ITranscriptTranslationBackfi
             return false;
         }
 
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, "^__[A-Z0-9_]+__"))
-        {
-            return false;
-        }
-
-        return !string.Equals(NormalizeLanguage(segment.OriginalLanguage), "system", StringComparison.Ordinal);
+        return !WarpTalk.TranscriptService.Domain.ControlMarkers.IsControlMarker(
+            text, NormalizeLanguage(segment.OriginalLanguage));
     }
 
     public async Task<Result<TranscriptLanguageCoverageDto>> GetCoverageAsync(

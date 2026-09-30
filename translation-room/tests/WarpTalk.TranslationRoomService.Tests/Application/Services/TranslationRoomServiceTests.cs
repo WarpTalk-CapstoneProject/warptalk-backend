@@ -52,6 +52,10 @@ public class TranslationRoomServiceTests
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
+        // The conditional ENDED transition wins unless a test says a concurrent End got there first.
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomSessionRepository).Returns(_mockSessionRepo.Object);
@@ -427,6 +431,62 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         room.StartedAt.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// k8s multi-replica dedupe: a double-clicked Start on two replicas took the room live twice —
+    /// two RoomStarted broadcasts, two MEETING_STARTED rounds to the invite list. Only the Start
+    /// that wins the conditional transition does any of that; the other still reports success.
+    /// </summary>
+    [Fact]
+    public async Task StartTranslationRoomAsync_ConcurrentStarts_AnnounceTheStartOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() => NewStartableRoom(roomId, hostId));
+        var started = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "IN_PROGRESS", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref started, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.StartTranslationRoomAsync(roomId, hostId, null),
+            _service.StartTranslationRoomAsync(roomId, hostId, null));
+
+        results.Should().OnlyContain(result => result.IsSuccess && result.Value!.Status == RoomStatus.IN_PROGRESS);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.Is<string>(payload => payload.Contains("RoomStarted"))),
+            Times.Once);
+        _mockUow.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task OpenScheduledRoomAsync_ConcurrentOpens_AnnounceTheOpeningOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() =>
+            {
+                var room = NewStartableRoom(roomId, hostId);
+                room.Status = "SCHEDULED";
+                room.ScheduledAt = DateTime.UtcNow;
+                return room;
+            });
+        var opened = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "OPEN", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref opened, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.OpenScheduledRoomAsync(roomId),
+            _service.OpenScheduledRoomAsync(roomId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(It.IsAny<string>(), It.Is<string>(payload => payload.Contains(roomId.ToString()))),
+            Times.Once);
     }
 
     [Fact]
@@ -925,6 +985,42 @@ public class TranslationRoomServiceTests
         room.EndedAt.Should().NotBeNull();
         room.DurationSeconds.Should().BeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
+    }
+
+    /// <summary>
+    /// k8s multi-replica dedupe. "End for everyone" reaches this service more than once per meeting,
+    /// and on two replicas the repeats run in parallel: each read its own copy of the room as
+    /// IN_PROGRESS, and each went on to process session_ends — which is what queues finalization,
+    /// so the meeting got two sets of artifacts and two "Summary ready" notifications. Only the End
+    /// that wins the conditional ENDED transition may do that.
+    /// </summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ConcurrentEnds_ProcessSessionEndsOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        // Each call reads its own entity, as each replica reads its own row.
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() => new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{}" });
+        var ended = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "ENDED", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref ended, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.EndTranslationRoomAsync(roomId, hostId),
+            _service.EndTranslationRoomAsync(roomId, hostId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.IsAny<string>()),
+            Times.Once);
+        _mockUow.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _mockUow.Verify(u => u.RollbackTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // WT-191 — participants used to sit in an ended room until they pressed Leave, because

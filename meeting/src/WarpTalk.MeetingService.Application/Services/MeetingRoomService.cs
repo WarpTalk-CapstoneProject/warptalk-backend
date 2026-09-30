@@ -8,6 +8,7 @@ using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Events;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.MeetingService.Application.Services;
 
@@ -32,6 +33,12 @@ public class MeetingRoomService : IMeetingRoomService
 
     private readonly IPlatformSettings? _platformSettings;
 
+    /// <summary>
+    /// Serialises recording start per room across replicas. Null only in tests that construct the
+    /// service by hand; the host always registers it (AddWarpTalkDistributedLocks).
+    /// </summary>
+    private readonly IDistributedLockProvider? _locks;
+
     /// <summary>User-facing refusal when meetings.recording.enabled is off.</summary>
     public const string RecordingDisabledMessage = "Recording is turned off on this platform right now.";
 
@@ -43,9 +50,11 @@ public class MeetingRoomService : IMeetingRoomService
         ILiveKitEgressService egressService,
         ILiveKitRoomAdminService roomAdminService,
         ILogger<MeetingRoomService> logger,
-        IPlatformSettings? platformSettings = null)
+        IPlatformSettings? platformSettings = null,
+        IDistributedLockProvider? locks = null)
     {
         _platformSettings = platformSettings;
+        _locks = locks;
         _tokenService = tokenService;
         _grpcService = grpcService;
         _unitOfWork = unitOfWork;
@@ -962,14 +971,25 @@ public class MeetingRoomService : IMeetingRoomService
                 deleteRoomResult.Error ?? "Failed to end LiveKit room.",
                 deleteRoomResult.ErrorCode);
 
-        if (meetingRoom != null)
-        {
-            meetingRoom.Status = "FINISHED";
-            meetingRoom.EndedAt = DateTime.UtcNow;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-        }
+        // One conditional UPDATE decides which call ended the meeting. "End for everyone" arrives
+        // more than once per meeting — production showed up to six calls within 0.7 s, on both replicas —
+        // and each used to publish its own __MEETING_END__, so the assistant worker summarised the
+        // same meeting up to six times. Only the call that actually moved ended_at off null goes
+        // on to trigger the summary; the rest have already done everything that is theirs to do
+        // (the LiveKit room is gone either way) and report success, because the meeting IS ended.
+        //
+        // No meeting-room row means nobody ever joined through this service, so there is no
+        // audio, no transcript and nothing to summarise: no trigger either.
+        var endedByThisCall = meetingRoom != null
+            && await _unitOfWork.MeetingRoomRepository.TryMarkFinishedAsync(meetingRoom.Id, DateTime.UtcNow);
 
-        await _unitOfWork.SaveChangesAsync();
+        if (!endedByThisCall)
+        {
+            _logger.LogInformation(
+                "Meeting {RoomId} was already ended (or never joined); not triggering its summary again.",
+                translationRoomId);
+            return Result.Success(true);
+        }
 
         // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
         // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from
@@ -1111,19 +1131,41 @@ public class MeetingRoomService : IMeetingRoomService
                 && !await _platformSettings.GetBooleanAsync(PlatformSettingsCatalog.RecordingEnabled))
                 return Result.Failure<RecordingStateDto>(RecordingDisabledMessage, ErrorCodes.Forbidden);
 
-            var startResult = await _egressService.StartRoomCompositeEgressAsync(meetingRoom.ProviderRoomName);
-            if (!startResult.IsSuccess || string.IsNullOrEmpty(startResult.Value))
-                return Result.Failure<RecordingStateDto>(startResult.Error ?? "Failed to start recording.", ErrorCodes.InternalServerError);
+            if (_locks is null)
+                return await StartRecordingAsync(translationRoomId, meetingRoom);
 
-            meetingRoom.ActiveEgressId = startResult.Value;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
+            // The ActiveEgressId check above is a read. Two Start Recording presses on two replicas
+            // both passed it, both asked LiveKit for an egress, and the second overwrote the first
+            // one's id — leaving a recording nobody could stop, and two files for one meeting. The
+            // start runs under a per-room lease, and re-checks the row (not the tracked copy) once
+            // it holds it, so the second press sees the first one's egress.
+            Result<RecordingStateDto>? started = null;
+            var outcome = await _locks.TryRunExclusiveAsync(
+                RecordingStartLockResource(translationRoomId),
+                TimeSpan.FromSeconds(30),
+                async ct =>
+                {
+                    if (await _unitOfWork.MeetingRoomRepository.AnyAsync(
+                            r => r.Id == meetingRoom.Id && r.ActiveEgressId != null && r.ActiveEgressId != "",
+                            ct))
+                    {
+                        started = Result.Failure<RecordingStateDto>("Recording is already in progress.", ErrorCodes.InvalidState);
+                        return;
+                    }
 
-            await PublishRecordingStartedAsync(translationRoomId, meetingRoom.ActiveEgressId);
+                    started = await StartRecordingAsync(translationRoomId, meetingRoom);
+                },
+                _logger,
+                CancellationToken.None);
 
-            await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = true });
-
-            return Result.Success(new RecordingStateDto { Recording = true, EgressId = meetingRoom.ActiveEgressId });
+            return outcome switch
+            {
+                ExclusiveTickOutcome.Ran when started is not null => started,
+                ExclusiveTickOutcome.Skipped => Result.Failure<RecordingStateDto>(
+                    "Recording is already being started.", ErrorCodes.InvalidState),
+                _ => Result.Failure<RecordingStateDto>(
+                    "Could not start recording right now. Please try again.", ErrorCodes.InternalServerError),
+            };
         }
 
         if (normalizedAction == "stop")
@@ -1196,6 +1238,26 @@ public class MeetingRoomService : IMeetingRoomService
     /// about a recording that is running, and they would press Record again into "already in
     /// progress". What is lost is only the in-progress marker, which is the smaller harm.
     /// </summary>
+    public static string RecordingStartLockResource(Guid translationRoomId) =>
+        $"meeting:recording-start:{translationRoomId}";
+
+    private async Task<Result<RecordingStateDto>> StartRecordingAsync(Guid translationRoomId, MeetingRoom meetingRoom)
+    {
+        var startResult = await _egressService.StartRoomCompositeEgressAsync(meetingRoom.ProviderRoomName);
+        if (!startResult.IsSuccess || string.IsNullOrEmpty(startResult.Value))
+            return Result.Failure<RecordingStateDto>(startResult.Error ?? "Failed to start recording.", ErrorCodes.InternalServerError);
+
+        meetingRoom.ActiveEgressId = startResult.Value;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync();
+
+        await PublishRecordingStartedAsync(translationRoomId, meetingRoom.ActiveEgressId);
+
+        await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = true });
+
+        return Result.Success(new RecordingStateDto { Recording = true, EgressId = meetingRoom.ActiveEgressId });
+    }
+
     private async Task PublishRecordingStartedAsync(Guid translationRoomId, string egressId)
     {
         try
