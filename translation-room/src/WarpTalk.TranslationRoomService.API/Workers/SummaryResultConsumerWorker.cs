@@ -101,7 +101,8 @@ public class SummaryResultConsumerWorker : BackgroundService
         }
     }
 
-    private async Task ProcessEntryAsync(StreamEntry entry, CancellationToken ct)
+    /// <summary>One result. Internal so the tests can drive it without a live stream.</summary>
+    internal async Task ProcessEntryAsync(StreamEntry entry, CancellationToken ct)
     {
         var fields = entry.Values.ToDictionary(
             value => value.Name.ToString(),
@@ -143,6 +144,20 @@ public class SummaryResultConsumerWorker : BackgroundService
 
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        // WT-870. The request side already refuses a meeting that kept no transcript; this is the
+        // write side refusing too, for a request queued before that check existed or by anything
+        // that does not know it. Neither the canonical summary nor a rendering is stored. A room
+        // that cannot be found has nothing to store it against either, so it is refused the same.
+        var room = await unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+        if (room == null || !TranscriptRetention.IsSaved(room))
+        {
+            _logger.LogWarning(
+                "Dropped a summary result for room {RoomId}: the meeting does not save its transcript, or no longer exists.",
+                roomId);
+            await PublishOutcomeAsync(requestId, "failed", TranscriptRetention.ErrorTranscriptNotSaved);
+            return;
+        }
 
         // WHERE THIS ANSWER GOES, AND WHY THE REQUEST HAD TO SAY.
         //
