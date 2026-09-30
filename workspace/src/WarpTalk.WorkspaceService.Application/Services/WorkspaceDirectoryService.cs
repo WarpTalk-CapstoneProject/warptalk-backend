@@ -213,10 +213,23 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         // creating a room at all.
         if (config.AllowedTargetLanguages != null && config.AllowedTargetLanguages.Any())
         {
+            // WT-706: BOTH SIDES REDUCED TO THE PRIMARY SUBTAG, which is the comparison
+            // translation-room's room-edit gate (WorkspaceMeetingPolicyGrpcClient, WT-707) and
+            // the gateway's RoomLanguagePolicy already make. This one still compared raw strings,
+            // so the create path and the edit path could answer differently about the same
+            // workspace: a whitelist holding "vi-VN" refused a room asking for "vi" here while
+            // permitting exactly that edit one service over. Saves are normalized now, but stored
+            // documents written before WT-706 are not, and they are read by this line.
+            var allowed = new HashSet<string>(
+                config.AllowedTargetLanguages
+                    .Select(LanguageTag.Base)
+                    .Where(code => code.Length > 0),
+                StringComparer.Ordinal);
+
             if (targetLanguages.Count > 0)
             {
                 var unsupported = targetLanguages.FirstOrDefault(lang =>
-                    !config.AllowedTargetLanguages.Contains(lang, StringComparer.OrdinalIgnoreCase));
+                    !allowed.Contains(LanguageTag.Base(lang)));
                 if (unsupported != null)
                 {
                     return Decision(MeetingCreationDecisionDto.Denied(
@@ -225,7 +238,7 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             }
 
             if (!string.IsNullOrWhiteSpace(sourceLanguage)
-                && !config.AllowedTargetLanguages.Contains(sourceLanguage, StringComparer.OrdinalIgnoreCase))
+                && !allowed.Contains(LanguageTag.Base(sourceLanguage)))
             {
                 return Decision(MeetingCreationDecisionDto.Denied(
                     $"Source language '{sourceLanguage}' is not allowed by the workspace policy."));
