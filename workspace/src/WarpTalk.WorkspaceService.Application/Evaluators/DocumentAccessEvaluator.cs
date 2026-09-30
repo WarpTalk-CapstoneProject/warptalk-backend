@@ -179,8 +179,10 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         }
         else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
         {
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase) ||
+            // IsIndexEligible is the one definition of "may the model use this" (status, retention,
+            // the AI switch, confidentiality); the rest asks whether the index has caught up.
+            // It used to restate the status and retention half inline. WT-872.
+            if (!document.IsIndexEligible() ||
                 !string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.completed.ToString(), StringComparison.OrdinalIgnoreCase) ||
                 document.LastIndexedAt == null ||
                 !document.AiEligible)
