@@ -318,6 +318,72 @@ public sealed class TranslationRoomArtifactServiceTests
     }
 
     /// <summary>
+    /// WT-870: a meeting held with "Save the meeting transcript" off has nothing to summarise.
+    /// Both of the rewrite's branches are refused with their own code — the redirect to
+    /// finalization (no artifacts) as well as the published request (a summary left over from
+    /// before this fix) — and nothing is queued on either.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RegenerateSummaryAsync_RefusesAMeetingThatKeptNoTranscript(bool hasLeftoverSummary)
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.Settings = "{\"save_transcript\":false}";
+        if (hasLeftoverSummary)
+        {
+            room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+            {
+                Id = Guid.NewGuid(),
+                TranslationRoomId = room.Id,
+                ArtifactType = "SUMMARY_EXPORT",
+                Status = "COMPLETED"
+            });
+        }
+
+        var queue = new Mock<IArtifactsFinalizationQueue>();
+        var redis = new Mock<IRedisStateRepository>();
+
+        var service = CreateServiceForRoom(room, redis, queue);
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(TranscriptRetention.ErrorCodeTranscriptNotSaved, result.ErrorCode);
+        queue.Verify(
+            item => item.QueueFinalization(It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<string?>()),
+            Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>WT-870, the other half: an explicit TRUE changes nothing about the rewrite.</summary>
+    [Fact]
+    public async Task RegenerateSummaryAsync_StillPublishes_WhenTheRoomSavesItsTranscript()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateEndedRoom(hostId);
+        room.Settings = "{\"save_transcript\":true}";
+        room.TranslationRoomArtifacts.Add(new TranslationRoomArtifact
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = room.Id,
+            ArtifactType = "SUMMARY_EXPORT",
+            Status = "COMPLETED"
+        });
+
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateServiceForRoom(room, redis, new Mock<IArtifactsFinalizationQueue>());
+        var result = await service.RegenerateSummaryAsync(room.Id, hostId, "general", null, "Bearer token");
+
+        Assert.True(result.IsSuccess);
+        redis.Verify(
+            item => item.StreamAddAsync("assistant:summary_requests", It.IsAny<Dictionary<string, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>
     /// THE SHAPE A PERSON ASKED FOR SURVIVES THE REDIRECT.
     ///
     /// This is the bug reported as "summary type không hoạt động", and it lived in the gap

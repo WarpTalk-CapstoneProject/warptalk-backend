@@ -1620,14 +1620,17 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != "SCHEDULED")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToOpen, ErrorCodes.InvalidState);
 
+            // The status check above is a read; this is the decision. Only the call that moves the
+            // row off SCHEDULED announces the opening, so a second opener — another replica's
+            // sweep, or a host racing the clock — changes nothing and notifies nobody.
+            if (!await _translationRoomRepository.TryTransitionStatusAsync(translationRoomId, OpenableStatuses, "OPEN", ct))
+                return Result.Success();
+
             translationRoom.Status = "OPEN";
             translationRoom.UpdatedAt = DateTime.UtcNow;
             // StartedAt stays null on purpose: it is the clock for "the meeting ran", which is
             // what the history, the duration and the artifacts all read. A room that opened and
             // that nobody attended never started.
-
-            _translationRoomRepository.Update(translationRoom);
-            await _unitOfWork.SaveChangesAsync(ct);
 
             // Both best-effort and both after the save, the same order every other transition
             // here uses: the status is the fact, and a client that reacts to either of these must
@@ -1691,7 +1694,7 @@ public class TranslationRoomService : ITranslationRoomService
             // OPEN joins the two here rather than replacing them (WT-612): the clock opens the
             // booking, but a host who wants to begin before their slot still may, and a room the
             // clock opened has to be startable by the first person who arrives.
-            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING" && translationRoom.Status != "OPEN")
+            if (!StartableStatuses.Contains(translationRoom.Status))
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
             // A suspended workspace may not take a room live. This is the transition that actually
@@ -1720,14 +1723,41 @@ public class TranslationRoomService : ITranslationRoomService
             if (!routeResult.IsSuccess)
                 _logger.LogWarning("Could not generate audio routes while starting room {RoomId}: {Error}", translationRoomId, routeResult.Error);
 
-            translationRoom.Status = "IN_PROGRESS";
-            translationRoom.StartedAt ??= DateTime.UtcNow;
-            translationRoom.UpdatedAt = DateTime.UtcNow;
-            translationRoom.UpdatedBy = callerId;
+            // The status check above is a read; this is the decision. A double-clicked Start on two
+            // replicas used to take the room live twice — two MEETING_STARTED rounds to the whole
+            // invite list, two started events. The loser of the compare-and-set reports the room
+            // as started (it is) and does none of that.
+            await _unitOfWork.BeginTransactionAsync(ct);
+            try
+            {
+                if (!await _translationRoomRepository.TryTransitionStatusAsync(translationRoomId, StartableStatuses, "IN_PROGRESS", ct))
+                {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
+                    _logger.LogInformation(
+                        "Room {RoomId} was started by a concurrent request; this Start changes nothing.",
+                        translationRoomId);
+                    translationRoom.Status = "IN_PROGRESS";
+                    return Result.Success(translationRoom.ToResponseDto(
+                        await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                        await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                }
 
-            _translationRoomRepository.Update(translationRoom);
+                translationRoom.Status = "IN_PROGRESS";
+                translationRoom.StartedAt ??= DateTime.UtcNow;
+                translationRoom.UpdatedAt = DateTime.UtcNow;
+                translationRoom.UpdatedBy = callerId;
 
-            await _unitOfWork.SaveChangesAsync(ct);
+                _translationRoomRepository.Update(translationRoom);
+
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _unitOfWork.CommitTransactionAsync(ct);
+            }
+            catch
+            {
+                await _unitOfWork.RollbackTransactionAsync(CancellationToken.None);
+                throw;
+            }
+
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
 
             // WT-322: tell everyone already in the room that translation is now live. Published
@@ -2656,6 +2686,18 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// The statuses a host may end a room from. OPEN alongside WAITING (WT-612): both are rooms
+    /// standing open with nothing running in them, and a host must be able to close either one.
+    /// </summary>
+    private static readonly string[] EndableStatuses = ["IN_PROGRESS", "PAUSED", "WAITING", "OPEN"];
+
+    /// <summary>The statuses Start takes live: see the OPEN note in StartTranslationRoomAsync.</summary>
+    private static readonly string[] StartableStatuses = ["SCHEDULED", "WAITING", "OPEN"];
+
+    /// <summary>Only a booking the clock has not yet opened, and nobody has touched, opens.</summary>
+    private static readonly string[] OpenableStatuses = ["SCHEDULED"];
+
     public async Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
         try
@@ -2690,47 +2732,73 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (translationRoom.Status == "ENDED")
                 return Result.Success();
-            // OPEN alongside WAITING (WT-612): both are rooms standing open with nothing running
-            // in them, and a host must be able to close either one.
-            if (translationRoom.Status != "IN_PROGRESS" && translationRoom.Status != "PAUSED" && translationRoom.Status != "WAITING" && translationRoom.Status != "OPEN")
+            if (!EndableStatuses.Contains(translationRoom.Status))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 
-            translationRoom.Status = "ENDED";
-            translationRoom.EndedAt = DateTime.UtcNow;
-            translationRoom.UpdatedAt = DateTime.UtcNow;
+            var endedAt = DateTime.UtcNow;
 
-            // WT-826: publish the record to the people who took part, unless the host turned that
-            // off. Inside the same save as ENDED, so there is no moment in which the meeting is
-            // over and its record is still waiting on a click nobody is going to make.
-            await ApplyRecordAutoShareAtEndAsync(translationRoom, ct);
-
-            _translationRoomRepository.Update(translationRoom);
-
-            // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
-            // translation session is still open so it gets an EndedAt.
-            await EndActiveTranslationSessionAsync(translationRoomId, ct);
-
-            var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
-            if (participants != null)
+            // ONE caller ends the meeting; every other concurrent End is told "done" and goes home.
+            // The status check above is a read, and "End for everyone" arrives more than once per
+            // meeting — with two replicas those repeats run in parallel, each reads IN_PROGRESS,
+            // and each used to go on to queue finalization (two sets of artifacts, two "Summary
+            // ready" notifications) and count the meeting as ended again. The compare-and-set runs
+            // inside the same transaction as the rest of the end, so the room is never left ENDED
+            // without its participants released, and a loser changes nothing at all.
+            await _unitOfWork.BeginTransactionAsync(ct);
+            try
             {
-                var participantsToUpdate = participants
-                    // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
-                    // somebody who was never let in had been in the room, and DISCONNECTED is the
-                    // one status the rejoin path treats as proof of admission — so it handed the
-                    // lobby's occupants a way in. A row still waiting stays waiting; the room
-                    // ending makes it moot rather than admitted.
-                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
-                    .ToList();
-
-                foreach (var participant in participantsToUpdate)
+                if (!await _translationRoomRepository.TryTransitionStatusAsync(translationRoomId, EndableStatuses, "ENDED", ct))
                 {
-                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
-                    participant.UpdatedAt = DateTime.UtcNow;
-                    _participantRepository.Update(participant);
+                    await _unitOfWork.RollbackTransactionAsync(ct);
+                    _logger.LogInformation(
+                        "Room {RoomId} was ended by a concurrent request; this End changes nothing.",
+                        translationRoomId);
+                    return Result.Success();
                 }
-            }
 
-            await _unitOfWork.SaveChangesAsync(ct);
+                translationRoom.Status = "ENDED";
+                translationRoom.EndedAt = endedAt;
+                translationRoom.UpdatedAt = endedAt;
+
+                // WT-826: publish the record to the people who took part, unless the host turned that
+                // off. Inside the same save as ENDED, so there is no moment in which the meeting is
+                // over and its record is still waiting on a click nobody is going to make.
+                await ApplyRecordAutoShareAtEndAsync(translationRoom, ct);
+
+                _translationRoomRepository.Update(translationRoom);
+
+                // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
+                // translation session is still open so it gets an EndedAt.
+                await EndActiveTranslationSessionAsync(translationRoomId, ct);
+
+                var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
+                if (participants != null)
+                {
+                    var participantsToUpdate = participants
+                        // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
+                        // somebody who was never let in had been in the room, and DISCONNECTED is the
+                        // one status the rejoin path treats as proof of admission — so it handed the
+                        // lobby's occupants a way in. A row still waiting stays waiting; the room
+                        // ending makes it moot rather than admitted.
+                        .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
+                        .ToList();
+
+                    foreach (var participant in participantsToUpdate)
+                    {
+                        participant.Status = TranslationRoomParticipantStatuses.Disconnected;
+                        participant.UpdatedAt = DateTime.UtcNow;
+                        _participantRepository.Update(participant);
+                    }
+                }
+
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _unitOfWork.CommitTransactionAsync(ct);
+            }
+            catch
+            {
+                await _unitOfWork.RollbackTransactionAsync(CancellationToken.None);
+                throw;
+            }
 
             // After the commit, so a failed save can never be counted as an ended meeting.
             await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.CurrentEndReason, ct);

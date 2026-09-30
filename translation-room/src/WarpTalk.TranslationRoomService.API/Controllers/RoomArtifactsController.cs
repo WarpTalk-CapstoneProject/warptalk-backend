@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Models;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 
@@ -92,6 +93,8 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             // WT-703: a language this meeting's artifacts cannot be generated in.
             if (result.ErrorCode == ErrorCodes.ValidationError) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-870: the meeting kept no transcript, so there is nothing to summarise.
+            if (result.ErrorCode == TranscriptRetention.ErrorCodeTranscriptNotSaved) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
@@ -155,6 +158,8 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             // WT-703: a language this meeting's artifacts cannot be generated in.
             if (result.ErrorCode == ErrorCodes.ValidationError) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-870: the meeting kept no transcript, so there is nothing to summarise.
+            if (result.ErrorCode == TranscriptRetention.ErrorCodeTranscriptNotSaved) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

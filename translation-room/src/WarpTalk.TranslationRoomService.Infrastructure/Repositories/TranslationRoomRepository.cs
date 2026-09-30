@@ -294,4 +294,22 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
                     || room.Status == "IN_PROGRESS"
                     || room.Status == "PAUSED"),
             ct);
+
+    public async Task<bool> TryTransitionStatusAsync(
+        Guid roomId,
+        IReadOnlyCollection<string> fromStatuses,
+        string toStatus,
+        CancellationToken ct = default)
+    {
+        var from = fromStatuses.ToArray();
+        var now = DateTime.UtcNow;
+        var changed = await _dbSet
+            .Where(room => room.Id == roomId && from.Contains(room.Status))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(room => room.Status, toStatus)
+                    .SetProperty(room => room.UpdatedAt, now),
+                ct);
+        return changed > 0;
+    }
 }
