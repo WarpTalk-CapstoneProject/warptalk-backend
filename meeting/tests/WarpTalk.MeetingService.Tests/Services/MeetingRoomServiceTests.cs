@@ -1017,6 +1017,48 @@ public class MeetingRoomServiceTests
             Times.Once);
     }
 
+    /// <summary>
+    /// WT-870: "Save the meeting transcript" off means no summary. The marker that makes
+    /// ai_assistant_worker summarise the meeting is not sent; the meeting still ends.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task EndMeetingAsync_RequestsAiSummaryOnlyWhenTheRoomSavesItsTranscript(bool saveTranscript, int expectedTriggers)
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+        {
+            HostId = hostId.ToString(),
+            Status = "IN_PROGRESS",
+            WorkspaceId = Guid.NewGuid().ToString(),
+            SaveTranscript = saveTranscript
+        };
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
+
+        var roomRepoMock = new Mock<IMeetingRoomRepository>();
+        roomRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingRoom?)null);
+        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+
+        var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+        _roomAdminServiceMock.Verify(
+            r => r.DeleteRoomAsync(translationRoomId.ToString(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _redisServiceMock.Verify(
+            r => r.PublishStreamMessageAsync(
+                "stt:results",
+                It.Is<Dictionary<string, string>>(fields => fields["text"] == "__MEETING_END__")),
+            Times.Exactly(expectedTriggers));
+    }
+
     [Fact]
     public async Task EndMeetingAsync_StillSucceeds_WhenAiSummaryTriggerFails()
     {
