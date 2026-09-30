@@ -181,12 +181,12 @@ public class MeetingStartedEventConsumerTests
         await _service.ProcessContextSnapshotAsync("room-872", workspaceId, CancellationToken.None);
 
         await _storage.DidNotReceiveWithAnyArgs().GetExtractedTextAsync(default!, default);
-        Assert.Empty(_db.ReceivedCalls().Where(c => c.GetMethodInfo().Name == nameof(IDatabase.StringSetAsync)));
+        Assert.DoesNotContain(_db.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IDatabase.StringSetAsync));
     }
 
     private string SnapshotWritten()
     {
-        var call = Assert.Single(_db.ReceivedCalls().Where(c => c.GetMethodInfo().Name == nameof(IDatabase.StringSetAsync)));
+        var call = Assert.Single(_db.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IDatabase.StringSetAsync));
         return ((RedisValue)call.GetArguments()[1]!).ToString();
     }
 }
