@@ -79,14 +79,30 @@ public record PagedResultDto<T>(
     int TotalCount
 );
 
+/// <param name="Sort">
+/// priority_desc (default — the list's historical order: priority DESC, then created_at DESC) |
+/// updated_desc | created_desc | term_asc | term_desc. Anything else is a 400.
+/// </param>
 public record GlobalGlossaryTermQuery(
     int Page = 1,
     int PageSize = 20,
     string? Status = null,
     string? BusinessDomain = null,
     string? Language = null,
-    string? Search = null
+    string? Search = null,
+    string? Sort = null
 );
+
+public static class GlobalGlossaryTermSorts
+{
+    public const string PriorityDesc = "priority_desc";
+    public const string UpdatedDesc = "updated_desc";
+    public const string CreatedDesc = "created_desc";
+    public const string TermAsc = "term_asc";
+    public const string TermDesc = "term_desc";
+
+    public static readonly string[] All = [PriorityDesc, UpdatedDesc, CreatedDesc, TermAsc, TermDesc];
+}
 
 public record BulkImportGlobalGlossaryTermRow(
     string Term,

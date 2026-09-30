@@ -38,6 +38,7 @@ public class InviteDuringMeetingTests
     private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory = new();
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService = new();
     private readonly Mock<IRedisStateRepository> _mockRedis = new();
+    private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger = new();
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
     private static readonly Guid RoomId = Guid.NewGuid();
@@ -58,7 +59,7 @@ public class InviteDuringMeetingTests
             _mockWorkspaceMeetingPolicy.Object,
             _mockWorkspaceMemberDirectory.Object,
             _mockEmailService.Object,
-            new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>().Object,
+            _mockLogger.Object,
             redisStateRepository: _mockRedis.Object);
     }
 
@@ -217,5 +218,31 @@ public class InviteDuringMeetingTests
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+    }
+    [Fact]
+    public async Task AFailedSaveIsAnInternalErrorAndIsLogged()
+    {
+        // UTCID08: the invitation rows cannot be committed. Nothing is announced on the wire and
+        // the caller gets the generic failure rather than an exception.
+        RoomIs(Room("IN_PROGRESS"));
+        _mockUow
+            .Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("db down"));
+
+        var result = await _service.InviteParticipantsAsync(
+            RoomId, HostId, new[] { "someone@acme.com" });
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().Be(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings);
+        result.ErrorCode.Should().Be(ErrorCodes.InternalServerError);
+        _mockRedis.Verify(
+            r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _mockLogger.Verify(l => l.Log(
+            LogLevel.Error,
+            It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((v, _) => v.ToString() ==
+                $"Error inviting participants. RoomId: {RoomId}, HostId: {HostId}"),
+            It.IsAny<InvalidOperationException>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
     }
 }

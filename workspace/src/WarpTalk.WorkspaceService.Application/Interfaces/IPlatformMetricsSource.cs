@@ -43,10 +43,24 @@ public interface IPlatformMetricsSource
     /// </summary>
     /// <exception cref="PlatformMetricsUnavailableException">The store was unreachable.</exception>
     Task<IReadOnlyList<PlatformMetricSample>> QueryAsync(string expression, CancellationToken ct);
+}
 
-    /// <summary>
-    /// Alerts in a firing or pending state right now.
-    /// </summary>
-    /// <exception cref="PlatformMetricsUnavailableException">The store was unreachable.</exception>
-    Task<IReadOnlyList<PlatformAlert>> ActiveAlertsAsync(CancellationToken ct);
+/// <summary>
+/// The alerts a person would actually be paged for right now.
+///
+/// Read from Alertmanager, not from Prometheus's rule state: Prometheus lists every rule that
+/// matches, including alerts an operator has deliberately SILENCED and alerts INHIBITED by a
+/// more important one. The kubeadm control-plane alerts were silenced for 30 days and still
+/// filled this screen; only Alertmanager knows about the silence.
+/// </summary>
+public interface IPlatformAlertSource
+{
+    /// <summary>Firing alerts that are neither silenced nor inhibited, minus the heartbeat alerts.</summary>
+    Task<IReadOnlyList<PlatformAlert>> FiringAlertsAsync(CancellationToken ct);
+}
+
+/// <summary>The workspace outbox's parked events.</summary>
+public interface IOutboxDeadLetterReader
+{
+    Task<(long Count, DateTime? OldestAt)> ReadAsync(CancellationToken ct);
 }

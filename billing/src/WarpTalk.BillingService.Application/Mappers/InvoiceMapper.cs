@@ -88,7 +88,8 @@ public static class InvoiceMapper
             Subtotal = request.Subtotal,
             Tax = request.Tax,
             Total = request.Total,
-            Currency = request.Plan.Currency,
+            // The charge's currency, not the plan's: a contract price is VND on any plan.
+            Currency = request.Currency,
             Status = InvoiceConstants.InvoiceStatuses.Open,
             LineItems = CreateBillingCycleLineItems(request),
             IssuedAt = request.Now,

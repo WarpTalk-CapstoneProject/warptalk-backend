@@ -20,4 +20,13 @@ public class AssistantMessageDto
     /// in step for no gain — the client is what renders it.
     /// </summary>
     public string? SourcesJson { get; set; }
+
+    /// <summary>
+    /// The @mentions a user message was sent with, as the stored JSON array. Null on every answer
+    /// and on a message that named nothing.
+    ///
+    /// A string for the same reason <see cref="SourcesJson"/> is: the client draws it, and the
+    /// shape is already written down once, in SerializeMentions.
+    /// </summary>
+    public string? MentionsJson { get; set; }
 }

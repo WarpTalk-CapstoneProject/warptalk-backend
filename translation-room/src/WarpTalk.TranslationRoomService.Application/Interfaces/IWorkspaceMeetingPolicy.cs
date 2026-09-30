@@ -31,8 +31,11 @@ public interface IWorkspaceMeetingPolicy
         CancellationToken ct = default);
 
     /// <summary>
-    /// WT-466: applies the workspace's allowed-language whitelist to a language set, and NOTHING
-    /// else — no host permission, no plan quota, no active-room count.
+    /// WT-466: applies the workspace's allowed-language whitelist to a language set. WT-707: and
+    /// the plan's max_languages quota, counted on DISTINCT normalized target languages — the same
+    /// limit the creation gate applies, read from the same settings response, so a room created
+    /// with 2 languages cannot be edited to 6. NOTHING else — no host permission, no active-room
+    /// count.
     ///
     /// It exists because editing a room is not creating one. <c>UpdateTranslationRoomAsync</c>
     /// rewrites SourceLanguage and TargetLanguages after checking only that the platform supports
@@ -83,6 +86,20 @@ public interface IWorkspaceMeetingPolicy
     /// bounded by the outage and self-corrects; the outage is not bounded by anything.
     /// </summary>
     Task<Result> EnsureWorkspaceCanHostMeetingsAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether the workspace has a live subscription, from WorkspaceService's replicated
+    /// entitlement snapshot — the same answer the WT-515 paywall gives at room creation.
+    /// </summary>
+    /// <returns>
+    /// True or false when the snapshot knows; NULL when it does not (no snapshot yet, an older
+    /// WorkspaceService, or the call failed). Null must be read as "allow": it is the seconds after
+    /// a payment before the snapshot lands, or an outage — and billing still refuses every charge
+    /// for a workspace without a live subscription, which stops the room.
+    /// </returns>
+    Task<bool?> HasActiveSubscriptionAsync(
         Guid workspaceId,
         CancellationToken ct = default);
 }

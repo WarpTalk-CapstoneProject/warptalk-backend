@@ -30,5 +30,22 @@ public interface IAssistantChatRequestPublisher
         /// images_json for wire compatibility with what the worker already reads.
         /// </summary>
         string? attachmentsJson = null,
+        /// <summary>
+        /// WT-687: plugin keys switched off for this conversation, as a JSON array, or null.
+        /// </summary>
+        string? disabledPluginKeysJson = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// A platform-scope turn (a system admin's WarpBot in the admin portal). Published with
+    /// <c>scope=platform</c> and an EMPTY workspace_id: the worker then offers only the read-only
+    /// platform admin tools, never workspace retrieval, plugins or workspace tools.
+    /// </summary>
+    Task PublishPlatformAsync(
+        Guid requestId,
+        Guid conversationId,
+        Guid userId,
+        string? bearerToken,
+        IReadOnlyList<ChatTurnDto> history,
         CancellationToken ct = default);
 }

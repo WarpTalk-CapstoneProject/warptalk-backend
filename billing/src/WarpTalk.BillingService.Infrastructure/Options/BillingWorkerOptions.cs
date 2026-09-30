@@ -25,6 +25,14 @@ public sealed class BillingWorkerOptions
     /// </summary>
     public int EntitlementReconcileIntervalMinutes { get; set; } = 60;
 
+    /// <summary>
+    /// Whether the expiry sweep freezes / forfeits the balance of subscriptions that ended, releases
+    /// frozen credits on renewal and marks old ones dormant (CreditFreezeService). On by default;
+    /// the switch exists so the first production run — which also settles subscriptions that ended
+    /// before this shipped — can be held until the owner has seen what it will do.
+    /// </summary>
+    public bool FrozenCreditSweepEnabled { get; set; } = true;
+
     public TimeSpan EntitlementReconcileInterval => TimeSpan.FromMinutes(EntitlementReconcileIntervalMinutes);
 
     public TimeSpan SessionMonitorInterval => TimeSpan.FromSeconds(SessionMonitorIntervalSeconds);

@@ -133,20 +133,19 @@ public class MeetingMinutesService : IMeetingMinutesService
         // their name to it, and that is the point at which it becomes somebody's word rather than
         // a model's output. So the draft stays with the people who can act on it — the host, a
         // workspace Owner/Admin — and everyone else sees it the moment it is signed.
-        if (string.Equals(minutes.Status, MeetingMinutesConstants.StatusDraft, StringComparison.OrdinalIgnoreCase))
-        {
-            var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
-            var canManage = room != null
-                && await RoomHostAccess.HasHostAuthorityAsync(room, userId, _workspaceMemberDirectory, ct);
+        //
+        // The designated secretary is one of those people: the host named them to work on exactly
+        // this document, so refusing them the draft would leave the assignment with nothing to do.
+        var access = await ResolveAccessAsync(minutes, userId, ct);
 
-            if (!canManage)
-            {
-                return Result.Failure<MeetingMinutesDto>(
-                    MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.Forbidden);
-            }
+        if (string.Equals(minutes.Status, MeetingMinutesConstants.StatusDraft, StringComparison.OrdinalIgnoreCase)
+            && !access.CanEdit)
+        {
+            return Result.Failure<MeetingMinutesDto>(
+                MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.Forbidden);
         }
 
-        return Result.Success(await ToDtoAsync(minutes, ct));
+        return Result.Success(WithAccess(await ToDtoAsync(minutes, ct), minutes, access));
     }
 
     /// <inheritdoc />
@@ -229,7 +228,17 @@ public class MeetingMinutesService : IMeetingMinutesService
             ReadTemplateKey(content),
             wanted,
             bearerToken,
+            userEmail,
             ct);
+
+        // WT-703: a language this meeting does not offer is a refusal of the REQUEST, not a state
+        // of the document, and it must reach the caller as one (400) rather than be dressed up as
+        // "unavailable" below. Stored translations were answered above and never get here — what
+        // already exists stays readable whatever the meeting's languages are now.
+        if (!rendering.IsSuccess && rendering.ErrorCode == ErrorCodes.ValidationError)
+        {
+            return Result.Failure<MinutesTranslationDto>(rendering.Error!, rendering.ErrorCode);
+        }
 
         if (!rendering.IsSuccess)
         {
@@ -243,7 +252,28 @@ public class MeetingMinutesService : IMeetingMinutesService
                 "This meeting no longer has a summary to translate the record from."));
         }
 
-        if (rendering.Value!.Status != SummaryVariantStatus.Ready)
+        // A FAILED RENDERING IS AN ANSWER, NOT "STILL GENERATING".
+        //
+        // This read every non-ready status as generating. A rendering that failed was therefore
+        // reported as still on its way, the web kept polling, and each poll that read the failed
+        // outcome released the claim so the NEXT one queued the whole job again — one failing
+        // model call every eight seconds until the ninety-second deadline, and then a generic
+        // "has not arrived" with the reason thrown away. Production shows exactly that cadence
+        // (twelve Japanese requests eight seconds apart on one room on 12 Sep, every one of them
+        // failing with the same reason). The reason is the reader's to see; the choice stays
+        // askable again because the variant endpoint has already released its claim.
+        if (rendering.Value!.Status == SummaryVariantStatus.Failed)
+        {
+            return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
+                wanted,
+                null,
+                MinutesTranslationStatus.Unavailable,
+                string.IsNullOrWhiteSpace(rendering.Value.Error)
+                    ? "This record could not be translated into that language. Please try again."
+                    : rendering.Value.Error));
+        }
+
+        if (rendering.Value.Status != SummaryVariantStatus.Ready)
         {
             return Result<MinutesTranslationDto>.Success(new MinutesTranslationDto(
                 wanted, null, MinutesTranslationStatus.Generating, null));
@@ -494,7 +524,7 @@ public class MeetingMinutesService : IMeetingMinutesService
         {
             // Idempotent on purpose. Pressing "lập biên bản" twice must not consume a second
             // minutes number, and must never overwrite edits somebody has already made.
-            return Result.Success(await ToDtoAsync(existing, ct));
+            return Result.Success(await ToDtoForAsync(existing, userId, ct));
         }
 
         var participants = await _unitOfWork.TranslationRoomParticipantRepository
@@ -553,13 +583,13 @@ public class MeetingMinutesService : IMeetingMinutesService
         _logger.LogInformation(
             "Drew up minutes {MinutesNo} for room {RoomId}", minutes.MinutesNo, roomId);
 
-        return Result.Success(await ToDtoAsync(minutes, ct));
+        return Result.Success(await ToDtoForAsync(minutes, userId, ct));
     }
 
     public async Task<Result<MeetingMinutesDto>> UpdateContentAsync(
         Guid roomId, Guid minutesId, Guid userId, string contentJson, CancellationToken ct = default)
     {
-        var loaded = await LoadForWriteAsync(roomId, minutesId, userId, ct);
+        var loaded = await LoadForEditAsync(roomId, minutesId, userId, ct);
         if (!loaded.IsSuccess) return Result.Failure<MeetingMinutesDto>(loaded.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, loaded.ErrorCode);
         var minutes = loaded.Value!;
 
@@ -576,13 +606,62 @@ public class MeetingMinutesService : IMeetingMinutesService
         _unitOfWork.MeetingMinutesRepository.Update(minutes);
         await _unitOfWork.SaveChangesAsync(ct);
 
-        return Result.Success(await ToDtoAsync(minutes, ct));
+        return Result.Success(await ToDtoForAsync(minutes, userId, ct));
+    }
+
+    public async Task<Result<MeetingMinutesDto>> DesignateSecretaryAsync(
+        Guid roomId, Guid minutesId, Guid userId, Guid? participantId, CancellationToken ct = default)
+    {
+        // Host authority, not the edit gate: a secretary naming their own replacement would be
+        // handing on a responsibility the host gave them.
+        var loaded = await LoadForWriteAsync(roomId, minutesId, userId, ct);
+        if (!loaded.IsSuccess) return Result.Failure<MeetingMinutesDto>(loaded.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, loaded.ErrorCode);
+        var minutes = loaded.Value!;
+
+        if (string.Equals(minutes.Status, MeetingMinutesConstants.StatusApproved, StringComparison.Ordinal))
+        {
+            return Result.Failure<MeetingMinutesDto>(
+                MeetingMinutesConstants.ErrorApprovedIsImmutable, ErrorCodes.InvalidState);
+        }
+
+        // The signature line already names who took responsibility. Swapping the name under it
+        // would make the signed record say somebody else signed.
+        if (minutes.SecretarySignedAt != null)
+        {
+            return Result.Failure<MeetingMinutesDto>(
+                MeetingMinutesConstants.ErrorSecretaryAlreadySigned, ErrorCodes.InvalidState);
+        }
+
+        if (participantId.HasValue)
+        {
+            var participants = await _unitOfWork.TranslationRoomParticipantRepository
+                .GetByRoomIdAsync(roomId, ct) ?? new List<TranslationRoomParticipant>();
+
+            // An account, because the edit gate recognises the secretary by user id; and a row in
+            // THIS room, because a participant id from another meeting must not become a key here.
+            var candidate = participants.FirstOrDefault(p => p.Id == participantId.Value);
+            if (candidate?.UserId == null)
+            {
+                return Result.Failure<MeetingMinutesDto>(
+                    MeetingMinutesConstants.ErrorSecretaryNotInMeeting, ErrorCodes.ValidationError);
+            }
+        }
+
+        minutes.SecretaryParticipantId = participantId;
+        minutes.UpdatedAt = DateTime.UtcNow;
+        minutes.UpdatedBy = userId;
+
+        _unitOfWork.MeetingMinutesRepository.Update(minutes);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Result.Success(await ToDtoForAsync(minutes, userId, ct));
     }
 
     public async Task<Result<MeetingMinutesDto>> SignAsync(
         Guid roomId, Guid minutesId, Guid userId, CancellationToken ct = default)
     {
-        var loaded = await LoadForWriteAsync(roomId, minutesId, userId, ct);
+        // The edit gate: the secretary the host designated signs for the content they worked on.
+        var loaded = await LoadForEditAsync(roomId, minutesId, userId, ct);
         if (!loaded.IsSuccess) return Result.Failure<MeetingMinutesDto>(loaded.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, loaded.ErrorCode);
         var minutes = loaded.Value!;
 
@@ -612,7 +691,7 @@ public class MeetingMinutesService : IMeetingMinutesService
             "Minutes {MinutesNo} signed by the secretary with {Edits} change(s) against the draft",
             minutes.MinutesNo, minutes.EditCountVsDraft);
 
-        return Result.Success(await ToDtoAsync(minutes, ct));
+        return Result.Success(await ToDtoForAsync(minutes, userId, ct));
     }
 
     public async Task<Result<MeetingMinutesDto>> ApproveAsync(
@@ -624,7 +703,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
         if (string.Equals(minutes.Status, MeetingMinutesConstants.StatusApproved, StringComparison.Ordinal))
         {
-            return Result.Success(await ToDtoAsync(minutes, ct));
+            return Result.Success(await ToDtoForAsync(minutes, userId, ct));
         }
 
         // Order matters and is the point of having two acts: the secretary is answerable for the
@@ -658,7 +737,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
         _logger.LogInformation("Minutes {MinutesNo} approved for room {RoomId}", minutes.MinutesNo, roomId);
 
-        return Result.Success(await ToDtoAsync(minutes, ct));
+        return Result.Success(await ToDtoForAsync(minutes, userId, ct));
     }
 
     public async Task<Result<MeetingMinutesDto>> ReviseAsync(
@@ -757,6 +836,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
     public async Task<Result<MinutesExportFile>> ExportAsync(
         Guid roomId, Guid userId, string? userEmail, string? template, string format,
+        string? language = null, string? mode = null, string? bearerToken = null,
         CancellationToken ct = default)
     {
         // Deliberately the same gate as reading the minutes on screen, not the write gate.
@@ -769,7 +849,29 @@ public class MeetingMinutesService : IMeetingMinutesService
                 current.Error ?? MeetingMinutesConstants.ErrorMinutesNotFound, current.ErrorCode);
         }
 
-        return await RenderAsync(current.Value!, template, format, ct);
+        // WT-685: the file follows the language the reader is reading. A language the record does
+        // not store is read the same way the page reads it, so the file and the screen agree; one
+        // that is still being generated renders its sections as "not translated yet" rather than
+        // silently printing a different language.
+        List<MinutesSection>? requested = null;
+        if (LanguageHelper.NormalizeLanguageCode(language).Length > 0)
+        {
+            var reading = await GetTranslationAsync(roomId, userId, userEmail, language!, bearerToken, ct);
+
+            // WT-703: the screen refuses a language the meeting does not offer, so the file does
+            // too, rather than handing back a file in a language the reader was just told no.
+            if (!reading.IsSuccess && reading.ErrorCode == ErrorCodes.ValidationError)
+            {
+                return Result.Failure<MinutesExportFile>(reading.Error!, reading.ErrorCode);
+            }
+
+            if (reading.IsSuccess && reading.Value!.Status == MinutesTranslationStatus.Ready)
+            {
+                requested = reading.Value.Sections;
+            }
+        }
+
+        return await RenderAsync(current.Value!, template, format, language, mode, requested, ct);
     }
 
     /// <summary>
@@ -781,7 +883,13 @@ public class MeetingMinutesService : IMeetingMinutesService
     /// a template is therefore exactly the .docx of that template, printed.
     /// </summary>
     private async Task<Result<MinutesExportFile>> RenderAsync(
-        MeetingMinutesDto minutes, string? template, string format, CancellationToken ct)
+        MeetingMinutesDto minutes,
+        string? template,
+        string format,
+        string? language,
+        string? mode,
+        List<MinutesSection>? requested,
+        CancellationToken ct)
     {
         var content = TryReadContent(minutes.Content);
         if (content == null)
@@ -791,6 +899,10 @@ public class MeetingMinutesService : IMeetingMinutesService
             return Result.Failure<MinutesExportFile>(
                 MeetingMinutesConstants.ErrorContentUnreadable, ErrorCodes.InvalidState);
         }
+
+        // One language, or the original plus exactly one — see MinutesLanguageView. Shaped here so
+        // both layouts obey the same rule without either writer choosing languages itself.
+        content = MinutesLanguageView.Shape(content, language, mode, requested);
 
         // Normalised here rather than at the controller so every caller — the HTTP endpoint
         // today, a scheduled circulation tomorrow — gets the same default and the same
@@ -1048,6 +1160,7 @@ public class MeetingMinutesService : IMeetingMinutesService
 
     public async Task<Result<MinutesExportFile>> ExportSharedAsync(
         string token, Guid? viewerUserId, string? viewerEmail, string? template, string format,
+        string? language = null, string? mode = null,
         CancellationToken ct = default)
     {
         var opened = await OpenLinkAsync(token, viewerUserId, viewerEmail, ct);
@@ -1080,7 +1193,8 @@ public class MeetingMinutesService : IMeetingMinutesService
                 MeetingMinutesConstants.ErrorMinutesNotPublished, ErrorCodes.InvalidState);
         }
 
-        return await RenderAsync(await ToDtoAsync(minutes, ct), template, format, ct);
+        // Stored languages only: a share link has no reader to generate a new reading as.
+        return await RenderAsync(await ToDtoAsync(minutes, ct), template, format, language, mode, null, ct);
     }
 
     /// <summary>
@@ -1242,6 +1356,7 @@ public class MeetingMinutesService : IMeetingMinutesService
                 TranslationRoomId = minutes.TranslationRoomId,
                 WorkspaceId = minutes.WorkspaceId,
                 SourceMinutesId = minutes.Id,
+                Source = MeetingActionItemConstants.SourceMinutes,
                 SeriesId = room?.SeriesId,
                 Task = item.Text.Trim(),
                 // Kept exactly as the meeting said it, whether or not it resolved to anybody.
@@ -1378,6 +1493,92 @@ public class MeetingMinutesService : IMeetingMinutesService
 
         return Result.Success(minutes);
     }
+
+    /// <summary>
+    /// Who may act on one document: the room's host authority, and whether the caller is the
+    /// secretary the host designated.
+    /// </summary>
+    private readonly record struct MinutesAccess(bool HasHostAuthority, bool IsSecretary)
+    {
+        public bool CanEdit => HasHostAuthority || IsSecretary;
+    }
+
+    private async Task<MinutesAccess> ResolveAccessAsync(
+        MeetingMinutes minutes, Guid userId, CancellationToken ct)
+    {
+        var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(minutes.TranslationRoomId, ct);
+        var hostAuthority = room != null
+            && room.DeletedAt == null
+            && await RoomHostAccess.HasHostAuthorityAsync(room, userId, _workspaceMemberDirectory, ct);
+
+        var isSecretary = false;
+        if (minutes.SecretaryParticipantId.HasValue)
+        {
+            var participants = await _unitOfWork.TranslationRoomParticipantRepository
+                .GetByRoomIdAsync(minutes.TranslationRoomId, ct);
+            isSecretary = participants?.Any(p =>
+                p.Id == minutes.SecretaryParticipantId.Value && p.UserId == userId) == true;
+        }
+
+        return new MinutesAccess(hostAuthority, isSecretary);
+    }
+
+    /// <summary>
+    /// The write gate for the CONTENT: host authority or the designated secretary.
+    ///
+    /// Loads the document before deciding, unlike <see cref="LoadForWriteAsync"/>, because who the
+    /// secretary is lives on the document. The room check still runs first, and a document from
+    /// another room is still NotFound.
+    /// </summary>
+    private async Task<Result<MeetingMinutes>> LoadForEditAsync(
+        Guid roomId, Guid minutesId, Guid userId, CancellationToken ct)
+    {
+        var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+        if (room == null || room.DeletedAt != null)
+        {
+            return Result.Failure<MeetingMinutes>(
+                MeetingMinutesConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+        }
+
+        var minutes = await _unitOfWork.MeetingMinutesRepository.GetByIdAsync(minutesId, ct);
+        if (minutes == null || minutes.TranslationRoomId != roomId)
+        {
+            return Result.Failure<MeetingMinutes>(
+                MeetingMinutesConstants.ErrorMinutesNotFound, ErrorCodes.NotFound);
+        }
+
+        var access = await ResolveAccessAsync(minutes, userId, ct);
+        if (!access.CanEdit)
+        {
+            return Result.Failure<MeetingMinutes>(
+                MeetingMinutesConstants.ErrorUnauthorizedEdit, ErrorCodes.Forbidden);
+        }
+
+        return Result.Success(minutes);
+    }
+
+    private static MeetingMinutesDto WithAccess(
+        MeetingMinutesDto dto, MeetingMinutes minutes, MinutesAccess access)
+    {
+        var approved = string.Equals(
+            minutes.Status, MeetingMinutesConstants.StatusApproved, StringComparison.Ordinal);
+
+        return dto with
+        {
+            CanEdit = access.CanEdit && !approved,
+            CanDesignateSecretary = access.HasHostAuthority && !approved && minutes.SecretarySignedAt == null,
+            CanApprove = access.HasHostAuthority
+        };
+    }
+
+    /// <summary>
+    /// The DTO a writer gets back, with the same permission flags a read carries. Every write
+    /// response replaces the web's cached copy, so a response without them would silently take
+    /// the editor away from the person who just saved.
+    /// </summary>
+    private async Task<MeetingMinutesDto> ToDtoForAsync(
+        MeetingMinutes minutes, Guid userId, CancellationToken ct) =>
+        WithAccess(await ToDtoAsync(minutes, ct), minutes, await ResolveAccessAsync(minutes, userId, ct));
 
     /// <summary>The latest SUMMARY_EXPORT's stored JSON, or null when the meeting has none.</summary>
     private async Task<string?> LoadSummaryContentAsync(Guid roomId, CancellationToken ct)

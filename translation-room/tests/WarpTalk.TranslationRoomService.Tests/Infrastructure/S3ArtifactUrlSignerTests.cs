@@ -46,7 +46,7 @@ public sealed class S3ArtifactUrlSignerTests
     /// <summary>
     /// WT-644 — THE SHAPE A REAL RECORDING ACTUALLY ARRIVES IN.
     ///
-    /// Nothing writes <c>s3://</c>. RecordingCompletedEventProcessor is the only writer of a
+    /// Nothing writes <c>s3://</c>. RecordingLifecycleEventProcessor is the only writer of a
     /// non-null FileUrl and it stores <c>EgressInfo.fileResults[].location</c> verbatim, which for
     /// an S3/R2 destination is the uploader's HTTPS object URL. The signer used to hand exactly
     /// that back unsigned, so the &lt;video&gt; element on the record page fetched R2's S3 API
@@ -164,5 +164,49 @@ public sealed class S3ArtifactUrlSignerTests
             TimeSpan.FromMinutes(15));
 
         Assert.StartsWith("http://minio:9000/", url);
+    }
+
+    /// <summary>
+    /// The download link carries the meeting's own name, inside the signature.
+    ///
+    /// The browser is sent straight to R2, so a Content-Disposition on OUR response would never be
+    /// seen — the object key is what a browser would otherwise save the file as. The response-header
+    /// override puts the name in the presigned request instead.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_AttachesTheGivenNameToTheSignedResponse()
+    {
+        using var signer = Signer("https://r2.example.test");
+
+        var url = await signer.CreateDownloadUrlAsync(
+            "s3://warptalk-recordings/rooms/demo.mp4",
+            TimeSpan.FromMinutes(15),
+            "Họp sprint 42 - Recording - 2026-09-18.mp4");
+
+        var query = Uri.UnescapeDataString(new Uri(url).Query);
+        Assert.Contains("response-content-disposition=", query, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("attachment;", query);
+        // Both spellings travel: the ASCII fallback and the UTF-8 one. See
+        // ContentDispositionHeaderTests for what each is for.
+        Assert.Contains("filename=\"Hop sprint 42 - Recording - 2026-09-18.mp4\"", query);
+        Assert.Contains("filename*=UTF-8''", query);
+    }
+
+    /// <summary>
+    /// PLAYBACK MUST NOT BE AN ATTACHMENT. The record page hands this very same link to a
+    /// &lt;video&gt; element, and a response that says "save me" is a response a browser is
+    /// entitled to save instead of play. No name, no disposition.
+    /// </summary>
+    [Fact]
+    public async Task CreateDownloadUrlAsync_LeavesThePlaybackLinkWithoutADisposition()
+    {
+        using var signer = Signer("https://r2.example.test");
+
+        var url = await signer.CreateDownloadUrlAsync(
+            "s3://warptalk-recordings/rooms/demo.mp4",
+            TimeSpan.FromMinutes(15));
+
+        Assert.DoesNotContain("response-content-disposition", url, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("attachment", url, StringComparison.OrdinalIgnoreCase);
     }
 }

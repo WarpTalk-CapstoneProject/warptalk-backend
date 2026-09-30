@@ -69,17 +69,36 @@ public static class WorkspaceMapper
             config.AiUsagePolicy?.ToDto(),
             config.IsProfanityFilterEnabled,
             config.InvitationExpiryDays,
-            AllowAnyPlugins: config.AllowAnyPlugins
+            AllowAnyPlugins: config.AllowAnyPlugins,
+            // Always answered on a read, so the settings page never has to guess which of the two
+            // meanings an empty list carries. The configuration derives it for documents written
+            // before WT-706.
+            RestrictLanguages: config.RestrictLanguages
         );
     }
 
     public static WorkspaceConfiguration ToConfiguration(this WorkspaceSettingsDto dto)
     {
+        // WT-706. The whitelist is normalized HERE, on the way into storage, so that what the
+        // workspace stores is already the primary subtag every other service compares against —
+        // a workspace that saved "vi-VN" could previously create no room at all, because rooms
+        // store "vi". An unrecognized code has already been refused by
+        // WorkspaceSettingsValidator, which runs before this on the save path; dropping it here
+        // is the belt to that braces, never the only guard.
+        var restrictLanguages = WorkspaceLanguagePolicy.IsRestricted(
+            dto.RestrictLanguages,
+            dto.AllowedTargetLanguages);
+
         return new WorkspaceConfiguration
         {
             DefaultLanguage = dto.DefaultLanguage,
             Timezone = dto.Timezone,
-            AllowedTargetLanguages = dto.AllowedTargetLanguages,
+            RestrictLanguages = restrictLanguages,
+            // Turning the restriction off stores an empty list, which is what keeps "empty means
+            // unrestricted" true for every existing consumer of the gRPC settings response.
+            AllowedTargetLanguages = restrictLanguages
+                ? WorkspaceLanguagePolicy.Normalize(dto.AllowedTargetLanguages).Codes
+                : new List<string>(),
             VoiceCloningEnabled = dto.VoiceCloningEnabled,
             MaxActiveRooms = dto.MaxActiveRooms,
             ArtifactRetentionDays = dto.ArtifactRetentionDays,
@@ -110,7 +129,8 @@ public static class WorkspaceMapper
                 ? current.AiUsagePolicy
                 : ApplyPatch(current.AiUsagePolicy, patch.AiUsagePolicy),
             IsProfanityFilterEnabled = patch.IsProfanityFilterEnabled ?? current.IsProfanityFilterEnabled,
-            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins
+            AllowAnyPlugins = patch.AllowAnyPlugins ?? current.AllowAnyPlugins,
+            RestrictLanguages = patch.RestrictLanguages ?? current.RestrictLanguages
         };
     }
 

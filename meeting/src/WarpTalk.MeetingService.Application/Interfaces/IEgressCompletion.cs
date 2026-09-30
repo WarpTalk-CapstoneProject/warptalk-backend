@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WarpTalk.MeetingService.Domain.Entities;
 
 namespace WarpTalk.MeetingService.Application.Interfaces;
 
@@ -43,4 +44,15 @@ public interface IEgressCompletion
     /// next tick. Swallowing it would drop a finished recording on the floor.
     /// </summary>
     Task<EgressCompletionOutcome> ApplyAsync(JsonElement egressInfo, CancellationToken ct = default);
+
+    /// <summary>
+    /// rec-loss: the ending with NO <c>EgressInfo</c> at all — LiveKit no longer knows the egress
+    /// this room holds (the sweep's UnknownEgressGrace has passed). Publishes RecordingFailed and
+    /// only then clears the room's id, so the recording ends in a visible state instead of the id
+    /// just vanishing.
+    ///
+    /// Here rather than in the sweep so every "a recording ended" event is written by this one
+    /// component. Same throw contract as <see cref="ApplyAsync"/>, and likewise does not save.
+    /// </summary>
+    Task ApplyLostAsync(MeetingRoom room, CancellationToken ct = default);
 }

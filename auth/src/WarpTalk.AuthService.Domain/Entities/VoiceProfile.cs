@@ -43,6 +43,16 @@ public partial class VoiceProfile
     /// </summary>
     public decimal? QualityScore { get; set; }
 
+    /// <summary>
+    /// Why the last clone of this recording failed, as a stable code the page translates
+    /// (PROVIDER_PLAN_REQUIRED, SAMPLE_REJECTED, SAMPLE_EXPIRED, ...). Null unless
+    /// <see cref="Status"/> is "clone_failed"; null on such a row means the reason was not recorded.
+    /// </summary>
+    public string? CloneErrorCode { get; set; }
+
+    /// <summary>The AI worker's one-line detail for <see cref="CloneErrorCode"/>.</summary>
+    public string? CloneError { get; set; }
+
     public bool IsActive { get; set; }
 
     public DateTime CreatedAt { get; set; }

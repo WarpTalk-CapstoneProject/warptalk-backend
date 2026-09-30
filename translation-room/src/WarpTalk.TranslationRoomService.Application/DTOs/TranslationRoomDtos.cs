@@ -22,7 +22,10 @@ public record RoomSettingsRequest(
     // WT-587: false makes this an ephemeral meeting — captions and translation still run, nothing
     // is written to transcript_segments. Null (the default) leaves it alone, which for a new room
     // means TranslationRoomSettings' own TRUE.
-    bool? SaveTranscript = null
+    bool? SaveTranscript = null,
+    // WT-826: false keeps the record host-only when the meeting ends. Null (the default) leaves
+    // it alone, which for a new room means ON.
+    bool? AutoShareRecord = null
 );
 
 public record RoomSettingsResponse(
@@ -35,7 +38,10 @@ public record RoomSettingsResponse(
     // WT-587. Trailing with a default so every existing positional construction site — and every
     // client reading this record — is unaffected, and so an older caller cannot accidentally
     // report a room as ephemeral by omission.
-    bool SaveTranscript = true
+    bool SaveTranscript = true,
+    // WT-826: whether the record is published to participants when the meeting ends. Effective
+    // value — a room that never stated it reads TRUE, because that is what will happen to it.
+    bool AutoShareRecord = true
 );
 
 public record UpdateRoomSettingsRequest(
@@ -66,7 +72,18 @@ public record GetTranslationRoomsRequest(
     /// answer, not fourteen. The home day panel asks "what is on Thursday?", and there the
     /// occurrence IS the meeting — collapsing would empty every day but one.
     /// </summary>
-    bool GroupBySeries = false
+    bool GroupBySeries = false,
+    /// <summary>
+    /// History only: <c>"mine"</c> reads the caller's own meetings (hosted, joined or invited) even
+    /// when the caller is a workspace Owner/Admin, instead of the whole workspace.
+    ///
+    /// The Artifacts page is a personal library: it lists what the caller can READ, and the
+    /// Owner/Admin widening adds no readable document — <c>ArtifactAccessHelper</c> grants a body
+    /// to the host, or to a participant/invitee when the room shares with participants, and never
+    /// on the workspace role. Widening there only produced locked cards. Anything else, including
+    /// omitting it, keeps the archive's workspace reading.
+    /// </summary>
+    string? Scope = null
 );
 
 /// <summary>
@@ -134,7 +151,12 @@ public record CreateTranslationRoomRequest(
     string? ExternalProvider = null,
     string? ExternalMeetingUrl = null,
     string? ExternalCalendarEventId = null,
-    string? ExternalCalendarEventUrl = null
+    string? ExternalCalendarEventUrl = null,
+    // EXTERNAL_BRIDGE only: what the far side of the external call speaks, i.e. the language of
+    // the "External Meeting" stand-in. Omitted, the server takes the first target that is not the
+    // source (TranslationRoomMapper.ResolveExternalMeetingLanguage). Sent, it is added to the
+    // targets if missing, so the workspace policy vets it like every other room language.
+    string? ExternalMeetingLanguage = null
 );
 
 /// <summary>WT-327: what creating a recurring booking returns.</summary>
@@ -230,8 +252,46 @@ public record TranslationRoomDto(
     /// Trailing and defaulted so every existing positional construction site still compiles, and
     /// <c>null</c> is read as "same as the booker" rather than "nobody".
     /// </summary>
-    Guid? EffectiveHostId = null
+    Guid? EffectiveHostId = null,
+    /// <summary>
+    /// WT-703: which languages new artifact content may be generated in for this room — see
+    /// <see cref="RoomArtifactLanguagesDto"/>. Set only by the room detail read and only once the
+    /// meeting is finished; <c>null</c> everywhere else.
+    ///
+    /// Trailing and defaulted so every existing positional construction site still compiles.
+    /// </summary>
+    RoomArtifactLanguagesDto? ArtifactLanguages = null,
+    /// <summary>
+    /// WT-849: whether the caller named by a <c>requesterEmail</c> passed into
+    /// <c>ITranslationRoomDirectoryService.GetRoomAsync</c> holds a live (PENDING or ACCEPTED)
+    /// invitation to this room — the same relation <c>ArtifactAccessHelper.IsParticipantOrInvited</c>
+    /// asks on the HTTP side, computed here for the mesh (<c>TranscriptReadAccess</c> is the first
+    /// consumer, over <c>GetTranslationRoomResponse.is_requester_invited</c>).
+    ///
+    /// <c>null</c> when no <c>requesterEmail</c> was supplied to the read — the caller did not ask,
+    /// so this is "not computed", not "not invited". Never widen a <c>null</c> here into <c>false</c>
+    /// or vice versa; that is exactly the field-presence distinction WT-587's <c>save_transcript</c>
+    /// documents for the same reason. Trailing and defaulted so every existing positional
+    /// construction site still compiles.
+    /// </summary>
+    bool? IsRequesterInvited = null
 );
+
+/// <summary>
+/// WT-703: the languages a finished meeting's shared artifacts (summary renderings, summary
+/// regenerates, minutes translations) may be GENERATED in — the room's source and target languages
+/// narrowed by the workspace whitelist and the active catalog, exactly what
+/// <c>IRoomArtifactLanguagePolicy</c> will accept. The server exposes it because the client cannot
+/// compute it: a guest cannot read the workspace settings the answer depends on.
+///
+/// It only bounds generating NEW content. Renderings and translations that already exist stay
+/// readable whatever this list says.
+///
+/// Carried as <see cref="TranslationRoomDto.ArtifactLanguages"/>, which is <c>null</c> while the
+/// meeting is not finished (there is nothing to generate yet, and a live page should not pay for
+/// the lookup) and when the list could not be computed.
+/// </summary>
+public record RoomArtifactLanguagesDto(IReadOnlyList<string> Generatable);
 
 public record TranslationRoomListItemDto(
     Guid Id,
@@ -413,7 +473,12 @@ public record TranslationRoomArtifactDto(
     /// SEEKABLE rather than as zero: substituting zero produces a plausible-looking, silently wrong
     /// position on every click.
     /// </summary>
-    DateTime? RecordingStartedAt = null
+    DateTime? RecordingStartedAt = null,
+    /// <summary>
+    /// WT-824: why a FAILED recording has no file — the host-facing sentence plus LiveKit's egress
+    /// status and error, URLs redacted. Null on every other artifact.
+    /// </summary>
+    string? FailureReason = null
 );
 
 public record CreateArtifactRequest(
@@ -432,7 +497,27 @@ public record CreateArtifactRequest(
 public record TranslationRoomHistoryItemDto(
     TranslationRoomListItemDto Room,
     List<TranslationRoomParticipantDto> Participants,
-    List<TranslationRoomArtifactDto> Artifacts
+    List<TranslationRoomArtifactDto> Artifacts,
+    /// <summary>
+    /// The CALLER's own invitation to this room, as stored (PENDING / ACCEPTED / DECLINED), or
+    /// null when no invitation carries the caller's email.
+    ///
+    /// Exists for the personal timeline's "Joined" vs "Missed". <c>RoomReadAccess.IsReadableBy</c>
+    /// puts a room on that timeline by host, by participant row, or by an invitation carrying the
+    /// caller's email — and the third route leaves no participant row at all. So the roster alone
+    /// could not tell "invited by email, never came" from "no roster evidence either way", and the
+    /// web had to call every such finished meeting Joined. This is the missing fact.
+    ///
+    /// Filled in ONLY by the personal timeline (<c>GetMyMeetingsAsync</c>). This record is shared
+    /// with the workspace archive (WT-333 FR-333-009 pins one response shape for both), and the
+    /// archive never sets it; <c>WhenWritingNull</c> is what keeps the archive's wire contract
+    /// byte-for-byte what it was. The cost: on the timeline "no invitation" is an ABSENT key rather
+    /// than an explicit null, and a reader must treat the two alike.
+    ///
+    /// Added LAST, with a default, so existing positional constructions keep compiling.
+    /// </summary>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ViewerInvitationStatus = null
 );
 
 public record TranslationRoomHistoryResponse(

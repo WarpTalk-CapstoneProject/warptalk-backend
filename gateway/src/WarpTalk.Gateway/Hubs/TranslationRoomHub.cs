@@ -208,6 +208,43 @@ public class TranslationRoomHub : Hub
         var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
         var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
 
+        // WT-699 / TC1806: being logged in is not being in this meeting. This method used to add
+        // ANY authenticated connection to the room group — a stranger with the room id, a guest
+        // still waiting for approval, a participant the host had kicked — and every transcript
+        // line, translation, chat message and roster change reached them from then on.
+        var admission = await _hostAuthority.GetRoomAdmissionAsync(
+            translationRoomId, userId, Context.ConnectionAborted);
+
+        if (admission == RoomAdmission.Refused)
+        {
+            _logger.LogWarning(
+                "TranslationRoomHub: refused JoinTranslationRoom on room {RoomId} for user {UserId} — "
+                + "not an admitted participant or the host.",
+                translationRoomId, userId);
+            throw new HubException("You are not a participant of this meeting.");
+        }
+
+        if (admission == RoomAdmission.Lobby)
+        {
+            await JoinLobbyAsync(translationRoomId, userId, roomIdStr, roomUserKey);
+            return;
+        }
+
+        // Admitted. A connection that waited in the lobby re-invokes this after ParticipantAdmitted,
+        // on the same connection id; it leaves the lobby group as it enters the room group.
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, TranslationRoomLobbyGroupName(translationRoomId));
+
+        // WT-707: the join writes both languages straight into Redis for STT/translation/dub, so
+        // it must honour the workspace whitelist exactly like Set*Language. It runs after the
+        // admission check — a stranger is refused without costing a policy lookup — and before
+        // the kick, the group, presence, the broadcast and every Redis write, so a refusal
+        // leaves no trace of the joiner in the room.
+        await EnsureLanguageAllowedAsync(translationRoomId, speakLanguage);
+        if (normalizedListenLanguage != normalizedSpeakLanguage)
+        {
+            await EnsureLanguageAllowedAsync(translationRoomId, listenLanguage);
+        }
+
         // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
         if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
         {
@@ -324,6 +361,26 @@ public class TranslationRoomHub : Hub
         string.IsNullOrWhiteSpace(language) ? language : language.Split('-')[0].ToLowerInvariant();
 
     /// <summary>
+    /// WT-699 / TC1806: somebody knocking gets the LOBBY group only — the answer to their knock
+    /// (ParticipantAdmitted / ParticipantRejected) and the room ending, and nothing said inside the
+    /// meeting. They are not announced to the room and not registered with the AI pipeline.
+    ///
+    /// The connection is still recorded against the room so that closing the lobby tab publishes
+    /// participant-offline exactly as before — that is what clears the knock from the host's queue
+    /// (MarkParticipantDisconnectedAsync moves WAITING back to INVITED).
+    /// </summary>
+    private async Task JoinLobbyAsync(Guid translationRoomId, string userId, string roomIdStr, string roomUserKey)
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, TranslationRoomLobbyGroupName(translationRoomId));
+        _connectionToRoom[Context.ConnectionId] = roomIdStr;
+        _roomUserToConnection[roomUserKey] = Context.ConnectionId;
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} is waiting in the lobby of room {RoomId}",
+            userId, translationRoomId);
+    }
+
+    /// <summary>
     /// Leave a translationRoom room. Removes connection from the translationRoom group
     /// and broadcasts ParticipantLeft to remaining participants.
     /// </summary>
@@ -379,31 +436,8 @@ public class TranslationRoomHub : Hub
         // recorded, which was harmless while the only way to learn the roster was to watch every
         // event from the beginning. Now that a joiner is handed a snapshot, an unrecorded mute
         // would show a muted participant as live on the newcomer's screen — and only theirs.
-        var db = _redis.GetDatabase();
-        var roomIdStr = translationRoomId.ToString();
-        var stored = await db.HashGetAsync(ParticipantsKey(roomIdStr), userId);
-        if (stored.HasValue)
-        {
-            try
-            {
-                var known = JsonSerializer.Deserialize<ParticipantInfoDto>(stored.ToString(), RosterJsonOptions);
-                if (known != null)
-                {
-                    await db.HashSetAsync(
-                        ParticipantsKey(roomIdStr),
-                        userId,
-                        JsonSerializer.Serialize(known with { IsMuted = isMuted }, RosterJsonOptions));
-                }
-            }
-            catch (JsonException ex)
-            {
-                // The broadcast above already reached everyone in the room; failing the call over
-                // a snapshot detail would turn a working mute into an error toast.
-                _logger.LogWarning(ex,
-                    "TranslationRoomHub: could not record mute state for {UserId} in room {TranslationRoomId}",
-                    userId, translationRoomId);
-            }
-        }
+        await RecordInRosterAsync(
+            translationRoomId, userId, known => known with { IsMuted = isMuted }, "mute state");
     }
 
     /// <summary>
@@ -548,6 +582,16 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLanguageChanged", userId, normalizedListenLanguage);
 
+        // WT-862: the broadcast reaches whoever is connected NOW; the roster snapshot is what
+        // everyone connecting LATER is handed — a newcomer, and every existing participant whose
+        // hub rejoins (a network blip, Start/Stop Translation). Left at the join-time value, that
+        // snapshot replaced the live update on the next rejoin (the client lets the live payload
+        // win over the participants API), so the badge snapped back to the old language on other
+        // people's screens while the pipeline was already translating into the new one.
+        await RecordInRosterAsync(
+            translationRoomId, userId,
+            known => known with { ListenLanguage = normalizedListenLanguage }, "listen language");
+
         // WT-419. The Redis hash above is read by STT; the AUDIO MESH reads the participant row in
         // Postgres, and nothing here ever wrote it. Routes were therefore pinned to whatever
         // languages a pair held at join time — two people who joined matching had no route at all,
@@ -590,6 +634,11 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantSpeakLanguageChanged", userId, normalizedSpeakLanguage);
 
+        // WT-862 — see SetListenLanguage: the snapshot a rejoin is handed must carry this too.
+        await RecordInRosterAsync(
+            translationRoomId, userId,
+            known => known with { SpeakLanguage = normalizedSpeakLanguage }, "speak language");
+
         // WT-419 — see SetListenLanguage above. Same gap, same fix, and this is the side the
         // production report came in on: an en/en speaker whose vi/vi listener received nothing.
         await PublishLanguageChangeAsync(translationRoomId, userId, speakLanguage: normalizedSpeakLanguage);
@@ -597,6 +646,75 @@ public class TranslationRoomHub : Hub
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} changed speak language to {SpeakLanguage} in translationRoom {TranslationRoomId}",
             userId, normalizedSpeakLanguage, translationRoomId);
+    }
+
+    /// <summary>
+    /// Say what the far side of an EXTERNAL_BRIDGE room speaks: move the "External Meeting"
+    /// stand-in (<see cref="WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId"/>) to
+    /// <paramref name="language"/>, for both speaking and hearing.
+    ///
+    /// WHY THE HOST SETS SOMEBODY ELSE'S LANGUAGE
+    ///   The stand-in never connects to this hub — it is a LiveKit identity the host's desktop
+    ///   publishes the Meet call's audio under — so nobody else can ever call SetSpeakLanguage for
+    ///   it. Until this method existed its language was fixed at creation, and it was fixed WRONG
+    ///   (the host's own language, see TranslationRoomMapper.ResolveExternalMeetingLanguage): both
+    ///   seats on one language, no route in either direction, nothing translated or dubbed.
+    ///
+    /// THE SAME THREE WRITES AS SetSpeakLanguage / SetListenLanguage, NOT A PARALLEL PATH
+    ///   1. The Redis hashes, keyed by the stand-in's id: STT pins the far side's speech to it and
+    ///      counts it as a language of the room (speak_languages); the listen hash matches.
+    ///   2. The existing broadcasts, about the stand-in's id — the main meeting window already
+    ///      handles both, and reads the stand-in's speak language to pick which dub it sends into
+    ///      Meet. To the whole GROUP rather than OthersInGroup: the caller is not the participant
+    ///      that changed, and when the host's main window is the caller it needs the event too.
+    ///   3. participant_language_changed for the stand-in, carrying BOTH languages. That is the
+    ///      WT-419 edge: TranslationRoomService persists the row and rebuilds the mesh from the
+    ///      persisted value (ParticipantLanguageProcessor), so the routes follow the pick rather
+    ///      than a Redis-only change the mesh never reads.
+    ///
+    /// Refused unless the caller is the host of a live EXTERNAL_BRIDGE room
+    /// (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>), and the language must
+    /// pass the workspace policy like any other pick. Both are checked before anything is written.
+    /// </summary>
+    public async Task SetExternalMeetingLanguage(Guid translationRoomId, string language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+            throw new HubException("language is required.");
+
+        var userId = GetUserId();
+        if (!await _hostAuthority.CanSetExternalMeetingLanguageAsync(translationRoomId, userId, Context.ConnectionAborted))
+        {
+            _logger.LogWarning(
+                "TranslationRoomHub: refused SetExternalMeetingLanguage on room {RoomId} for user {UserId} — "
+                + "not the host of a live external-bridge room.",
+                translationRoomId, userId);
+            throw new HubException("Only the host of an external meeting can change what the other side speaks.");
+        }
+
+        await EnsureLanguageAllowedAsync(translationRoomId, language);
+
+        var normalized = NormalizeLanguageCode(language.Trim());
+        // "auto" is STT's free-run hint, not a language a route can target: the mesh would ignore
+        // it (ParticipantLanguageProcessor) while STT stopped pinning the far side.
+        if (string.Equals(normalized, "auto", StringComparison.OrdinalIgnoreCase))
+            throw new HubException("Choose the language the other side speaks.");
+
+        var standInId = WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId.ToString();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync($"translationRoom:{translationRoomId}:speak_languages", standInId, normalized);
+        await db.HashSetAsync($"translationRoom:{translationRoomId}:languages", standInId, normalized);
+
+        await Clients.Group(groupName).SendAsync("ParticipantSpeakLanguageChanged", standInId, normalized);
+        await Clients.Group(groupName).SendAsync("ParticipantLanguageChanged", standInId, normalized);
+
+        await PublishLanguageChangeAsync(
+            translationRoomId, standInId, speakLanguage: normalized, listenLanguage: normalized);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: host {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
+            userId, normalized, translationRoomId);
     }
 
     /// <summary>
@@ -827,6 +945,47 @@ public class TranslationRoomHub : Hub
 
     // ── Helpers ────────────────────────────────────────────
 
+    /// <summary>
+    /// Rewrite one participant's entry in the stored roster snapshot (WT-354) so the roster a
+    /// joiner or a rejoining connection is handed agrees with what has been broadcast since.
+    ///
+    /// Every live change to a participant that the snapshot carries must go through here —
+    /// mute (WT-354) and both languages (WT-862). A change that is broadcast but not recorded is
+    /// correct on the screens that were connected at the time and wrong everywhere else, and the
+    /// next rejoin overwrites the correct ones too.
+    ///
+    /// No entry means the caller is not (yet) in the roster, and a failure here is logged, not
+    /// thrown: the broadcast has already reached the room, and turning a working change into an
+    /// error toast over a snapshot detail would be worse than the stale snapshot.
+    /// </summary>
+    private async Task RecordInRosterAsync(
+        Guid translationRoomId,
+        string userId,
+        Func<ParticipantInfoDto, ParticipantInfoDto> change,
+        string what)
+    {
+        var db = _redis.GetDatabase();
+        var roomIdStr = translationRoomId.ToString();
+        var stored = await db.HashGetAsync(ParticipantsKey(roomIdStr), userId);
+        if (!stored.HasValue) return;
+
+        try
+        {
+            var known = JsonSerializer.Deserialize<ParticipantInfoDto>(stored.ToString(), RosterJsonOptions);
+            if (known == null) return;
+            await db.HashSetAsync(
+                ParticipantsKey(roomIdStr),
+                userId,
+                JsonSerializer.Serialize(change(known), RosterJsonOptions));
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex,
+                "TranslationRoomHub: could not record {What} for {UserId} in room {TranslationRoomId}",
+                what, userId, translationRoomId);
+        }
+    }
+
     private string GetUserId() =>
         Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
         ?? Context.User?.FindFirst("sub")?.Value
@@ -838,4 +997,10 @@ public class TranslationRoomHub : Hub
         ?? "Unknown";
 
     private static string TranslationRoomGroupName(Guid translationRoomId) => $"translationRoom:{translationRoomId}";
+
+    /// <summary>
+    /// WT-699 / TC1806: the group a knocking connection sits in. Kept in step with
+    /// TranslationRoomRedisSubscriberService, which relays lobby-relevant commands to it.
+    /// </summary>
+    internal static string TranslationRoomLobbyGroupName(Guid translationRoomId) => $"translationRoom:{translationRoomId}:lobby";
 }

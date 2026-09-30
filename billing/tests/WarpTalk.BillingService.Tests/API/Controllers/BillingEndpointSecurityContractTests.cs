@@ -16,6 +16,77 @@ public class BillingEndpointSecurityContractTests
         AssertAdminOnly(typeof(CreditsController), nameof(CreditsController.GetGlobalCreditHistory));
     }
 
+    /// <summary>
+    /// WT-700: the balance is readable by every internal member, so it carries the internal-member
+    /// gate and not the Owner/Admin role gate — having both would make the role gate win and hide
+    /// the balance from members again.
+    /// </summary>
+    [Fact]
+    public void WorkspaceCreditBalance_RequiresInternalWorkspaceMember()
+    {
+        var action = GetAction(typeof(CreditsController), nameof(CreditsController.GetWorkspaceCredits));
+
+        Assert.NotNull(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+        Assert.Null(action.GetCustomAttribute<RequireWorkspaceRoleAttribute>());
+        Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
+
+        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.True(
+            authorize is null || string.IsNullOrEmpty(authorize.Roles),
+            "The balance must not authorize off JWT role claims.");
+    }
+
+    /// <summary>
+    /// WT-413 / WT-700: history and per-member usage show what was spent and by whom, so they stay
+    /// Owner/Admin even though the balance beside them opened up to internal members.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(CreditsController.GetCreditHistory))]
+    [InlineData(nameof(CreditsController.GetUsageByMember))]
+    public void WorkspaceCreditSpendActions_StayOwnerAdminOnly(string actionName)
+    {
+        AssertWorkspaceBillingRole(typeof(CreditsController), actionName);
+
+        var action = GetAction(typeof(CreditsController), actionName);
+        Assert.Null(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+
+        var roleFilter = action.GetCustomAttribute<RequireWorkspaceRoleAttribute>();
+        var roles = Assert.IsType<string[]>(Assert.Single(roleFilter!.Arguments!));
+        Assert.Equal(
+            new[]
+            {
+                WarpTalk.Shared.WorkspaceRoleConstants.Owner,
+                WarpTalk.Shared.WorkspaceRoleConstants.Admin,
+                WarpTalk.Shared.WorkspaceRoleConstants.SystemAdmin
+            },
+            roles);
+    }
+
+    /// <summary>
+    /// WT-699 / TC3405: the overage switch decides whether a workspace keeps spending past zero
+    /// credits, and both actions were reachable by any logged-in account. They take the same
+    /// membership-resolved Owner/Admin gate as the rest of the workspace's money actions.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(SubscriptionsController.GetOverage))]
+    [InlineData(nameof(SubscriptionsController.SetOverage))]
+    public void WorkspaceOverageActions_RequireWorkspaceBillingRole_NotJustLogin(string actionName)
+    {
+        AssertWorkspaceBillingRole(typeof(SubscriptionsController), actionName);
+
+        var action = GetAction(typeof(SubscriptionsController), actionName);
+        Assert.Null(action.GetCustomAttribute<RequireInternalWorkspaceMemberAttribute>());
+
+        var roleFilter = action.GetCustomAttribute<RequireWorkspaceRoleAttribute>();
+        var roles = Assert.IsType<string[]>(Assert.Single(roleFilter!.Arguments!));
+        Assert.DoesNotContain("Member", roles);
+
+        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.True(
+            authorize is null || string.IsNullOrEmpty(authorize.Roles),
+            $"{actionName} must not authorize off JWT role claims.");
+    }
+
     [Theory]
     [InlineData(nameof(UsagesController.GetGlobalMetrics))]
     [InlineData(nameof(UsagesController.GetGlobalUsageChart))]
@@ -123,12 +194,9 @@ public class BillingEndpointSecurityContractTests
     [Fact]
     public void NoBillingAction_AuthorizesWorkspaceRolesOffJwtClaims()
     {
-        // InvoicesController.CreateInvoiceCheckout is the one remaining instance of the WT-260
-        // shape. It is not reachable from the web client and cannot use RequireWorkspaceRole as
-        // written: its only route argument is an invoiceId, which the filter would happily treat
-        // as a workspace id. Fixing it needs an invoice -> workspace lookup in the application
-        // layer, so it is named here rather than silently passing. Do not add entries.
-        var knownOffenders = new[] { "InvoicesController.CreateInvoiceCheckout" };
+        // Empty since InvoicesController.CreateInvoiceCheckout moved its Owner check into the
+        // service, after the invoice -> workspace lookup. Do not add entries.
+        var knownOffenders = Array.Empty<string>();
 
         var controllers = typeof(PaymentsController).Assembly
             .GetTypes()
@@ -195,15 +263,21 @@ public class BillingEndpointSecurityContractTests
             nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
     }
 
+    /// <summary>
+    /// G10: "admin only" now means one staff permission, and never a role string — a role claim
+    /// would admit every staff member (or the WORKSPACE role "Admin") whatever their permissions.
+    /// </summary>
     private static void AssertAdminOnly(Type controller, string actionName)
     {
         var action = GetAction(controller, actionName);
-        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+        var authorize = action.GetCustomAttributes<AuthorizeAttribute>().ToList();
 
-        Assert.NotNull(authorize);
-        var roles = authorize!.Roles!.Split(',', StringSplitOptions.TrimEntries);
-        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.Admin, roles);
-        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.SystemAdmin, roles);
+        var permission = Assert.Single(authorize.OfType<WarpTalk.Shared.Authorization.RequirePermissionAttribute>());
+        Assert.True(
+            permission.Permission.StartsWith("billing.", StringComparison.Ordinal)
+                || permission.Permission.StartsWith("settings.", StringComparison.Ordinal),
+            $"{actionName} requires {permission.Permission}");
+        Assert.All(authorize, a => Assert.True(string.IsNullOrEmpty(a.Roles)));
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 

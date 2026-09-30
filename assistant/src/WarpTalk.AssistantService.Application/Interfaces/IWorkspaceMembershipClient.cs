@@ -35,6 +35,14 @@ public record WorkspaceMembership(bool IsMember, string RoleName, bool IsActive)
         && IsActive
         && (string.Equals(RoleName, WorkspaceRoleConstants.Owner, StringComparison.OrdinalIgnoreCase)
             || string.Equals(RoleName, WorkspaceRoleConstants.Admin, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The workspace's Owner - the one role that decides which plugins it has. An Admin is not.
+    /// </summary>
+    public bool IsOwner =>
+        IsMember
+        && IsActive
+        && string.Equals(RoleName, WorkspaceRoleConstants.Owner, StringComparison.OrdinalIgnoreCase);
 }
 
 public interface IWorkspaceMembershipClient

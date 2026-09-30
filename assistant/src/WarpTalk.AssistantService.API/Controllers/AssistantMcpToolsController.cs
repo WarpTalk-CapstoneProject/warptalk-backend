@@ -28,9 +28,14 @@ public class AssistantMcpToolsController : ControllerBase
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<McpToolDescriptorDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(string), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> ListTools([FromQuery] Guid? workspaceId, CancellationToken ct)
+    public async Task<IActionResult> ListTools(
+        [FromQuery] Guid? workspaceId,
+        // WT-687: plugins switched off for the conversation the caller is answering. Repeated
+        // (?excludePluginKeys=a&excludePluginKeys=b), and absent from every older caller.
+        [FromQuery] string[]? excludePluginKeys,
+        CancellationToken ct)
     {
-        var result = await _orchestrator.ListAvailableToolsAsync(CurrentUserId, workspaceId, ct);
+        var result = await _orchestrator.ListAvailableToolsAsync(CurrentUserId, workspaceId, excludePluginKeys, ct);
         return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
     }
 

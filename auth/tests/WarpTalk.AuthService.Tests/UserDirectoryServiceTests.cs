@@ -13,6 +13,41 @@ public class UserDirectoryServiceTests
         return (new UserDirectoryService(unitOfWork), unitOfWork);
     }
 
+    // ── WT-699 / TC4104: the BROADCAST audience ──────────────────────────────────────
+
+    [Fact]
+    public async Task ListActiveUserIdsAsync_HandsBackACursorWhileThePageIsFull()
+    {
+        var (service, unitOfWork) = CreateService();
+        var users = Substitute.For<IUserRepository>();
+        unitOfWork.UserRepository.Returns(users);
+        var page = new List<Guid> { Guid.NewGuid(), Guid.NewGuid() };
+        users.GetActiveUserIdsPageAsync(null, 2, Arg.Any<CancellationToken>()).Returns(page);
+
+        var result = await service.ListActiveUserIdsAsync(null, 2);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(page, result.Value.UserIds);
+        Assert.Equal(page[^1], result.Value.NextAfterId);
+    }
+
+    [Fact]
+    public async Task ListActiveUserIdsAsync_EndsOnAShortPage_AndClampsThePageSize()
+    {
+        var (service, unitOfWork) = CreateService();
+        var users = Substitute.For<IUserRepository>();
+        unitOfWork.UserRepository.Returns(users);
+        var after = Guid.NewGuid();
+        users.GetActiveUserIdsPageAsync(after, UserDirectoryService.MaxUserIdPageSize, Arg.Any<CancellationToken>())
+            .Returns(new List<Guid> { Guid.NewGuid() });
+
+        var result = await service.ListActiveUserIdsAsync(after, 50_000);
+
+        Assert.True(result.IsSuccess);
+        Assert.Single(result.Value.UserIds);
+        Assert.Null(result.Value.NextAfterId);
+    }
+
     [Fact]
     public async Task GetLanguageDefaultsAsync_ReturnsStoredLanguages()
     {

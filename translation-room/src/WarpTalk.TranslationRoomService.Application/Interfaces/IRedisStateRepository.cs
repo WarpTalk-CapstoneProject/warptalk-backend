@@ -24,6 +24,17 @@ public interface IRedisStateRepository
     /// The atomicity is the whole point of the method existing.
     /// </remarks>
     Task<bool> StringSetIfAbsentAsync(string key, string value, TimeSpan expiry);
+    /// <summary>
+    /// Delete <paramref name="key"/> only while it still holds <paramref name="expectedValue"/>,
+    /// and say whether it did — the release half of <see cref="StringSetIfAbsentAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// A plain delete after a read has the same gap a read-then-write has: between the read and
+    /// the delete another caller can release the claim and take a new one, and the delete then
+    /// removes THEIR claim. Two pollers that both saw a run complete did exactly that to each
+    /// other. The comparison and the delete are one server-side step here.
+    /// </remarks>
+    Task<bool> KeyDeleteIfEqualsAsync(string key, string expectedValue);
     Task<string?> StringGetAsync(string key);
     Task<long> PublishAsync(string channel, string message);
 

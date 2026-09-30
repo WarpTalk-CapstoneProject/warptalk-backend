@@ -38,6 +38,11 @@ namespace WarpTalk.AssistantService.API.Controllers;
 /// a migration to catch up.
 /// </para>
 /// <para>
+/// MARKETPLACE ROWS ONLY. A workspace's private plugin shares the <c>plugins</c> table but is not
+/// this surface's to manage: it is not listed, and every <c>{pluginKey}</c> endpoint answers 404
+/// for one exactly as for a key nobody holds. Its Owner edits and removes it from the workspace.
+/// </para>
+/// <para>
 /// SECRETS. No response from this controller carries an OAuth client secret, in any form. A secret
 /// enters through <c>PUT .../oauth</c>, is encrypted by <c>IPluginCredentialProtector</c> before it
 /// is stored, and is never read back - <c>hasClientSecret</c> is the whole of what can be learned
@@ -46,7 +51,6 @@ namespace WarpTalk.AssistantService.API.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/v1/assistant/plugins/catalog")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AssistantPluginCatalogController : ControllerBase
 {
     private readonly IPluginCatalogAdminService _catalogAdminService;
@@ -67,6 +71,7 @@ public class AssistantPluginCatalogController : ControllerBase
     /// </remarks>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<PluginCatalogAdminListItemDto>), StatusCodes.Status200OK)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> List(CancellationToken ct)
     {
         var result = await _catalogAdminService.ListAsync(ct);
@@ -77,6 +82,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [HttpGet("{pluginKey}")]
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> Get(string pluginKey, CancellationToken ct)
     {
         var result = await _catalogAdminService.GetAsync(pluginKey, ct);
@@ -94,6 +100,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> Update(
         string pluginKey,
         [FromBody] UpdatePluginCatalogRequest request,
@@ -116,6 +123,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> SetOAuthClient(
         string pluginKey,
         [FromBody] SetPluginOAuthClientRequest request,
@@ -137,6 +145,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> ReplaceTools(
         string pluginKey,
         [FromBody] ReplacePluginToolsRequest request,
@@ -159,6 +168,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogAdminDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> Rediscover(string pluginKey, CancellationToken ct)
     {
         var result = await _catalogAdminService.RediscoverAsync(pluginKey, CurrentUserId, ct);
@@ -185,6 +195,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [ProducesResponseType(typeof(PluginCatalogDeleteResultDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> Delete(
         string pluginKey,
         [FromQuery] bool hard,
@@ -214,6 +225,7 @@ public class AssistantPluginCatalogController : ControllerBase
     [HttpGet("{pluginKey}/audits")]
     [ProducesResponseType(typeof(PluginToolAuditPageDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [RequirePermission(AdminPermissions.PluginsRead)]
     public async Task<IActionResult> ListAudits(
         string pluginKey,
         [FromQuery] Guid? userId,
@@ -243,6 +255,8 @@ public class AssistantPluginCatalogController : ControllerBase
         {
             PluginConstants.ErrorCodes.UnknownPlugin => NotFound(body),
             PluginConstants.ErrorCodes.PluginInUse => Conflict(body),
+            // The platform audit log could not take the record, so the change was not made.
+            WarpTalk.Shared.ErrorCodes.ServiceUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable, body),
             _ => BadRequest(body),
         };
     }

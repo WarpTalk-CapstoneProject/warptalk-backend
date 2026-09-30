@@ -182,14 +182,14 @@ public class MeetingDocumentsIntegrationTests : BaseIntegrationTest
         var host = Guid.NewGuid();
         var participant = Guid.NewGuid();
 
-        var roomId = await CreateRoomAsync(host);
+        var roomId = await CreateRoomAsync(host, autoShareRecord: false);
         await JoinAsync(roomId, participant);
         await SeedArtifactAsync(roomId, "SUMMARY_EXPORT", "json", SummaryJson);
 
         (await GetDocumentsAsync(host)).Documents.Should().OnlyContain(d => d.CanOpen && d.IsHost);
 
-        // A room is HOST_ONLY unless somebody says otherwise, so this is the ordinary case, not an
-        // edge one. The card must show a lock rather than look available and fail on click.
+        // A host who keeps the record private (WT-826 made that a choice rather than the default).
+        // The card must show a lock rather than look available and fail on click.
         var asParticipant = (await GetDocumentsAsync(participant)).Documents;
         asParticipant.Should().ContainSingle("a participant may still see THAT the document exists");
         asParticipant[0].CanOpen.Should().BeFalse("but the download endpoint would refuse them");
@@ -257,10 +257,14 @@ public class MeetingDocumentsIntegrationTests : BaseIntegrationTest
         return (await response.Content.ReadFromJsonAsync<MeetingDocumentsResponse>())!;
     }
 
-    private async Task<Guid> CreateRoomAsync(Guid hostId)
+    private async Task<Guid> CreateRoomAsync(Guid hostId, bool? autoShareRecord = null)
     {
+        var request = NewRoomRequest() with
+        {
+            Settings = autoShareRecord is null ? null : new RoomSettingsRequest(AutoShareRecord: autoShareRecord),
+        };
         var response = await Client.SendAsync(
-            BuildRequest(HttpMethod.Post, "/api/v1/translation-rooms", hostId, body: NewRoomRequest()));
+            BuildRequest(HttpMethod.Post, "/api/v1/translation-rooms", hostId, body: request));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
         var room = await response.Content.ReadFromJsonAsync<TranslationRoomDto>();

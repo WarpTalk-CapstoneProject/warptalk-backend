@@ -208,11 +208,21 @@ public interface ITranslationRoomService
     Task<Result> StopTranslationAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-612 — SCHEDULED to OPEN because the booked time arrived. Driven by
+    /// ScheduledRoomLifecycleWorker and by nothing else: there is no caller id because no human is
+    /// involved, and no endpoint because a host who wants to open early already has one
+    /// (<see cref="OpenWaitingRoomAsync"/>) and a host who wants to begin has Start.
+    /// Idempotent — a room already OPEN succeeds without notifying anyone a second time.
+    /// </summary>
+    Task<Result> OpenScheduledRoomAsync(Guid translationRoomId, CancellationToken ct = default);
+
     Task<Result<TranslationRoomHistoryResponse>> GetTranslationRoomHistoryAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
     /// <summary>
     /// WT-333 — the caller's own meetings in one workspace, past and upcoming, newest first. Same
-    /// response shape as the history read; the implementation documents the three ways it differs.
+    /// response shape as the history read; the implementation documents the three ways it differs,
+    /// and the one field only this read fills in (<c>ViewerInvitationStatus</c>).
     /// </summary>
     Task<Result<TranslationRoomHistoryResponse>> GetMyMeetingsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 

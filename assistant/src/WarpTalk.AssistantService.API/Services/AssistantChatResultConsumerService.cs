@@ -8,6 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using WarpTalk.Shared.Coordination;
+using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Interfaces;
@@ -29,19 +31,36 @@ public class AssistantChatResultConsumerService : BackgroundService
     private const long ReclaimIdleMilliseconds = 30_000;
     private const long MaxAttempts = 5;
 
+    /// <summary>
+    /// Lease name: ONE replica reads this stream at a time.
+    ///
+    /// Multi-replica: the assistant service runs several replicas behind one consumer group.
+    /// A consumer group would hand consecutive entries of the same reply to different replicas,
+    /// and their broadcasts — each through the SignalR backplane — would reach clients in whatever
+    /// order the replicas happened to finish: chunks of one answer arriving shuffled, and a
+    /// replica still marking a request "processing" after another had completed it. One reader
+    /// keeps the single-replica ordering. Failover loses nothing: entries the old leader read but
+    /// did not acknowledge stay pending and are reclaimed by XAUTOCLAIM after
+    /// ReclaimIdleMilliseconds.
+    /// </summary>
+    public const string LeaseResource = "assistant:chat-results";
+
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILeaderElection _leadership;
     private readonly ILogger<AssistantChatResultConsumerService> _logger;
     private readonly string _consumerName = $"assistant-service-{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public AssistantChatResultConsumerService(
         IConnectionMultiplexer redis,
         IServiceScopeFactory scopeFactory,
-        ILogger<AssistantChatResultConsumerService> logger)
+        ILogger<AssistantChatResultConsumerService> logger,
+        ILeaderElection leadership)
     {
         _redis = redis;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _leadership = leadership;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -54,6 +73,12 @@ public class AssistantChatResultConsumerService : BackgroundService
         {
             try
             {
+                if (!_leadership.IsLeader)
+                {
+                    await Task.Delay(500, stoppingToken);
+                    continue;
+                }
+
                 var reclaimed = await db.StreamAutoClaimAsync(
                     StreamName,
                     GroupName,
@@ -79,6 +104,10 @@ public class AssistantChatResultConsumerService : BackgroundService
 
                 foreach (var entry in entries)
                 {
+                    // Leadership can move mid-batch; the rest stays pending for the new leader.
+                    if (!_leadership.IsLeader)
+                        break;
+
                     try
                     {
                         await ProcessEntryAsync(entry, stoppingToken);
@@ -103,9 +132,10 @@ public class AssistantChatResultConsumerService : BackgroundService
                     }
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 // shutting down
+                break;
             }
             catch (Exception ex)
             {
@@ -205,6 +235,9 @@ public class AssistantChatResultConsumerService : BackgroundService
             return;
 
         var type = fields.GetValueOrDefault("type", "");
+        // Which store the answer belongs in. The worker echoes the request's scope; "" is a worker
+        // that predates the field, and FinalizeMessageAsync then looks in both.
+        var resultScope = fields.GetValueOrDefault("scope", "");
         var content = fields.GetValueOrDefault("content", "");
 
         using var scope = _scopeFactory.CreateScope();
@@ -255,11 +288,11 @@ public class AssistantChatResultConsumerService : BackgroundService
                 break;
 
             case "completed":
-                await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), fields.GetValueOrDefault("sources_json", ""), failed: false, ct);
+                await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), fields.GetValueOrDefault("sources_json", ""), failed: false, resultScope, ct);
                 break;
 
             case "failed":
-                await FinalizeMessageAsync(scope, conversationId, requestId, content, "", "", failed: true, ct);
+                await FinalizeMessageAsync(scope, conversationId, requestId, content, "", "", failed: true, resultScope, ct);
                 break;
 
             default:
@@ -269,12 +302,25 @@ public class AssistantChatResultConsumerService : BackgroundService
     }
 
     private async Task FinalizeMessageAsync(
-        IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, string sourcesJson, bool failed, CancellationToken ct)
+        IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, string sourcesJson, bool failed, string resultScope, CancellationToken ct)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var notifier = scope.ServiceProvider.GetRequiredService<IAssistantNotifier>();
 
-        var message = await unitOfWork.AssistantMessageRepository.GetByIdAsync(messageId, ct);
+        var isPlatform = string.Equals(resultScope, AssistantConversationScopes.Platform, StringComparison.Ordinal);
+        var message = isPlatform ? null : await unitOfWork.AssistantMessageRepository.GetByIdAsync(messageId, ct);
+        if (message == null && (isPlatform || string.IsNullOrEmpty(resultScope)))
+        {
+            // Platform-scope answer: it lives in platform_messages and nowhere else.
+            var platformMessage = await unitOfWork.PlatformMessageRepository.GetByIdAsync(messageId, ct);
+            if (platformMessage != null)
+            {
+                await FinalizePlatformMessageAsync(
+                    unitOfWork, notifier, conversationId, platformMessage, content, toolCallsJson, sourcesJson, failed, ct);
+                return;
+            }
+        }
+
         if (message == null)
         {
             _logger.LogWarning("AssistantChatResultConsumerService: message {MessageId} not found for '{Type}' result.", messageId, failed ? "failed" : "completed");
@@ -299,6 +345,41 @@ public class AssistantChatResultConsumerService : BackgroundService
         {
             await notifier.BroadcastMessageFailedAsync(
                 conversationId, messageId, string.IsNullOrEmpty(content) ? "The assistant could not generate a reply." : content, ct);
+        }
+        else
+        {
+            await notifier.BroadcastMessageCompletedAsync(conversationId, message.ToDto(), ct);
+        }
+    }
+
+    private static async Task FinalizePlatformMessageAsync(
+        IUnitOfWork unitOfWork,
+        IAssistantNotifier notifier,
+        Guid conversationId,
+        Domain.Entities.PlatformMessage message,
+        string content,
+        string toolCallsJson,
+        string sourcesJson,
+        bool failed,
+        CancellationToken ct)
+    {
+        message.Status = failed ? "failed" : "completed";
+        message.CompletedAt = DateTime.UtcNow;
+        if (!failed)
+        {
+            message.Content = content;
+            message.SourcesJson = string.IsNullOrWhiteSpace(sourcesJson) ? null : sourcesJson;
+        }
+        if (!string.IsNullOrEmpty(toolCallsJson))
+            message.ToolResultsJson = toolCallsJson;
+
+        unitOfWork.PlatformMessageRepository.Update(message);
+        await unitOfWork.SaveChangesAsync(ct);
+
+        if (failed)
+        {
+            await notifier.BroadcastMessageFailedAsync(
+                conversationId, message.Id, string.IsNullOrEmpty(content) ? "The assistant could not generate a reply." : content, ct);
         }
         else
         {

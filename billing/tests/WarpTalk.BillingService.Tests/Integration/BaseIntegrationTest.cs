@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using Xunit;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.Tests.Integration;
 
@@ -37,6 +38,10 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
             {
                 builder.ConfigureTestServices(services =>
                 {
+                    // G10: admin endpoints ask the auth service who is staff; here the token's
+                    // "admin" hint stands in for its answer (Super Admin), as before G10.
+                    services.UseTokenHintAsStaffAccessForTests();
+
                     var dbDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<BillingDbContext>));
                     if (dbDescriptor != null) services.Remove(dbDescriptor);
 

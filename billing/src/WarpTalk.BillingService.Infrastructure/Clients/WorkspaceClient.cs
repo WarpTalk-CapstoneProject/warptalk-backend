@@ -24,7 +24,7 @@ public class WorkspaceClient : IWorkspaceClient
         _logger = logger;
     }
 
-    public async Task<Result<(bool IsMember, string RoleName, bool IsActive)>> GetWorkspaceMemberDetailsAsync(
+    public async Task<Result<(bool IsMember, string RoleName, bool IsActive, string MembershipType)>> GetWorkspaceMemberDetailsAsync(
         Guid workspaceId, Guid userId, CancellationToken cancellationToken = default)
     {
         try
@@ -36,12 +36,12 @@ public class WorkspaceClient : IWorkspaceClient
             };
 
             var response = await _grpcClient.GetWorkspaceMemberDetailsAsync(request, cancellationToken: cancellationToken);
-            return Result.Success((response.IsMember, response.RoleName, response.IsActive));
+            return Result.Success((response.IsMember, response.RoleName, response.IsActive, response.MembershipType));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToRetrieveWorkspaceMemberDetails, workspaceId, userId);
-            return Result.Failure<(bool, string, bool)>(ex.Message, ErrorCodes.InternalServerError);
+            return Result.Failure<(bool, string, bool, string)>(ex.Message, ErrorCodes.InternalServerError);
         }
     }
 

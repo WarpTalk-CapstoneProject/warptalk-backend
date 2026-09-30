@@ -42,6 +42,7 @@ public class WorkspaceDocumentServiceTests
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IOptions<ObjectStorageOptions> _storageOptions;
+    private readonly IKnowledgeChunkWriter _chunkWriter = Substitute.For<IKnowledgeChunkWriter>();
     private readonly WorkspaceDocumentService _documentService;
 
     public WorkspaceDocumentServiceTests()
@@ -95,6 +96,7 @@ public class WorkspaceDocumentServiceTests
             _translationRoomClient,
             _storage,
             Substitute.For<IDocumentTextExtractor>(),
+            _chunkWriter,
             Substitute.For<ILogger<WorkspaceDocumentService>>()
         );
     }
@@ -475,6 +477,70 @@ public class WorkspaceDocumentServiceTests
         _workspaceDocumentRepository.Received(1).Update(document);
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.Received(1).PublishDocumentDeletedAsync(documentId, workspaceId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteDocumentAsync_ShouldPurgeTheIndexedChunks_AfterTheDeleteIsCommitted()
+    {
+        // WT-871. The DocumentDeleted event has no consumer, so the chunks — and the facts
+        // extracted onto them — have to be removed from the store directly, or WarpBot keeps
+        // answering from a document that no longer exists.
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Admin");
+        var saved = false;
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            saved = true;
+            return Task.FromResult(1);
+        });
+        var purgedAfterSave = false;
+        _chunkWriter.DeleteDocumentChunksAsync(workspaceId, document.Id, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                purgedAfterSave = saved;
+                return Task.CompletedTask;
+            });
+
+        var result = await _documentService.DeleteDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(document.DeletedAt);
+        await _chunkWriter.Received(1).DeleteDocumentChunksAsync(workspaceId, document.Id, Arg.Any<CancellationToken>());
+        Assert.True(purgedAfterSave);
+        await _workspaceDocumentAuditRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceDocumentAudit>(a =>
+                a.Action == WorkspaceDocumentConstants.AuditActions.DeleteDocument
+                && a.Metadata != null && a.Metadata.Contains("\"vectorsPurged\":true")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteDocumentAsync_StillDeletes_AndRecordsTheFailedPurge_WhenTheVectorStoreIsDown()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Owner");
+        _chunkWriter.DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new HttpRequestExceptionStub()));
+
+        var result = await _documentService.DeleteDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(document.DeletedAt);
+        await _workspaceDocumentAuditRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceDocumentAudit>(a =>
+                a.Action == WorkspaceDocumentConstants.AuditActions.DeleteDocument
+                && a.Metadata != null && a.Metadata.Contains("\"vectorsPurged\":false")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteDocumentAsync_ShouldNotPurge_WhenTheCallerMayNotDelete()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Member");
+
+        var result = await _documentService.DeleteDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(document.DeletedAt);
+        await _chunkWriter.DidNotReceive().DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -1153,6 +1219,90 @@ public class WorkspaceDocumentServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    // ---- GET extracted-text: WarpBot reads only what it may use (WT-872) ----------------------
+    //
+    // The uploader holds `view` on their own document from the moment it is uploaded, so the
+    // assistant's get_document tool quoted back documents still Pending Approval, or already
+    // Rejected, that the index had never been allowed to see. The read now asks the embedding
+    // pipeline's own question — IsIndexEligible — after the ACL.
+
+    private WorkspaceDocument ArrangeExtractedTextRead(Guid workspaceId, Guid userId, string status)
+    {
+        var document = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "omega");
+        document.Status = status;
+        document.UploadedBy = userId;
+        _workspaceDocumentRepository.GetByIdAsync(document.Id, Arg.Any<CancellationToken>()).Returns(document);
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        _storage.GetExtractedTextAsync(document, Arg.Any<CancellationToken>())
+            .Returns("{\"FullText\": \"Mat ma Omega 99\"}");
+        return document;
+    }
+
+    [Theory]
+    [InlineData(nameof(WorkspaceDocumentStatus.pending_approval))]
+    [InlineData(nameof(WorkspaceDocumentStatus.rejected))]
+    [InlineData(nameof(WorkspaceDocumentStatus.@private))]
+    public async Task GetExtractedTextAsync_ShouldRefuseWithNotAiEligible_WhenTheDocumentIsNotApprovedForAi(string status)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, status);
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode, result.ErrorCode);
+        Assert.Null(result.Value);
+        // Refused before the text is ever loaded, not loaded and then withheld.
+        await _storage.DidNotReceiveWithAnyArgs().GetExtractedTextAsync(default!, default);
+        await _storage.DidNotReceiveWithAnyArgs().GetDecryptedStreamAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldRefuse_WhenAiUseIsSwitchedOff()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.@public.ToString());
+        document.IsAiAllowed = false;
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldReturnTheText_WhenTheDocumentIsApprovedAndAiEligible()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Mat ma Omega 99", result.Value!.FullText);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldKeepTheAclAnswer_WhenTheCallerCannotSeeTheDocument()
+    {
+        // The eligibility answer is only for someone who may see the document; everyone else
+        // gets the same refusal as before, so the new code leaks nothing about its status.
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.rejected.ToString());
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault));
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
     }
 
     // ---- Role policies name Member, and only Member ------------------------------------------
@@ -1926,4 +2076,199 @@ public class WorkspaceDocumentServiceTests
         // document's history is not worth a 500.
         Assert.Null(WorkspaceDocumentMapper.ReadAuditReason(metadata));
     }
+
+    #region Revoking "public" — unpublish / publish
+
+    // "Public" is the approval state: every internal member reads the document and the
+    // assistant may index it. Before these routes existed nothing could take it back except
+    // archive or delete. The tests below pin what the revoke has to do SERVER-SIDE — status,
+    // index, audit — because a UI that merely hid the document would have fixed nothing.
+
+    private (Guid WorkspaceId, Guid UserId, WorkspaceDocument Document) ArrangeVisibilityChange(
+        WorkspaceDocumentStatus status,
+        string roleName,
+        bool callerIsUploader = false)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Status = status.ToString(),
+            IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString(),
+            LastIndexedAt = DateTime.UtcNow,
+            AiEligible = true,
+            IsAiAllowed = true,
+            StorageKey = "key",
+            FileName = "plan.pdf",
+            FileExtension = ".pdf",
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
+            UploadedBy = callerIsUploader ? userId : Guid.NewGuid(),
+        };
+        document.OwnerId = document.UploadedBy;
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId });
+        StubRoleName(roleId, roleName);
+        _workspaceDocumentRepository.GetByIdAsync(document.Id, Arg.Any<CancellationToken>()).Returns(document);
+
+        return (workspaceId, userId, document);
+    }
+
+    [Fact]
+    public async Task UnpublishDocumentAsync_MakesAPublicDocumentPrivate_AndDeletesItsVectors()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Admin");
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.@private.ToString(), document.Status);
+        Assert.Equal(WorkspaceDocumentStatus.@private.ToString(), result.Value!.Status);
+        Assert.False(document.AiEligible);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
+        Assert.Null(document.LastIndexedAt);
+
+        _workspaceDocumentRepository.Received(1).Update(document);
+        // Synchronously, through the store — the invalidation event has no consumer.
+        await _chunkWriter.Received(1).DeleteDocumentChunksAsync(workspaceId, document.Id, Arg.Any<CancellationToken>());
+        await _eventPublisher.Received(1).PublishDocumentLifecycleAsync(
+            document.Id, workspaceId, WorkspaceDocumentStatus.@private.ToString(), Arg.Any<string>(),
+            WorkspaceDocumentConstants.LifecycleEvents.Unpublished, Arg.Any<DateTime>(), userId, Arg.Any<CancellationToken>());
+        await _workspaceDocumentAuditRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceDocumentAudit>(a => a.Action == WorkspaceDocumentConstants.AuditActions.UnpublishDocument),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UnpublishDocumentAsync_LetsTheUploaderWithdrawTheirOwnDocument()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(
+            WorkspaceDocumentStatus.@public, "Member", callerIsUploader: true);
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.@private.ToString(), document.Status);
+    }
+
+    [Fact]
+    public async Task UnpublishDocumentAsync_RefusesAMemberWhoNeitherUploadedNorAdministers()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Member");
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _chunkWriter.DidNotReceive().DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UnpublishDocumentAsync_RefusesADocumentThatWasNeverPublished()
+    {
+        // pending_approval is already hidden from members; "making it private" would silently
+        // drop it out of the review queue instead.
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.pending_approval, "Admin");
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), document.Status);
+    }
+
+    [Fact]
+    public async Task UnpublishDocumentAsync_IsIdempotent()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@private, "Admin");
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UnpublishDocumentAsync_StillRevokes_WhenTheVectorStoreIsDown()
+    {
+        // The row is the authority on who may read. A Qdrant outage must not leave the document
+        // public — it is logged and audited instead, and the allowlist already excludes it.
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Owner");
+        _chunkWriter.DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new HttpRequestExceptionStub()));
+
+        var result = await _documentService.UnpublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.@private.ToString(), document.Status);
+    }
+
+    [Fact]
+    public async Task PublishDocumentAsync_AnAdminPublishesDirectly_AndReindexes()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@private, "Admin");
+
+        var result = await _documentService.PublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), document.IngestionStatus);
+        await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
+            document.Id, workspaceId, "key", "plan.pdf", ".pdf", Arg.Any<Guid>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishDocumentAsync_TheUploaderGoesBackThroughApproval()
+    {
+        // Taking your document back needs nobody's sign-off; putting it in front of the whole
+        // workspace is exactly what approval gates.
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(
+            WorkspaceDocumentStatus.@private, "Member", callerIsUploader: true);
+
+        var result = await _documentService.PublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), document.Status);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), document.IngestionStatus);
+        await _eventPublisher.DidNotReceive().PublishDocumentUploadedAsync(
+            Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<Guid>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishDocumentAsync_RefusesAMemberWhoNeitherUploadedNorAdministers()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@private, "Member");
+
+        var result = await _documentService.PublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceDocumentStatus.@private.ToString(), document.Status);
+    }
+
+    [Fact]
+    public async Task PublishDocumentAsync_RefusesARejectedDocument()
+    {
+        // Rejected goes back through a revision, not through this door around the reviewer.
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.rejected, "Admin");
+
+        var result = await _documentService.PublishDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    private sealed class HttpRequestExceptionStub : Exception
+    {
+        public HttpRequestExceptionStub() : base("qdrant unavailable") { }
+    }
+
+    #endregion
 }

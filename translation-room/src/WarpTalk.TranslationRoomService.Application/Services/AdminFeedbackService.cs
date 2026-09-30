@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.TranslationRoomService.Application.DTOs.Admin;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -23,6 +24,10 @@ public class AdminFeedbackService : IAdminFeedbackService
 
     /// <summary>Default window when the caller states none. Stated in the response either way.</summary>
     private const int DefaultRangeDays = 30;
+
+    /// <summary>The overall rating's scale, as the feedback write path validates it.</summary>
+    private const int MinOverallRating = 1;
+    private const int MaxOverallRating = 5;
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _timeProvider;
@@ -49,8 +54,25 @@ public class AdminFeedbackService : IAdminFeedbackService
 
         try
         {
-            var (totals, dimensions) = await _unitOfWork.TranslationRoomFeedbackRepository
-                .GetAdminStatsAsync(filter, ct);
+            var repository = _unitOfWork.TranslationRoomFeedbackRepository;
+            var (totals, dimensions) = await repository.GetAdminStatsAsync(filter, ct);
+
+            // WT-694: the trend is against the window of the same length immediately before, read
+            // with the same query — never extrapolated.
+            var previousFilter = filter with
+            {
+                From = filter.From - (filter.To - filter.From),
+                To = filter.From,
+            };
+            var (previousTotals, previousDimensions) = await repository.GetAdminStatsAsync(previousFilter, ct);
+
+            // Null, not zero. A window in which nothing ended has no response rate — reporting 0%
+            // would say every meeting went unrated when none was ever eligible.
+            var responseRate = AdminFeedbackInsightsCalculator.ResponseRate(totals);
+            var insights = AdminFeedbackInsightsCalculator.Dimensions(
+                totals, dimensions, previousTotals, previousDimensions);
+            var (confidence, confidenceNote) = AdminFeedbackInsightsCalculator.Survey(totals.ResponseCount, responseRate);
+            var (lowest, lowestNote) = AdminFeedbackInsightsCalculator.Lowest(dimensions, insights);
 
             return Result.Success(new AdminFeedbackSummaryDto(
                 filter.From,
@@ -58,18 +80,36 @@ public class AdminFeedbackService : IAdminFeedbackService
                 totals.ResponseCount,
                 totals.RoomsWithFeedback,
                 totals.EndedRooms,
-                // Null, not zero. A window in which nothing ended has no response rate — reporting
-                // 0% would say every meeting went unrated when none was ever eligible.
-                totals.EndedRooms == 0
-                    ? null
-                    : (double)totals.RoomsWithFeedback / totals.EndedRooms,
+                responseRate,
                 dimensions
-                    .Select(d => new AdminFeedbackDimensionDto(
-                        d.Dimension,
-                        d.ResponseCount,
-                        d.AverageRating,
-                        d.Distribution))
-                    .ToList()));
+                    .Select(d =>
+                    {
+                        var insight = insights.First(i => i.Dimension == d.Dimension);
+                        return new AdminFeedbackDimensionDto(
+                            d.Dimension,
+                            d.ResponseCount,
+                            d.AverageRating,
+                            d.Distribution,
+                            insight.ResponseShare,
+                            insight.Confidence,
+                            insight.ConfidenceNote,
+                            insight.PreviousResponseCount,
+                            insight.PreviousAverageRating,
+                            insight.PreviousConfidence,
+                            insight.AverageDelta);
+                    })
+                    .ToList(),
+                previousFilter.From,
+                previousFilter.To,
+                previousTotals.ResponseCount,
+                AdminFeedbackInsightsCalculator.ResponseRate(previousTotals),
+                confidence,
+                confidenceNote,
+                lowest,
+                lowestNote,
+                dimensions.Where(d => d.ResponseCount == 0).Select(d => d.Dimension).ToList(),
+                AdminFeedbackInsightsCalculator.MinResponses,
+                AdminFeedbackInsightsCalculator.MinRate));
         }
         catch (Exception ex)
         {
@@ -90,12 +130,39 @@ public class AdminFeedbackService : IAdminFeedbackService
                 error!, ErrorCodes.ValidationError);
         }
 
+        var sort = string.IsNullOrWhiteSpace(query.Sort) ? "recent" : query.Sort.Trim().ToLowerInvariant();
+        if (sort is not ("recent" or "lowest"))
+        {
+            return Result.Failure<AdminPagedResult<AdminFeedbackCommentDto>>(
+                "Unknown sort. Expected one of: recent, lowest.", ErrorCodes.ValidationError);
+        }
+
+        if (query.MinRating is < MinOverallRating or > MaxOverallRating
+            || query.MaxRating is < MinOverallRating or > MaxOverallRating)
+        {
+            return Result.Failure<AdminPagedResult<AdminFeedbackCommentDto>>(
+                $"minRating and maxRating must be between {MinOverallRating} and {MaxOverallRating}.",
+                ErrorCodes.ValidationError);
+        }
+
+        if (query.MinRating is { } min && query.MaxRating is { } max && min > max)
+        {
+            return Result.Failure<AdminPagedResult<AdminFeedbackCommentDto>>(
+                "minRating must be less than or equal to maxRating.", ErrorCodes.ValidationError);
+        }
+
+        var criteria = new AdminFeedbackCommentCriteria(
+            string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+            query.MinRating,
+            query.MaxRating);
+
         var (page, pageSize) = query.Normalize();
 
         try
         {
             var (rows, total) = await _unitOfWork.TranslationRoomFeedbackRepository
-                .GetAdminCommentsAsync(filter, page, pageSize, ct);
+                .GetAdminCommentsAsync(
+                    filter, page, pageSize, ct, lowestRatedFirst: sort == "lowest", criteria: criteria);
 
             return Result.Success(new AdminPagedResult<AdminFeedbackCommentDto>(
                 rows

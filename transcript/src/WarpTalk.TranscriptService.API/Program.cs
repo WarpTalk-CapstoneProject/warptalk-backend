@@ -11,6 +11,7 @@ using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Persistence;
 using WarpTalk.TranscriptService.Infrastructure.Persistence.Contexts;
 using WarpTalk.TranscriptService.Infrastructure.Repositories;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -40,8 +41,10 @@ builder.WebHost.ConfigureKestrel(options =>
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranscriptDb"));
 var dataSource = dataSourceBuilder.Build();
 
-builder.Services.AddDbContext<TranscriptDbContext>(options =>
-    options.UseNpgsql(dataSource));
+builder.Services.AddDbContext<TranscriptDbContext>((provider, options) =>
+    options.UseNpgsql(dataSource)
+        // [AdminAudited] global-glossary routes record each save before it commits.
+        .AddAdminAuditInterceptor(provider));
 builder.Services.AddWarpTalkServiceHealthChecks<TranscriptDbContext>(
     "transcript-database");
 
@@ -56,10 +59,21 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptReadAccess,
     WarpTalk.TranscriptService.Application.Authorization.TranscriptReadAccess>();
 
+// WT-704: which languages new transcript content (backfill, MT correction) may be generated in —
+// read from TranslationRoomService's L2 ∩ L1 answer rather than recomputed here.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptRoomLanguagePolicy,
+    WarpTalk.TranscriptService.Application.Authorization.TranscriptRoomLanguagePolicy>();
+
 // WT-605: who may Pause/Resume Transcript — host-only, separate from the read predicate above
 // so widening read access can never silently widen who can stop recording.
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptPauseAccess,
     WarpTalk.TranscriptService.Application.Authorization.TranscriptPauseAccess>();
+
+// Glossaries carry a workspaceId supplied by the caller (route or body), and IGlossaryService
+// itself trusts it — GlossariesController is the only boundary that can ask whether the caller
+// actually belongs to that workspace before honoring the request.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Interfaces.IWorkspaceMembershipClient,
+    WarpTalk.TranscriptService.Infrastructure.Clients.WorkspaceMembershipGrpcClient>();
 
 // --- Application Services ---
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
@@ -82,13 +96,16 @@ var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
+// Platform settings (/admin/settings): flags.global_glossary is read at every meeting start.
+WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(builder.Services);
+
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
 
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
@@ -120,6 +137,19 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+// The platform audit log is hosted by the workspace service, on the same address. The global
+// glossary is platform-wide reference data every workspace's translation reads, so an edit to it
+// is an admin action like a plan change: recorded before it commits, refused if it cannot be.
+builder.Services.AddGrpcClient<AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.TranscriptService);
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>

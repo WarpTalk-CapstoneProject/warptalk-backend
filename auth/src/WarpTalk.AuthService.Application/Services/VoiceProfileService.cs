@@ -360,15 +360,8 @@ public class VoiceProfileService : IVoiceProfileService
                     "That voice profile could not be found.", ErrorCodes.NotFound);
             }
 
-            var samples = await _unitOfWork.VoiceSampleRepository.FindAsync(
-                v => v.VoiceProfileId == profileId && v.DeletedAt == null, "", ct);
-
-            // The newest recording, and only one that still HAS its audio: contains_raw_audio goes
-            // false when a sample has been reduced to its embedding, and the row outlives the file.
-            var sample = samples
-                .Where(v => v.ContainsRawAudio && !string.IsNullOrWhiteSpace(v.FileUrl))
-                .OrderByDescending(v => v.CreatedAt)
-                .FirstOrDefault();
+            // The newest recording, and only one that still HAS its audio.
+            var sample = await FindStoredRecordingAsync(profileId, ct);
 
             if (sample is null)
             {
@@ -653,6 +646,8 @@ public class VoiceProfileService : IVoiceProfileService
                 profile.Provider = outcome.Provider ?? LibraryVoiceProvider;
                 profile.Status = "active";
                 profile.IsActive = true;
+                profile.CloneErrorCode = null;
+                profile.CloneError = null;
             }
             else
             {
@@ -660,11 +655,21 @@ public class VoiceProfileService : IVoiceProfileService
                 // recording could not be turned into a voice instead of listing it as active
                 // and leaving somebody to discover in a meeting that it was never usable —
                 // which is the whole of WT-396.
-                profile.Status = "clone_failed";
+                //
+                // And the REASON is stored with it. The answer key is deleted as it is read, so
+                // before this the only record of why was the log line below — and on 2026-09-18,
+                // when every upload failed because the provider account had dropped to a plan
+                // without cloning, the next deploy deleted those lines and left a "Couldn't
+                // clone" badge that nobody could explain.
+                profile.Status = CloneFailedStatus;
                 profile.IsActive = false;
+                profile.CloneErrorCode = Truncate(
+                    string.IsNullOrWhiteSpace(outcome.ErrorCode) ? UnknownCloneErrorCode : outcome.ErrorCode.Trim(),
+                    CloneErrorCodeMaxLength);
+                profile.CloneError = Truncate(outcome.Error?.Trim(), CloneErrorMaxLength);
                 _logger.LogWarning(
-                    "Voice clone failed for profile {ProfileId}: {Error}",
-                    profile.Id, outcome.Error ?? "no reason given");
+                    "Voice clone failed for profile {ProfileId}: [{ErrorCode}] {Error}",
+                    profile.Id, profile.CloneErrorCode, outcome.Error ?? "no reason given");
             }
 
             profile.UpdatedAt = DateTime.UtcNow;
@@ -678,6 +683,123 @@ public class VoiceProfileService : IVoiceProfileService
         }
 
         return collected;
+    }
+
+    private const string CloneFailedStatus = "clone_failed";
+    private const string UnknownCloneErrorCode = "UNKNOWN";
+    private const int CloneErrorCodeMaxLength = 64;
+    private const int CloneErrorMaxLength = 500;
+
+    private static string? Truncate(string? value, int max) =>
+        string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];
+
+    /// <summary>
+    /// Send a recording whose clone failed back to be cloned again, from the copy in storage.
+    ///
+    /// WHY THIS EXISTS
+    ///     The only action a "Couldn't clone" row offered was Re-record. That is the right answer
+    ///     for a recording the provider refused, and the wrong one for every other failure: on
+    ///     2026-09-18 the recordings were fine and the provider account's plan was not, so a new
+    ///     take would have failed identically. Once the account is fixed, the stored recording is
+    ///     exactly what should be cloned — asking the person to perform it again is asking them
+    ///     to pay for somebody else's outage.
+    ///
+    /// Only from "clone_failed": a pending clone is already queued, and a finished one has a voice.
+    /// That also bounds the paid provider calls to one per failure a person has actually seen.
+    /// Consent is re-checked, because a retry is a new use of biometric audio and the upload
+    /// consent may have been withdrawn since the recording was made.
+    /// </summary>
+    public async Task<Result<VoiceProfileDto>> RetryCloneAsync(
+        Guid userId, Guid profileId, CancellationToken ct = default)
+    {
+        try
+        {
+            var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            var profile = profiles.FirstOrDefault(p => p.Id == profileId && p.DeletedAt == null);
+            if (profile is null)
+            {
+                return Result.Failure<VoiceProfileDto>(
+                    "That voice profile could not be found.", ErrorCodes.NotFound);
+            }
+
+            if (!string.Equals(profile.Status, CloneFailedStatus, StringComparison.Ordinal))
+            {
+                return Result.Failure<VoiceProfileDto>(
+                    "Only a voice that could not be cloned can be retried.", ErrorCodes.InvalidState);
+            }
+
+            var consent = await _unitOfWork.VoiceConsentRepository.GetCurrentAsync(
+                userId, VoiceProfileConsentContract.UploadConsentType, ct);
+            if (consent is null
+                || !string.Equals(consent.ConsentStatus, VoiceProfileConsentContract.GrantedStatus, StringComparison.OrdinalIgnoreCase)
+                || consent.RevokedAt != null)
+            {
+                return Result.Failure<VoiceProfileDto>(
+                    "Voice consent is required before this recording can be cloned.", ErrorCodes.Forbidden);
+            }
+
+            var sample = await FindStoredRecordingAsync(profileId, ct);
+            if (sample is null)
+            {
+                return Result.Failure<VoiceProfileDto>(
+                    "There is no recording stored for this voice. Record it again.", ErrorCodes.InvalidState);
+            }
+
+            byte[] audio;
+            await using (var stream = await _storage.ReadAsync(sample.FileUrl!, ct))
+            using (var buffer = new MemoryStream())
+            {
+                await stream.CopyToAsync(buffer, ct);
+                audio = buffer.ToArray();
+            }
+
+            var queued = await _cloneQueue.RequestAsync(
+                profile.Id, userId, profile.Language ?? "en", audio, ct);
+            if (!queued)
+            {
+                return Result.Failure<VoiceProfileDto>(
+                    "The recording could not be sent for cloning right now. Try again in a moment.",
+                    ErrorCodes.ServiceUnavailable);
+            }
+
+            // Back to the state a fresh upload is in: no provider voice and not failed, which the
+            // page renders as "Cloning" and polls until the answer is collected.
+            profile.Status = "active";
+            profile.IsActive = true;
+            profile.CloneErrorCode = null;
+            profile.CloneError = null;
+            profile.UpdatedAt = DateTime.UtcNow;
+            profile.UpdatedBy = userId;
+            _unitOfWork.VoiceProfileRepository.Update(profile);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            _logger.LogInformation("Voice profile {ProfileId} re-queued for cloning.", profile.Id);
+            return Result.Success(VoiceProfileMapper.ToDto(profile, consent));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrying the clone of voice profile {ProfileId}.", profileId);
+            return Result.Failure<VoiceProfileDto>(
+                "The recording could not be sent for cloning.",
+                InfrastructureFailure.ClassifyErrorCode(ex));
+        }
+    }
+
+    /// <summary>
+    /// The newest sample of this profile that still has its audio, or null. Shared by playback
+    /// and by the clone retry so the two can never disagree about which recording is "the" one.
+    /// </summary>
+    private async Task<VoiceSample?> FindStoredRecordingAsync(Guid profileId, CancellationToken ct)
+    {
+        var samples = await _unitOfWork.VoiceSampleRepository.FindAsync(
+            v => v.VoiceProfileId == profileId && v.DeletedAt == null, "", ct);
+
+        // contains_raw_audio goes false when a sample has been reduced to its embedding, and the
+        // row outlives the file.
+        return samples
+            .Where(v => v.ContainsRawAudio && !string.IsNullOrWhiteSpace(v.FileUrl))
+            .OrderByDescending(v => v.CreatedAt)
+            .FirstOrDefault();
     }
 
     public async Task<Result<IReadOnlyList<VoiceProfileDto>>> GetProfilesAsync(Guid userId, CancellationToken ct = default)

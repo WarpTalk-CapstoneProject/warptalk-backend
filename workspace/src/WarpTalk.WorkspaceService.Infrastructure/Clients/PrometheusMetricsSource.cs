@@ -13,8 +13,9 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Clients;
 /// <summary>
 /// Reads the platform metrics store over the Prometheus HTTP API.
 ///
-/// GET only, and only the two read endpoints. Prometheus also exposes admin routes that delete
-/// series and shut the process down; they are not reachable through this type, and the deployed
+/// GET only, and only the query endpoint. Alerts come from Alertmanager instead
+/// (<see cref="AlertmanagerAlertSource"/>), which is the only place silences exist. Prometheus
+/// also exposes admin routes that delete series and shut the process down; they are not reachable through this type, and the deployed
 /// server does not run with <c>--web.enable-admin-api</c>.
 /// </summary>
 public class PrometheusMetricsSource : IPlatformMetricsSource
@@ -72,48 +73,6 @@ public class PrometheusMetricsSource : IPlatformMetricsSource
         return samples;
     }
 
-    public async Task<IReadOnlyList<PlatformAlert>> ActiveAlertsAsync(CancellationToken ct)
-    {
-        var document = await GetAsync("api/v1/alerts", ct);
-        var root = document.RootElement;
-
-        RequireSuccess(root, "alerts");
-
-        if (!root.TryGetProperty("data", out var data)
-            || !data.TryGetProperty("alerts", out var alerts)
-            || alerts.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
-
-        var results = new List<PlatformAlert>(alerts.GetArrayLength());
-        foreach (var alert in alerts.EnumerateArray())
-        {
-            var labels = alert.TryGetProperty("labels", out var l) ? l : default;
-            var annotations = alert.TryGetProperty("annotations", out var a) ? a : default;
-
-            DateTime? activeSince = null;
-            if (alert.TryGetProperty("activeAt", out var activeAt)
-                && DateTime.TryParse(
-                    activeAt.GetString(),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                    out var parsed))
-            {
-                activeSince = parsed;
-            }
-
-            results.Add(new PlatformAlert(
-                Name: StringProperty(labels, "alertname") ?? "(unnamed)",
-                Severity: StringProperty(labels, "severity") ?? "unknown",
-                State: alert.TryGetProperty("state", out var state) ? state.GetString() ?? "unknown" : "unknown",
-                Summary: StringProperty(annotations, "summary"),
-                ActiveSince: activeSince));
-        }
-
-        return results;
-    }
-
     private async Task<JsonDocument> GetAsync(string path, CancellationToken ct)
     {
         HttpResponseMessage response;
@@ -158,11 +117,6 @@ public class PrometheusMetricsSource : IPlatformMetricsSource
                 $"The metrics store rejected '{what}': {error ?? "no reason given"}");
         }
     }
-
-    private static string? StringProperty(JsonElement element, string name) =>
-        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
-            ? value.GetString()
-            : null;
 
     /// <summary>
     /// InvariantCulture explicitly. The value arrives as "0.006575"; parsed under a locale whose

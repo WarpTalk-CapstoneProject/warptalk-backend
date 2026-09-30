@@ -8,6 +8,9 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -20,21 +23,42 @@ namespace WarpTalk.BillingService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/subscriptions")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminSubscriptionsController : ControllerBase
 {
     private readonly IAdminSubscriptionService _adminSubscriptionService;
     private readonly ISubscriptionService _subscriptionService;
+    private readonly IStripeSubscriptionLifecycleService _lifecycle;
 
     public AdminSubscriptionsController(
         IAdminSubscriptionService adminSubscriptionService,
-        ISubscriptionService subscriptionService)
+        ISubscriptionService subscriptionService,
+        IStripeSubscriptionLifecycleService lifecycle)
     {
         _adminSubscriptionService = adminSubscriptionService;
         _subscriptionService = subscriptionService;
+        _lifecycle = lifecycle;
+    }
+
+    /// <summary>
+    /// #466: link card plans bought before #466 to the Stripe subscription their checkout created,
+    /// so Stripe's invoice.paid — not the expiry sweep — owns their next renewal. Run it once after
+    /// the deploy, dry-run first. Reads Stripe only (checkout session → subscription); it never
+    /// creates, changes or cancels anything there.
+    /// </summary>
+    [HttpPost("stripe-links/backfill")]
+    [AdminAudited(AdminAuditBillingActions.StripeLinksBackfilled, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
+    public async Task<IActionResult> BackfillStripeLinks(
+        [FromQuery] bool dryRun = true,
+        [FromQuery] int limit = 200,
+        CancellationToken ct = default)
+    {
+        var result = await _lifecycle.BackfillStripeLinksAsync(dryRun, limit, ct);
+        return ToActionResult(result);
     }
 
     [HttpGet]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetDirectory(
         [FromQuery] AdminSubscriptionDirectoryQuery query,
         CancellationToken ct)
@@ -49,6 +73,7 @@ public class AdminSubscriptionsController : ControllerBase
     /// page's total.
     /// </summary>
     [HttpGet("summary")]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<IActionResult> GetSummary(CancellationToken ct)
     {
         var result = await _adminSubscriptionService.GetSummaryAsync(ct);
@@ -62,6 +87,8 @@ public class AdminSubscriptionsController : ControllerBase
     /// exactly the step an administrative move must not require.
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/change-plan")]
+    [AdminAudited(AdminAuditWorkspaceActions.PlanChanged, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<IActionResult> ChangePlan(
         Guid workspaceId,
         [FromBody] AdminChangeSubscriptionPlanRequest request,

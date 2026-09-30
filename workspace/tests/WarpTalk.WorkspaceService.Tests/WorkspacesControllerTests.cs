@@ -12,6 +12,7 @@ using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Settings;
 using WarpTalk.Shared;
 using Xunit;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.WorkspaceService.Tests;
 
@@ -120,7 +121,8 @@ public class WorkspacesControllerTests
     [Fact]
     public async Task GetWorkspaceById_ShouldUseAdminLookup_WhenUserHasPlatformAdminRole()
     {
-        // Arrange
+        // Arrange — G10: the "admin" hint plus workspaces.read from the auth service.
+        var controller = new WorkspacesController(_workspaceService, StaffResolver(DelegateStaffAccessSource.Staff(AdminPermissions.WorkspacesRead)));
         var workspaceId = Guid.NewGuid();
         var expectedDto = new WorkspaceDto(workspaceId, "FitPick", "fitpick", null, "admin", DateTime.UtcNow, "en");
 
@@ -129,7 +131,7 @@ public class WorkspacesControllerTests
             new Claim(ClaimTypes.NameIdentifier, _userId.ToString()),
             new Claim(ClaimTypes.Role, "admin")
         };
-        _controller.ControllerContext = new ControllerContext
+        controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth")) }
         };
@@ -138,13 +140,51 @@ public class WorkspacesControllerTests
             .Returns(Result.Success(expectedDto));
 
         // Act
-        var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
+        var result = await controller.GetWorkspaceById(workspaceId, CancellationToken.None);
 
         // Assert
         var okResult = Assert.IsType<OkObjectResult>(result);
         var value = Assert.IsType<WorkspaceDto>(okResult.Value);
         Assert.Equal(expectedDto, value);
         await _workspaceService.DidNotReceive().GetWorkspaceByIdAsync(workspaceId, _userId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetWorkspaceById_UsesTheMemberLookup_WhenTheAdminHintHasNoWorkspacesRead()
+    {
+        // A staff member without workspaces.read — or one removed since their token was issued —
+        // sees only the workspaces they belong to.
+        var controller = new WorkspacesController(_workspaceService, StaffResolver(StaffAccess.None));
+        var workspaceId = Guid.NewGuid();
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim(ClaimTypes.NameIdentifier, _userId.ToString()), new Claim(ClaimTypes.Role, "admin")], "TestAuth")),
+            },
+        };
+        _workspaceService.GetWorkspaceByIdAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure<WorkspaceDto>("Workspace not found.", ErrorCodes.NotFound));
+
+        var result = await controller.GetWorkspaceById(workspaceId, CancellationToken.None);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+        await _workspaceService.DidNotReceive().GetWorkspaceByIdForAdminAsync(workspaceId, Arg.Any<CancellationToken>());
+    }
+
+    private static IStaffAccessResolver StaffResolver(StaffAccess access) =>
+        new CachedStaffAccessResolver(
+            new DelegateStaffAccessSource(_ => access),
+            new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+            new StaticOptions(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CachedStaffAccessResolver>.Instance);
+
+    private sealed class StaticOptions : Microsoft.Extensions.Options.IOptionsMonitor<StaffAuthorizationOptions>
+    {
+        public StaffAuthorizationOptions CurrentValue { get; } = new();
+        public StaffAuthorizationOptions Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<StaffAuthorizationOptions, string?> listener) => null;
     }
 
     [Fact]

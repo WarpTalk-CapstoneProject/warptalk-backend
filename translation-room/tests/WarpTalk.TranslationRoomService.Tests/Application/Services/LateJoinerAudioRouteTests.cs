@@ -40,6 +40,9 @@ public class LateJoinerAudioRouteTests
 
     public LateJoinerAudioRouteTests()
     {
+        _rooms.Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _uow.Setup(u => u.TranslationRoomRepository).Returns(_rooms.Object);
         _uow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_participants.Object);
         _uow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_routes.Object);

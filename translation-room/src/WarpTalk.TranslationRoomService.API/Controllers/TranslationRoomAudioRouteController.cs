@@ -79,14 +79,27 @@ public class TranslationRoomAudioRouteController : ControllerBase
         [FromBody] ToggleVoiceCloneDto dto,
         CancellationToken ct)
     {
-        var result = await _audioRouteService.ToggleVoiceCloneAsync(roomId, routeId, dto, ct);
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _audioRouteService.ToggleVoiceCloneAsync(roomId, routeId, userId.Value, dto, ct);
 
         if (result.IsSuccess)
         {
             return Ok(result.Value);
         }
 
-        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+        // WT-699 / TC1905: a refusal is a 403 and a missing route a 404 — collapsing both into
+        // 400 would tell a caller who is not the speaker that their request was malformed.
+        return result.ErrorCode switch
+        {
+            ErrorCodes.Forbidden => StatusCode(403, new { Error = result.Error, Code = result.ErrorCode }),
+            ErrorCodes.NotFound => NotFound(new { Error = result.Error, Code = result.ErrorCode }),
+            _ => BadRequest(new { Error = result.Error, Code = result.ErrorCode }),
+        };
     }
 
     /// <summary>

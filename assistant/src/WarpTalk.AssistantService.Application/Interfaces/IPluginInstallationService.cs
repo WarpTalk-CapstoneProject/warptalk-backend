@@ -29,6 +29,16 @@ public interface IPluginInstallationService
     Task<Result> DisableAsync(string pluginKey, Guid userId, CancellationToken ct = default);
 
     /// <summary>
+    /// Records what WarpBot may do with each named tool of an installed plugin, for this user only.
+    /// WT-687. Answers with the catalog row so the caller can render the resolved choices.
+    /// </summary>
+    Task<Result<PluginCatalogItemDto>> UpdateToolPolicyAsync(
+        string pluginKey,
+        Guid userId,
+        IReadOnlyDictionary<string, string> tools,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Adds an MCP-backed app to the catalog, so it becomes installable by every user without a
     /// deploy or a restart.
     /// </summary>

@@ -432,6 +432,37 @@ public class ParticipantManagementServiceTests
         _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    /// <summary>
+    /// WT-699 / TC2103: a second kick used to answer success again (and re-publish the Kick
+    /// command). It is now a distinct Conflict, and nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task KickParticipantAsync_ShouldReturnConflict_WhenParticipantIsAlreadyKicked()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var targetParticipantId = Guid.NewGuid();
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoom { Id = roomId, HostId = hostId });
+        _participantRepositoryMock.Setup(repo => repo.GetByIdAsync(targetParticipantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoomParticipant
+            {
+                Id = targetParticipantId,
+                TranslationRoomId = roomId,
+                UserId = Guid.NewGuid(),
+                Status = TranslationRoomParticipantStatuses.Kicked,
+                Role = TranslationRoomParticipantRole.PARTICIPANT.ToString()
+            });
+
+        var result = await _sut.KickParticipantAsync(roomId, targetParticipantId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Conflict);
+        result.Error.Should().Be(TranslationRoomConstants.ErrorParticipantAlreadyKicked);
+        _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public async Task LeaveRoomAsync_ShouldSetStatusToLeft_WhenParticipantLeaves()
     {
@@ -696,6 +727,27 @@ public class ParticipantManagementServiceTests
         participant.Status.Should().Be(TranslationRoomParticipantStatuses.Invited);
         // LeftAt records a departure from the room. They were never in it.
         participant.LeftAt.Should().BeNull();
+    }
+
+    /// <summary>
+    /// WT-699 / TC2106. Leave used to overwrite KICKED with LEFT, and LEFT is read by the rejoin
+    /// path as proof of admission — a kicked guest could leave and walk straight back in.
+    /// </summary>
+    [Theory]
+    [InlineData(TranslationRoomParticipantStatuses.Kicked)]
+    [InlineData(TranslationRoomParticipantStatuses.Rejected)]
+    public async Task LeavingDoesNotLaunderATerminalStatus(string terminalStatus)
+    {
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var participant = ArrangeParticipant(roomId, userId, terminalStatus);
+
+        var result = await _sut.LeaveRoomAsync(roomId, userId);
+
+        result.IsSuccess.Should().BeTrue();
+        participant.Status.Should().Be(terminalStatus);
+        participant.LeftAt.Should().BeNull();
+        _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

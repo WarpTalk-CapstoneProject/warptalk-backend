@@ -71,7 +71,11 @@ public sealed class EntitlementChangePublisher : IEntitlementChangePublisher
                 .Select(entitlement => new ResolvedEntitlementPayload(
                     entitlement.Key,
                     entitlement.Value,
-                    entitlement.Source))
+                    entitlement.Source)
+                {
+                    Ceiling = entitlement.Ceiling,
+                    CeilingSource = entitlement.CeilingSource
+                })
                 .ToList());
 
         var envelope = DomainEventEnvelope.Create(

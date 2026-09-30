@@ -69,6 +69,29 @@ public partial class Plugin
     /// </summary>
     public Guid? UpdatedBy { get; set; }
 
+    /// <summary>
+    /// Null for a marketplace plugin, curated by a system admin and addable by any workspace Owner.
+    /// Set for a private MCP plugin created by that workspace's Owner, which only that workspace
+    /// sees and can use. No FK - workspaces live in the workspace service's own database.
+    /// </summary>
+    public Guid? OwnerWorkspaceId { get; set; }
+
+    /// <summary>Who created the row. Null for a migration or a seed.</summary>
+    public Guid? CreatedBy { get; set; }
+
+    /// <summary>
+    /// Whether workspaces may have this marketplace plugin by default:
+    /// <c>PluginWorkspaceAccessConstants.Default.Available</c> or <c>.OptIn</c> (hidden from every
+    /// workspace a platform admin has not enabled it for). Meaningless on a private plugin.
+    /// </summary>
+    public string WorkspaceDefault { get; set; } = "available";
+
+    /// <summary>
+    /// The plan rule, as a JSON array of plan slugs; null means every plan. A workspace whose plan
+    /// is not in it cannot have the plugin unless an override enables it.
+    /// </summary>
+    public string? AllowedPlanSlugsJson { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

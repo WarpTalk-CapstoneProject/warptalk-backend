@@ -69,6 +69,9 @@ public class TranslationRoomStartAuthorizationTests
 
     public TranslationRoomStartAuthorizationTests()
     {
+        _roomRepository.Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _unitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_roomRepository.Object);
         _unitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_participantRepository.Object);
         // WT-339: Start now ASKS whether a translation session is open before it lets the audio

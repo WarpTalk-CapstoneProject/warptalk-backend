@@ -1,4 +1,5 @@
 using WarpTalk.Shared;
+using WarpTalk.Shared.Email;
 using WarpTalk.NotificationService.Application.DTOs;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.Application.Mappers;
@@ -12,64 +13,66 @@ public class NotificationService : INotificationService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IEmailSender? _emailSender;
+    private readonly IEmailTemplateComposer _emailTemplates;
+    private readonly IEmailDeliveryRecorder? _deliveries;
     private readonly ILogger<NotificationService> _logger;
+
+    /// <summary>Where an email copy's button points when the notification's own link is unsafe.</summary>
+    public const string FallbackActionUrl = "https://warptalk.app";
 
     public NotificationService(
         IUnitOfWork unitOfWork,
         ILogger<NotificationService> logger,
-        IEmailSender? emailSender = null)
+        IEmailSender? emailSender = null,
+        IEmailTemplateComposer? emailTemplates = null,
+        IEmailDeliveryRecorder? deliveries = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _emailSender = emailSender;
+        // The email copy is the admin-editable "notification.email-copy" template, read from this
+        // service's own store.
+        _emailTemplates = emailTemplates ?? new EmailTemplateComposer(new EmailCms.EmailPublishedResolver(unitOfWork));
+        _deliveries = deliveries;
     }
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.NotificationPreferenceRepository;
-
-        // We do a simple fallback if multiple matching items exist
-        // Real implementation usually handles SingleOrDefault correctly
-        var prefs = await repo.FindAsync(p => p.UserId == userId);
-        var pref = prefs.FirstOrDefault();
-
-        if (pref == null)
-        {
-            pref = new NotificationPreference
-            {
-                Id = Guid.NewGuid(),
-                UserId = userId,
-                NotificationType = "SYSTEM",
-                EmailEnabled = true,
-                PushEnabled = true,
-                InAppEnabled = true,
-                UpdatedAt = DateTime.UtcNow
-            };
-            await repo.AddAsync(pref);
-            await _unitOfWork.SaveChangesAsync();
-        }
-
-        return Result.Success(MapToDto(pref));
+        var (pref, _) = await GetOrCreatePreferenceAsync(userId, ct);
+        return Result.Success(NotificationPreferenceMapper.ToDto(pref));
     }
 
     public async Task<Result<NotificationPreferenceDto>> UpdatePreferencesAsync(Guid userId, UpdateNotificationPreferenceRequest request, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.NotificationPreferenceRepository;
-        var prefs = await repo.FindAsync(p => p.UserId == userId);
-        var pref = prefs.FirstOrDefault();
+        // A user with no row used to get 404 here, so the settings page could never save for
+        // anyone whose row had not been lazily created by an earlier GET. PUT now creates the
+        // default row and applies the patch to it in the same SaveChanges.
+        var (pref, created) = await GetOrCreatePreferenceAsync(userId, ct, saveIfCreated: false);
 
-        if (pref == null)
-            return Result.Failure<NotificationPreferenceDto>("Preferences not found", ErrorCodes.NotFound);
-
-        if (request.EmailEnabled.HasValue) pref.EmailEnabled = request.EmailEnabled.Value;
-        if (request.PushEnabled.HasValue) pref.PushEnabled = request.PushEnabled.Value;
-        if (request.InAppEnabled.HasValue) pref.InAppEnabled = request.InAppEnabled.Value;
-
-        pref.UpdatedAt = DateTime.UtcNow;
-        repo.Update(pref);
+        NotificationPreferenceMapper.ApplyUpdate(pref, request);
+        // Update() on a freshly added entity is unnecessary; only mark an existing row modified.
+        if (!created) _unitOfWork.NotificationPreferenceRepository.Update(pref);
         await _unitOfWork.SaveChangesAsync();
 
-        return Result.Success(MapToDto(pref));
+        return Result.Success(NotificationPreferenceMapper.ToDto(pref));
+    }
+
+    /// <summary>
+    /// Loads the user's preference row, creating it with the entity defaults (every channel on,
+    /// type SYSTEM — the only type ever written, which keeps the (user_id, notification_type)
+    /// unique key satisfied) when the user has none yet.
+    /// </summary>
+    private async Task<(NotificationPreference Pref, bool Created)> GetOrCreatePreferenceAsync(
+        Guid userId, CancellationToken ct, bool saveIfCreated = true)
+    {
+        var repo = _unitOfWork.NotificationPreferenceRepository;
+        var pref = await repo.GetByUserIdAsync(userId, ct);
+        if (pref != null) return (pref, false);
+
+        pref = NotificationPreferenceMapper.CreateDefaultEntity(userId);
+        await repo.AddAsync(pref);
+        if (saveIfCreated) await _unitOfWork.SaveChangesAsync();
+        return (pref, true);
     }
 
     public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
@@ -127,13 +130,20 @@ public class NotificationService : INotificationService
                     var userEmail = ExtractEmailFromPayload(dto.PayloadJson);
                     if (!string.IsNullOrWhiteSpace(userEmail))
                     {
-                        var htmlBody = EmailTemplateRenderer.RenderGenericNotification(
-                            dto.Title,
-                            dto.Content,
-                            dto.ActionUrl);
-                        var delivered = await _emailSender.SendEmailAsync(
-                            new EmailMessage(userEmail, dto.Title, htmlBody),
+                        var email = await _emailTemplates.ComposeAsync(
+                            EmailTemplateCatalog.NotificationEmailCopy,
+                            new Dictionary<string, string>
+                            {
+                                ["Title"] = dto.Title,
+                                ["Content"] = dto.Content,
+                                ["ActionUrl"] = SafeActionUrl(dto.ActionUrl),
+                            },
+                            null,
                             ct);
+                        var delivered = await _emailSender.SendEmailAsync(
+                            new EmailMessage(userEmail, email.Subject, email.HtmlBody, TextBody: email.TextBody),
+                            ct);
+                        if (_deliveries is not null) await _deliveries.RecordAsync(email, delivered, ct);
                         if (!delivered)
                         {
                             _logger.LogWarning(
@@ -152,6 +162,16 @@ public class NotificationService : INotificationService
         return Result.Success(NotificationMessageMapper.ToDto(notification));
     }
 
+    /// <summary>
+    /// A notification's link, only if it is a web address. A producer's action_url is not trusted
+    /// to become an href in somebody's inbox.
+    /// </summary>
+    public static string SafeActionUrl(string? actionUrl) =>
+        Uri.TryCreate(actionUrl, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
+            ? uri.ToString()
+            : FallbackActionUrl;
+
     private static string? ExtractEmailFromPayload(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
@@ -166,15 +186,4 @@ public class NotificationService : INotificationService
         catch { }
         return null;
     }
-
-    private NotificationPreferenceDto MapToDto(NotificationPreference p) =>
-        new NotificationPreferenceDto(
-            p.Id,
-            p.UserId,
-            p.NotificationType ?? "SYSTEM",
-            p.EmailEnabled,
-            p.PushEnabled,
-            p.InAppEnabled,
-            p.UpdatedAt
-        );
 }

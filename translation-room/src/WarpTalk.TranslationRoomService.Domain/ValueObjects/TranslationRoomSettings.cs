@@ -15,8 +15,28 @@ public class TranslationRoomSettings
     /// with no shared vocabulary long enough for the guard reading it to compare against spellings
     /// no writer ever produced.
     /// </summary>
+    /// <remarks>
+    /// WT-826: new rooms are CREATED with ALL_PARTICIPANTS (see
+    /// <c>TranslationRoomMapper.ResolveSettings</c>), and a room is published when it ends unless
+    /// <see cref="AutoShareRecord"/> says otherwise. The HOST_ONLY here is deliberately NOT that
+    /// default: it is the value a blob with no key at all reads as, and an authorization input
+    /// must never widen access by being absent. The new default lives where rooms are born.
+    /// </remarks>
     [JsonPropertyName("artifact_access")]
     public string ArtifactAccess { get; set; } = ArtifactAccessLevels.HostOnly;
+
+    /// <summary>
+    /// WT-826: "Share the record with participants automatically". When on, the transcript, AI
+    /// summary and recording are published to everyone who took part the moment the meeting ends,
+    /// and that publish counts as the host releasing the recording consent hold.
+    ///
+    /// NULLABLE ON PURPOSE. Null means nobody stated it — every room created before this field —
+    /// and reads as ON (<c>RecordAutoShare.IsOn</c>). It is kept distinct from FALSE because
+    /// <see cref="ArtifactAccess"/> cannot carry that distinction: HOST_ONLY was written into
+    /// every blob as a default, so a stored HOST_ONLY never proved a host chose it.
+    /// </summary>
+    [JsonPropertyName("auto_share_record")]
+    public bool? AutoShareRecord { get; set; }
 
     // The three below are seeded from the meeting type at creation (see
     // TranslationRoomTypePolicy). They live here rather than in a column because this is

@@ -163,10 +163,17 @@ public static class SubscriptionMapper
         };
     }
 
-    public static Subscription ToTrialEntity(this TrialSubscriptionRequest request, Plan plan, string ownerDomain)
+    /// <param name="durationDays">Trial length; the live billing.trial.days setting, resolved by the caller.</param>
+    /// <param name="credits">Trial credits; the live billing.trial.credits setting, resolved by the caller.</param>
+    public static Subscription ToTrialEntity(
+        this TrialSubscriptionRequest request,
+        Plan plan,
+        string ownerDomain,
+        int durationDays = SubscriptionConstants.TrialDefaults.DurationDays,
+        int credits = SubscriptionConstants.TrialDefaults.Credits)
     {
         var now = DateTime.UtcNow;
-        var trialEnd = now.AddDays(SubscriptionConstants.TrialDefaults.DurationDays);
+        var trialEnd = now.AddDays(durationDays);
 
         return new Subscription
         {
@@ -175,9 +182,9 @@ public static class SubscriptionMapper
             WorkspaceId = request.WorkspaceId,
             PlanId = plan.Id,
             Status = SubscriptionConstants.SubscriptionStatuses.Active,
-            CreditsRemaining = SubscriptionConstants.TrialDefaults.Credits,
+            CreditsRemaining = credits,
             CreditsUsedThisCycle = 0,
-            CreditsPerCycleOverride = SubscriptionConstants.TrialDefaults.Credits,
+            CreditsPerCycleOverride = credits,
             OverageCapCreditsOverride = SubscriptionConstants.TrialDefaults.OverageCapCredits,
             ContractPriceVnd = null,
             TrialEndsAt = trialEnd,

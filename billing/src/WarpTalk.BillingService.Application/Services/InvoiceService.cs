@@ -10,6 +10,7 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -53,13 +54,54 @@ public class InvoiceService : IInvoiceService
     }
 
     public async Task<Result<PaginatedResponse<InvoiceDto>>> GetGlobalInvoicesAsync(
-        PaginationQuery query, CancellationToken cancellationToken = default)
+        GlobalInvoiceQuery query, CancellationToken cancellationToken = default)
     {
+        var status = string.IsNullOrWhiteSpace(query.Status) ? null : query.Status.Trim().ToLowerInvariant();
+        if (status == "all") status = null;
+        if (status != null && !InvoiceConstants.InvoiceStatuses.Filterable.Contains(status))
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.UnknownStatusFilter, ErrorCodes.ValidationError);
+        }
+
+        if (!AdminSort.TryResolve(query.Sort, GlobalInvoiceSorts.All, GlobalInvoiceSorts.IssuedDesc, out var sort))
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.UnknownSort, ErrorCodes.ValidationError);
+        }
+
+        var currency = string.IsNullOrWhiteSpace(query.Currency) ? null : query.Currency.Trim().ToUpperInvariant();
+        if (currency != null && (currency.Length != 3 || !currency.All(char.IsAsciiLetterUpper)))
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.InvalidCurrency, ErrorCodes.ValidationError);
+        }
+
+        if (AdminDateFilter.ValidateRange(query.FromDate, query.ToDate, "fromDate", "toDate") is { } rangeError)
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(rangeError, ErrorCodes.ValidationError);
+        }
+
+        if (query.MinTotal is { } min && query.MaxTotal is { } max && min > max)
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.InvalidTotalRange, ErrorCodes.ValidationError);
+        }
+
         try
         {
-            var page = await _unitOfWork.InvoiceRepository.GetPageAsync(
-                BillingQueryHelper.ToPageRequest(query),
-                null,
+            var page = await _unitOfWork.InvoiceRepository.GetGlobalPageAsync(
+                new GlobalInvoiceFilter(
+                    BillingQueryHelper.ToPageRequest(query),
+                    string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+                    status,
+                    query.WorkspaceId,
+                    currency,
+                    AdminDateFilter.ToUtc(query.FromDate),
+                    AdminDateFilter.ToUtc(query.ToDate),
+                    query.MinTotal,
+                    query.MaxTotal,
+                    sort),
                 cancellationToken);
 
             var dtos = page.Items.Select(i => i.ToDto(i.Payment.Subscription.WorkspaceId)).ToList();
@@ -93,6 +135,7 @@ public class InvoiceService : IInvoiceService
 
     public async Task<Result<string>> CreateInvoiceCheckoutSessionAsync(
         Guid invoiceId,
+        InvoiceCheckoutCaller caller,
         CancellationToken cancellationToken = default)
     {
         try
@@ -109,24 +152,70 @@ public class InvoiceService : IInvoiceService
                     ErrorCodes.NotFound);
             }
 
-            if (invoice.Status == InvoiceConstants.InvoiceStatuses.Paid)
+            // WT-260, the last instance. This action authorised off [Authorize(Roles = Owner…)],
+            // and a workspace Owner is membership data, never a token claim — so no real Owner
+            // could ever pay, and any platform-role holder could pay (and so re-point) ANY
+            // workspace's invoice. The filter cannot help: the only route value is an invoice id,
+            // which it would take for a workspace id. The invoice names its workspace, so the check
+            // happens here, after the lookup.
+            //
+            // Owner only. Paying is a spend decision, and an invoice is not a plan change an Admin
+            // was already trusted with.
+            var workspaceId = invoice.Payment.Subscription.WorkspaceId;
+            if (!caller.IsPlatformAdmin)
+            {
+                var access = await _workspaceClient.VerifyWorkspaceRolesAsync(
+                    workspaceId,
+                    caller.UserId,
+                    WorkspaceRoleConstants.Owner);
+
+                if (!access.IsSuccess)
+                {
+                    return Result.Failure<string>(
+                        access.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                        ErrorCodes.InternalServerError);
+                }
+
+                if (!access.Value)
+                {
+                    return Result.Failure<string>(
+                        ApiMessageConstants.ErrorMessages.BillingAccessDenied,
+                        ErrorCodes.Forbidden);
+                }
+            }
+
+            if (invoice.Status == InvoiceConstants.InvoiceStatuses.Paid || invoice.PaidAt is not null)
             {
                 return Result.Failure<string>(
                     BillingMessageConstants.ApiErrorMessages.BillingInvoiceAlreadyPaid,
                     ErrorCodes.ValidationError);
             }
 
+            // A voided or written-off invoice is not owed. Taking money for one would be a charge
+            // with nothing behind it, and nothing downstream would reverse it.
+            if (invoice.Status is InvoiceConstants.InvoiceStatuses.Void
+                or InvoiceConstants.InvoiceStatuses.Uncollectible)
+            {
+                return Result.Failure<string>(
+                    BillingMessageConstants.ApiErrorMessages.BillingInvoiceNotPayable,
+                    ErrorCodes.ValidationError);
+            }
+
             var subscription = invoice.Payment.Subscription;
             var plan = subscription.Plan;
             var checkoutResult = await _stripePaymentService.CreateCheckoutSessionAsync(
+                // WT-545: the buyer is whoever is paying now, not whoever the invoice was raised
+                // to. GetAndProcessCheckoutSessionAsync lets the session's named buyer through
+                // without a role check, so it has to be the person holding this token.
                 new CreateCheckoutSessionRequest(
-                    UserId: invoice.UserId,
+                    UserId: caller.UserId,
                     WorkspaceId: subscription.WorkspaceId,
                     Amount: invoice.Total,
                     Currency: invoice.Currency,
                     PaymentType: PaymentConstants.PaymentTypes.InvoicePayment,
                     PlanSlug: plan?.Slug ?? SubscriptionConstants.PlanSlugs.Enterprise,
-                    BillingCycle: plan?.BillingCycle ?? SubscriptionConstants.BillingCycles.Monthly),
+                    BillingCycle: plan?.BillingCycle ?? SubscriptionConstants.BillingCycles.Monthly,
+                    BuyerEmail: caller.Email),
                 cancellationToken);
 
             if (!checkoutResult.IsSuccess)
@@ -176,12 +265,7 @@ public class InvoiceService : IInvoiceService
                 return Result.Success(invoice.ToDto(invoice.Payment.Subscription.WorkspaceId));
             }
 
-            var paidAt = DateTime.UtcNow;
-            invoice.Status = InvoiceConstants.InvoiceStatuses.Paid;
-            invoice.PaidAt = paidAt;
-            invoice.Payment.Status = PaymentConstants.PaymentStatuses.Paid;
-            invoice.Payment.PaidAt = paidAt;
-            invoice.Payment.UpdatedAt = DateTime.UtcNow;
+            invoice.MarkPaid(DateTime.UtcNow);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             return Result.Success(invoice.ToDto(invoice.Payment.Subscription.WorkspaceId));

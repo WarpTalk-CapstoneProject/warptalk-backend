@@ -17,6 +17,9 @@ public static class BillingMessageConstants
         public const string CreditTopUpMissingCreditCount =
             "This top-up carried no credit count, so nothing could be granted. Contact support with the payment reference.";
 
+        public const string PurchaseRequiresSubscription =
+            "Subscribe to a plan to buy extra credits.";
+
         public const string CreditTopUpNoSubscription =
             "This workspace has no active subscription to credit. Contact support with the payment reference.";
 
@@ -30,6 +33,13 @@ public static class BillingMessageConstants
     public static class NotificationTitles
     {
         public const string BillingInvoiceReminder = "Billing invoice reminder";
+
+        /// <summary>#466: the first failed automatic renewal charge of a dunning episode.</summary>
+        public const string RenewalPaymentFailed = "Payment failed — update your card";
+
+        /// <summary>#466: {0} is the end of the grace window (UTC).</summary>
+        public const string RenewalPaymentFailedBody =
+            "We could not charge your card for your plan's renewal. Your plan stays active until {0} while we retry. Update your card on the Billing page to keep it.";
     }
 
     public static class NotificationMetadataKeys
@@ -37,6 +47,8 @@ public static class BillingMessageConstants
         public const string InvoiceId = "invoice_id";
         public const string InvoiceNumber = "invoice_number";
         public const string ReminderKind = "reminder_kind";
+        public const string WorkspaceId = "workspace_id";
+        public const string GraceEndsAt = "grace_ends_at";
     }
 
     public static class AdjustmentMessages
@@ -302,6 +314,7 @@ public static class BillingMessageConstants
         public const string BillingPaymentEventFailed = "Failed to process payment event";
         public const string BillingInvoiceNotFound = "Invoice not found.";
         public const string BillingInvoiceAlreadyPaid = "Invoice is already paid.";
+        public const string BillingInvoiceNotPayable = "This invoice is void or written off and cannot be paid.";
 
         public const string BillingOwnerEmailInvalid = "Owner email is invalid.";
         public const string BillingTrialAlreadyExistsForOwnerDomain = "Trial already exists for this owner email domain.";

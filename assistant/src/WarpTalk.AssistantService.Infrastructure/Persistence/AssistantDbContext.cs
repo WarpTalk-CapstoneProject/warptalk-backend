@@ -20,11 +20,17 @@ public partial class AssistantDbContext : DbContext
     public virtual DbSet<AssistantMessage> AssistantMessages { get; set; }
 
     public virtual DbSet<AssistantToolCall> AssistantToolCalls { get; set; }
+    public virtual DbSet<PlatformConversation> PlatformConversations { get; set; }
+    public virtual DbSet<PlatformMessage> PlatformMessages { get; set; }
     public virtual DbSet<Plugin> Plugins { get; set; }
     public virtual DbSet<PluginInstallation> PluginInstallations { get; set; }
     public virtual DbSet<PluginConnection> PluginConnections { get; set; }
     public virtual DbSet<PluginToolAudit> PluginToolAudits { get; set; }
     public virtual DbSet<PluginConfirmationToken> PluginConfirmationTokens { get; set; }
+    public virtual DbSet<WorkspacePlugin> WorkspacePlugins { get; set; }
+    public virtual DbSet<WorkspacePluginCuration> WorkspacePluginCurations { get; set; }
+    public virtual DbSet<WorkspacePluginOverride> WorkspacePluginOverrides { get; set; }
+    public virtual DbSet<PluginRequest> PluginRequests { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -63,6 +69,9 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.SourcesJson)
                 .HasColumnType("jsonb")
                 .HasColumnName("sources_json");
+            entity.Property(e => e.MentionsJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("mentions_json");
             entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("completed").HasColumnName("status");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
@@ -71,6 +80,48 @@ public partial class AssistantDbContext : DbContext
                 .HasForeignKey(d => d.ConversationId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("assistant_messages_conversation_id_fkey");
+        });
+
+        // Scope "platform": a system admin's WarpBot in the admin portal. Separate tables with no
+        // workspace column, so no workspace-scoped query can reach them and they cannot hold
+        // workspace data. See PlatformConversation.
+        modelBuilder.Entity<PlatformConversation>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("platform_conversations_pkey");
+            entity.ToTable("platform_conversations", "assistant");
+
+            entity.HasIndex(e => new { e.UserId, e.LastMessageAt }, "idx_platform_conversations_user");
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Title).HasMaxLength(255).HasDefaultValue("New chat").HasColumnName("title");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.LastMessageAt).HasColumnName("last_message_at");
+            entity.Property(e => e.IsArchived).HasDefaultValue(false).HasColumnName("is_archived");
+        });
+
+        modelBuilder.Entity<PlatformMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("platform_messages_pkey");
+            entity.ToTable("platform_messages", "assistant");
+
+            entity.HasIndex(e => new { e.ConversationId, e.CreatedAt }, "idx_platform_messages_conversation");
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.ConversationId).HasColumnName("conversation_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Role).HasMaxLength(20).HasColumnName("role");
+            entity.Property(e => e.Content).HasDefaultValue("").HasColumnName("content");
+            entity.Property(e => e.ToolResultsJson).HasColumnName("tool_results_json");
+            entity.Property(e => e.SourcesJson).HasColumnType("jsonb").HasColumnName("sources_json");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("completed").HasColumnName("status");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+
+            entity.HasOne(d => d.Conversation).WithMany(p => p.Messages)
+                .HasForeignKey(d => d.ConversationId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("platform_messages_conversation_id_fkey");
         });
 
         modelBuilder.Entity<AssistantToolCall>(entity =>
@@ -125,8 +176,91 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.SortOrder).HasDefaultValue(0).HasColumnName("sort_order");
             entity.Property(e => e.Category).HasMaxLength(50).HasColumnName("category");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.OwnerWorkspaceId).HasColumnName("owner_workspace_id");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+            // 20260925120000_plugin_workspace_availability.sql
+            entity.Property(e => e.WorkspaceDefault).HasMaxLength(20).HasDefaultValue("available").HasColumnName("workspace_default");
+            entity.Property(e => e.AllowedPlanSlugsJson).HasColumnType("jsonb").HasColumnName("allowed_plan_slugs");
+        });
+
+        modelBuilder.Entity<WorkspacePluginOverride>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workspace_plugin_overrides_pkey");
+            entity.ToTable("workspace_plugin_overrides", "assistant");
+            entity.HasIndex(e => new { e.WorkspaceId, e.PluginId }, "workspace_plugin_overrides_workspace_plugin_key").IsUnique();
+            entity.HasIndex(e => e.PluginId, "idx_workspace_plugin_overrides_plugin_id");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.PluginId).HasColumnName("plugin_id");
+            entity.Property(e => e.State).HasMaxLength(20).HasColumnName("state");
+            entity.Property(e => e.Reason).HasMaxLength(500).HasColumnName("reason");
+            entity.Property(e => e.SetBy).HasColumnName("set_by");
+            entity.Property(e => e.SetAt).HasDefaultValueSql("now()").HasColumnName("set_at");
+
+            entity.HasOne<Plugin>()
+                .WithMany()
+                .HasForeignKey(e => e.PluginId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("workspace_plugin_overrides_plugin_id_fkey");
+        });
+
+        // Every column mapped by hand, like the rest of this context: there is no naming
+        // convention here, so a property without HasColumnName is a column that does not exist and
+        // every SELECT over the table fails. 20260917100000_workspace_plugin_marketplace.sql.
+        modelBuilder.Entity<WorkspacePlugin>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workspace_plugins_pkey");
+            entity.ToTable("workspace_plugins", "assistant");
+            entity.HasIndex(e => new { e.WorkspaceId, e.PluginId }, "workspace_plugins_workspace_plugin_key").IsUnique();
+            entity.HasIndex(e => e.PluginId, "idx_workspace_plugins_plugin_id");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.PluginId).HasColumnName("plugin_id");
+            entity.Property(e => e.AddedBy).HasColumnName("added_by");
+            entity.Property(e => e.AddedAt).HasDefaultValueSql("now()").HasColumnName("added_at");
+
+            entity.HasOne<Plugin>()
+                .WithMany()
+                .HasForeignKey(e => e.PluginId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("workspace_plugins_plugin_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkspacePluginCuration>(entity =>
+        {
+            entity.HasKey(e => e.WorkspaceId).HasName("workspace_plugin_curations_pkey");
+            entity.ToTable("workspace_plugin_curations", "assistant");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.CuratedAt).HasDefaultValueSql("now()").HasColumnName("curated_at");
+            entity.Property(e => e.CuratedBy).HasColumnName("curated_by");
+            entity.Property(e => e.SeededFromAllowAnyPlugins).HasDefaultValue(false).HasColumnName("seeded_from_allow_any_plugins");
+        });
+
+        modelBuilder.Entity<PluginRequest>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("plugin_requests_pkey");
+            entity.ToTable("plugin_requests", "assistant");
+            entity.HasIndex(e => new { e.WorkspaceId, e.PluginId, e.RequestedBy }, "plugin_requests_one_pending")
+                .IsUnique()
+                .HasFilter("status = 'pending'");
+            entity.HasIndex(e => new { e.WorkspaceId, e.Status, e.CreatedAt }, "idx_plugin_requests_workspace_status_created");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.PluginId).HasColumnName("plugin_id");
+            entity.Property(e => e.RequestedBy).HasColumnName("requested_by");
+            entity.Property(e => e.Reason).HasMaxLength(500).HasColumnName("reason");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("pending").HasColumnName("status");
+            entity.Property(e => e.DecidedBy).HasColumnName("decided_by");
+            entity.Property(e => e.DecidedAt).HasColumnName("decided_at");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+
+            entity.HasOne<Plugin>()
+                .WithMany()
+                .HasForeignKey(e => e.PluginId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("plugin_requests_plugin_id_fkey");
         });
 
         modelBuilder.Entity<PluginInstallation>(entity =>
@@ -141,6 +275,7 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.ConfigJson).HasColumnType("jsonb").HasColumnName("config_json");
             entity.Property(e => e.InstalledAt).HasDefaultValueSql("now()").HasColumnName("installed_at");
             entity.Property(e => e.DisabledAt).HasColumnName("disabled_at");
+            entity.Property(e => e.ConnectedAt).HasColumnName("connected_at");
 
             entity.HasOne<Plugin>()
                 .WithMany()

@@ -15,6 +15,14 @@ public interface IUserDirectoryService
 {
     Task<Result<UserIdentityDto>> GetUserByIdAsync(Guid userId, CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-699 / TC4104: one page of active user ids for a BROADCAST announcement. The page size is
+    /// clamped to 1..<see cref="UserDirectoryService.MaxUserIdPageSize"/>; NextAfterId is null on
+    /// the last page.
+    /// </summary>
+    Task<Result<(IReadOnlyList<Guid> UserIds, Guid? NextAfterId)>> ListActiveUserIdsAsync(
+        Guid? afterId, int pageSize, CancellationToken ct = default);
+
     Task<Result<UserIdentityDto>> GetUserByEmailAsync(string email, CancellationToken ct = default);
 
     /// <summary>

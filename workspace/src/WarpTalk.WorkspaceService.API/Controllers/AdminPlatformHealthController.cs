@@ -17,7 +17,7 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/platform-health")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.HealthRead)]
 public class AdminPlatformHealthController : ControllerBase
 {
     private readonly IAdminPlatformHealthService _health;

@@ -41,6 +41,7 @@ public class TranscriptCorrectionsController : ControllerBase
             {
                 "NOT_FOUND" => NotFound(result.Error),
                 "BAD_REQUEST" => BadRequest(result.Error),
+                "LANGUAGE_NOT_ALLOWED" => BadRequest(result.Error),
                 "UNAUTHORIZED" => StatusCode(403, result.Error),
                 _ => StatusCode(500, result.Error)
             };

@@ -30,11 +30,25 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
             .WithMessage("Invalid notification type.");
 
 
+        // WT-699 / TC4104: all three modes the model defines. BROADCAST (every active account)
+        // and SEGMENT (every active member of one workspace) are resolved to user ids by
+        // IAdminAudienceResolver when the announcement is created.
         RuleFor(x => x.TargetAudienceMode)
             .NotEmpty()
-            .Equal(NotificationConstants.TargetModeSpecificUsers)
-            .WithMessage(
-                "Only SPECIFIC_USERS is supported until a production user/segment resolver is configured.");
+            .Must(mode => mode == NotificationConstants.TargetModeSpecificUsers
+                          || mode == NotificationConstants.TargetModeBroadcast
+                          || mode == NotificationConstants.TargetModeSegment)
+            .WithMessage("TargetAudienceMode must be BROADCAST, SEGMENT or SPECIFIC_USERS.");
+
+        // A broadcast names nobody; a list alongside it would be ignored, so refuse it rather than
+        // let the admin believe it narrowed anything.
+        When(x => x.TargetAudienceMode == NotificationConstants.TargetModeBroadcast, () =>
+        {
+            RuleFor(x => x.SpecificUserIds)
+                .Empty().WithMessage("SpecificUserIds must be empty when mode is BROADCAST.");
+            RuleFor(x => x.SegmentId)
+                .Null().WithMessage("SegmentId must be empty when mode is BROADCAST.");
+        });
 
         When(x => x.TargetAudienceMode == NotificationConstants.TargetModeSpecificUsers, () =>
         {
@@ -45,7 +59,8 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
         When(x => x.TargetAudienceMode == NotificationConstants.TargetModeSegment, () =>
         {
             RuleFor(x => x.SegmentId)
-                .NotNull().WithMessage("SegmentId is required when mode is SEGMENT.");
+                .NotNull().WithMessage("SegmentId is required when mode is SEGMENT.")
+                .NotEqual(Guid.Empty).WithMessage("SegmentId is required when mode is SEGMENT.");
         });
 
         // Type-specific rules: SYSTEM

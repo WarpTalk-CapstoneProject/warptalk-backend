@@ -10,4 +10,5 @@ public static class BillingOperationalEventIds
     public static readonly EventId InvoiceOverdueSuspend = new(4104, nameof(InvoiceOverdueSuspend));
     public static readonly EventId AiServiceSuspended = new(4105, nameof(AiServiceSuspended));
     public static readonly EventId AiServiceResumed = new(4106, nameof(AiServiceResumed));
+    public static readonly EventId BillingCycleCurrencyMismatch = new(4107, nameof(BillingCycleCurrencyMismatch));
 }

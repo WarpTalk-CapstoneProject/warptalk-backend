@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.Shared.Extensions;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 
@@ -29,7 +30,7 @@ public class TranscriptExportsController : ControllerBase
 
         try
         {
-            var result = await _exportService.CreateExportAsync(transcriptId, request, userId);
+            var result = await _exportService.CreateExportAsync(transcriptId, request, userId, User.GetEmail());
             return Ok(result);
         }
         catch (UnauthorizedAccessException)
@@ -51,7 +52,7 @@ public class TranscriptExportsController : ControllerBase
 
         try
         {
-            var (fileBytes, contentType, fileName) = await _exportService.DownloadExportAsync(transcriptId, id, userId);
+            var (fileBytes, contentType, fileName) = await _exportService.DownloadExportAsync(transcriptId, id, userId, User.GetEmail());
             return File(fileBytes, contentType, fileName);
         }
         catch (UnauthorizedAccessException)

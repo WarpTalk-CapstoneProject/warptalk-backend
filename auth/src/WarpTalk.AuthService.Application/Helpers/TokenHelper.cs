@@ -11,9 +11,10 @@ public static class TokenHelper
     public static (string AccessToken, string RefreshToken, DateTime ExpiresAt) GenerateTokens(
         this IJwtTokenGenerator jwtGenerator,
         User user,
-        List<string> roles)
+        List<string> roles,
+        string? staffRole = null)
     {
-        var accessToken = jwtGenerator.GenerateAccessToken(user.Id, user.Email, user.EmailVerified, roles);
+        var accessToken = jwtGenerator.GenerateAccessToken(user.Id, user.Email, user.EmailVerified, roles, staffRole);
         var refreshToken = jwtGenerator.GenerateRefreshToken();
         var expiresAt = DateTime.UtcNow.AddMinutes(jwtGenerator.AccessTokenExpiryMinutes);
         return (accessToken, refreshToken, expiresAt);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace WarpTalk.TranslationRoomService.Application.Helpers;
 
@@ -21,10 +22,29 @@ public static class SummaryContentBuilder
         {
             try
             {
-                using var doc = JsonDocument.Parse(structuredJson);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
-                    doc.RootElement.TryGetProperty("summary", out _))
+                var node = JsonNode.Parse(structuredJson);
+                if (node is JsonObject obj && obj.ContainsKey("summary"))
                 {
+                    bool hasActionItems = false;
+                    if (obj.TryGetPropertyValue("actionItems", out var aiNode) && aiNode is JsonArray aiArr && aiArr.Count > 0)
+                    {
+                        hasActionItems = true;
+                    }
+                    else if (obj.TryGetPropertyValue("action_items", out var aiSnake) && aiSnake is JsonArray aiSnakeArr && aiSnakeArr.Count > 0)
+                    {
+                        hasActionItems = true;
+                    }
+
+                    if (!hasActionItems && !string.IsNullOrWhiteSpace(actionItemsRaw))
+                    {
+                        var parsedActionItems = ParseActionItemsMarkdown(actionItemsRaw);
+                        if (parsedActionItems.Count > 0)
+                        {
+                            obj["actionItems"] = JsonSerializer.SerializeToNode(parsedActionItems);
+                            return obj.ToJsonString();
+                        }
+                    }
+
                     // Already in the shape the frontend expects — pass through verbatim.
                     return structuredJson;
                 }

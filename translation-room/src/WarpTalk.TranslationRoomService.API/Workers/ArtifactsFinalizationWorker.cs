@@ -12,7 +12,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
 
@@ -20,21 +23,33 @@ public class ArtifactsFinalizationWorker : BackgroundService
 {
     private readonly IArtifactsFinalizationQueue _queue;
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDistributedLockProvider _locks;
     private readonly NotificationClient _notificationClient;
     private readonly ILogger<ArtifactsFinalizationWorker> _logger;
     private readonly string _frontendBaseUrl;
 
     private const string SummaryReadyNotificationType = "MEETING_SUMMARY_READY";
 
+    /// <summary>
+    /// Only bounds how long a replica that died mid-finalization keeps the room: the lease is
+    /// renewed for as long as the finalization runs (the flush alone waits up to 30 s).
+    /// </summary>
+    private static readonly TimeSpan FinalizationLease = TimeSpan.FromMinutes(2);
+
+    /// <summary>One lease per room, so different meetings still finalize in parallel.</summary>
+    internal static string LockResourceFor(Guid roomId) => $"translation-room:finalize:{roomId}";
+
     public ArtifactsFinalizationWorker(
         IArtifactsFinalizationQueue queue,
         IServiceProvider serviceProvider,
         NotificationClient notificationClient,
         IOptions<AppSettings> appSettings,
-        ILogger<ArtifactsFinalizationWorker> logger)
+        ILogger<ArtifactsFinalizationWorker> logger,
+        IDistributedLockProvider locks)
     {
         _queue = queue;
         _serviceProvider = serviceProvider;
+        _locks = locks;
         _notificationClient = notificationClient;
         _frontendBaseUrl = appSettings.Value.FrontendBaseUrl?.TrimEnd('/') ?? string.Empty;
         _logger = logger;
@@ -77,15 +92,7 @@ public class ArtifactsFinalizationWorker : BackgroundService
 
         try
         {
-            using var scope = _serviceProvider.CreateScope();
-            var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizer>();
-            await finalizationService.ProcessRoomFinalizationAsync(
-                        request.RoomId, request.TemplateKey, request.SummaryLanguage, stoppingToken);
-
-            // The summary exists as of this line, and this is the only moment anything knows
-            // that. Finalization is the last step of a meeting nobody is watching any more —
-            // everyone has left, which is exactly why they need telling.
-            await NotifySummaryReadyAsync(scope, roomId, stoppingToken);
+            await FinalizeOnceAsync(request, stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -98,6 +105,70 @@ public class ArtifactsFinalizationWorker : BackgroundService
         {
             concurrency.Release();
         }
+    }
+
+    /// <summary>
+    /// Finalizes the room unless it is being, or has already been, finalized — on any replica.
+    ///
+    /// The queue is in-process, but its producers are not: an End served by one replica, the
+    /// reconciliation sweep on another, a host's "regenerate" on a third can each queue the same
+    /// room, and every finalization writes a NEW transcript and summary artifact and rings
+    /// "Summary ready" for everyone who was there. Two guards, one per way that goes wrong:
+    ///   * a per-room lease, so two replicas never finalize the same room at the same time;
+    ///   * inside it, the finalizer's own output as the record — it writes both text artifacts in
+    ///     one save or neither, and every legitimate producer only queues a room that has none —
+    ///     so a request that arrives after a finished finalization is recognised and dropped.
+    /// Internal so the tests can drive two "replicas" against one lease store.
+    /// </summary>
+    internal async Task<ExclusiveTickOutcome> FinalizeOnceAsync(FinalizationRequest request, CancellationToken stoppingToken)
+    {
+        var roomId = request.RoomId;
+        var outcome = await _locks.TryRunExclusiveAsync(
+            LockResourceFor(roomId),
+            FinalizationLease,
+            async ct =>
+            {
+                using var scope = _serviceProvider.CreateScope();
+                if (await IsAlreadyFinalizedAsync(scope, roomId, ct))
+                {
+                    _logger.LogInformation(
+                        "Room {RoomId} already has its transcript and summary artifacts; not finalizing it again.",
+                        roomId);
+                    return;
+                }
+
+                var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizer>();
+                await finalizationService.ProcessRoomFinalizationAsync(
+                    request.RoomId, request.TemplateKey, request.SummaryLanguage, ct);
+
+                // The summary exists as of this line, and this is the only moment anything knows
+                // that. Finalization is the last step of a meeting nobody is watching any more —
+                // everyone has left, which is exactly why they need telling.
+                await NotifySummaryReadyAsync(scope, roomId, ct);
+            },
+            _logger,
+            stoppingToken);
+
+        if (outcome == ExclusiveTickOutcome.Skipped)
+        {
+            _logger.LogInformation(
+                "Room {RoomId} is being finalized by another replica; dropping this duplicate request.",
+                roomId);
+        }
+
+        return outcome;
+    }
+
+    private static async Task<bool> IsAlreadyFinalizedAsync(IServiceScope scope, Guid roomId, CancellationToken ct)
+    {
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var transcript = ArtifactType.TRANSCRIPT_EXPORT.ToString();
+        var summary = ArtifactType.SUMMARY_EXPORT.ToString();
+        return await unitOfWork.TranslationRoomArtifactRepository.AnyAsync(
+            artifact => artifact.TranslationRoomId == roomId
+                && artifact.DeletedAt == null
+                && (artifact.ArtifactType == transcript || artifact.ArtifactType == summary),
+            ct);
     }
 
     /// <summary>
@@ -121,6 +192,13 @@ public class ArtifactsFinalizationWorker : BackgroundService
                 ct);
             var room = rooms.FirstOrDefault();
             if (room == null)
+            {
+                return;
+            }
+
+            // WT-870: a meeting that kept no transcript has no summary to announce, and a
+            // "summary and transcript are ready" message would send people to look for both.
+            if (!TranscriptRetention.IsSaved(room))
             {
                 return;
             }

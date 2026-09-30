@@ -13,6 +13,19 @@ namespace WarpTalk.TranslationRoomService.Domain.Interfaces;
 public sealed record AdminFeedbackFilter(DateTime From, DateTime To, Guid? WorkspaceId = null);
 
 /// <summary>
+/// Narrowing that applies to the comment list ONLY. Kept off <see cref="AdminFeedbackFilter"/> on
+/// purpose: the statistics describe every rating in the window, and a search box on the comment
+/// list must not quietly change them.
+/// </summary>
+/// <param name="Search">ILIKE substring over the comment text and the room title.</param>
+/// <param name="MinRating">Inclusive lower bound on overall_rating (1..5), validated upstream.</param>
+/// <param name="MaxRating">Inclusive upper bound on overall_rating (1..5), validated upstream.</param>
+public sealed record AdminFeedbackCommentCriteria(
+    string? Search = null,
+    int? MinRating = null,
+    int? MaxRating = null);
+
+/// <summary>
 /// One rating dimension over the window.
 /// </summary>
 /// <param name="ResponseCount">
@@ -61,9 +74,16 @@ public interface ITranslationRoomFeedbackRepository : IGenericRepository<Transla
     /// One page of comments, newest first, plus the total that matched. Ratings with no comment
     /// are excluded — they are already counted in the statistics.
     /// </summary>
+    /// <param name="lowestRatedFirst">
+    /// WT-694: order by overall rating ascending (newest first within a rating) instead of newest
+    /// first — the comments most worth reading are the unhappy ones.
+    /// </param>
+    /// <param name="criteria">Comment-list-only search and rating range; null for none.</param>
     Task<(IReadOnlyList<AdminFeedbackCommentRow> Items, int Total)> GetAdminCommentsAsync(
         AdminFeedbackFilter filter,
         int page,
         int pageSize,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        bool lowestRatedFirst = false,
+        AdminFeedbackCommentCriteria? criteria = null);
 }

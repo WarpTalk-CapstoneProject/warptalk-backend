@@ -11,7 +11,12 @@ public interface IAssistantConversationService
 {
     Task<Result<IEnumerable<AssistantConversationDto>>> ListConversationsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
     Task<Result<AssistantConversationDetailDto>> GetConversationAsync(Guid conversationId, Guid userId, CancellationToken ct = default);
-    Task<Result<AssistantConversationDto>> CreateConversationAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
+    /// <summary>
+    /// A new conversation, optionally starting with turns already in it — a meeting's WarpBot thread handed to
+    /// the widget. See <see cref="CreateAssistantConversationRequest.SeedMessages"/>.
+    /// </summary>
+    Task<Result<AssistantConversationDto>> CreateConversationAsync(
+        Guid userId, CreateAssistantConversationRequest request, CancellationToken ct = default);
     Task<Result<SendAssistantMessageResponse>> SendMessageAsync(Guid conversationId, Guid userId, string? bearerToken, SendAssistantMessageRequest request, CancellationToken ct = default);
     Task<Result> ArchiveConversationAsync(Guid conversationId, Guid userId, CancellationToken ct = default);
 

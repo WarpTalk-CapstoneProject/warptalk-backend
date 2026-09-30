@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -88,7 +89,7 @@ public sealed class RecordingCompletedEventConsumerService : BackgroundService
                 _logger.LogError(
                     ex,
                     "RecordingCompletedEventConsumerService could not create consumer group {Group} on {Stream} "
-                    + "(attempt {Attempt}); retrying in {RetryDelay}. Recording completion events are NOT being "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. Recording lifecycle events are NOT being "
                     + "processed until it succeeds.",
                     GroupName, StreamName, attempt, retryDelay);
 
@@ -149,6 +150,16 @@ public sealed class RecordingCompletedEventConsumerService : BackgroundService
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), ct);
         }
 
+        // rec-loss: said at Error before the DLQ write. A dead-lettered recording event is a
+        // recording row that will never appear or never resolve — the exact silent loss this
+        // consumer exists to prevent — and nothing reads the DLQ stream on its own.
+        var (translationRoomId, egressId) = TryReadRecordingIds(message);
+        message.Values.TryGetValue("event_type", out var eventType);
+        _logger.LogError(
+            "Dead-lettering {EventType} message {MessageId} (translation_room_id {TranslationRoomId}, egress_id {EgressId}) "
+            + "after {MaxAttempts} attempts: {Error}",
+            eventType, message.Id, translationRoomId, egressId, MaxAttempts, result.Error);
+
         var dlqValues = new Dictionary<string, string>(
             message.Values,
             StringComparer.OrdinalIgnoreCase)
@@ -163,4 +174,36 @@ public sealed class RecordingCompletedEventConsumerService : BackgroundService
         await _redisStreamRepository.AddAsync(DlqStreamName, dlqValues);
         await _redisStreamRepository.AcknowledgeAsync(StreamName, GroupName, message.Id);
     }
+
+    /// <summary>
+    /// Best effort, for the log line only: the message being dead-lettered may be the very one whose
+    /// envelope is not valid JSON, so nothing here may throw.
+    /// </summary>
+    private static (string? TranslationRoomId, string? EgressId) TryReadRecordingIds(RedisStreamMessage message)
+    {
+        if (!message.Values.TryGetValue("envelope", out var serialized) || string.IsNullOrWhiteSpace(serialized))
+            return (null, null);
+
+        try
+        {
+            using var document = JsonDocument.Parse(serialized);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("payload", out var payload) ||
+                payload.ValueKind != JsonValueKind.Object)
+            {
+                return (null, null);
+            }
+
+            return (ReadString(payload, "translation_room_id"), ReadString(payload, "egress_id"));
+        }
+        catch (JsonException)
+        {
+            return (null, null);
+        }
+    }
+
+    private static string? ReadString(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 }

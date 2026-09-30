@@ -43,6 +43,16 @@ public sealed class RealtimeNotificationPersistenceService(
                         .GetRequiredService<RealtimeNotificationPersistenceHandler>();
                     await handler.HandleAsync(message, stoppingToken);
                 }
+                catch (Exception ex) when (WarpTalk.Shared.PersistenceConflict.IsUniqueViolation(ex))
+                {
+                    // Multi-replica, and deliberately NOT single-runner: every notification-service
+                    // replica receives this pub/sub message and races to persist it, and the
+                    // notification id primary key lets exactly one win. That keeps the bell durable
+                    // for as long as ANY replica is up (a leader-elected handler would drop the
+                    // messages published during a failover). The losers land here — expected, not
+                    // an error.
+                    logger.LogDebug(ex, "Realtime notification was already persisted by another replica.");
+                }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Failed to persist realtime notification for the notification center.");

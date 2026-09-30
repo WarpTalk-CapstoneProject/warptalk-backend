@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -20,6 +21,10 @@ using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
+
+// WT-701: lets the tests drive FinalizeSummaryAsync with a short wait window. The API project
+// declares the same thing in its csproj.
+[assembly: InternalsVisibleTo("WarpTalk.TranslationRoomService.Tests")]
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.BackgroundProcessors;
 
@@ -133,7 +138,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         }
     }
 
-    private async Task FinalizeRoomArtifactsAsync(
+    internal async Task FinalizeRoomArtifactsAsync(
         Guid roomId,
         string? templateKey = null,
         string? summaryLanguage = null,
@@ -148,11 +153,19 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         {
             try
             {
+                // WT-870. Read inside the retry loop on purpose: a database hiccup here retries
+                // like every other failure below, instead of being mistaken for either answer.
+                var keepsRecord = await RoomKeepsTranscriptAsync(roomId, ct);
+
                 // Meeting owns recording artifacts from its signed
                 // recording_completed event. This finalizer owns transcript
                 // and summary outputs only.
                 var transcriptTask = FinalizeTranscriptAsync(roomId, ct);
-                var summaryTask = FinalizeSummaryAsync(roomId, ct);
+                // No summary at all for a meeting that kept no transcript: not waited for, not
+                // saved, not re-requested, not indexed. See TranscriptRetention.
+                var summaryTask = keepsRecord
+                    ? FinalizeKeptSummaryAsync(roomId, ct)
+                    : Task.FromResult<SummaryFinalization?>(null);
 
                 await Task.WhenAll(transcriptTask, summaryTask);
 
@@ -164,21 +177,37 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 var artifactRepo = _unitOfWork.TranslationRoomArtifactRepository;
 
                 await artifactRepo.AddAsync(transcript.Artifact, ct);
-                await artifactRepo.AddAsync(summary.Artifact, ct);
+                if (summary is { } kept)
+                {
+                    await artifactRepo.AddAsync(kept.Artifact, ct);
+                }
 
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // Only now, with the summary durably stored, is it worth indexing. Publishing
-                // before the save would index a summary a later rollback erased.
-                await PublishSummaryToKnowledgeAsync(roomId, summary.Artifact.Content, ct);
-
-                // The placeholder is saved and the transcript is in hand — so ask for the summary
-                // that never came, sending the transcript rather than waiting for the worker to
-                // find one. See RequestSummaryFromTranscriptAsync.
-                if (summary.TimedOut)
+                if (summary is { } saved)
                 {
-                    await RequestSummaryFromTranscriptAsync(
-                        roomId, transcript.CitedTranscript, templateKey, summaryLanguage, ct);
+                    // Only now, with the summary durably stored, is it worth indexing. Publishing
+                    // before the save would index a summary a later rollback erased.
+                    await PublishSummaryToKnowledgeAsync(roomId, saved.Artifact.Content, ct);
+
+                    // The placeholder is saved and the transcript is in hand — so ask for the summary
+                    // that never came, sending the transcript rather than waiting for the worker to
+                    // find one. See RequestSummaryFromTranscriptAsync.
+                    if (saved.TimedOut)
+                    {
+                        await RequestSummaryFromTranscriptAsync(
+                            roomId, transcript.CitedTranscript, templateKey, summaryLanguage, ct);
+                    }
+                }
+                else
+                {
+                    // Anything the AI worker wrote for this meeting anyway (an older trigger, a
+                    // worker that does not know the setting) must not outlive the meeting: the
+                    // late-summary recovery would otherwise find it and have to refuse it again.
+                    await _redisStateRepo.KeyDeleteAsync(SummaryKey(roomId));
+                    _logger.LogInformation(
+                        "Room {RoomId} does not save its transcript; finalized without a summary.",
+                        roomId);
                 }
 
                 _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
@@ -240,6 +269,31 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 await Task.Delay(baseDelayMs + jitterMs, ct);
             }
         }
+    }
+
+    private static string SummaryKey(Guid roomId) => $"meeting:{roomId}:summary";
+
+    private async Task<SummaryFinalization?> FinalizeKeptSummaryAsync(Guid roomId, CancellationToken ct) =>
+        await FinalizeSummaryAsync(roomId, ct);
+
+    /// <summary>
+    /// WT-870: whether this meeting keeps a record at all. Fails CLOSED on a missing room — there
+    /// is nothing to attach a summary to, and a meeting whose setting cannot be established must
+    /// not be the one that gets summarised against the host's choice. A lookup that THROWS is not
+    /// an answer and propagates to the retry loop.
+    /// </summary>
+    private async Task<bool> RoomKeepsTranscriptAsync(Guid roomId, CancellationToken ct)
+    {
+        var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+        if (room == null)
+        {
+            _logger.LogWarning(
+                "Room {RoomId} could not be found while finalizing; no summary will be produced for it.",
+                roomId);
+            return false;
+        }
+
+        return TranscriptRetention.IsSaved(room);
     }
 
     /// <summary>
@@ -524,10 +578,14 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// over a whole meeting transcript, which is not instant.
     ///
     /// Longer than the transcript's window because it is waiting on generation, not on a flush.
-    /// It exits the moment content appears, so a summary that is already there costs one read.
+    /// It exits the moment <c>structured_json</c> appears, so a summary that is already there
+    /// costs one read.
+    ///
+    /// Settable only from the tests (InternalsVisibleTo below), so the wait can be driven without
+    /// spending ninety real seconds per case.
     /// </summary>
-    private static readonly TimeSpan SummaryWaitTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan SummaryPollInterval = TimeSpan.FromSeconds(2);
+    internal TimeSpan SummaryWaitTimeout { get; init; } = TimeSpan.FromSeconds(90);
+    internal TimeSpan SummaryPollInterval { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// The summary artifact, and whether it is the placeholder written because nothing arrived.
@@ -537,16 +595,16 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// appear zero times — so this flag is the signal that the meeting deserves a second attempt,
     /// not a rare edge case.
     /// </summary>
-    private readonly record struct SummaryFinalization(TranslationRoomArtifact Artifact, bool TimedOut);
+    internal readonly record struct SummaryFinalization(TranslationRoomArtifact Artifact, bool TimedOut);
 
-    private async Task<SummaryFinalization> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
+    internal async Task<SummaryFinalization> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
     {
         _logger.LogInformation("Retrieving AI summary from Redis cache for room {RoomId}", roomId);
 
         try
         {
             // Try to fetch AI-generated summary from Redis hash key "meeting:{roomId}:summary"
-            string summaryKey = $"meeting:{roomId}:summary";
+            string summaryKey = SummaryKey(roomId);
 
             // WT-13: ai_assistant_worker also writes a structured JSON version of the same
             // summary/decisions/action-items when it can (see MeetingAssistant.generate_structured_summary).
@@ -567,9 +625,23 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 || !string.IsNullOrWhiteSpace(actionItems)
                 || !string.IsNullOrWhiteSpace(structuredJson);
 
-            if (foundSomething)
+            if (!string.IsNullOrWhiteSpace(structuredJson))
             {
                 await _redisStateRepo.KeyDeleteAsync(summaryKey);
+            }
+            else if (foundSomething)
+            {
+                // WT-701. The prose (and maybe action items) arrived but structured_json did not
+                // make the window. The artifact saved now is the markdown fallback — no
+                // templateKey, no summaryLanguage — so the key is KEPT: when ai_assistant_worker
+                // writes structured_json, ArtifactsReconciliationWorker.RecoverLateSummariesAsync
+                // finds it and upgrades this artifact in place. Deleting here is what used to leave
+                // the fallback as the meeting's summary until the worker happened to recreate the key.
+                _logger.LogWarning(
+                    "Only a partial AI summary for room {RoomId} arrived within {Seconds}s (no structured_json). Saving the fallback summary and KEEPING {SummaryKey} so the structured version can replace it.",
+                    roomId,
+                    SummaryWaitTimeout.TotalSeconds,
+                    summaryKey);
             }
             else
             {
@@ -623,9 +695,11 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             .ToEntity();
 
     /// <summary>
-    /// Polls the summary hash until the AI worker has written something, or the window closes.
+    /// Polls the summary hash until the AI worker has written <c>structured_json</c>, or the
+    /// window closes.
     ///
-    /// Returns whatever is there at the end — an empty result is a legitimate answer that the
+    /// Returns whatever is there at the end — content without structured_json becomes the
+    /// fallback artifact, and an empty result is a legitimate answer that the
     /// caller turns into an explicit insufficient-data artifact, because a UI stuck on
     /// "generating" forever is worse than one that says the summary did not arrive (WT-13).
     /// </summary>
@@ -647,9 +721,12 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.ActionItems);
             var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, MeetingSummaryHash.StructuredJson);
 
-            if (!string.IsNullOrWhiteSpace(content)
-                || !string.IsNullOrWhiteSpace(actionItems)
-                || !string.IsNullOrWhiteSpace(structuredJson))
+            // WT-701: ONLY structured_json ends the wait early. The worker writes the three fields
+            // with an LLM call between each (content, then action_items, then structured_json),
+            // so a hash holding content alone is a summary still being written. Returning on it
+            // saved the raw-markdown fallback — no templateKey, no summaryLanguage — as the
+            // meeting's summary moments before the structured one landed.
+            if (!string.IsNullOrWhiteSpace(structuredJson))
             {
                 return (content, actionItems, structuredJson);
             }

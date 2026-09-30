@@ -8,6 +8,10 @@ using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 
 
@@ -58,7 +62,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<GlobalBillingMetricsDto>> GetGlobalMetrics(CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalMetricsAsync(cancellationToken);
@@ -66,7 +70,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/chart")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<UsageChartDto>> GetGlobalUsageChart([FromQuery] UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalUsageChartAsync(query, cancellationToken);
@@ -74,7 +78,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/breakdown")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdown(
         [FromQuery] UsageChartQuery query,
         CancellationToken cancellationToken = default)
@@ -84,7 +88,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/top-workspaces")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<IEnumerable<TopWorkspaceDto>>> GetTopWorkspaces(
         [FromQuery] UsageChartQuery query,
         CancellationToken cancellationToken = default)
@@ -94,7 +98,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/alerts")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<IEnumerable<UsageAlertDto>>> GetUsageAlerts(CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetUsageAlertsAsync(cancellationToken);
@@ -102,7 +106,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("rate-card")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<IReadOnlyList<UsageRateCardDto>>> GetUsageRateCard(CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.GetActiveRateCardsAsync(cancellationToken);
@@ -110,7 +114,8 @@ public class UsagesController : ControllerBase
     }
 
     [HttpPut("rate-card")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.RateCardUpserted, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard))]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<ActionResult<UsageRateCardDto>> UpsertUsageRateCard([FromBody] UpsertUsageRateCardRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.UpsertRateCardAsync(request, cancellationToken);
@@ -118,7 +123,8 @@ public class UsagesController : ControllerBase
     }
 
     [HttpPost("rate-card/{id:guid}/deactivate")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.RateCardDeactivated, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<ActionResult<UsageRateCardDto>> DeactivateUsageRateCard(Guid id, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.DeactivateRateCardAsync(id, cancellationToken);
@@ -130,8 +136,28 @@ public class UsagesController : ControllerBase
         return Ok(result.Value);
     }
 
+    [HttpPut("rate-card/{id:guid}/provider-cost")]
+    [AdminAudited(AdminAuditBillingActions.RateCardCostSet, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
+    public async Task<ActionResult<UsageRateCardDto>> SetUsageRateCardProviderCost(
+        Guid id, [FromBody] SetRateCardProviderCostRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _rateCardAdminService.SetProviderCostAsync(id, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+            return result.ErrorCode switch
+            {
+                ErrorCodes.NotFound => NotFound(error),
+                ErrorCodes.InternalServerError => StatusCode(500, error),
+                _ => BadRequest(error),
+            };
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPost("rate-card/preview")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<ActionResult<RateCardPreviewDto>> PreviewUsageRateCard([FromBody] RateCardPreviewRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.PreviewRateCardAsync(request, cancellationToken);
@@ -143,7 +169,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("pricing-config")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<PricingConfigDto>> GetPricingConfig(CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.GetPricingConfigAsync(cancellationToken);
@@ -151,7 +177,8 @@ public class UsagesController : ControllerBase
     }
 
     [HttpPut("pricing-config")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.PricingConfigUpdated, AdminAuditEntityTypes.PricingConfig, typeof(BillingPricingConfig))]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<ActionResult<PricingConfigDto>> UpdatePricingConfig([FromBody] UpdatePricingConfigRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateCardAdminService.UpdatePricingConfigAsync(request, cancellationToken);

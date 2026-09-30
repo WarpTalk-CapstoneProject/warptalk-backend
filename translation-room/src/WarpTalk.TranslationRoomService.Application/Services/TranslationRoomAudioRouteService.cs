@@ -626,7 +626,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         }
     }
 
-    public async Task<Result<TranslationRoomAudioRouteDto>> ToggleVoiceCloneAsync(Guid roomId, Guid routeId, ToggleVoiceCloneDto dto, CancellationToken ct = default)
+    public async Task<Result<TranslationRoomAudioRouteDto>> ToggleVoiceCloneAsync(Guid roomId, Guid routeId, Guid callerUserId, ToggleVoiceCloneDto dto, CancellationToken ct = default)
     {
         try
         {
@@ -644,6 +644,26 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             if (route.Status == AudioRouteStatus.COMPLETED.ToString())
             {
                 return Result.Failure<TranslationRoomAudioRouteDto>(AudioRouteConstants.ErrorCannotUpdateCompletedRoute, ErrorCodes.InvalidState);
+            }
+
+            // WT-699 / TC1905: this endpoint had no caller check at all, so any logged-in account
+            // that could guess or read a route id could switch cloning of SOMEBODY ELSE'S voice on
+            // — bypassing both the speaker's choice and the consent record SetVoiceCloneConsentAsync
+            // insists on. The route's source participant is the only person this flag is about.
+            var caller = await _translationRoomParticipantRepository.GetByRoomAndUserAsync(roomId, callerUserId, ct);
+            if (caller == null || caller.Id != route.SourceParticipantId)
+            {
+                return Result.Failure<TranslationRoomAudioRouteDto>(AudioRouteConstants.ErrorNotRouteSpeaker, ErrorCodes.Forbidden);
+            }
+
+            // The same consent gate as the self-service switch, in the same direction: ON needs
+            // the record, OFF never does.
+            if (dto.VoiceCloneEnabled
+                && !route.VoiceCloneEnabled
+                && !await _voiceConsentDirectory.HasVoiceCloneConsentAsync(callerUserId, ct))
+            {
+                return Result.Failure<TranslationRoomAudioRouteDto>(
+                    AudioRouteConstants.ErrorVoiceCloneConsentMissing, ErrorCodes.Forbidden);
             }
 
             if (route.VoiceCloneEnabled != dto.VoiceCloneEnabled)

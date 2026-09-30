@@ -71,4 +71,33 @@ public class SummaryContentBuilderTests
         item.GetProperty("owner").GetString().Should().BeEmpty();
         item.GetProperty("task").GetString().Should().Be("Book the room");
     }
+
+    [Fact]
+    public void Build_MergesActionItemsRaw_WhenStructuredJsonHasEmptyActionItems()
+    {
+        const string structured = """{"summary":"We shipped it.","decisions":["Ship Friday"],"actionItems":[]}""";
+        const string rawItems = "[ ] Prepare slide deck - @alice\n- [ ] Deploy to staging";
+
+        var result = SummaryContentBuilder.Build(structured, null, rawItems);
+
+        using var doc = JsonDocument.Parse(result);
+        doc.RootElement.GetProperty("summary").GetString().Should().Be("We shipped it.");
+        doc.RootElement.GetProperty("decisions")[0].GetString().Should().Be("Ship Friday");
+        var items = doc.RootElement.GetProperty("actionItems");
+        items.GetArrayLength().Should().Be(2);
+        items[0].GetProperty("task").GetString().Should().Be("Prepare slide deck");
+        items[0].GetProperty("owner").GetString().Should().Be("alice");
+        items[1].GetProperty("task").GetString().Should().Be("Deploy to staging");
+    }
+
+    [Fact]
+    public void Build_DoesNotOverwriteActionItems_WhenStructuredJsonAlreadyContainsActionItems()
+    {
+        const string structured = """{"summary":"Done.","actionItems":[{"task":"Existing task","owner":"bob"}]}""";
+        const string rawItems = "[ ] Another task - @alice";
+
+        var result = SummaryContentBuilder.Build(structured, null, rawItems);
+
+        result.Should().Be(structured);
+    }
 }
