@@ -59,6 +59,7 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
     private readonly TimeProvider _time;
     private readonly IEntitlementChangePublisher? _entitlementChangePublisher;
     private readonly IAiServiceStateStore? _aiServiceStateStore;
+    private readonly ISuspensionLiftService? _suspensionLift;
 
     public AdminWorkspaceBillingService(
         IUnitOfWork unitOfWork,
@@ -69,7 +70,8 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
         ILogger<AdminWorkspaceBillingService> logger,
         TimeProvider? timeProvider = null,
         IEntitlementChangePublisher? entitlementChangePublisher = null,
-        IAiServiceStateStore? aiServiceStateStore = null)
+        IAiServiceStateStore? aiServiceStateStore = null,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _creditService = creditService;
@@ -80,6 +82,7 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
         _time = timeProvider ?? TimeProvider.System;
         _entitlementChangePublisher = entitlementChangePublisher;
         _aiServiceStateStore = aiServiceStateStore;
+        _suspensionLift = suspensionLift;
     }
 
     // ── Read ────────────────────────────────────────────────────────────────────────────────
@@ -364,13 +367,11 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
         // credits is a month the customer cannot use. No payment and no invoice are raised.
         subscription.CurrentPeriodEnd = newEnd;
         subscription.CreditsRemaining += granted;
-        if (subscription.CreditsRemaining > 0
-            && subscription.ServiceState == SubscriptionConstants.ServiceStates.Suspended
-            && subscription.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap)
-        {
-            subscription.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
-            subscription.SuspendedReason = null;
-        }
+        // WT-878: the shared credit-grant rule. A comp does not reset the cycle, so without the
+        // overage-counter settlement a workspace suspended at exactly its cap went straight back to
+        // overage_cap on its next charge; and the cycle-close invoice would bill overage the comp
+        // already covered.
+        var lift = SuspensionLiftService.ApplyCreditGrant(subscription, now);
 
         subscription.UpdatedAt = now;
         subscription.UpdatedBy = actor.ActorId;
@@ -411,12 +412,18 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
                 ["credits_granted"] = Invariant(granted),
                 ["credits_remaining"] = Invariant(subscription.CreditsRemaining),
             },
-            afterSave: () => Task.FromResult(new AdminWorkspaceBillingActionResultDto(
-                AdminAuditWorkspaceActions.PeriodComped,
-                ToSummary(subscription, plan, Now()),
-                entry is null ? null : ToLedgerDto(entry),
-                null,
-                null)),
+            afterSave: async () =>
+            {
+                // As ExtendTrialAsync does for trial_ended: the AI pipeline keeps a lifted room
+                // stopped until it is told.
+                if (lift.Lifted) await PushAiServiceStateAsync(subscription, ct);
+                return new AdminWorkspaceBillingActionResultDto(
+                    AdminAuditWorkspaceActions.PeriodComped,
+                    ToSummary(subscription, plan, Now()),
+                    entry is null ? null : ToLedgerDto(entry),
+                    null,
+                    null);
+            },
             entitlementReason: EntitlementConstants.Reasons.SubscriptionChanged,
             ct);
     }
@@ -519,7 +526,33 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
             ["currency"] = invoice.Currency,
         };
 
-        invoice.MarkPaid(Now());
+        var now = Now();
+        invoice.MarkPaid(now);
+
+        // WT-878: the same settlement InvoiceService.MarkInvoicePaidAsync and the Stripe invoice
+        // payment run. Flipping only the invoice left a workspace the overdue sweeper had suspended
+        // suspended after this page settled its invoice. Staged here so the lift commits in the
+        // same SaveChanges as the invoice (and is discarded with it if the audit refuses).
+        var subscription = invoice.Payment!.Subscription!;
+        var beforeServiceState = subscription.ServiceState;
+        var beforeSuspendedReason = subscription.SuspendedReason;
+        var lift = _suspensionLift is null
+            ? SuspensionLiftOutcome.None
+            : await _suspensionLift.StageAfterInvoicePaidAsync(subscription, invoice.Id, now, ct);
+
+        var after = new Dictionary<string, string?>
+        {
+            ["status"] = invoice.Status,
+            ["invoice_number"] = invoice.InvoiceNumber,
+            ["paid_at"] = invoice.PaidAt is { } paidAt ? Iso(paidAt) : null,
+        };
+        if (lift.Lifted)
+        {
+            before["service_state"] = beforeServiceState;
+            before["suspended_reason"] = beforeSuspendedReason;
+            after["service_state"] = subscription.ServiceState;
+            after["suspended_reason"] = subscription.SuspendedReason;
+        }
 
         return await RecordThenSaveAsync(
             workspaceId,
@@ -529,14 +562,18 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
             invoice.Id,
             request!.Reason.Trim(),
             before,
-            new Dictionary<string, string?>
+            after,
+            afterSave: async () =>
             {
-                ["status"] = invoice.Status,
-                ["invoice_number"] = invoice.InvoiceNumber,
-                ["paid_at"] = invoice.PaidAt is { } paidAt ? Iso(paidAt) : null,
+                if (lift.Lifted && _suspensionLift is not null)
+                {
+                    await _suspensionLift.PushServiceStateAsync(subscription, ct);
+                    await _suspensionLift.PublishCreditsUpdatedAsync(subscription, resumed: true, ct);
+                }
+
+                return new AdminWorkspaceBillingActionResultDto(
+                    AdminAuditWorkspaceActions.InvoiceMarkedPaid, null, null, invoice.ToDto(workspaceId), null);
             },
-            afterSave: () => Task.FromResult(new AdminWorkspaceBillingActionResultDto(
-                AdminAuditWorkspaceActions.InvoiceMarkedPaid, null, null, invoice.ToDto(workspaceId), null)),
             entitlementReason: null,
             ct);
     }

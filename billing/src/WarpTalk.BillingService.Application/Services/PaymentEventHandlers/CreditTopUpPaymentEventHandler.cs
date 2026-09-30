@@ -94,9 +94,8 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         // Credits live on the subscription — it is what CreditsRemaining hangs off and what every
         // consumption path decrements. A workspace with no subscription has nowhere to put them.
         var subscription = context.Subscription
-            ?? await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            ?? await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                context.WorkspaceId, includePlan: false, cancellationToken: cancellationToken);
 
         if (subscription is null)
         {

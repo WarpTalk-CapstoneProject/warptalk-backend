@@ -62,10 +62,14 @@ public class LegacyCancelReactivateStripeTests
         CurrentPeriodEnd = DateTime.UtcNow.AddDays(20),
     };
 
-    private void Returns(Subscription row) =>
+    private void Returns(Subscription row)
+    {
         _subscriptions
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(row);
+        _subscriptions.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(row);
+    }
 
     [Fact]
     public async Task Cancel_StripeManaged_CallsStripeByThePlanSubscriptionId_AndKeepsEntitlements()

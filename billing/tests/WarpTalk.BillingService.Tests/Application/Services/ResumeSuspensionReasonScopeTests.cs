@@ -62,10 +62,14 @@ public class ResumeSuspensionReasonScopeTests
         CurrentPeriodEnd = DateTime.UtcNow.AddDays(10),
     };
 
-    private void Returns(Subscription row) =>
+    private void Returns(Subscription row)
+    {
         _subscriptions
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(row);
+        _subscriptions.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(row);
+    }
 
     [Theory]
     [InlineData(SubscriptionConstants.SuspendedReasons.TrialEnded)]

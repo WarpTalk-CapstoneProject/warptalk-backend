@@ -33,9 +33,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetCurrentForWorkspaceAsync(
+                workspaceId, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<BillingReportDto>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);

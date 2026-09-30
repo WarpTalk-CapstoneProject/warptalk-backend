@@ -40,9 +40,8 @@ public class PaymentService : IPaymentService
     {
         try
         {   //find latest active subscription for workspace
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<PaginatedResponse<PaymentTransactionDto>>(

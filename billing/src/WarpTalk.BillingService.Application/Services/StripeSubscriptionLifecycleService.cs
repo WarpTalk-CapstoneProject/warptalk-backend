@@ -402,10 +402,8 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
     // ---- helpers -----------------------------------------------------------------------------
 
     private Task<Subscription?> LoadLiveAsync(Guid workspaceId, CancellationToken ct) =>
-        _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-            "Plan",
-            ct);
+        _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: true, cancellationToken: ct);
 
     private async Task PublishEntitlementsAsync(Guid workspaceId, CancellationToken ct)
     {
