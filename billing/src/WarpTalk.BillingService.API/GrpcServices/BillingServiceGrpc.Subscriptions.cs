@@ -38,9 +38,11 @@ public partial class BillingServiceGrpc
             throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToCancelSubscription));
         }
 
-        var latestSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
-            context.CancellationToken);
+        // WT-878: the row just cancelled is the live one (cancel-at-period-end keeps it active);
+        // an unordered pick could answer with an older, long-dead row instead.
+        var latestSub = await _unitOfWork.SubscriptionRepository.GetCurrentForWorkspaceAsync(
+            workspaceId,
+            cancellationToken: context.CancellationToken);
 
         if (latestSub != null)
         {
@@ -56,9 +58,11 @@ public partial class BillingServiceGrpc
         if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
             throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
 
-        var latestSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
-            context.CancellationToken);
+        // WT-878: the live row first; the newest inactive row only when nothing is live, so an
+        // expired workspace still reports its last plan with hasActiveSubscription = false.
+        var latestSub = await _unitOfWork.SubscriptionRepository.GetCurrentForWorkspaceAsync(
+            workspaceId,
+            cancellationToken: context.CancellationToken);
 
         if (latestSub == null)
         {

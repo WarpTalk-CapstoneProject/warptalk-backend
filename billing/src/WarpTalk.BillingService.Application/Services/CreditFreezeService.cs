@@ -266,15 +266,21 @@ public sealed class CreditFreezeService : ICreditFreezeService
     /// Credits bought or granted through this subscription, net of what already expired: credit
     /// packs (minus their expiries), credit top-ups, frozen credits released into it, and manual
     /// admin adjustments. Clamped at zero by <see cref="Split"/>.
+    ///
+    /// WT-878: shared with the cycle renewal (CycleRenewalCredits), so a renewal and an expiry agree
+    /// on which part of a balance was bought.
     /// </summary>
-    private async Task<long> PurchasedCreditsAsync(Guid subscriptionId, CancellationToken ct)
+    public static async Task<long> PurchasedCreditsAsync(IUnitOfWork unitOfWork, Guid subscriptionId, CancellationToken ct)
     {
-        var rows = await _unitOfWork.CreditTransactionRepository.FindAsync(
+        var rows = await unitOfWork.CreditTransactionRepository.FindAsync(
             t => t.SubscriptionId == subscriptionId && t.Type != TransactionConstants.TransactionTypes.Consume,
             ct);
 
-        return rows.Where(IsPurchasedOrGranted).Sum(t => (long)t.Amount);
+        return rows is null ? 0L : rows.Where(IsPurchasedOrGranted).Sum(t => (long)t.Amount);
     }
+
+    private Task<long> PurchasedCreditsAsync(Guid subscriptionId, CancellationToken ct) =>
+        PurchasedCreditsAsync(_unitOfWork, subscriptionId, ct);
 
     private static bool IsPurchasedOrGranted(CreditTransaction t) =>
         t.ReferenceType == PackageCatalogConstants.ReferenceTypes.CreditPackPurchase

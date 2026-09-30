@@ -269,6 +269,22 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
                 (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow), cancellationToken);
     }
 
+    public async Task<Subscription?> GetCurrentForWorkspaceAsync(
+        Guid workspaceId,
+        bool includePlan = false,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<Subscription> query = _dbSet;
+        if (includePlan)
+        {
+            query = query.Include(s => s.Plan);
+        }
+
+        return await SubscriptionSelection
+            .OrderCurrentFirst(SubscriptionSelection.ForWorkspace(query, workspaceId))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     // ── Admin Insights (2026-09-17) ──────────────────────────────────────────
 
     public async Task<SubscriptionFlowCounts> GetSubscriptionFlowCountsAsync(
