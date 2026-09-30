@@ -385,6 +385,8 @@ public class WorkspaceDocumentsController : ControllerBase
         {
             ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            // WT-872: a refusal like FORBIDDEN, with its own code so WarpBot can say why.
+            WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))

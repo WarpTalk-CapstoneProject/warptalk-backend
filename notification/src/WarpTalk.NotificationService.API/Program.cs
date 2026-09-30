@@ -122,6 +122,9 @@ builder.Configuration.GetSection("EmailCampaigns").Bind(emailCampaignOptions);
 builder.Services.AddSingleton(emailCampaignOptions);
 builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailAudienceResolver, WarpTalk.NotificationService.Application.Services.EmailCms.EmailAudienceResolver>();
 builder.Services.AddScoped<WarpTalk.NotificationService.Application.Services.EmailCms.IEmailCampaignService, WarpTalk.NotificationService.Application.Services.EmailCms.EmailCampaignService>();
+// Multi-replica: the send worker runs each tick on one replica at a time, under the shared Redis
+// lease (renewed while the tick runs) — see EmailCampaignWorker.
+WarpTalk.Shared.Coordination.CoordinationServiceCollectionExtensions.AddWarpTalkDistributedLocks(builder.Services);
 builder.Services.AddHostedService<WarpTalk.NotificationService.API.HostedServices.EmailCampaignWorker>();
 builder.Services.AddScoped<IAnnouncementService, AnnouncementService>();
 // G12: the pending-work inbox source for content.

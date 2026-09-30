@@ -121,6 +121,38 @@ public sealed class ArtifactsReconciliationLateSummaryTests
         Assert.Equal(1, harness.Saves);
     }
 
+    /// <summary>
+    /// WT-870: a meeting held with "Save the meeting transcript" off gets no summary, and a late
+    /// one is not an exception — the row is left as it is and the key is dropped.
+    /// </summary>
+    [Fact]
+    public async Task ALateSummaryForAMeetingThatKeptNoTranscriptIsDiscardedNotSaved()
+    {
+        var placeholder = SummaryContentBuilder.Build(null, null, null);
+        var harness = new Harness(placeholder, saveTranscript: false);
+        harness.Hash["content"] = Markdown;
+        harness.Hash["structured_json"] = Structured;
+
+        await harness.Worker.RecoverLateSummariesAsync(CancellationToken.None);
+
+        Assert.Equal(placeholder, harness.Artifact.Content);
+        Assert.Equal(0, harness.Saves);
+        Assert.Equal(1, harness.Deletes);
+        Assert.False(harness.KeyExists);
+    }
+
+    [Fact]
+    public async Task ALateSummaryForAMeetingThatKeptItsTranscriptIsStillRecovered()
+    {
+        var harness = new Harness(SummaryContentBuilder.Build(null, null, null), saveTranscript: true);
+        harness.Hash["structured_json"] = Structured;
+
+        await harness.Worker.RecoverLateSummariesAsync(CancellationToken.None);
+
+        Assert.Equal(Structured, harness.Artifact.Content);
+        Assert.Equal(1, harness.Saves);
+    }
+
     private sealed class Harness
     {
         public Dictionary<string, string> Hash { get; } = new();
@@ -132,13 +164,17 @@ public sealed class ArtifactsReconciliationLateSummaryTests
 
         private bool _deleted;
 
-        public Harness(string storedContent)
+        public Harness(string storedContent, bool? saveTranscript = null)
         {
             var room = new TranslationRoom
             {
                 Id = Guid.NewGuid(),
                 Status = "ENDED",
-                EndedAt = DateTime.UtcNow.AddMinutes(-15)
+                EndedAt = DateTime.UtcNow.AddMinutes(-15),
+                // Null leaves the blob empty, which reads as the default — a saved transcript.
+                Settings = saveTranscript is { } save
+                    ? System.Text.Json.JsonSerializer.Serialize(new Domain.ValueObjects.TranslationRoomSettings { SaveTranscript = save })
+                    : null!
             };
             Artifact = new TranslationRoomArtifact
             {

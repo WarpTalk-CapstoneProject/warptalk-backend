@@ -1528,6 +1528,21 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // THE VECTORS HAVE TO GO, NOT JUST BE ANNOUNCED (WT-871). The DocumentDeleted
+            // invalidation above has no consumer — the event catalog lists `consumers: []`,
+            // warptalk-ai never reads `workspace-document-events`, and the only .NET reader of
+            // that stream handles DocumentUploaded alone — so on its own it removed nothing. An
+            // Owner/Admin's WarpBot search is not narrowed by the ai-retrievable allowlist, so it
+            // went on answering from the deleted file, and the Knowledge page (which reads the
+            // same Qdrant points, facts included) went on listing it.
+            //
+            // Same helper and same order as UnpublishDocumentAsync: after the commit, because a
+            // purge that ran ahead of a failed save would strip the index of a document that is
+            // still live. A purge failure is logged and recorded on the audit row but does not
+            // undo the delete — the row is the authority, the allowlist already excludes it, and
+            // what lingers is chunks an Owner/Admin can still remove from the Knowledge page.
+            var vectorsPurged = await TryPurgeDocumentChunksAsync(workspaceId, documentId, ct);
+
             await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
@@ -1538,7 +1553,14 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 userId,
                 ct);
 
-            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DeleteDocument, logger: _logger, ct: ct);
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.DeleteDocument,
+                new { vectorsPurged },
+                _logger,
+                ct);
 
             return Result.Success();
         }
@@ -1962,6 +1984,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (document == null || document.DeletedAt != null)
             {
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
+            }
+
+            // WT-872. This read exists for the assistant — WarpBot's get_document tool is its only
+            // caller — and `view` is not the question the assistant needs answered. The uploader
+            // holds `view` on their own document from the moment it is uploaded, so a document
+            // sitting in Pending Approval, or one an admin had Rejected, was quoted back to them
+            // verbatim by WarpBot while the index (correctly) had never seen it.
+            //
+            // The gate is IsIndexEligible, the one definition of "may the model read this" that
+            // the embedding pipeline already uses — not a second list of statuses kept here.
+            // Checked AFTER the ACL on purpose: someone who may not see the document at all gets
+            // the same answer as before, and only a caller who can see it learns why WarpBot
+            // cannot use it.
+            if (!document.IsIndexEligible())
+            {
+                return Result.Failure<ExtractedTextDto>(
+                    WorkspaceConstants.Errors.DocumentNotAiEligible,
+                    WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode);
             }
 
             string extractedText = string.Empty;
