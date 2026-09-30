@@ -188,6 +188,7 @@ public static class WorkspaceConstants
         public const string AccessDeniedSensitive = "Access denied. Sensitive document.";
         public const string AccessDeniedDefault = "Access denied. Default action blocks access.";
         public const string AccessDeniedPrivate = "Access denied. This document is private.";
+        public const string DocumentNotAiEligible = "This document is not available to WarpBot. It is pending approval, rejected, private, restricted, or AI use is turned off for it.";
     }
 
     // Configuration Keys
