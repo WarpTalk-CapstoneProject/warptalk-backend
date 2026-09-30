@@ -52,6 +52,27 @@ public static class PaymentConstants
             SubscriptionRenewal,
             SubscriptionUpdate
         };
+
+        /// <summary>
+        /// WT-878: the ONLY types a customer may start through <c>POST /payments/checkout</c> —
+        /// each one has a server-priced path in PaymentAppService. Everything else (the lifecycle
+        /// types SubscriptionUpdate / SubscriptionRenewal, InvoicePayment, the add-on lifecycle, any
+        /// unknown string) is refused there: those types exist for events Stripe or the server
+        /// raises, and a checkout that named one used to fall through to the generic session and
+        /// charge the client's own Amount for a plan the webhook then activated.
+        /// InvoicePayment has its own endpoint (InvoiceService.CreateInvoiceCheckoutSessionAsync), priced
+        /// from the invoice.
+        /// </summary>
+        public static readonly IReadOnlyList<string> CustomerCheckoutTypes = new[]
+        {
+            Subscription,
+            CreditTopUp,
+            CreditPack,
+            AddOn
+        };
+
+        public const string CheckoutTypeNotAllowedMessage =
+            "This payment type cannot be purchased through checkout.";
     }
 
     public static class PaymentStatuses
