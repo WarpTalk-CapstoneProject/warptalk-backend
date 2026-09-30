@@ -52,6 +52,10 @@ public class TranslationRoomServiceTests
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
+        // The conditional ENDED transition wins unless a test says a concurrent End got there first.
+        _mockRoomRepo.Setup(r => r.TryMarkEndedAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomSessionRepository).Returns(_mockSessionRepo.Object);
@@ -925,6 +929,42 @@ public class TranslationRoomServiceTests
         room.EndedAt.Should().NotBeNull();
         room.DurationSeconds.Should().BeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
+    }
+
+    /// <summary>
+    /// k8s multi-replica dedupe. "End for everyone" reaches this service more than once per meeting,
+    /// and on two replicas the repeats run in parallel: each read its own copy of the room as
+    /// IN_PROGRESS, and each went on to process session_ends — which is what queues finalization,
+    /// so the meeting got two sets of artifacts and two "Summary ready" notifications. Only the End
+    /// that wins the conditional ENDED transition may do that.
+    /// </summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ConcurrentEnds_ProcessSessionEndsOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        // Each call reads its own entity, as each replica reads its own row.
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() => new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{}" });
+        var ended = 0;
+        _mockRoomRepo.Setup(r => r.TryMarkEndedAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref ended, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.EndTranslationRoomAsync(roomId, hostId),
+            _service.EndTranslationRoomAsync(roomId, hostId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.IsAny<string>()),
+            Times.Once);
+        _mockUow.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _mockUow.Verify(u => u.RollbackTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // WT-191 — participants used to sit in an ended room until they pressed Leave, because

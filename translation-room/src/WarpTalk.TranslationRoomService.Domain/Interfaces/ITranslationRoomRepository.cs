@@ -128,4 +128,20 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<TranslationRoom?> GetByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default);
     Task<List<TranslationRoom>> GetHistoryByUserIdAsync(Guid userId, int limit, int offset, CancellationToken ct = default);
     Task<int> CountActiveByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Moves the room to ENDED as one conditional UPDATE, only while its status is still one of
+    /// <paramref name="fromStatuses"/>, and returns whether THIS call did it.
+    ///
+    /// Ending is reached more than once per meeting — the client's "End for everyone" repeats, and
+    /// with two replicas the repeats run truly in parallel. A read-then-save lets every one of them
+    /// see IN_PROGRESS and each go on to fire the once-per-meeting side effects (finalization,
+    /// "Summary ready", the meeting-ended metric). The winner of this compare-and-set is the only
+    /// caller that does.
+    /// </summary>
+    Task<bool> TryMarkEndedAsync(
+        Guid roomId,
+        IReadOnlyCollection<string> fromStatuses,
+        DateTime endedAtUtc,
+        CancellationToken ct = default);
 }

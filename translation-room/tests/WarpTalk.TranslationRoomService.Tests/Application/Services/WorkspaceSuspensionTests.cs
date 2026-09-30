@@ -53,6 +53,9 @@ public class WorkspaceSuspensionTests
 
     public WorkspaceSuspensionTests()
     {
+        _mockRoomRepo.Setup(r => r.TryMarkEndedAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
