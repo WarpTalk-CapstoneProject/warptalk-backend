@@ -30,7 +30,10 @@ public class TranscriptQueryService : ITranscriptQueryService
         _logger = logger;
     }
 
-    public async Task<Result<TranscriptDto>> GetTranscriptAsync(Guid transcriptId, Guid userId, CancellationToken cancellationToken = default)
+    public Task<Result<TranscriptDto>> GetTranscriptAsync(Guid transcriptId, Guid userId, CancellationToken cancellationToken = default)
+        => GetTranscriptAsync(transcriptId, userId, null, cancellationToken);
+
+    public async Task<Result<TranscriptDto>> GetTranscriptAsync(Guid transcriptId, Guid userId, string? userEmail, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -38,7 +41,7 @@ public class TranscriptQueryService : ITranscriptQueryService
             if (transcript == null || transcript.DeletedAt != null)
                 return Result.Failure<TranscriptDto>($"Transcript with ID {transcriptId} not found.", "NOT_FOUND");
 
-            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+            if (!await CanAccessTranscriptAsync(transcript, userId, userEmail, cancellationToken))
                 return Result.Failure<TranscriptDto>("You do not have access to this transcript.", "FORBIDDEN");
 
             return Result.Success(transcript.ToDto());
@@ -50,7 +53,10 @@ public class TranscriptQueryService : ITranscriptQueryService
         }
     }
 
-    public async Task<Result<TranscriptDto>> GetTranscriptByTranslationRoomAsync(Guid translationRoomId, Guid userId, CancellationToken cancellationToken = default)
+    public Task<Result<TranscriptDto>> GetTranscriptByTranslationRoomAsync(Guid translationRoomId, Guid userId, CancellationToken cancellationToken = default)
+        => GetTranscriptByTranslationRoomAsync(translationRoomId, userId, null, cancellationToken);
+
+    public async Task<Result<TranscriptDto>> GetTranscriptByTranslationRoomAsync(Guid translationRoomId, Guid userId, string? userEmail, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -70,7 +76,7 @@ public class TranscriptQueryService : ITranscriptQueryService
             if (transcript == null)
                 return Result.Failure<TranscriptDto>($"Transcript for room {translationRoomId} not found.", "NOT_FOUND");
 
-            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+            if (!await CanAccessTranscriptAsync(transcript, userId, userEmail, cancellationToken))
                 return Result.Failure<TranscriptDto>("You do not have access to this transcript.", "FORBIDDEN");
 
             return Result.Success(transcript.ToDto());
@@ -82,7 +88,10 @@ public class TranscriptQueryService : ITranscriptQueryService
         }
     }
 
-    public async Task<Result<PagedResult<TranscriptSegmentDto>>> GetSegmentsAsync(Guid transcriptId, Guid userId, int skip = 0, int take = 50, CancellationToken cancellationToken = default)
+    public Task<Result<PagedResult<TranscriptSegmentDto>>> GetSegmentsAsync(Guid transcriptId, Guid userId, int skip = 0, int take = 50, CancellationToken cancellationToken = default)
+        => GetSegmentsAsync(transcriptId, userId, skip, take, null, cancellationToken);
+
+    public async Task<Result<PagedResult<TranscriptSegmentDto>>> GetSegmentsAsync(Guid transcriptId, Guid userId, int skip, int take, string? userEmail, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -92,7 +101,7 @@ public class TranscriptQueryService : ITranscriptQueryService
                 return Result.Failure<PagedResult<TranscriptSegmentDto>>($"Transcript with ID {transcriptId} not found.", "NOT_FOUND");
             }
 
-            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+            if (!await CanAccessTranscriptAsync(transcript, userId, userEmail, cancellationToken))
                 return Result.Failure<PagedResult<TranscriptSegmentDto>>("You do not have access to this transcript.", "FORBIDDEN");
 
             var totalCount = await _unitOfWork.TranscriptSegments.CountAsync(s => s.TranscriptId == transcriptId, cancellationToken);
@@ -131,7 +140,10 @@ public class TranscriptQueryService : ITranscriptQueryService
     /// was said. A sentence none of whose segments are stored yet falls back to its recorded start,
     /// then to when it was stored, and sorts after every anchored sentence.
     /// </remarks>
-    public async Task<Result<PagedResult<TranscriptCleanSentenceDto>>> GetCleanSentencesAsync(Guid transcriptId, Guid userId, int skip = 0, int take = 50, CancellationToken cancellationToken = default)
+    public Task<Result<PagedResult<TranscriptCleanSentenceDto>>> GetCleanSentencesAsync(Guid transcriptId, Guid userId, int skip = 0, int take = 50, CancellationToken cancellationToken = default)
+        => GetCleanSentencesAsync(transcriptId, userId, skip, take, null, cancellationToken);
+
+    public async Task<Result<PagedResult<TranscriptCleanSentenceDto>>> GetCleanSentencesAsync(Guid transcriptId, Guid userId, int skip, int take, string? userEmail, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -141,7 +153,7 @@ public class TranscriptQueryService : ITranscriptQueryService
                 return Result.Failure<PagedResult<TranscriptCleanSentenceDto>>($"Transcript with ID {transcriptId} not found.", "NOT_FOUND");
             }
 
-            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+            if (!await CanAccessTranscriptAsync(transcript, userId, userEmail, cancellationToken))
                 return Result.Failure<PagedResult<TranscriptCleanSentenceDto>>("You do not have access to this transcript.", "FORBIDDEN");
 
             var sentences = await _unitOfWork.TranscriptCleanSentences.GetByTranscriptIdAsync(transcriptId, cancellationToken);
@@ -184,7 +196,10 @@ public class TranscriptQueryService : ITranscriptQueryService
             .Select(x => x.Sentence);
     }
 
-    public async Task<Result<PagedResult<TranscriptTranslationDto>>> GetTranslationsAsync(Guid transcriptId, Guid userId, int skip = 0, int take = 50, CancellationToken cancellationToken = default)
+    public Task<Result<PagedResult<TranscriptTranslationDto>>> GetTranslationsAsync(Guid transcriptId, Guid userId, int skip = 0, int take = 50, CancellationToken cancellationToken = default)
+        => GetTranslationsAsync(transcriptId, userId, skip, take, null, cancellationToken);
+
+    public async Task<Result<PagedResult<TranscriptTranslationDto>>> GetTranslationsAsync(Guid transcriptId, Guid userId, int skip, int take, string? userEmail, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -194,7 +209,7 @@ public class TranscriptQueryService : ITranscriptQueryService
                 return Result.Failure<PagedResult<TranscriptTranslationDto>>($"Transcript with ID {transcriptId} not found.", "NOT_FOUND");
             }
 
-            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+            if (!await CanAccessTranscriptAsync(transcript, userId, userEmail, cancellationToken))
                 return Result.Failure<PagedResult<TranscriptTranslationDto>>("You do not have access to this transcript.", "FORBIDDEN");
 
             // TranscriptTranslation (the old 1:1 table) was dropped — translations now live in
@@ -245,6 +260,8 @@ public class TranscriptQueryService : ITranscriptQueryService
         }
     }
 
-    private Task<bool> CanAccessTranscriptAsync(WarpTalk.TranscriptService.Domain.Entities.Transcript transcript, Guid userId, CancellationToken cancellationToken)
-        => _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, cancellationToken);
+    private Task<bool> CanAccessTranscriptAsync(WarpTalk.TranscriptService.Domain.Entities.Transcript transcript, Guid userId, string? userEmail, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(userEmail)
+            ? _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, cancellationToken)
+            : _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, userEmail, cancellationToken);
 }

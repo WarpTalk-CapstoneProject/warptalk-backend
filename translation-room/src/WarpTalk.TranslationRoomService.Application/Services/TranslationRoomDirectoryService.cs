@@ -8,6 +8,7 @@ using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
+using WarpTalk.TranslationRoomService.Domain.Authorization;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -64,9 +65,17 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         => GetRoomAsync(translationRoomId, includeArtifactLanguages: false, ct);
 
     /// <inheritdoc />
+    public Task<Result<TranslationRoomDto>> GetRoomAsync(
+        Guid translationRoomId,
+        bool includeArtifactLanguages,
+        CancellationToken ct = default)
+        => GetRoomAsync(translationRoomId, includeArtifactLanguages, requesterEmail: null, ct);
+
+    /// <inheritdoc />
     public async Task<Result<TranslationRoomDto>> GetRoomAsync(
         Guid translationRoomId,
         bool includeArtifactLanguages,
+        string? requesterEmail,
         CancellationToken ct = default)
     {
         var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
@@ -85,7 +94,30 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         if (includeArtifactLanguages)
             dto = dto with { ArtifactLanguages = await ResolveArtifactLanguagesAsync(room, ct) };
 
+        if (requesterEmail is not null)
+            dto = dto with { IsRequesterInvited = await IsInvitedAsync(translationRoomId, requesterEmail, ct) };
+
         return Result.Success(dto);
+    }
+
+    /// <summary>
+    /// WT-849: whether <paramref name="requesterEmail"/> holds a live invitation to this room —
+    /// the same status allow-list and email normalisation
+    /// <c>ArtifactAccessHelper.IsParticipantOrInvited</c> asks on the translation-room side, so a
+    /// consumer across the mesh agrees with the in-process check instead of restating a looser
+    /// copy of it.
+    /// </summary>
+    private async Task<bool> IsInvitedAsync(Guid translationRoomId, string requesterEmail, CancellationToken ct)
+    {
+        var email = RoomReadAccess.NormalizeEmail(requesterEmail);
+        if (email is null) return false;
+
+        var invitations = await _unitOfWork.TranslationRoomInvitationRepository.FindAsync(
+            i => i.TranslationRoomId == translationRoomId, ct: ct);
+
+        return invitations.Any(i =>
+            RoomReadAccess.NormalizeEmail(i.Email) == email &&
+            RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status));
     }
 
     /// <summary>

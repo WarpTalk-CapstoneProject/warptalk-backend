@@ -63,8 +63,12 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         //
         // WT-704: the generatable artifact languages are opt-in — they cost a workspace RPC plus a
         // catalog read, and most callers of this RPC are on hot paths that never need them.
+        //
+        // WT-849: requester_email is opt-in the same way — empty from a caller (like most of this
+        // RPC's callers) that never needs to know whether ITS caller holds a standing invitation.
+        var requesterEmail = string.IsNullOrWhiteSpace(request.RequesterEmail) ? null : request.RequesterEmail;
         var result = await _directoryService.GetRoomAsync(
-            parsedId, request.IncludeArtifactLanguages, context.CancellationToken);
+            parsedId, request.IncludeArtifactLanguages, requesterEmail, context.CancellationToken);
 
         if (!result.IsSuccess)
             throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.Id);
@@ -113,6 +117,14 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         {
             response.GeneratableArtifactLanguages.AddRange(artifactLanguages.Generatable);
             response.ArtifactLanguagesResolved = true;
+        }
+
+        // WT-849: only set alongside a real answer — requester_email absent means the directory
+        // service never looked, and the field must then stay absent rather than default to false,
+        // the same field-presence rule save_transcript documents above.
+        if (requesterEmail is not null && result.Value!.IsRequesterInvited is { } isInvited)
+        {
+            response.IsRequesterInvited = isInvited;
         }
 
         return response;

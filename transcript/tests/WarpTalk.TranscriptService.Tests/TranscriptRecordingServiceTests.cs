@@ -311,6 +311,7 @@ public class TranscriptRecordingServiceTests
         var pauseAccess = new TranscriptPauseAccess(new FakeRoomClient(host));
         var readAccess = Substitute.For<ITranscriptReadAccess>();
         readAccess.CanReadRoomTranscriptAsync(RoomId, host, Arg.Any<CancellationToken>()).Returns(true);
+        readAccess.CanReadRoomTranscriptAsync(RoomId, host, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(true);
 
         var database = Substitute.For<IDatabase>();
         var multiplexer = Substitute.For<IConnectionMultiplexer>();

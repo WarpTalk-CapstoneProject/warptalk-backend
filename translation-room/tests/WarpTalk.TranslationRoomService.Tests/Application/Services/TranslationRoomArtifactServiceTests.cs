@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
@@ -136,6 +137,97 @@ public sealed class TranslationRoomArtifactServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
     }
+
+    /// <summary>
+    /// WT-849: somebody invited by email who never joined reads the outputs once the host has
+    /// shared them with ALL_PARTICIPANTS — the same person the room page already admits. The
+    /// email claim arrives in whatever case the identity provider issued it.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_AdmitsAnInviteeWhoNeverJoined_WhenTheHostSharedTheOutputs()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.AllParticipants);
+        Invite(artifact, "Alice@Example.com", "PENDING");
+
+        var result = await CreateService(artifact)
+            .GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid(), "alice@example.COM");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Contains("Real transcript", result.Value!.Content);
+    }
+
+    /// <summary>
+    /// HOST_ONLY is still HOST_ONLY for an invitee — and the refusal says so, rather than telling
+    /// them they were never part of the meeting.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_RefusesAnInviteeOnAHostOnlyRoom_AndPointsAtTheHost()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.HostOnly);
+        Invite(artifact, "alice@example.com", "ACCEPTED");
+
+        var result = await CreateService(artifact)
+            .GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid(), "alice@example.com");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+        Assert.Equal(ArtifactAccessHelper.DescribeArtifactDenial(isParticipantOrInvited: true), result.Error);
+    }
+
+    /// <summary>
+    /// An invitation outside RoomReadAccess.InvitationStatusesGrantingRead is no relation at all —
+    /// neither for the gate nor for the wording of the refusal. The refusal used to be computed
+    /// with its own lookup that ignored status, so a revoked invitee was told "ask the host".
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_TreatsARevokedInvitationAsNoRelation()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.AllParticipants);
+        Invite(artifact, "alice@example.com", "REVOKED");
+
+        var result = await CreateService(artifact)
+            .GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid(), "alice@example.com");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+        Assert.Equal(ArtifactAccessHelper.DescribeArtifactDenial(isParticipantOrInvited: false), result.Error);
+    }
+
+    /// <summary>A caller with no email claim cannot match an invitation, so is refused as a stranger.</summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_RefusesACallerWithoutAnEmailClaim()
+    {
+        var artifact = CreateArtifact(Guid.NewGuid());
+        artifact.Content = "# Real transcript";
+        artifact.TranslationRoom.Settings = SettingsWith(ArtifactAccessLevels.AllParticipants);
+        Invite(artifact, "alice@example.com", "PENDING");
+
+        var result = await CreateService(artifact).GetArtifactDownloadAsync(artifact.Id, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Unauthorized, result.ErrorCode);
+    }
+
+    // Serialised from the value object itself rather than written by hand: the wire key is
+    // "artifact_access", and a hand-typed "artifactAccess" silently reads back as HOST_ONLY.
+    private static string SettingsWith(string artifactAccess)
+        => System.Text.Json.JsonSerializer.Serialize(
+            new WarpTalk.TranslationRoomService.Domain.ValueObjects.TranslationRoomSettings { ArtifactAccess = artifactAccess });
+
+    private static void Invite(TranslationRoomArtifact artifact, string email, string status)
+        => artifact.TranslationRoom.TranslationRoomInvitations.Add(new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = artifact.TranslationRoomId,
+            Email = email,
+            Status = status
+        });
 
     private static TranslationRoomArtifactService CreateService(TranslationRoomArtifact artifact)
     {

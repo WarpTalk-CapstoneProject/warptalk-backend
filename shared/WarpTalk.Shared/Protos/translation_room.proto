@@ -69,6 +69,10 @@ message GetTranslationRoomRequest {
   // transcript read access — none of which need it. Only callers that gate GENERATION of new
   // language content (transcript backfill, MT correction) set it.
   bool include_artifact_languages = 2;
+  // WT-849: the caller's email claim, so the response can say whether THIS person holds a
+  // standing invitation to the room. Empty when the caller has no email claim, or does not need
+  // the answer — in either case the server computes nothing and is_requester_invited is absent.
+  string requester_email = 3;
 }
 
 message GetTranslationRoomByCodeRequest {
@@ -153,6 +157,18 @@ message GetTranslationRoomResponse {
   // must then fall back to the room's own set (source_language + target_languages), never to
   // "anything". An EMPTY list with resolved=true is an answer: nothing may be generated.
   bool artifact_languages_resolved = 19;
+  // WT-849: whether the caller named in GetTranslationRoomRequest.requester_email holds a live
+  // (PENDING or ACCEPTED) invitation to this room — the same relation
+  // ArtifactAccessHelper.IsParticipantOrInvited asks on the translation-room side, so a consumer
+  // that treats an invitee as a participant for sharing purposes agrees with that helper instead
+  // of restating a looser copy of it.
+  //
+  // `optional` — real field presence, for the same reason as `save_transcript` above: the request
+  // must have carried an email for this to mean anything, and a bare bool defaults to FALSE on
+  // proto3, which would read as "not invited" for a caller this server never got to check. Absent
+  // means "no requester_email was sent, or this server predates the field" — the reader must NOT
+  // treat absent as an answer either way, only as "ask the room-read predicate instead".
+  optional bool is_requester_invited = 20;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

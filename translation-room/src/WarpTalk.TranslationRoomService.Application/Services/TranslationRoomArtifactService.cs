@@ -54,13 +54,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         string templateKey,
         string? summaryLanguage,
         string? bearerToken,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null)
@@ -72,7 +73,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
                 return Result.Failure<string>("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<string>("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
 
             // THE HOST DECIDES WHAT THE MEETING'S SUMMARY IS (WT-703).
@@ -184,6 +185,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         Guid roomId,
         Guid userId,
         string requestId,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(requestId))
@@ -191,7 +193,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
         var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
             r => r.Id == roomId,
-            "TranslationRoomParticipants,TranslationRoomArtifacts",
+            "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
             ct);
 
         if (room == null)
@@ -200,7 +202,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         // The same gate as reading the artifacts, because the failure text quotes what the worker
         // found in this meeting's transcript — "This meeting has no saved transcript to summarise"
         // is itself a fact about the meeting.
-        if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+        if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
             return Result.Failure<SummaryRewriteStatusDto>("Unauthorized to read this room's artifacts.", ErrorCodes.Unauthorized);
 
         var outcome = await ReadRewriteOutcomeAsync(requestId);
@@ -243,13 +245,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         string templateKey,
         string? language,
         string? bearerToken,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null)
@@ -261,7 +264,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // The same gate the canonical summary is read behind. A rendering is the same
             // meeting's content in another language — it must not be reachable by anyone the
             // original is not.
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<SummaryVariantDto>("Unauthorized to read this room's summary.", ErrorCodes.Unauthorized);
 
             var wantedTemplate = NormalizeTemplateKey(templateKey);
@@ -517,19 +520,20 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     public async Task<Result<List<SummaryVariantSummaryDto>>> GetSummaryVariantsAsync(
         Guid roomId,
         Guid userId,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null)
                 return Result.Failure<List<SummaryVariantSummaryDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<List<SummaryVariantSummaryDto>>("Unauthorized to read this room's summary.", ErrorCodes.Unauthorized);
 
             var listed = new List<SummaryVariantSummaryDto>();
@@ -713,13 +717,13 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         return stored.TemplateKey == templateKey && stored.Language == language;
     }
 
-    public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null) return Result.Failure<List<RoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
@@ -729,7 +733,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 return Result.Failure<List<RoomArtifactDto>>("Artifacts are only available for finished rooms.", ErrorCodes.InvalidState);
             }
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<List<RoomArtifactDto>>("Unauthorized to view artifacts for this room.", ErrorCodes.Unauthorized);
 
             var artifacts = await _unitOfWork.TranslationRoomArtifactRepository.GetArtifactsByRoomIdAsync(roomId, ct);
@@ -746,6 +750,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     public async Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(
         Guid artifactId,
         Guid userId,
+        string? userEmail = null,
         bool asAttachment = false,
         CancellationToken ct = default)
     {
@@ -755,15 +760,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure<ArtifactDownloadDto>("Artifact not found.", ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId, userEmail))
             {
                 // Named rather than flat — see ArtifactAccessHelper.DescribeArtifactDenial. The
-                // participant roster is already loaded on the room this query returned, so saying
-                // WHICH refusal this is costs nothing beyond the predicate.
-                var wasThere = artifact.TranslationRoom.TranslationRoomParticipants
-                    .Any(participant => participant.UserId == userId);
+                // participant roster and invitation list are already loaded on the room, so
+                // determining WHICH refusal this is costs nothing beyond the predicate.
                 return Result.Failure<ArtifactDownloadDto>(
-                    ArtifactAccessHelper.DescribeArtifactDenial(wasThere),
+                    ArtifactAccessHelper.DescribeArtifactDenial(
+                        ArtifactAccessHelper.IsParticipantOrInvited(artifact.TranslationRoom, userId, userEmail)),
                     ErrorCodes.Unauthorized);
             }
 

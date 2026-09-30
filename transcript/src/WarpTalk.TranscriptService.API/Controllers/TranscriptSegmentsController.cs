@@ -2,11 +2,11 @@ using System;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.Shared.Extensions;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
-
-using Microsoft.AspNetCore.Authorization;
 
 namespace WarpTalk.TranscriptService.API.Controllers;
 
@@ -33,7 +33,7 @@ public class TranscriptSegmentsController : ControllerBase
         if (!Guid.TryParse(userIdString, out var userId))
             return Unauthorized();
 
-        var result = await _transcriptQueryService.GetSegmentsAsync(transcriptId, userId, skip, take, cancellationToken);
+        var result = await _transcriptQueryService.GetSegmentsAsync(transcriptId, userId, skip, take, User.GetEmail(), cancellationToken);
 
         if (!result.IsSuccess)
         {

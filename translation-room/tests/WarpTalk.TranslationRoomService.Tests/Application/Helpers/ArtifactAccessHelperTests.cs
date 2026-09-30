@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using FluentAssertions;
 using WarpTalk.TranslationRoomService.Application.Helpers;
+using WarpTalk.TranslationRoomService.Domain.Authorization;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.ValueObjects;
@@ -139,6 +140,75 @@ public class ArtifactAccessHelperTests
         ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId).Should().Be(expected);
     }
 
+    // WT-849: Invited-but-absent users should be treated like participants when the host
+    // enables ALL_PARTICIPANTS. The old guard hard-blocked anyone with isParticipant == false,
+    // which excluded every person who was invited but could not join — a majority of recipients
+    // for enterprise meetings scheduled in advance.
+
+    [Fact]
+    public void Invitee_IsAdmitted_OnAnAllParticipantsRoom_WhenEmailProvided()
+    {
+        var hostId = Guid.NewGuid();
+        var inviteeId = Guid.NewGuid();
+        const string inviteeEmail = "alice@example.com";
+        var room = CreateRoomWithInvitee(hostId, ArtifactAccessLevels.AllParticipants, inviteeEmail);
+
+        // Not a participant (never joined), but was invited — should be admitted.
+        ArtifactAccessHelper.HasAccessToRoomArtifacts(room, inviteeId, inviteeEmail)
+            .Should().BeTrue("invited-but-absent members may see artifacts when host enables ALL_PARTICIPANTS");
+    }
+
+    [Fact]
+    public void Invitee_IsRefused_OnAHostOnlyRoom_EvenWithEmail()
+    {
+        var hostId = Guid.NewGuid();
+        var inviteeId = Guid.NewGuid();
+        const string inviteeEmail = "bob@example.com";
+        var room = CreateRoomWithInvitee(hostId, ArtifactAccessLevels.HostOnly, inviteeEmail);
+
+        ArtifactAccessHelper.HasAccessToRoomArtifacts(room, inviteeId, inviteeEmail)
+            .Should().BeFalse("HOST_ONLY still denies everyone who is not the host, even if invited");
+    }
+
+    [Fact]
+    public void Invitee_EmailCaseInsensitive_IsAdmitted_OnAllParticipantsRoom()
+    {
+        // WT-496 established that email matching must be case-insensitive. WT-849 must not
+        // reintroduce case-sensitivity through the invitation path.
+        var hostId = Guid.NewGuid();
+        var inviteeId = Guid.NewGuid();
+        var room = CreateRoomWithInvitee(hostId, ArtifactAccessLevels.AllParticipants, "Alice@Example.COM");
+
+        // Caller supplies the token-cased email; invitation is stored with a different case.
+        ArtifactAccessHelper.HasAccessToRoomArtifacts(room, inviteeId, "alice@example.com")
+            .Should().BeTrue("email comparison must be case-insensitive");
+    }
+
+    [Fact]
+    public void Stranger_WithNoInvitation_IsRefused_OnAllParticipantsRoom()
+    {
+        var hostId = Guid.NewGuid();
+        var room = CreateRoomWithInvitee(hostId, ArtifactAccessLevels.AllParticipants, "carol@example.com");
+
+        // A completely different person — not a participant, not an invitee.
+        ArtifactAccessHelper.HasAccessToRoomArtifacts(room, Guid.NewGuid(), "stranger@example.com")
+            .Should().BeFalse("share-link strangers must still be denied");
+    }
+
+    [Fact]
+    public void DescribeArtifactDenial_IsParticipantOrInvited_ReturnsHostSettingMessage()
+    {
+        ArtifactAccessHelper.DescribeArtifactDenial(isParticipantOrInvited: true)
+            .Should().Contain("host");
+    }
+
+    [Fact]
+    public void DescribeArtifactDenial_IsNeitherParticipantNorInvitee_ReturnsPresenceMessage()
+    {
+        ArtifactAccessHelper.DescribeArtifactDenial(isParticipantOrInvited: false)
+            .Should().Contain("invited");
+    }
+
     [Fact]
     public void TheVocabularyIsExactlyWhatTheWritersProduce()
     {
@@ -172,7 +242,33 @@ public class ArtifactAccessHelperTests
             Id = Guid.NewGuid(),
             HostId = hostId,
             Settings = Serialize(artifactAccess),
-            TranslationRoomParticipants = participants
+            TranslationRoomParticipants = participants,
+            TranslationRoomInvitations = new List<TranslationRoomInvitation>()
+        };
+    }
+
+    /// <summary>
+    /// Creates a room with NO joined participants, but with one email invitation in PENDING status.
+    /// This is the WT-849 scenario: invited but absent.
+    /// </summary>
+    private static TranslationRoom CreateRoomWithInvitee(Guid hostId, string artifactAccess, string inviteeEmail)
+    {
+        return new TranslationRoom
+        {
+            Id = Guid.NewGuid(),
+            HostId = hostId,
+            Settings = Serialize(artifactAccess),
+            TranslationRoomParticipants = new List<TranslationRoomParticipant>(),
+            TranslationRoomInvitations = new List<TranslationRoomInvitation>
+            {
+                new()
+                {
+                    Email = inviteeEmail,
+                    // PENDING is one of RoomReadAccess.InvitationStatusesGrantingRead.
+                    // Storing the invitation but never joining leaves it PENDING.
+                    Status = RoomReadAccess.InvitationStatusesGrantingRead[0]
+                }
+            }
         };
     }
 }
