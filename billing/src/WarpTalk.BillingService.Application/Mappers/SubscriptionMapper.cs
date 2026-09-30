@@ -77,12 +77,27 @@ public static class SubscriptionMapper
         TrialEndsAt: sub.TrialEndsAt
     );
 
+    /// <summary>
+    /// Cancel at period end: renewal off, the plan stays in force until <c>CurrentPeriodEnd</c>.
+    ///
+    /// WT-878: this used to also set <c>Status = cancelled</c>. <see cref="Subscription.GrantsPlanEntitlements"/>
+    /// requires <c>Status == active</c>, so the workspace fell to the platform floor the moment it
+    /// cancelled, weeks before the period it had paid for ended — while the product (and Stripe)
+    /// promise the plan runs to the end. The Status is therefore left alone; "cancelled at period
+    /// end" is <c>AutoRenew == false</c>, exactly what the #466 auto-renew-off path writes
+    /// (StripeSubscriptionLifecycleService.ApplyAutoRenew), and what <c>CancelAtPeriodEnd</c> on
+    /// the wire already reads (<c>!AutoRenew</c>).
+    ///
+    /// Nothing else is needed for the period end: SubscriptionOwnership.DueForExpiry takes an
+    /// active row whose period has ended unless an owner may still renew it, and both of those
+    /// exclusions (invoice cycle close, Stripe renewal) require <c>AutoRenew</c>. So the expiry
+    /// sweep ends the row — IsActive false, Status expired — at <c>CurrentPeriodEnd</c>.
+    /// </summary>
     public static void Cancel(this Subscription sub, string? reason)
     {
         var now = DateTime.UtcNow;
         sub.CancellationReason = reason;
         sub.AutoRenew = false;
-        sub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
         sub.UpdatedAt = now;
     }
 

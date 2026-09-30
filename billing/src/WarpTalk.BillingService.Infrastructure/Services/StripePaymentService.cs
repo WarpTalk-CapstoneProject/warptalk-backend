@@ -331,8 +331,51 @@ public class StripePaymentService : IStripePaymentService
             ? (long)decimal.Round(amount, 0, MidpointRounding.AwayFromZero)
             : (long)decimal.Round(amount * 100m, 0, MidpointRounding.AwayFromZero);
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// WT-878. Addressed by id — the id stored on the plan's own subscription row — so it can only
+    /// ever touch that one Stripe subscription. The metadata search below matched every active
+    /// subscription carrying the workspace id, add-ons included.
+    /// </remarks>
+    public async Task<Result<string>> SetPlanSubscriptionCancelAtPeriodEndAsync(
+        string stripeSubscriptionId,
+        bool cancelAtPeriodEnd,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(stripeSubscriptionId))
+        {
+            return Result.Failure<string>("No Stripe subscription id.", ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var updated = await _stripeSdkClient.UpdateSubscriptionAsync(
+                stripeSubscriptionId,
+                new SubscriptionUpdateOptions { CancelAtPeriodEnd = cancelAtPeriodEnd },
+                cancellationToken);
+            return Result.Success(updated?.Status ?? string.Empty);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return Result.Failure<string>(ex.Message, ErrorCodes.BillingExternalServiceError);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// WT-878: the search matches on the workspace id alone, and add-on subscriptions carry the same
+    /// workspace id (<see cref="BaseMetadata"/>). Only PLAN subscriptions are touched now — see
+    /// <see cref="IsPlanSubscription"/>. With no Stripe key configured nothing in Stripe can be
+    /// charging this workspace, so that reads as "nothing to cancel" rather than an error.
+    /// </remarks>
     public async Task<Result<bool>> CancelSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken = default)
     {
+        var secretKey = _configuration[PaymentConstants.StripeConfigKeys.SecretKey];
+        if (string.IsNullOrEmpty(secretKey) || secretKey == PaymentConstants.StripePlaceholders.SecretKeyPlaceholder)
+        {
+            return Result.Success(false);
+        }
+
         try
         {
             var searchOptions = new SubscriptionSearchOptions
@@ -342,10 +385,14 @@ public class StripePaymentService : IStripePaymentService
 
             var searchResults = await _stripeSdkClient.SearchSubscriptionsAsync(searchOptions, cancellationToken);
 
-            if (searchResults.Data.Count == 0)
+            var planSubscriptions = (searchResults?.Data ?? new List<Stripe.Subscription>())
+                .Where(IsPlanSubscription)
+                .ToList();
+
+            if (planSubscriptions.Count == 0)
                 return Result.Success(false);
 
-            foreach (var sub in searchResults.Data)
+            foreach (var sub in planSubscriptions)
             {
                 var updateOptions = new SubscriptionUpdateOptions
                 {
@@ -356,10 +403,35 @@ public class StripePaymentService : IStripePaymentService
 
             return Result.Success(true);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
+            return Result.Failure<bool>(ex.Message, ErrorCodes.BillingExternalServiceError);
         }
+    }
+
+    /// <summary>
+    /// WT-878: whether a Stripe subscription found by workspace is the PLAN's. Every checkout this
+    /// service creates stamps <c>PaymentType</c> on the subscription; an add-on's says
+    /// <c>AddOn</c> and also carries the catalog <c>PackageId</c>. Anything naming another payment
+    /// type, or carrying a package id, is not the plan and is left alone. A subscription with no
+    /// payment type at all predates that metadata and can only be a plan checkout.
+    /// </summary>
+    public static bool IsPlanSubscription(Stripe.Subscription subscription)
+    {
+        var metadata = subscription.Metadata;
+        if (metadata is null)
+        {
+            return true;
+        }
+
+        if (metadata.ContainsKey(PackageCatalogConstants.StripeMetadata.PackageId))
+        {
+            return false;
+        }
+
+        return !metadata.TryGetValue(PaymentConstants.StripeMetadata.PaymentType, out var paymentType)
+               || string.IsNullOrWhiteSpace(paymentType)
+               || string.Equals(paymentType, PaymentConstants.PaymentTypes.Subscription, StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<Result<(string Status, string FailureReason)>> GetPaymentStatusAsync(string providerTransactionId, CancellationToken cancellationToken = default)
