@@ -1221,6 +1221,90 @@ public class WorkspaceDocumentServiceTests
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
     }
 
+    // ---- GET extracted-text: WarpBot reads only what it may use (WT-872) ----------------------
+    //
+    // The uploader holds `view` on their own document from the moment it is uploaded, so the
+    // assistant's get_document tool quoted back documents still Pending Approval, or already
+    // Rejected, that the index had never been allowed to see. The read now asks the embedding
+    // pipeline's own question — IsIndexEligible — after the ACL.
+
+    private WorkspaceDocument ArrangeExtractedTextRead(Guid workspaceId, Guid userId, string status)
+    {
+        var document = ArrangeIndexedDocument(workspaceId, Guid.NewGuid(), "omega");
+        document.Status = status;
+        document.UploadedBy = userId;
+        _workspaceDocumentRepository.GetByIdAsync(document.Id, Arg.Any<CancellationToken>()).Returns(document);
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        _storage.GetExtractedTextAsync(document, Arg.Any<CancellationToken>())
+            .Returns("{\"FullText\": \"Mat ma Omega 99\"}");
+        return document;
+    }
+
+    [Theory]
+    [InlineData(nameof(WorkspaceDocumentStatus.pending_approval))]
+    [InlineData(nameof(WorkspaceDocumentStatus.rejected))]
+    [InlineData(nameof(WorkspaceDocumentStatus.@private))]
+    public async Task GetExtractedTextAsync_ShouldRefuseWithNotAiEligible_WhenTheDocumentIsNotApprovedForAi(string status)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, status);
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode, result.ErrorCode);
+        Assert.Null(result.Value);
+        // Refused before the text is ever loaded, not loaded and then withheld.
+        await _storage.DidNotReceiveWithAnyArgs().GetExtractedTextAsync(default!, default);
+        await _storage.DidNotReceiveWithAnyArgs().GetDecryptedStreamAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldRefuse_WhenAiUseIsSwitchedOff()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.@public.ToString());
+        document.IsAiAllowed = false;
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldReturnTheText_WhenTheDocumentIsApprovedAndAiEligible()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Mat ma Omega 99", result.Value!.FullText);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldKeepTheAclAnswer_WhenTheCallerCannotSeeTheDocument()
+    {
+        // The eligibility answer is only for someone who may see the document; everyone else
+        // gets the same refusal as before, so the new code leaks nothing about its status.
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.rejected.ToString());
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault));
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
     // ---- Role policies name Member, and only Member ------------------------------------------
     //
     // DocumentAccessEvaluator matches a Role policy against the caller's role name whoever they

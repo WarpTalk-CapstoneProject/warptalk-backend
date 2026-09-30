@@ -1986,6 +1986,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
             }
 
+            // WT-872. This read exists for the assistant — WarpBot's get_document tool is its only
+            // caller — and `view` is not the question the assistant needs answered. The uploader
+            // holds `view` on their own document from the moment it is uploaded, so a document
+            // sitting in Pending Approval, or one an admin had Rejected, was quoted back to them
+            // verbatim by WarpBot while the index (correctly) had never seen it.
+            //
+            // The gate is IsIndexEligible, the one definition of "may the model read this" that
+            // the embedding pipeline already uses — not a second list of statuses kept here.
+            // Checked AFTER the ACL on purpose: someone who may not see the document at all gets
+            // the same answer as before, and only a caller who can see it learns why WarpBot
+            // cannot use it.
+            if (!document.IsIndexEligible())
+            {
+                return Result.Failure<ExtractedTextDto>(
+                    WorkspaceConstants.Errors.DocumentNotAiEligible,
+                    WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode);
+            }
+
             string extractedText = string.Empty;
             try
             {
