@@ -480,6 +480,70 @@ public class WorkspaceDocumentServiceTests
     }
 
     [Fact]
+    public async Task DeleteDocumentAsync_ShouldPurgeTheIndexedChunks_AfterTheDeleteIsCommitted()
+    {
+        // WT-871. The DocumentDeleted event has no consumer, so the chunks — and the facts
+        // extracted onto them — have to be removed from the store directly, or WarpBot keeps
+        // answering from a document that no longer exists.
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Admin");
+        var saved = false;
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            saved = true;
+            return Task.FromResult(1);
+        });
+        var purgedAfterSave = false;
+        _chunkWriter.DeleteDocumentChunksAsync(workspaceId, document.Id, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                purgedAfterSave = saved;
+                return Task.CompletedTask;
+            });
+
+        var result = await _documentService.DeleteDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(document.DeletedAt);
+        await _chunkWriter.Received(1).DeleteDocumentChunksAsync(workspaceId, document.Id, Arg.Any<CancellationToken>());
+        Assert.True(purgedAfterSave);
+        await _workspaceDocumentAuditRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceDocumentAudit>(a =>
+                a.Action == WorkspaceDocumentConstants.AuditActions.DeleteDocument
+                && a.Metadata != null && a.Metadata.Contains("\"vectorsPurged\":true")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteDocumentAsync_StillDeletes_AndRecordsTheFailedPurge_WhenTheVectorStoreIsDown()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Owner");
+        _chunkWriter.DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new HttpRequestExceptionStub()));
+
+        var result = await _documentService.DeleteDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(document.DeletedAt);
+        await _workspaceDocumentAuditRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceDocumentAudit>(a =>
+                a.Action == WorkspaceDocumentConstants.AuditActions.DeleteDocument
+                && a.Metadata != null && a.Metadata.Contains("\"vectorsPurged\":false")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteDocumentAsync_ShouldNotPurge_WhenTheCallerMayNotDelete()
+    {
+        var (workspaceId, userId, document) = ArrangeVisibilityChange(WorkspaceDocumentStatus.@public, "Member");
+
+        var result = await _documentService.DeleteDocumentAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(document.DeletedAt);
+        await _chunkWriter.DidNotReceive().DeleteDocumentChunksAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GetAccessPoliciesAsync_ShouldReturnPaginatedPolicies_WhenAccessAllowed()
     {
         // Arrange

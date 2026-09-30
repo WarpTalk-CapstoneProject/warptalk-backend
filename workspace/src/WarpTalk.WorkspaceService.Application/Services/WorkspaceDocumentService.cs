@@ -1528,6 +1528,21 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // THE VECTORS HAVE TO GO, NOT JUST BE ANNOUNCED (WT-871). The DocumentDeleted
+            // invalidation above has no consumer — the event catalog lists `consumers: []`,
+            // warptalk-ai never reads `workspace-document-events`, and the only .NET reader of
+            // that stream handles DocumentUploaded alone — so on its own it removed nothing. An
+            // Owner/Admin's WarpBot search is not narrowed by the ai-retrievable allowlist, so it
+            // went on answering from the deleted file, and the Knowledge page (which reads the
+            // same Qdrant points, facts included) went on listing it.
+            //
+            // Same helper and same order as UnpublishDocumentAsync: after the commit, because a
+            // purge that ran ahead of a failed save would strip the index of a document that is
+            // still live. A purge failure is logged and recorded on the audit row but does not
+            // undo the delete — the row is the authority, the allowlist already excludes it, and
+            // what lingers is chunks an Owner/Admin can still remove from the Knowledge page.
+            var vectorsPurged = await TryPurgeDocumentChunksAsync(workspaceId, documentId, ct);
+
             await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
@@ -1538,7 +1553,14 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 userId,
                 ct);
 
-            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DeleteDocument, logger: _logger, ct: ct);
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.DeleteDocument,
+                new { vectorsPurged },
+                _logger,
+                ct);
 
             return Result.Success();
         }
