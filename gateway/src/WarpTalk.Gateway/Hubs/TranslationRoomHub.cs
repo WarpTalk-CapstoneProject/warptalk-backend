@@ -436,31 +436,8 @@ public class TranslationRoomHub : Hub
         // recorded, which was harmless while the only way to learn the roster was to watch every
         // event from the beginning. Now that a joiner is handed a snapshot, an unrecorded mute
         // would show a muted participant as live on the newcomer's screen — and only theirs.
-        var db = _redis.GetDatabase();
-        var roomIdStr = translationRoomId.ToString();
-        var stored = await db.HashGetAsync(ParticipantsKey(roomIdStr), userId);
-        if (stored.HasValue)
-        {
-            try
-            {
-                var known = JsonSerializer.Deserialize<ParticipantInfoDto>(stored.ToString(), RosterJsonOptions);
-                if (known != null)
-                {
-                    await db.HashSetAsync(
-                        ParticipantsKey(roomIdStr),
-                        userId,
-                        JsonSerializer.Serialize(known with { IsMuted = isMuted }, RosterJsonOptions));
-                }
-            }
-            catch (JsonException ex)
-            {
-                // The broadcast above already reached everyone in the room; failing the call over
-                // a snapshot detail would turn a working mute into an error toast.
-                _logger.LogWarning(ex,
-                    "TranslationRoomHub: could not record mute state for {UserId} in room {TranslationRoomId}",
-                    userId, translationRoomId);
-            }
-        }
+        await RecordInRosterAsync(
+            translationRoomId, userId, known => known with { IsMuted = isMuted }, "mute state");
     }
 
     /// <summary>
@@ -605,6 +582,16 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLanguageChanged", userId, normalizedListenLanguage);
 
+        // WT-862: the broadcast reaches whoever is connected NOW; the roster snapshot is what
+        // everyone connecting LATER is handed — a newcomer, and every existing participant whose
+        // hub rejoins (a network blip, Start/Stop Translation). Left at the join-time value, that
+        // snapshot replaced the live update on the next rejoin (the client lets the live payload
+        // win over the participants API), so the badge snapped back to the old language on other
+        // people's screens while the pipeline was already translating into the new one.
+        await RecordInRosterAsync(
+            translationRoomId, userId,
+            known => known with { ListenLanguage = normalizedListenLanguage }, "listen language");
+
         // WT-419. The Redis hash above is read by STT; the AUDIO MESH reads the participant row in
         // Postgres, and nothing here ever wrote it. Routes were therefore pinned to whatever
         // languages a pair held at join time — two people who joined matching had no route at all,
@@ -646,6 +633,11 @@ public class TranslationRoomHub : Hub
 
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantSpeakLanguageChanged", userId, normalizedSpeakLanguage);
+
+        // WT-862 — see SetListenLanguage: the snapshot a rejoin is handed must carry this too.
+        await RecordInRosterAsync(
+            translationRoomId, userId,
+            known => known with { SpeakLanguage = normalizedSpeakLanguage }, "speak language");
 
         // WT-419 — see SetListenLanguage above. Same gap, same fix, and this is the side the
         // production report came in on: an en/en speaker whose vi/vi listener received nothing.
@@ -952,6 +944,47 @@ public class TranslationRoomHub : Hub
     }
 
     // ── Helpers ────────────────────────────────────────────
+
+    /// <summary>
+    /// Rewrite one participant's entry in the stored roster snapshot (WT-354) so the roster a
+    /// joiner or a rejoining connection is handed agrees with what has been broadcast since.
+    ///
+    /// Every live change to a participant that the snapshot carries must go through here —
+    /// mute (WT-354) and both languages (WT-862). A change that is broadcast but not recorded is
+    /// correct on the screens that were connected at the time and wrong everywhere else, and the
+    /// next rejoin overwrites the correct ones too.
+    ///
+    /// No entry means the caller is not (yet) in the roster, and a failure here is logged, not
+    /// thrown: the broadcast has already reached the room, and turning a working change into an
+    /// error toast over a snapshot detail would be worse than the stale snapshot.
+    /// </summary>
+    private async Task RecordInRosterAsync(
+        Guid translationRoomId,
+        string userId,
+        Func<ParticipantInfoDto, ParticipantInfoDto> change,
+        string what)
+    {
+        var db = _redis.GetDatabase();
+        var roomIdStr = translationRoomId.ToString();
+        var stored = await db.HashGetAsync(ParticipantsKey(roomIdStr), userId);
+        if (!stored.HasValue) return;
+
+        try
+        {
+            var known = JsonSerializer.Deserialize<ParticipantInfoDto>(stored.ToString(), RosterJsonOptions);
+            if (known == null) return;
+            await db.HashSetAsync(
+                ParticipantsKey(roomIdStr),
+                userId,
+                JsonSerializer.Serialize(change(known), RosterJsonOptions));
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex,
+                "TranslationRoomHub: could not record {What} for {UserId} in room {TranslationRoomId}",
+                what, userId, translationRoomId);
+        }
+    }
 
     private string GetUserId() =>
         Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value

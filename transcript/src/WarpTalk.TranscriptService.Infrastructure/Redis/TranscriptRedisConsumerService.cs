@@ -310,6 +310,16 @@ public class TranscriptRedisConsumerService : BackgroundService
             return true;
         }
 
+        // A control marker is not speech. The __MEETING_END__ sentinel that asks the assistant
+        // worker for the summary rides this same stream, and was being written into the meeting's
+        // transcript as a line of dialogue from "System" — once per End call, so a meeting ended
+        // by six racing clicks carried six of them (prod, 30 Sep: sequence_order 1-6 within 0.7 s),
+        // and every transcript export and preview showed them. Acknowledged, never stored.
+        if (WarpTalk.TranscriptService.Domain.ControlMarkers.IsControlMarker(text, language))
+        {
+            return true;
+        }
+
         // WT-587: an ephemeral meeting stops here — captions and translation have already
         // happened elsewhere, and this is the step that would have written the room down.
         //

@@ -282,6 +282,35 @@ public sealed class SummaryLanguageVariantTests
     }
 
     /// <summary>
+    /// WT-870: a meeting held with "Save the meeting transcript" off gets no NEW rendering — the
+    /// same point WT-703 refuses a language at, so nothing is claimed or queued. What already
+    /// exists (a summary written before this fix) stays readable.
+    /// </summary>
+    [Fact]
+    public async Task AMeetingThatKeptNoTranscriptGetsNoNewRenderingButKeepsWhatItHas()
+    {
+        var reader = Guid.NewGuid();
+        var room = RoomWithSummary(Guid.NewGuid(), reader, templateKey: "general", summaryLanguage: "en");
+        room.Settings = "{\"artifact_access\":\"ALL_PARTICIPANTS\",\"save_transcript\":false}";
+        var redis = new Mock<IRedisStateRepository>();
+        var service = CreateService(room, redis, variant: null);
+
+        var published = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "en", "Bearer t");
+        Assert.True(published.IsSuccess, $"{published.ErrorCode}: {published.Error}");
+
+        var result = await service.GetOrQueueSummaryVariantAsync(room.Id, reader, "general", "ja", "Bearer t");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WarpTalk.TranslationRoomService.Application.Helpers.TranscriptRetention.ErrorCodeTranscriptNotSaved, result.ErrorCode);
+        redis.Verify(
+            item => item.StringSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>()),
+            Times.Never);
+        redis.Verify(
+            item => item.StreamAddAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>
     /// What already exists is never re-filtered: the published summary stays readable in its own
     /// language even when the meeting would no longer let that language be generated.
     /// </summary>

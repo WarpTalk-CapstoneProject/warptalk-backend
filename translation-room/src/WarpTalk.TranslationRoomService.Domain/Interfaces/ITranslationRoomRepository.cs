@@ -128,4 +128,22 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<TranslationRoom?> GetByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default);
     Task<List<TranslationRoom>> GetHistoryByUserIdAsync(Guid userId, int limit, int offset, CancellationToken ct = default);
     Task<int> CountActiveByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Moves the room from one of <paramref name="fromStatuses"/> to <paramref name="toStatus"/> as
+    /// one conditional UPDATE, and returns whether THIS call did it. Only status and updated_at are
+    /// written; the caller saves the rest of the transition (ended_at, started_at...) in the same
+    /// transaction.
+    ///
+    /// Open, Start and End are each reached more than once for the same room — clients repeat the
+    /// request (prod: six "End for everyone" POSTs in 0.7 s), and with two replicas the repeats
+    /// run in parallel. A read-then-save lets every one of them see the old status and each fire
+    /// the once-per-transition side effects (notifications, finalization, meeting-ended metrics).
+    /// The winner of this compare-and-set is the only caller that does.
+    /// </summary>
+    Task<bool> TryTransitionStatusAsync(
+        Guid roomId,
+        IReadOnlyCollection<string> fromStatuses,
+        string toStatus,
+        CancellationToken ct = default);
 }

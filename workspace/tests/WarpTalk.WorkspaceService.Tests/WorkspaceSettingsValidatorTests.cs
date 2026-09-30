@@ -16,7 +16,10 @@ public class WorkspaceSettingsValidatorTests
         bool requireVerifiedDomainForInternal = false,
         List<string>? mirroredDomains = null) =>
         new(
-            "en",
+            // Inside the whitelist below on purpose: since WT-706 a restricted workspace may not
+            // default to a language it does not permit, and these cases are about the numeric
+            // bounds and the verified-domain rule, not about languages.
+            "vi",
             "UTC",
             new List<string> { "vi" },
             true,

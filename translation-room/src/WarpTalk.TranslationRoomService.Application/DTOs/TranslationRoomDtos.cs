@@ -72,7 +72,18 @@ public record GetTranslationRoomsRequest(
     /// answer, not fourteen. The home day panel asks "what is on Thursday?", and there the
     /// occurrence IS the meeting — collapsing would empty every day but one.
     /// </summary>
-    bool GroupBySeries = false
+    bool GroupBySeries = false,
+    /// <summary>
+    /// History only: <c>"mine"</c> reads the caller's own meetings (hosted, joined or invited) even
+    /// when the caller is a workspace Owner/Admin, instead of the whole workspace.
+    ///
+    /// The Artifacts page is a personal library: it lists what the caller can READ, and the
+    /// Owner/Admin widening adds no readable document — <c>ArtifactAccessHelper</c> grants a body
+    /// to the host, or to a participant/invitee when the room shares with participants, and never
+    /// on the workspace role. Widening there only produced locked cards. Anything else, including
+    /// omitting it, keeps the archive's workspace reading.
+    /// </summary>
+    string? Scope = null
 );
 
 /// <summary>

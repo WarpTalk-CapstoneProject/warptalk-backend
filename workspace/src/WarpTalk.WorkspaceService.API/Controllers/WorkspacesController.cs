@@ -47,6 +47,10 @@ public class WorkspacesController : ControllerBase
         "defaultLanguage",
         "timezone",
         "allowedTargetLanguages",
+        // WT-706's "Allow all languages" switch. Patchable on its own: turning the restriction
+        // off has to be expressible without also sending an empty allowedTargetLanguages, since
+        // the merge below would otherwise carry the current list forward.
+        "restrictLanguages",
         "voiceCloningEnabled",
         "maxActiveRooms",
         "artifactRetentionDays",
