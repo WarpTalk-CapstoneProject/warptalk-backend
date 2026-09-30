@@ -130,18 +130,20 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<int> CountActiveByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
 
     /// <summary>
-    /// Moves the room to ENDED as one conditional UPDATE, only while its status is still one of
-    /// <paramref name="fromStatuses"/>, and returns whether THIS call did it.
+    /// Moves the room from one of <paramref name="fromStatuses"/> to <paramref name="toStatus"/> as
+    /// one conditional UPDATE, and returns whether THIS call did it. Only status and updated_at are
+    /// written; the caller saves the rest of the transition (ended_at, started_at...) in the same
+    /// transaction.
     ///
-    /// Ending is reached more than once per meeting — the client's "End for everyone" repeats, and
-    /// with two replicas the repeats run truly in parallel. A read-then-save lets every one of them
-    /// see IN_PROGRESS and each go on to fire the once-per-meeting side effects (finalization,
-    /// "Summary ready", the meeting-ended metric). The winner of this compare-and-set is the only
-    /// caller that does.
+    /// Open, Start and End are each reached more than once for the same room — clients repeat the
+    /// request (prod: six "End for everyone" POSTs in 0.7 s), and with two replicas the repeats
+    /// run in parallel. A read-then-save lets every one of them see the old status and each fire
+    /// the once-per-transition side effects (notifications, finalization, meeting-ended metrics).
+    /// The winner of this compare-and-set is the only caller that does.
     /// </summary>
-    Task<bool> TryMarkEndedAsync(
+    Task<bool> TryTransitionStatusAsync(
         Guid roomId,
         IReadOnlyCollection<string> fromStatuses,
-        DateTime endedAtUtc,
+        string toStatus,
         CancellationToken ct = default);
 }

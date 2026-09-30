@@ -40,8 +40,8 @@ public class RecordAutoShareTests
 
     public RecordAutoShareTests()
     {
-        _rooms.Setup(r => r.TryMarkEndedAsync(
-                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rooms.Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
         var participants = new Mock<ITranslationRoomParticipantRepository>();
         participants.Setup(p => p.GetByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))

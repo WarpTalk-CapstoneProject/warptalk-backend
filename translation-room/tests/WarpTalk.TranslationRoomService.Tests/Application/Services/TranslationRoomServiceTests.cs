@@ -53,8 +53,8 @@ public class TranslationRoomServiceTests
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         // The conditional ENDED transition wins unless a test says a concurrent End got there first.
-        _mockRoomRepo.Setup(r => r.TryMarkEndedAsync(
-                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
@@ -431,6 +431,62 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         room.StartedAt.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// k8s multi-replica dedupe: a double-clicked Start on two replicas took the room live twice —
+    /// two RoomStarted broadcasts, two MEETING_STARTED rounds to the invite list. Only the Start
+    /// that wins the conditional transition does any of that; the other still reports success.
+    /// </summary>
+    [Fact]
+    public async Task StartTranslationRoomAsync_ConcurrentStarts_AnnounceTheStartOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() => NewStartableRoom(roomId, hostId));
+        var started = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "IN_PROGRESS", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref started, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.StartTranslationRoomAsync(roomId, hostId, null),
+            _service.StartTranslationRoomAsync(roomId, hostId, null));
+
+        results.Should().OnlyContain(result => result.IsSuccess && result.Value!.Status == RoomStatus.IN_PROGRESS);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.Is<string>(payload => payload.Contains("RoomStarted"))),
+            Times.Once);
+        _mockUow.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task OpenScheduledRoomAsync_ConcurrentOpens_AnnounceTheOpeningOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() =>
+            {
+                var room = NewStartableRoom(roomId, hostId);
+                room.Status = "SCHEDULED";
+                room.ScheduledAt = DateTime.UtcNow;
+                return room;
+            });
+        var opened = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "OPEN", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref opened, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.OpenScheduledRoomAsync(roomId),
+            _service.OpenScheduledRoomAsync(roomId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(It.IsAny<string>(), It.Is<string>(payload => payload.Contains(roomId.ToString()))),
+            Times.Once);
     }
 
     [Fact]
@@ -948,8 +1004,8 @@ public class TranslationRoomServiceTests
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
             .ReturnsAsync(() => new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{}" });
         var ended = 0;
-        _mockRoomRepo.Setup(r => r.TryMarkEndedAsync(
-                roomId, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "ENDED", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => Interlocked.Exchange(ref ended, 1) == 0);
 
         var results = await Task.WhenAll(

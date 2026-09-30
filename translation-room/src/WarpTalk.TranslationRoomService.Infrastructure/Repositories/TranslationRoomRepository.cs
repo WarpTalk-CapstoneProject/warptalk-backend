@@ -295,20 +295,20 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
                     || room.Status == "PAUSED"),
             ct);
 
-    public async Task<bool> TryMarkEndedAsync(
+    public async Task<bool> TryTransitionStatusAsync(
         Guid roomId,
         IReadOnlyCollection<string> fromStatuses,
-        DateTime endedAtUtc,
+        string toStatus,
         CancellationToken ct = default)
     {
-        var endable = fromStatuses.ToArray();
+        var from = fromStatuses.ToArray();
+        var now = DateTime.UtcNow;
         var changed = await _dbSet
-            .Where(room => room.Id == roomId && endable.Contains(room.Status))
+            .Where(room => room.Id == roomId && from.Contains(room.Status))
             .ExecuteUpdateAsync(
                 setters => setters
-                    .SetProperty(room => room.Status, nameof(RoomStatus.ENDED))
-                    .SetProperty(room => room.EndedAt, (DateTime?)endedAtUtc)
-                    .SetProperty(room => room.UpdatedAt, endedAtUtc),
+                    .SetProperty(room => room.Status, toStatus)
+                    .SetProperty(room => room.UpdatedAt, now),
                 ct);
         return changed > 0;
     }

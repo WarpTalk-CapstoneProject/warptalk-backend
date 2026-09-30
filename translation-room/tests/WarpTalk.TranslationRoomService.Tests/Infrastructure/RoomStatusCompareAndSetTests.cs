@@ -8,13 +8,13 @@ using WarpTalk.TranslationRoomService.Infrastructure.Repositories;
 namespace WarpTalk.TranslationRoomService.Tests.Infrastructure;
 
 /// <summary>
-/// k8s multi-replica dedupe: the conditional ENDED transition that decides which of several
-/// concurrent "End for everyone" calls runs the once-per-meeting side effects.
+/// k8s multi-replica dedupe: the conditional status transition that decides which of several
+/// concurrent Open / Start / End calls runs the once-per-transition side effects.
 ///
 /// Real Postgres on purpose: the whole point is the single conditional UPDATE, which a mock can
 /// only assume. Two DbContexts stand in for two replicas, each with its own connection.
 /// </summary>
-public class RoomEndCompareAndSetTests : IAsyncLifetime
+public class RoomStatusCompareAndSetTests : IAsyncLifetime
 {
     private static readonly string[] Endable = ["IN_PROGRESS", "PAUSED", "WAITING", "OPEN"];
 
@@ -71,7 +71,7 @@ public class RoomEndCompareAndSetTests : IAsyncLifetime
     private async Task<bool> EndFromAnotherReplicaAsync(Guid roomId)
     {
         await using var db = new TranslationRoomDbContext(_options);
-        return await new TranslationRoomRepository(db).TryMarkEndedAsync(roomId, Endable, DateTime.UtcNow);
+        return await new TranslationRoomRepository(db).TryTransitionStatusAsync(roomId, Endable, "ENDED");
     }
 
     [Fact]
@@ -85,7 +85,6 @@ public class RoomEndCompareAndSetTests : IAsyncLifetime
         await using var db = new TranslationRoomDbContext(_options);
         var room = await db.Set<TranslationRoom>().AsNoTracking().SingleAsync(r => r.Id == roomId);
         room.Status.Should().Be("ENDED");
-        room.EndedAt.Should().NotBeNull();
     }
 
     [Fact]
@@ -102,5 +101,19 @@ public class RoomEndCompareAndSetTests : IAsyncLifetime
         var roomId = await SeedRoomAsync("OPEN");
 
         (await EndFromAnotherReplicaAsync(roomId)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ConcurrentOpens_ExactlyOneWins()
+    {
+        var roomId = await SeedRoomAsync("SCHEDULED");
+
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, 3).Select(async _ =>
+        {
+            await using var db = new TranslationRoomDbContext(_options);
+            return await new TranslationRoomRepository(db).TryTransitionStatusAsync(roomId, ["SCHEDULED"], "OPEN");
+        }));
+
+        outcomes.Count(won => won).Should().Be(1);
     }
 }
