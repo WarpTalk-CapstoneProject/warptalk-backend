@@ -304,9 +304,8 @@ public sealed class CreditFreezeService : ICreditFreezeService
         foreach (var workspaceId in frozen.Select(s => s.WorkspaceId).Distinct().Take(BatchSize))
         {
             ct.ThrowIfCancellationRequested();
-            var target = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                ct);
+            var target = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: ct);
             if (target is null)
             {
                 continue;

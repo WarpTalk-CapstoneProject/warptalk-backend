@@ -130,8 +130,8 @@ public sealed class CreditPackExpiryService : ICreditPackExpiryService
             return (owner, false);
         }
 
-        var live = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == purchase.WorkspaceId && s.IsActive && s.DeletedAt == null, ct);
+        var live = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            purchase.WorkspaceId, includePlan: false, cancellationToken: ct);
         return (live ?? owner, false);
     }
 

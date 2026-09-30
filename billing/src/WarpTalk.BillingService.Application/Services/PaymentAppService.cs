@@ -704,8 +704,8 @@ public class PaymentAppService : IPaymentAppService
             : request.PaymentIntentId;
 
         var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(p => p.ProviderTransactionId == providerTxId);
-        var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null);
+        var subscription = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: false);
 
         return Result.Success(request.ToPaymentEventContext(
             workspaceId,

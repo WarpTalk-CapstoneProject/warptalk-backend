@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
@@ -45,6 +46,12 @@ public class CreditFreezeServiceTests
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Expression<Func<Subscription, bool>> p, CancellationToken _) =>
                 _subscriptions.FirstOrDefault(p.Compile()));
+        subscriptions
+            .Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid workspaceId, bool _, bool _, CancellationToken _) =>
+                SubscriptionSelection.OrderCurrentFirst(
+                        SubscriptionSelection.ForWorkspace(_subscriptions.AsQueryable(), workspaceId).Where(s => s.IsActive))
+                    .FirstOrDefault());
 
         var ledger = new Mock<ICreditTransactionRepository>();
         ledger

@@ -91,8 +91,8 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
         var baseCredits = totalCredits - bonus;
 
         var subscription = context.Subscription
-            ?? await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.DeletedAt == null, cancellationToken);
+            ?? await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                context.WorkspaceId, includePlan: false, cancellationToken: cancellationToken);
         if (subscription is null)
         {
             // backend#467: never lose paid credit. The pack is booked frozen on the workspace's

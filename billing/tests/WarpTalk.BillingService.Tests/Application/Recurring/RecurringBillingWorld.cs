@@ -63,6 +63,12 @@ internal sealed class RecurringBillingWorld
         Wire(CreditTransactionRepository, Ledger, _pendingLedger);
 
         SubscriptionRepository
+            .Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid workspaceId, bool _, bool _, CancellationToken _) => WithPlan(
+                SubscriptionSelection.OrderCurrentFirst(
+                        SubscriptionSelection.ForWorkspace(Subscriptions.AsQueryable(), workspaceId).Where(s => s.IsActive))
+                    .FirstOrDefault()));
+        SubscriptionRepository
             .Setup(r => r.GetByStripeSubscriptionIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string id, CancellationToken _) => WithPlan(Subscriptions.FirstOrDefault(s => s.StripeSubscriptionId == id)));
         SubscriptionRepository

@@ -94,9 +94,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -298,9 +297,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<bool>(
@@ -464,9 +462,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             // A trial cancelled through CancelImmediately has IsActive = false, so it does not
             // match here and correctly reads as "nothing to reactivate" rather than being revived.
@@ -600,9 +597,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -770,9 +766,8 @@ public class SubscriptionService : ISubscriptionService
         // This finds the subscription to bill or credit, not the one that grants plan quotas — a
         // cancelled subscription still inside its paid period keeps its credits until the period
         // ends, so narrowing this to the entitlement test would take money handling with it.
-        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-            cancellationToken);
+        var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
         if (sub is null)
             return (null, null, Result.Failure<T>(
@@ -796,9 +791,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -858,9 +852,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
