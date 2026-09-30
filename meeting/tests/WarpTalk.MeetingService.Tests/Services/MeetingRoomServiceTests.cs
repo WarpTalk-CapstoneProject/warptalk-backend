@@ -968,28 +968,48 @@ public class MeetingRoomServiceTests
         _unitOfWorkMock.Verify(u => u.RollbackTransactionAsync(), Times.Once);
     }
 
+    /// <summary>A room that is live, hosted by <paramref name="hostId"/>, as EndMeetingAsync reads it.</summary>
+    private Mock<IMeetingRoomRepository> ArrangeLiveMeeting(Guid translationRoomId, Guid hostId, Func<bool> tryMarkFinished)
+    {
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+                {
+                    HostId = hostId.ToString(),
+                    Status = "IN_PROGRESS",
+                    WorkspaceId = Guid.NewGuid().ToString()
+                }));
+
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS"
+        };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+        roomRepoMock
+            .Setup(r => r.TryMarkFinishedAsync(meetingRoom.Id, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(tryMarkFinished);
+        return roomRepoMock;
+    }
+
+    private void VerifySentinelPublished(Guid translationRoomId, Times times) =>
+        _redisServiceMock.Verify(
+            r => r.PublishStreamMessageAsync(
+                "stt:results",
+                It.Is<Dictionary<string, string>>(fields =>
+                    fields["meeting_id"] == translationRoomId.ToString() &&
+                    fields["text"] == "__MEETING_END__")),
+            times);
+
     [Fact]
     public async Task EndMeetingAsync_TriggersAiSummary_WithoutUnusedMeetingEndedPubSub()
     {
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid().ToString();
-
-        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
-        {
-            HostId = hostId.ToString(),
-            Status = "IN_PROGRESS",
-            WorkspaceId = workspaceId
-        };
-        _redisServiceMock
-            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
-            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
-
-        var roomRepoMock = new Mock<IMeetingRoomRepository>();
-        roomRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingRoom?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+        ArrangeLiveMeeting(translationRoomId, hostId, () => true);
 
         var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
 
@@ -1008,13 +1028,60 @@ public class MeetingRoomServiceTests
             r => r.DeleteRoomAsync(translationRoomId.ToString(), It.IsAny<CancellationToken>()),
             Times.Once);
 
-        _redisServiceMock.Verify(
-            r => r.PublishStreamMessageAsync(
-                "stt:results",
-                It.Is<Dictionary<string, string>>(fields =>
-                    fields["meeting_id"] == translationRoomId.ToString() &&
-                    fields["text"] == "__MEETING_END__")),
-            Times.Once);
+        VerifySentinelPublished(translationRoomId, Times.Once());
+    }
+
+    /// <summary>
+    /// k8s multi-replica dedupe. Production: 12 of the 42 meetings still in stt:results carried two
+    /// to four __MEETING_END__ sentinels 0–1.8 s apart, because every "End for everyone" call —
+    /// on either replica — published its own. The meeting ends once, so it is summarised once.
+    /// </summary>
+    [Fact]
+    public async Task EndMeetingAsync_ConcurrentCalls_PublishTheSummaryTriggerOnce()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        // Stands in for the conditional UPDATE: only the first caller finds ended_at still null.
+        var ended = 0;
+        ArrangeLiveMeeting(translationRoomId, hostId, () => Interlocked.Exchange(ref ended, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _sut.EndMeetingAsync(translationRoomId, hostId),
+            _sut.EndMeetingAsync(translationRoomId, hostId),
+            _sut.EndMeetingAsync(translationRoomId, hostId));
+
+        Assert.All(results, result => Assert.True(result.IsSuccess));
+        VerifySentinelPublished(translationRoomId, Times.Once());
+    }
+
+    [Fact]
+    public async Task EndMeetingAsync_WhenAlreadyEnded_SucceedsWithoutTriggeringTheSummaryAgain()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeLiveMeeting(translationRoomId, hostId, () => false);
+
+        var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+        VerifySentinelPublished(translationRoomId, Times.Never());
+    }
+
+    [Fact]
+    public async Task EndMeetingAsync_WithNoMeetingRoomRow_DoesNotTriggerTheSummary()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = hostId.ToString(), Status = "IN_PROGRESS" }));
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+
+        var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+        VerifySentinelPublished(translationRoomId, Times.Never());
     }
 
     /// <summary>
@@ -1064,22 +1131,7 @@ public class MeetingRoomServiceTests
     {
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-
-        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
-        {
-            HostId = hostId.ToString(),
-            Status = "IN_PROGRESS",
-            WorkspaceId = Guid.NewGuid().ToString()
-        };
-        _redisServiceMock
-            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
-            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
-
-        var roomRepoMock = new Mock<IMeetingRoomRepository>();
-        roomRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingRoom?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+        ArrangeLiveMeeting(translationRoomId, hostId, () => true);
 
         _redisServiceMock
             .Setup(r => r.PublishStreamMessageAsync("stt:results", It.IsAny<Dictionary<string, string>>()))

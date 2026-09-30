@@ -962,14 +962,25 @@ public class MeetingRoomService : IMeetingRoomService
                 deleteRoomResult.Error ?? "Failed to end LiveKit room.",
                 deleteRoomResult.ErrorCode);
 
-        if (meetingRoom != null)
-        {
-            meetingRoom.Status = "FINISHED";
-            meetingRoom.EndedAt = DateTime.UtcNow;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-        }
+        // One conditional UPDATE decides which call ended the meeting. "End for everyone" arrives
+        // more than once per meeting — production showed 2–4 calls 0–1.8 s apart on both replicas —
+        // and each used to publish its own __MEETING_END__, so the assistant worker summarised the
+        // same meeting up to four times. Only the call that actually moved ended_at off null goes
+        // on to trigger the summary; the rest have already done everything that is theirs to do
+        // (the LiveKit room is gone either way) and report success, because the meeting IS ended.
+        //
+        // No meeting-room row means nobody ever joined through this service, so there is no
+        // audio, no transcript and nothing to summarise: no trigger either.
+        var endedByThisCall = meetingRoom != null
+            && await _unitOfWork.MeetingRoomRepository.TryMarkFinishedAsync(meetingRoom.Id, DateTime.UtcNow);
 
-        await _unitOfWork.SaveChangesAsync();
+        if (!endedByThisCall)
+        {
+            _logger.LogInformation(
+                "Meeting {RoomId} was already ended (or never joined); not triggering its summary again.",
+                translationRoomId);
+            return Result.Success(true);
+        }
 
         // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
         // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from
