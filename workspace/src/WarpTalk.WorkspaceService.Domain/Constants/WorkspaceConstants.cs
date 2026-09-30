@@ -89,6 +89,23 @@ public static class WorkspaceConstants
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
         public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 1 and 3650.";
         public const string VerifiedDomainsRequired = "Verified domains are required when internal members must use verified domains.";
+
+        /// <summary>
+        /// WT-706. Format arg is the code exactly as the caller wrote it — naming it is the whole
+        /// point, because the old behaviour was to store anything at all, and a workspace that
+        /// saved a code no room can carry ended up unable to create a meeting with a setting that
+        /// looked perfectly correct on screen.
+        /// </summary>
+        public const string AllowedTargetLanguageNotRecognizedFormat = "'{0}' is not a language code. Use a two- or three-letter code such as vi, en or ja.";
+
+        /// <summary>
+        /// WT-706. Emptying the list used to switch a restricted workspace to unrestricted without
+        /// saying so — the opposite of what unticking the last language means.
+        /// </summary>
+        public const string AllowedTargetLanguagesRequiredWhenRestricted = "Keep at least one allowed language, or turn off the language restriction to allow all languages.";
+
+        /// <summary>WT-706. Format arg is the workspace's default language.</summary>
+        public const string DefaultLanguageNotAllowedFormat = "The default language '{0}' must be one of the workspace's allowed languages.";
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";

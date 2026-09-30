@@ -334,6 +334,100 @@ public class WorkspaceDirectoryServiceTests
         Assert.True(result.Value!.IsAllowed);
     }
 
+    /// <summary>
+    /// WT-706. The whitelist was compared as raw strings here while translation-room's room-edit
+    /// gate (WT-707) and the gateway both compare primary subtags — so the two paths disagreed
+    /// about the same workspace. A workspace whose settings held "vi-VN" could create no meeting
+    /// at all, because rooms store "vi", while an EDIT to exactly those languages was permitted
+    /// one service over.
+    ///
+    /// Saves are normalized now, so only documents written before WT-706 can look like this —
+    /// which is precisely why the comparison, not just the save path, had to be fixed.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_WhenAStoredRegionalTagNamesTheRequestedLanguage()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi-VN\",\"EN\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi" }, sourceLanguage: "en");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>The same reduction on the asking side: a room requesting "vi-VN" is asking for "vi".</summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_WhenTheRequestedTagCarriesARegion()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi-VN" }, sourceLanguage: "vi_VN");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// Normalizing the comparison must not widen it. Reducing to the primary subtag makes
+    /// regional variants of an allowed language match; it does not make a DIFFERENT language
+    /// match, which is the whole policy.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_StillDenies_ALanguageOutsideTheNormalizedWhitelist()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi-VN\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "en-US" });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("not allowed", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task ValidateMeetingCreationAsync_Denies_WhenActiveRoomLimitReached()
     {
