@@ -367,13 +367,11 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
         // credits is a month the customer cannot use. No payment and no invoice are raised.
         subscription.CurrentPeriodEnd = newEnd;
         subscription.CreditsRemaining += granted;
-        if (subscription.CreditsRemaining > 0
-            && subscription.ServiceState == SubscriptionConstants.ServiceStates.Suspended
-            && subscription.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap)
-        {
-            subscription.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
-            subscription.SuspendedReason = null;
-        }
+        // WT-878: the shared credit-grant rule. A comp does not reset the cycle, so without the
+        // overage-counter settlement a workspace suspended at exactly its cap went straight back to
+        // overage_cap on its next charge; and the cycle-close invoice would bill overage the comp
+        // already covered.
+        var lift = SuspensionLiftService.ApplyCreditGrant(subscription, now);
 
         subscription.UpdatedAt = now;
         subscription.UpdatedBy = actor.ActorId;
@@ -414,12 +412,18 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
                 ["credits_granted"] = Invariant(granted),
                 ["credits_remaining"] = Invariant(subscription.CreditsRemaining),
             },
-            afterSave: () => Task.FromResult(new AdminWorkspaceBillingActionResultDto(
-                AdminAuditWorkspaceActions.PeriodComped,
-                ToSummary(subscription, plan, Now()),
-                entry is null ? null : ToLedgerDto(entry),
-                null,
-                null)),
+            afterSave: async () =>
+            {
+                // As ExtendTrialAsync does for trial_ended: the AI pipeline keeps a lifted room
+                // stopped until it is told.
+                if (lift.Lifted) await PushAiServiceStateAsync(subscription, ct);
+                return new AdminWorkspaceBillingActionResultDto(
+                    AdminAuditWorkspaceActions.PeriodComped,
+                    ToSummary(subscription, plan, Now()),
+                    entry is null ? null : ToLedgerDto(entry),
+                    null,
+                    null);
+            },
             entitlementReason: EntitlementConstants.Reasons.SubscriptionChanged,
             ct);
     }

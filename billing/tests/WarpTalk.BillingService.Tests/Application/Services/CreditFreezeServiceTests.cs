@@ -247,6 +247,27 @@ public class CreditFreezeServiceTests
     }
 
     [Fact]
+    public async Task Restored_credits_settle_the_overage_they_paid_off_so_the_next_charge_does_not_re_suspend()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 500;
+        ended.CreditsFrozenAt = Now.AddDays(-3);
+        var capped = AddSubscription(plan, balance: -200, active: true);
+        capped.ServiceState = SubscriptionConstants.ServiceStates.Suspended;
+        capped.SuspendedReason = SubscriptionConstants.SuspendedReasons.OverageCap;
+        capped.OverageCreditsThisCycle = 200;
+        capped.OverageStartedAt = Now.AddDays(-2);
+
+        await _service.StageReleaseIntoAsync(capped, Now);
+
+        capped.CreditsRemaining.Should().Be(300);
+        capped.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        capped.OverageCreditsThisCycle.Should().Be(0, "a positive balance owes no overage");
+        capped.OverageStartedAt.Should().BeNull();
+    }
+
+    [Fact]
     public async Task The_sweep_releases_only_into_a_live_subscription()
     {
         var plan = AddPlan(rolloverCap: 0);

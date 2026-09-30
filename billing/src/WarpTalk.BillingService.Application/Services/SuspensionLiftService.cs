@@ -14,10 +14,12 @@ namespace WarpTalk.BillingService.Application.Services;
 /// <inheritdoc cref="ISuspensionLiftService"/>
 /// <remarks>
 /// WHERE THE RULES COME FROM
-///   The overage rule is the one CompPeriodAsync and CreditFreezeService.StageReleaseIntoAsync
-///   already apply ("credits that bring the balance back above zero lift an overage suspension, and
-///   nothing else"), plus the counter settlement below, which those two paths do not need (a comp
-///   and a renewal release both happen next to a cycle reset) but a top-up does.
+///   The overage rule: credits that bring the balance back above zero lift an overage suspension,
+///   and nothing else, plus the counter settlement below. <see cref="ApplyCreditGrant"/> is the one
+///   implementation: top-ups and credit packs stage it through this service, and
+///   AdminWorkspaceBillingService.CompPeriodAsync and CreditFreezeService.StageReleaseIntoAsync call
+///   it directly (a comp does not reset the cycle, and the frozen-credit sweep can release mid-cycle,
+///   so both need the settlement as much as a top-up does).
 ///
 /// WHY THE OVERAGE COUNTER HAS TO MOVE (subscription.settle_usage_charge, migration 20260926090000)
 ///   Settlement computes <c>v_new_overage = overage_credits_this_cycle + delta</c>, where delta is

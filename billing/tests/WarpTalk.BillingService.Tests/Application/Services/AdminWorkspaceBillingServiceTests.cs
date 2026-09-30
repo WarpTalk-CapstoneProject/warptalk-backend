@@ -266,6 +266,44 @@ public class AdminWorkspaceBillingServiceTests
         _invoices.Verify(r => r.AddAsync(It.IsAny<Invoice>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Comp_lifts_an_overage_cap_suspension_settles_the_counter_and_tells_ai()
+    {
+        var subscription = GivenSubscription(s =>
+        {
+            s.CreditsRemaining = -500;
+            s.OverageCreditsThisCycle = 500;
+            s.OverageStartedAt = Now.AddDays(-2);
+            s.ServiceState = SubscriptionConstants.ServiceStates.Suspended;
+            s.SuspendedReason = SubscriptionConstants.SuspendedReasons.OverageCap;
+        });
+        _transactions.Setup(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var aiState = new Mock<IAiServiceStateStore>();
+        aiState
+            .Setup(s => s.SetAiServiceStateAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        var creditService = new CreditService(
+            _unitOfWork.Object,
+            NullLogger<CreditService>.Instance,
+            new Mock<IUsageSettlementService>().Object,
+            new Mock<IWorkspaceClient>().Object);
+        var service = new AdminWorkspaceBillingService(
+            _unitOfWork.Object, creditService, _resolver.Object, _pricing.Object, _audit.Object,
+            NullLogger<AdminWorkspaceBillingService>.Instance, new FixedClock(Now), aiServiceStateStore: aiState.Object);
+
+        var result = await service.CompPeriodAsync(_workspaceId, new AdminCompPeriodRequest(1, "Goodwill"), _actor);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        subscription.CreditsRemaining.Should().Be(500);
+        subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        subscription.SuspendedReason.Should().BeNull();
+        subscription.OverageCreditsThisCycle.Should().Be(0);
+        subscription.OverageStartedAt.Should().BeNull();
+        aiState.Verify(s => s.SetAiServiceStateAsync(
+            _workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // ── entitlement overrides ───────────────────────────────────────────────────────────────
 
     [Fact]

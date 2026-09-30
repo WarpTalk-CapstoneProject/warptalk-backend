@@ -368,15 +368,11 @@ public sealed class CreditFreezeService : ICreditFreezeService
 
         if (total > 0)
         {
-            // The same rule CompPeriodAsync applies: credits that bring the balance back above zero
-            // lift an overage suspension, and nothing else.
-            if (target.CreditsRemaining > 0
-                && target.ServiceState == SubscriptionConstants.ServiceStates.Suspended
-                && target.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap)
-            {
-                target.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
-                target.SuspendedReason = null;
-            }
+            // WT-878: the shared credit-grant rule (SuspensionLiftService.ApplyCreditGrant): released
+            // credits pay off this cycle's overage first, and a balance back above zero lifts an
+            // overage_cap suspension, and nothing else. Static and pure, so it runs on an ADDED
+            // (unsaved) target too; it only stages fields.
+            SuspensionLiftService.ApplyCreditGrant(target, nowUtc);
 
             // No Update(target): the caller's target is already tracked — loaded by this unit of
             // work, or a subscription the payment path has just ADDED and not saved. Marking an added
