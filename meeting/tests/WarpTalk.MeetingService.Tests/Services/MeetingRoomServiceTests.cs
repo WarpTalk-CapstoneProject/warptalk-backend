@@ -1107,11 +1107,16 @@ public class MeetingRoomServiceTests
             .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
             .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
 
-        var roomRepoMock = new Mock<IMeetingRoomRepository>();
-        roomRepoMock
-            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MeetingRoom?)null);
-        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS"
+        };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom)
+            .Setup(r => r.TryMarkFinishedAsync(meetingRoom.Id, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
 
         var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
 

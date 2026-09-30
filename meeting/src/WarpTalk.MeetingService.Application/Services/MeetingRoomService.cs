@@ -972,9 +972,9 @@ public class MeetingRoomService : IMeetingRoomService
                 deleteRoomResult.ErrorCode);
 
         // One conditional UPDATE decides which call ended the meeting. "End for everyone" arrives
-        // more than once per meeting — production showed 2–4 calls 0–1.8 s apart on both replicas —
+        // more than once per meeting — production showed up to six calls within 0.7 s, on both replicas —
         // and each used to publish its own __MEETING_END__, so the assistant worker summarised the
-        // same meeting up to four times. Only the call that actually moved ended_at off null goes
+        // same meeting up to six times. Only the call that actually moved ended_at off null goes
         // on to trigger the summary; the rest have already done everything that is theirs to do
         // (the LiveKit room is gone either way) and report success, because the meeting IS ended.
         //
