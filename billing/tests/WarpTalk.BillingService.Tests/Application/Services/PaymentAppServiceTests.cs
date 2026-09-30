@@ -331,12 +331,19 @@ public class PaymentAppServiceTests
     [Fact]
     public async Task CreateCheckoutSessionAsync_APlanCheckoutIsNotGatedOnHavingAPlan()
     {
+        // WT-878: "Renewal" used to stand in for "not an extra-credits type" here; the checkout now
+        // refuses any type outside its allowlist, so the plan checkout itself is the case.
+        var plans = new Mock<IPlanRepository>();
+        plans
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Plan { Id = Guid.NewGuid(), Slug = "pro", Name = "Pro", Price = 100m, IsActive = true });
+        _unitOfWork.Setup(u => u.Plans).Returns(plans.Object);
         _stripePaymentService
-            .Setup(s => s.CreateCheckoutSessionAsync(It.IsAny<CreateCheckoutSessionRequest>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.CreateCatalogCheckoutSessionAsync(It.IsAny<CreateCheckoutSessionRequest>(), It.IsAny<CheckoutExtras>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success("https://checkout.stripe.test/s"));
 
         var result = await CreateService().CreateCheckoutSessionAsync(
-            new CreateCheckoutSessionRequest(Guid.NewGuid(), Guid.NewGuid(), 100m, PaymentType: "Renewal", PlanSlug: "pro"));
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), Guid.NewGuid(), 100m, PaymentType: PaymentConstants.PaymentTypes.Subscription, PlanSlug: "pro"));
 
         Assert.True(result.IsSuccess, result.Error);
         _subscriptionRepository.Verify(
