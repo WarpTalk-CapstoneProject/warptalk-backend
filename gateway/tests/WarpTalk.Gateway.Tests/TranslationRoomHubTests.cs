@@ -264,6 +264,79 @@ public class TranslationRoomHubTests
     }
 
     /// <summary>
+    /// WT-862 — a language change must reach the stored roster snapshot, not only the people
+    /// connected at the time. The snapshot is what a newcomer and every REJOINING connection is
+    /// handed (ParticipantRoster), and the client lets that live payload win over the participants
+    /// API — so a snapshot left at the join-time language put the old badge back on everyone's
+    /// screen at the next hub rejoin, while translation was already running in the new language.
+    /// </summary>
+    [Theory]
+    [InlineData("listen", "ja-JP")]
+    [InlineData("speak", "ja-JP")]
+    public async Task SetLanguage_ShouldRewriteTheCallersRosterEntry_SoRejoinsSeeTheNewLanguage(
+        string side, string language)
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        hub.Context = CreateContext(userId.ToString(), "conn-roster-language");
+
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var joinedAs = new ParticipantInfoDto(
+            UserId: userId,
+            DisplayName: "Tuan",
+            SpeakLanguage: "en",
+            ListenLanguage: "en",
+            IsMuted: true,
+            JoinedAt: DateTime.UtcNow.AddMinutes(-3));
+        dbMock.Setup(db => db.HashGetAsync($"translationRoom:{roomId}:participants", userId.ToString(), CommandFlags.None))
+            .ReturnsAsync(JsonSerializer.Serialize(joinedAs, options));
+
+        RedisValue written = RedisValue.Null;
+        dbMock.Setup(db => db.HashSetAsync(
+                $"translationRoom:{roomId}:participants",
+                userId.ToString(),
+                It.IsAny<RedisValue>(),
+                When.Always,
+                CommandFlags.None))
+            .Callback<RedisKey, RedisValue, RedisValue, When, CommandFlags>((_, _, value, _, _) => written = value)
+            .ReturnsAsync(true);
+
+        if (side == "listen")
+            await hub.SetListenLanguage(roomId, language);
+        else
+            await hub.SetSpeakLanguage(roomId, language);
+
+        Assert.False(written.IsNull, "the roster entry must be rewritten");
+        var recorded = JsonSerializer.Deserialize<ParticipantInfoDto>(written.ToString(), options)!;
+        Assert.Equal(side == "listen" ? "ja" : "en", recorded.ListenLanguage);
+        Assert.Equal(side == "speak" ? "ja" : "en", recorded.SpeakLanguage);
+        // Only the language moves; everything else the snapshot says is kept.
+        Assert.Equal("Tuan", recorded.DisplayName);
+        Assert.True(recorded.IsMuted);
+    }
+
+    [Fact]
+    public async Task SetListenLanguage_WithNoRosterEntry_ShouldNotInventOne()
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-no-roster");
+
+        await hub.SetListenLanguage(roomId, "ja");
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                $"translationRoom:{roomId}:participants",
+                It.IsAny<RedisValue>(),
+                It.IsAny<RedisValue>(),
+                It.IsAny<When>(),
+                It.IsAny<CommandFlags>()),
+            Times.Never);
+    }
+
+    /// <summary>
     /// WT-419 — the edge that was missing entirely.
     ///
     /// These two methods wrote the new language to a Redis hash and broadcast it, and that was all.
