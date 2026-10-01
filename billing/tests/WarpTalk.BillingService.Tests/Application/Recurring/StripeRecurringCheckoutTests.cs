@@ -57,6 +57,9 @@ public class StripeRecurringCheckoutTests
         extras.Line!.StripePriceId.Should().Be("price_test_monthly");
         extras.Line.RecurringInterval.Should().Be(PaymentConstants.PriceIntervals.Month, "a recurring line makes the session mode=subscription");
         extras.Metadata[PaymentConstants.StripeMetadata.AutoRenew].Should().Be("true");
+        extras.Metadata[PaymentConstants.StripeMetadata.ExpectedAmount].Should().Be("499000",
+            "WT-878: the quoted price rides on the session so a reprice mid-checkout cannot refuse the activation");
+        extras.Metadata[PaymentConstants.StripeMetadata.ExpectedCurrency].Should().Be("vnd");
         request.Amount.Should().Be(499_000m);
         world.Saves.Should().BeGreaterThan(0, "the plan's new Stripe ids are persisted");
     }

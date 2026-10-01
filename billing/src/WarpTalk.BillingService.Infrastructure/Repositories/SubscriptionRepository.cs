@@ -260,13 +260,27 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             query = query.Include(s => s.Plan);
         }
 
-        return await query
-            .OrderByDescending(s => s.CreatedAt)
-            .FirstOrDefaultAsync(s =>
-                s.WorkspaceId == workspaceId &&
-                s.IsActive &&
-                s.DeletedAt == null &&
-                (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow), cancellationToken);
+        // WT-878: the same order GetCurrentForWorkspaceAsync uses (SubscriptionSelection), so the
+        // two agree on which live row is "the" subscription when a race left two of them.
+        var live = SubscriptionSelection.ForWorkspace(query, workspaceId)
+            .Where(s => s.IsActive && (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow));
+        return await SubscriptionSelection.OrderCurrentFirst(live).FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<Subscription?> GetCurrentForWorkspaceAsync(
+        Guid workspaceId,
+        bool includePlan = false,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<Subscription> query = _dbSet;
+        if (includePlan)
+        {
+            query = query.Include(s => s.Plan);
+        }
+
+        return await SubscriptionSelection
+            .OrderCurrentFirst(SubscriptionSelection.ForWorkspace(query, workspaceId))
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     // ── Admin Insights (2026-09-17) ──────────────────────────────────────────

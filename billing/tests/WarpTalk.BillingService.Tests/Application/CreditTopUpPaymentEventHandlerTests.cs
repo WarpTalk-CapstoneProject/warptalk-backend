@@ -161,6 +161,8 @@ public class CreditTopUpPaymentEventHandlerTests
             .Setup(r => r.FirstOrDefaultAsync(
                 It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Subscription?)null);
+        _subscriptions.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _handler.HandleAsync(Context(10_000));
 
@@ -177,6 +179,8 @@ public class CreditTopUpPaymentEventHandlerTests
         _subscriptions
             .Setup(r => r.FirstOrDefaultAsync(
                 It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+        _subscriptions.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(subscription);
 
         var result = await _handler.HandleAsync(Context(1_500));
@@ -196,6 +200,8 @@ public class CreditTopUpPaymentEventHandlerTests
         _subscriptions
             .Setup(r => r.FirstOrDefaultAsync(
                 It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
+        _subscriptions.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Subscription?)null);
         var ended = new Subscription
         {

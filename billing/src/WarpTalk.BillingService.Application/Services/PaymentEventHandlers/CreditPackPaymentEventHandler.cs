@@ -31,12 +31,18 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
     private readonly ILogger<CreditPackPaymentEventHandler> _logger;
 
     private readonly ICreditFreezeService? _creditFreeze;
+    private readonly ISuspensionLiftService? _suspensionLift;
 
-    public CreditPackPaymentEventHandler(IUnitOfWork unitOfWork, ILogger<CreditPackPaymentEventHandler> logger, ICreditFreezeService? creditFreeze = null)
+    public CreditPackPaymentEventHandler(
+        IUnitOfWork unitOfWork,
+        ILogger<CreditPackPaymentEventHandler> logger,
+        ICreditFreezeService? creditFreeze = null,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _creditFreeze = creditFreeze;
+        _suspensionLift = suspensionLift;
     }
 
     public bool CanHandle(PaymentEventContext context) =>
@@ -85,8 +91,8 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
         var baseCredits = totalCredits - bonus;
 
         var subscription = context.Subscription
-            ?? await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.DeletedAt == null, cancellationToken);
+            ?? await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                context.WorkspaceId, includePlan: false, cancellationToken: cancellationToken);
         if (subscription is null)
         {
             // backend#467: never lose paid credit. The pack is booked frozen on the workspace's
@@ -124,6 +130,9 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
         var purchaseId = Guid.NewGuid();
         subscription.CreditsRemaining += totalCredits;
         subscription.UpdatedAt = now;
+
+        // WT-878: the same lift rule as a custom top-up — see CreditTopUpPaymentEventHandler.
+        var lift = _suspensionLift?.StageAfterCreditGrant(subscription, now) ?? SuspensionLiftOutcome.None;
         _unitOfWork.SubscriptionRepository.Update(subscription);
 
         await _unitOfWork.CreditTransactionRepository.AddAsync(new CreditTransaction
@@ -148,10 +157,14 @@ public sealed class CreditPackPaymentEventHandler : IPaymentEventHandler
 
         context.Subscription = subscription;
         context.SubscriptionChanged = true;
+        if (_suspensionLift is { } liftService)
+        {
+            context.AfterCommit.Add(ct => liftService.PublishCreditsUpdatedAsync(subscription, lift.Lifted, ct));
+        }
 
         _logger.LogInformation(
-            "credit_pack_granted: Pack={Slug} Credits={Credits} WorkspaceId={WorkspaceId} BalanceAfter={BalanceAfter}",
-            pack.Slug, totalCredits, context.WorkspaceId, subscription.CreditsRemaining);
+            "credit_pack_granted: Pack={Slug} Credits={Credits} WorkspaceId={WorkspaceId} BalanceAfter={BalanceAfter} Lifted={Lifted}",
+            pack.Slug, totalCredits, context.WorkspaceId, subscription.CreditsRemaining, lift.LiftedReason);
         return Result.Success();
     }
 

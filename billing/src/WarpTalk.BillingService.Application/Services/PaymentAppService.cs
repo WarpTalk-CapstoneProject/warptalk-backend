@@ -79,7 +79,10 @@ public class PaymentAppService : IPaymentAppService
             s => s.WorkspaceId == workspaceId
                 && s.DeletedAt == null
                 && s.IsActive
-                && s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                && (s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                    // WT-878: a row cancelled at period end the pre-WT-878 way
+                    // (Subscription.IsLegacyCancelledInPeriod).
+                    || (s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled && s.CancelledAt == null))
                 && s.CurrentPeriodEnd >= now);
     }
 
@@ -93,6 +96,34 @@ public class PaymentAppService : IPaymentAppService
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
             }
+
+            // WT-878 — ALLOWLIST, before anything is priced or any Stripe session exists. Only the
+            // customer-facing types with a server-priced branch below may start a checkout. Any
+            // other type fell through to the generic session, which charged request.Amount and
+            // stamped the request's PlanSlug/BillingCycle on the metadata — so "SubscriptionUpdate"
+            // + planSlug "enterprise" + a token amount was a 12-month Enterprise plan for pennies,
+            // activated by SubscriptionPaymentEventHandler, even on a hidden plan.
+            var paymentType = PaymentConstants.PaymentTypes.CustomerCheckoutTypes.FirstOrDefault(
+                t => string.Equals(t, request.PaymentType?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (paymentType is null)
+            {
+                _logger.LogWarning(
+                    "checkout_refused_payment_type: WorkspaceId={WorkspaceId} PaymentType={PaymentType} PlanSlug={PlanSlug}",
+                    request.WorkspaceId,
+                    request.PaymentType,
+                    request.PlanSlug);
+                return Result.Failure<string>(
+                    PaymentConstants.PaymentTypes.CheckoutTypeNotAllowedMessage,
+                    ErrorCodes.ValidationError);
+            }
+
+            // The canonical spelling from here on: StripePaymentService and the event handlers
+            // compare it case-sensitively. Only a plan checkout carries a plan.
+            request = request with
+            {
+                PaymentType = paymentType,
+                PlanSlug = paymentType == PaymentConstants.PaymentTypes.Subscription ? request.PlanSlug : string.Empty,
+            };
 
             // #466: a plan is priced by the server and sold either as a recurring Stripe
             // Subscription (auto-renew on) or as one paid period (auto-renew off).
@@ -208,6 +239,19 @@ public class PaymentAppService : IPaymentAppService
                     Amount = decimal.Round(request.Credits * creditValueVnd, 0, MidpointRounding.AwayFromZero),
                     Currency = PaymentConstants.Currencies.Vnd,
                 };
+            }
+            else
+            {
+                // WT-878: the generic session below charges request.Amount as given. Only a top-up,
+                // re-priced just above, may reach it; a catalog type that did not come back with
+                // its own priced line must not be sold at the client's number.
+                _logger.LogError(
+                    "checkout_refused_unpriced: WorkspaceId={WorkspaceId} PaymentType={PaymentType} reached the generic checkout without a server price.",
+                    request.WorkspaceId,
+                    request.PaymentType);
+                return Result.Failure<string>(
+                    BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                    ErrorCodes.InternalServerError);
             }
 
             var result = await _stripePaymentService.CreateCheckoutSessionAsync(request);
@@ -593,6 +637,10 @@ public class PaymentAppService : IPaymentAppService
         var metadata = new Dictionary<string, string>(extras.Metadata)
         {
             [PaymentConstants.StripeMetadata.AutoRenew] = autoRenew ? "true" : "false",
+            // WT-878: what this session was priced at, so activation honours it if the plan is
+            // repriced before the buyer finishes paying.
+            [PaymentConstants.StripeMetadata.ExpectedAmount] = amount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            [PaymentConstants.StripeMetadata.ExpectedCurrency] = currency,
         };
         var line = new CatalogCheckoutLine(
             plan.Name,
@@ -663,8 +711,8 @@ public class PaymentAppService : IPaymentAppService
             : request.PaymentIntentId;
 
         var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(p => p.ProviderTransactionId == providerTxId);
-        var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null);
+        var subscription = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: false);
 
         return Result.Success(request.ToPaymentEventContext(
             workspaceId,

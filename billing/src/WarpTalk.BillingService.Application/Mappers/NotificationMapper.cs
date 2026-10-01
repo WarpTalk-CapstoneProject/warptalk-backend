@@ -14,8 +14,32 @@ namespace WarpTalk.BillingService.Application.Mappers;
 
 public static class NotificationMapper
 {
-    public static RealtimeNotificationMessage ToCreditsUpdatedMessage(Guid userId, int newBalance, string title, string content)
+    /// <summary>
+    /// <c>billing.credits_updated</c>. The payload keeps <c>new_balance</c> (the original shape) and,
+    /// since WT-878, says which workspace it is about and the service state the balance left it
+    /// in — a top-up that lifted an overage suspension is exactly the moment the billing page needs
+    /// to stop showing "suspended". The extra keys are optional: a reader of the old shape is
+    /// unaffected.
+    /// </summary>
+    public static RealtimeNotificationMessage ToCreditsUpdatedMessage(
+        Guid userId,
+        int newBalance,
+        string title,
+        string content,
+        Guid? workspaceId = null,
+        string? serviceState = null,
+        string? suspendedReason = null)
     {
+        object payload = workspaceId is null && serviceState is null
+            ? new { new_balance = newBalance }
+            : new
+            {
+                new_balance = newBalance,
+                workspace_id = workspaceId?.ToString(),
+                service_state = serviceState,
+                suspended_reason = suspendedReason,
+            };
+
         return new RealtimeNotificationMessage
         {
             Id = Guid.NewGuid().ToString(),
@@ -23,7 +47,7 @@ public static class NotificationMapper
             Type = BillingMessageConstants.Notifications.Types.CreditsUpdated,
             Title = title,
             Content = content,
-            PayloadJson = JsonSerializer.Serialize(new { new_balance = newBalance }),
+            PayloadJson = JsonSerializer.Serialize(payload),
             CreatedAt = DateTime.UtcNow.ToString("O")
         };
     }

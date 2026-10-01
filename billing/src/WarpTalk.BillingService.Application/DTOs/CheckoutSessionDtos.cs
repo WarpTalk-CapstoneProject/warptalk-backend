@@ -83,7 +83,11 @@ public record StripePaymentEventRequest(
     /// <summary>#466: the Stripe Customer the checkout / subscription belongs to.</summary>
     string StripeCustomerId = "",
     /// <summary>#466: start of the period a renewal invoice paid for (the invoice line's period).</summary>
-    DateTime? PeriodStart = null
+    DateTime? PeriodStart = null,
+    /// <summary>WT-878, plan checkouts: the period total the session was priced at (pre-coupon); 0 = unknown.</summary>
+    decimal ExpectedAmount = 0,
+    /// <summary>WT-878, plan checkouts: the currency the session was priced in; empty = unknown.</summary>
+    string ExpectedCurrency = ""
 );
 
 public record CheckoutSessionDto(
