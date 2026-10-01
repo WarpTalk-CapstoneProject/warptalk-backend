@@ -97,7 +97,18 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
                 policyResult.ErrorCode);
         }
 
-        if (membershipType == MembershipType.Internal)
+        // WT-624. "You may be internal to only one Enterprise workspace" — and the workspace
+        // being joined has to be an Enterprise one for the seat being handed out to be an
+        // enterprise seat at all. Without the second half of that condition the rule fired on
+        // workspaces that draw no internal/external line from domains, where Internal means
+        // nothing more than "not an outside collaborator": a workspace created from a public
+        // address is never Enterprise (see WorkspaceService.CreateWorkspaceAsync — requireVerified
+        // stays false), every invitation it issues is legally Internal, and every invitee who
+        // happened to hold an internal seat in some real Enterprise workspace was refused 403 on
+        // a rule that did not apply to them. The join-request path has always scoped it this way
+        // (WorkspaceHelper.EvaluateJoinRequestEligibilityAsync checks isEnterpriseWorkspace
+        // first); this was the door that did not.
+        if (membershipType == MembershipType.Internal && config.RequireVerifiedDomainForInternal)
         {
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
             if (isInternalElsewhere)
