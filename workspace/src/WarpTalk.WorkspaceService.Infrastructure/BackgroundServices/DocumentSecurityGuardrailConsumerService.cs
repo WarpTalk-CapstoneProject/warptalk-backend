@@ -297,7 +297,8 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             }
 
             var isApproved = string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase);
-            var hasMaskedContent = !string.IsNullOrWhiteSpace(scanResult.MaskedContent);
+            var hasMaskedContent = !string.IsNullOrWhiteSpace(scanResult.MaskedContent)
+                && !string.Equals(scanResult.MaskedContent.Trim(), content.FullText.Trim(), StringComparison.Ordinal);
             var canIndex = document.IsAiAllowed
                 && !wasRestrictedBeforeScan
                 && isApproved
@@ -308,7 +309,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             if (scanResult.PiiDetected && !hasMaskedContent)
             {
                 _logger.LogWarning(
-                    "Skipping embedding for document {DocumentId} because PII was detected but masked content was unavailable.",
+                    "Skipping embedding for document {DocumentId} because PII was detected but masked content was unavailable or unmasked.",
                     documentId);
             }
 

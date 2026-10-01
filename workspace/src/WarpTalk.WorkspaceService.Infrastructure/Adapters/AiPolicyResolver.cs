@@ -58,25 +58,45 @@ public class AiPolicyResolver : IAiPolicyResolver
         }
 
         // C. Apply Hierarchy & Fallbacks
+        string piiSource = "default";
         if (docPolicy?.RedactPii != null)
         {
             piiEnabled = docPolicy.RedactPii.Enabled;
+            piiSource = "document_policy";
         }
         else if (wsConfig?.AiUsagePolicy?.RedactPii != null)
         {
             piiEnabled = wsConfig.AiUsagePolicy.RedactPii.Enabled;
+            piiSource = "workspace_policy";
         }
 
+        string dlpSource = "default";
         if (docPolicy?.Dlp != null)
         {
             dlpEnabled = docPolicy.Dlp.Enabled;
             keywordsBlacklist = docPolicy.Dlp.KeywordsBlacklist;
+            dlpSource = "document_policy";
         }
         else if (wsConfig?.AiUsagePolicy?.Dlp != null)
         {
             dlpEnabled = wsConfig.AiUsagePolicy.Dlp.Enabled;
             keywordsBlacklist = wsConfig.AiUsagePolicy.Dlp.KeywordsBlacklist;
+            dlpSource = "workspace_policy";
         }
+
+        _logger.LogInformation(
+            "Resolved AI Policy for Document {DocumentId} in Workspace {WorkspaceId}: " +
+            "PiiEnabled={PiiEnabled} (source: {PiiSource}), " +
+            "DlpEnabled={DlpEnabled} (source: {DlpSource}, keywords count: {KeywordsCount}), " +
+            "AllowExternalLlm={AllowExternalLlm}",
+            document.Id,
+            document.WorkspaceId,
+            piiEnabled,
+            piiSource,
+            dlpEnabled,
+            dlpSource,
+            keywordsBlacklist?.Count ?? 0,
+            allowExternalLlm);
 
         return new ResolvedPolicySettings(piiEnabled, dlpEnabled, keywordsBlacklist, allowExternalLlm);
     }
