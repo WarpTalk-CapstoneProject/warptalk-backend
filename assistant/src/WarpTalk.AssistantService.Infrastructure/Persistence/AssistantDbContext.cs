@@ -30,6 +30,8 @@ public partial class AssistantDbContext : DbContext
     public virtual DbSet<WorkspacePlugin> WorkspacePlugins { get; set; }
     public virtual DbSet<WorkspacePluginCuration> WorkspacePluginCurations { get; set; }
     public virtual DbSet<WorkspacePluginOverride> WorkspacePluginOverrides { get; set; }
+
+    public virtual DbSet<WorkspacePluginToolPolicy> WorkspacePluginToolPolicies { get; set; }
     public virtual DbSet<PluginRequest> PluginRequests { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -204,6 +206,27 @@ public partial class AssistantDbContext : DbContext
                 .HasForeignKey(e => e.PluginId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("workspace_plugin_overrides_plugin_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkspacePluginToolPolicy>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workspace_plugin_tool_policies_pkey");
+            entity.ToTable("workspace_plugin_tool_policies", "assistant");
+            entity.HasIndex(e => new { e.WorkspaceId, e.PluginId, e.ToolName }, "workspace_plugin_tool_policies_workspace_plugin_tool_key").IsUnique();
+            entity.HasIndex(e => e.PluginId, "idx_workspace_plugin_tool_policies_plugin_id");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.PluginId).HasColumnName("plugin_id");
+            entity.Property(e => e.ToolName).HasMaxLength(150).HasColumnName("tool_name");
+            entity.Property(e => e.Policy).HasMaxLength(20).HasColumnName("policy");
+            entity.Property(e => e.SetBy).HasColumnName("set_by");
+            entity.Property(e => e.SetAt).HasDefaultValueSql("now()").HasColumnName("set_at");
+
+            entity.HasOne<Plugin>()
+                .WithMany()
+                .HasForeignKey(e => e.PluginId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("workspace_plugin_tool_policies_plugin_id_fkey");
         });
 
         // Every column mapped by hand, like the rest of this context: there is no naming
