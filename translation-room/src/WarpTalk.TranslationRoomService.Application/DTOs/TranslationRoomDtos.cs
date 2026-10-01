@@ -613,3 +613,28 @@ public record TranslationRoomFeedbackStateDto(
 /// level is already the vocabulary the guard enforces (<c>ArtifactAccessLevels</c>).
 /// </summary>
 public record SetArtifactAccessRequest(string Level);
+
+/// <summary>
+/// WT-709: one language to ADD to a running meeting's declared set (its L2).
+///
+/// One code, never a list and never the whole set. A payload carrying the full set would make
+/// removal expressible — send four of the five you have — and removal is the one thing this
+/// operation must not be able to do: a language somebody is already speaking, listening in or
+/// has utterances stored against cannot be taken back out of the meeting without orphaning them.
+/// The shape enforces "add only" before any code does.
+/// </summary>
+public record AddRoomLanguageRequest([Required] string Language);
+
+/// <summary>
+/// WT-709: a meeting's declared languages (L2) after a change, so the caller can repaint its
+/// pickers from the answer instead of refetching the room.
+///
+/// Source and targets stay separate, exactly as the room stores them: the source is the language
+/// the meeting is held in and drives the summary language, while the targets are what it is
+/// translated into. A pre-flattened list would lose that distinction on the way to a client that
+/// has to show it.
+/// </summary>
+public record RoomLanguagesDto(
+    string SourceLanguage,
+    IReadOnlyList<string> TargetLanguages
+);

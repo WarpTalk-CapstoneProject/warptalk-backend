@@ -119,6 +119,34 @@ public static class TranslationRoomConstants
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
 
     /// <summary>
+    /// WT-709. The statuses in which the host may ADD a language to a live meeting.
+    ///
+    /// Deliberately the complement of the <see cref="ErrorSettingsLocked"/> gate plus WAITING, and
+    /// not "anything that has not ended". A SCHEDULED room is edited through the settings form,
+    /// which validates source and targets TOGETHER against the workspace whitelist and the plan
+    /// quota; routing a future meeting through the narrow add would split one decision across two
+    /// doors for no gain. WAITING is included because the lobby is exactly where the need shows
+    /// up — a guest knocks, the host sees they speak Korean, and the room has not started yet.
+    /// </summary>
+    public static readonly string[] RoomLanguageAddableStatuses = new[]
+    {
+        "WAITING",
+        "IN_PROGRESS",
+        "PAUSED"
+    };
+
+    /// <summary>
+    /// WT-709. Its own message rather than <see cref="ErrorUnauthorizedUpdateRoom"/>: adding a
+    /// language mid-meeting is not editing the room's settings — the settings form is frozen in
+    /// exactly the states this operation is for — and a participant who is told "only host can
+    /// update room settings" goes looking for a settings screen that is not the point.
+    /// </summary>
+    public const string ErrorUnauthorizedAddRoomLanguage = "Only the meeting host can add a language to this meeting.";
+
+    /// <summary>WT-709. Format arg {0} is the room's current status.</summary>
+    public const string ErrorRoomLanguagesNotAddable = "A language can only be added while the meeting is open (status is {0}). Edit the room's settings instead.";
+
+    /// <summary>
     /// WT-480. Deliberately its own message rather than <see cref="ErrorUnauthorizedUpdateRoom"/>:
     /// sharing a finished meeting's transcript, summary and recording is a different act from
     /// editing a room's settings, and the person refused should be told which one they were
@@ -227,7 +255,13 @@ public static class TranslationRoomConstants
     public const string ValidationLanguageUnsupported = "Language '{0}' is not supported by the platform.";
     public const string ValidationArtifactAccessUnsupported = "Artifact access level '{0}' is not supported. Allowed values: {1}.";
     public const string ValidationLanguageNotAllowedByWorkspace = "This workspace does not allow '{0}' in meetings.";
-    public const string ValidationLanguageNotAllowedByPolicy = "{0} language '{1}' is not allowed by room policy. It must be the source language or one of the target languages.";
+    /// <summary>
+    /// WT-709. Format args: {0} is "Speak" or "Listen", {1} the code, {2} the room's own languages.
+    /// The sentence names the way out on purpose — the host can add the language from inside the
+    /// meeting, so a refusal here is a step, not a dead end.
+    /// </summary>
+    public const string ValidationLanguageNotAllowedByPolicy = "{0} language '{1}' is not one of this meeting's languages ({2}). Ask the host to add it to the meeting.";
+    public const string ValidationRoomLanguageRequired = "A language is required.";
     public const string ValidationSourceLanguageUnsupported = "Source language is not supported.";
     public const string ValidationListenLanguageRequired = "Listen language is required.";
     public const string ValidationSpeakLanguageRequired = "Speak language is required.";

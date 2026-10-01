@@ -518,6 +518,32 @@ public class TranslationRoomHubTests
         await Assert.ThrowsAsync<HubException>(() => hub.SetExternalMeetingLanguage(Guid.NewGuid(), language));
     }
 
+    /// <summary>
+    /// WT-709. The two refusals have different exits, so they must read differently: a language
+    /// outside the MEETING's set is answered by asking the host (who can add it from inside the
+    /// call); one outside the WORKSPACE's whitelist is not something the host can fix. Neither
+    /// may write anything.
+    /// </summary>
+    [Theory]
+    [InlineData(RoomLanguageVerdict.NotInRoomLanguages, "Ask the host")]
+    [InlineData(RoomLanguageVerdict.NotInWorkspacePolicy, "workspace does not allow")]
+    public async Task SetSpeakLanguage_RefusalNamesTheLimitThatSaidNo(RoomLanguageVerdict verdict, string expected)
+    {
+        var policy = new Mock<IRoomLanguagePolicy>();
+        policy.Setup(p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(verdict);
+        var (hub, dbMock, _, _, _, _) = CreateHub(languagePolicy: policy.Object);
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-speak-refused");
+
+        var ex = await Assert.ThrowsAsync<HubException>(() => hub.SetSpeakLanguage(Guid.NewGuid(), "ko"));
+
+        Assert.Contains(expected, ex.Message);
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<When>(), It.IsAny<CommandFlags>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task SetSpeakLanguage_ShouldThrow_WhenLanguageIsMissing()
     {
@@ -909,8 +935,8 @@ public class TranslationRoomHubTests
     public async Task JoinTranslationRoom_ShouldRefuse_WhenWorkspacePolicyExcludesALanguage(string speak, string listen)
     {
         var policy = new Mock<IRoomLanguagePolicy>();
-        policy.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid _, string language, CancellationToken _) => language != "ja");
+        policy.Setup(p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid _, string language, CancellationToken _) => language != "ja" ? RoomLanguageVerdict.Allowed : RoomLanguageVerdict.NotInWorkspacePolicy);
         var presence = new Mock<IPresenceNotifier>();
         var (hub, dbMock, _, clientProxyMock, groupsMock, _) = CreateHub(languagePolicy: policy.Object, presence: presence.Object);
         hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-join-refused");
@@ -941,8 +967,8 @@ public class TranslationRoomHubTests
     public async Task JoinTranslationRoom_ShouldProceed_WhenWorkspacePolicyPermitsBothLanguages()
     {
         var policy = new Mock<IRoomLanguagePolicy>();
-        policy.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        policy.Setup(p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomLanguageVerdict.Allowed);
         var presence = new Mock<IPresenceNotifier>();
         var (hub, _, _, clientProxyMock, groupsMock, _) = CreateHub(languagePolicy: policy.Object, presence: presence.Object);
         var userId = Guid.NewGuid().ToString();
@@ -951,8 +977,8 @@ public class TranslationRoomHubTests
 
         await hub.JoinTranslationRoom(roomId, "Member", "vi", "en");
 
-        policy.Verify(p => p.IsLanguageAllowedAsync(roomId, "vi", It.IsAny<CancellationToken>()), Times.Once);
-        policy.Verify(p => p.IsLanguageAllowedAsync(roomId, "en", It.IsAny<CancellationToken>()), Times.Once);
+        policy.Verify(p => p.EvaluateLanguageAsync(roomId, "vi", It.IsAny<CancellationToken>()), Times.Once);
+        policy.Verify(p => p.EvaluateLanguageAsync(roomId, "en", It.IsAny<CancellationToken>()), Times.Once);
         groupsMock.Verify(
             g => g.AddToGroupAsync("conn-join-allowed", $"translationRoom:{roomId}", It.IsAny<CancellationToken>()),
             Times.Once);
@@ -970,15 +996,15 @@ public class TranslationRoomHubTests
     public async Task JoinTranslationRoom_ShouldCheckPolicyOnce_WhenSpeakAndListenAreTheSameLanguage()
     {
         var policy = new Mock<IRoomLanguagePolicy>();
-        policy.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        policy.Setup(p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomLanguageVerdict.Allowed);
         var (hub, _, _, _, _, _) = CreateHub(languagePolicy: policy.Object);
         hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-join-same");
 
         await hub.JoinTranslationRoom(Guid.NewGuid(), "Member", "en-US", "en");
 
         policy.Verify(
-            p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -1200,8 +1226,8 @@ public class TranslationRoomHubTests
     private static IRoomLanguagePolicy AnyLanguage()
     {
         var mock = new Mock<IRoomLanguagePolicy>();
-        mock.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        mock.Setup(p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomLanguageVerdict.Allowed);
         return mock.Object;
     }
 
@@ -1209,8 +1235,8 @@ public class TranslationRoomHubTests
     private static IRoomLanguagePolicy NoLanguage()
     {
         var mock = new Mock<IRoomLanguagePolicy>();
-        mock.Setup(p => p.IsLanguageAllowedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
+        mock.Setup(p => p.EvaluateLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RoomLanguageVerdict.NotInWorkspacePolicy);
         return mock.Object;
     }
 

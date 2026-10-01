@@ -383,6 +383,38 @@ public class TranslationRoomRedisSubscriberServiceTests
     /// channel: PascalCase command fields, and a camelCase <c>State</c> the client reads as
     /// TranslationRoomStateDto.
     /// </summary>
+    /// <summary>
+    /// WT-709. The host added a language mid-meeting; every picker in the room AND at its door has
+    /// to grow the option. The lobby matters most — the guest who needed it is usually still there.
+    /// </summary>
+    [Fact]
+    public async Task RoomLanguagesChanged_ReachesTheRoomAndItsLobby_WithTheWholeSet()
+    {
+        var roomId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "RoomLanguagesChanged",
+                RoomId = roomId.ToString(),
+                Languages = new { sourceLanguage = "vi", targetLanguages = new[] { "en", "ko" } }
+            })));
+
+        await WaitForSendsAsync("RoomLanguagesChanged", 2);
+
+        _clients.Verify(c => c.Group($"translationRoom:{roomId}"), Times.Once);
+        _clients.Verify(c => c.Group($"translationRoom:{roomId}:lobby"), Times.Once);
+
+        var sent = _proxy.Invocations.First(i =>
+            i.Method.Name == nameof(IClientProxy.SendCoreAsync) && (string)i.Arguments[0] == "RoomLanguagesChanged");
+        var languages = (JsonElement)((object?[])sent.Arguments[1])[0]!;
+        Assert.Equal(
+            new[] { "en", "ko" },
+            languages.GetProperty("targetLanguages").EnumerateArray().Select(e => e.GetString()).ToArray());
+    }
+
     private static RedisValue RoomStartedCommand(Guid roomId, object[] participants) =>
         new(JsonSerializer.Serialize(new
         {

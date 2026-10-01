@@ -224,6 +224,37 @@ public interface ITranslationRoomService
     Task<Result<TranslationRoomDto>> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-709: the host adds ONE language to a meeting that is already open, from inside it.
+    ///
+    /// The counterpart to the rule restored in
+    /// <c>LanguagePolicy.ValidateParticipantLanguagesAsync</c>: a participant may only choose a
+    /// language the meeting declares (its L2), so the meeting needs a way to declare one more
+    /// while people are in the room. Without this the restored rule would simply turn away the
+    /// Korean-speaking guest it exists to serve.
+    ///
+    /// Its own door rather than a field on <see cref="UpdateTranslationRoomSettingsAsync"/>, for
+    /// the same reason <see cref="InviteParticipantsAsync"/> has one: that method refuses any room
+    /// past WAITING (<c>ErrorSettingsLocked</c>), and it refuses it deliberately — rewriting a
+    /// room's language SET mid-meeting could drop a language somebody is speaking. Widening that
+    /// guard would open every other settings field with it. This operation is narrow enough to be
+    /// safe in a live room precisely because it can only ADD.
+    ///
+    /// Host only (the EFFECTIVE host, so a handover carries it), the room must be in
+    /// <c>TranslationRoomConstants.RoomLanguageAddableStatuses</c>, and the code must be one the
+    /// platform supports, inside the workspace whitelist (L1) and within the plan's max_languages
+    /// quota — the last two enforced together by
+    /// <see cref="IWorkspaceMeetingPolicy.ValidateRoomLanguagesAsync"/>, which fails CLOSED. A
+    /// language the room already has is a no-op success: the host got what they asked for, and
+    /// two hosts clicking at once must not produce a duplicate or an error.
+    /// </summary>
+    /// <returns>The meeting's languages after the addition, for the caller's pickers.</returns>
+    Task<Result<RoomLanguagesDto>> AddRoomLanguageAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string language,
+        CancellationToken ct = default);
+
     // Lifecycle Controls
     Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> PauseTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
