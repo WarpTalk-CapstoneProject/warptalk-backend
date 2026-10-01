@@ -311,7 +311,15 @@ public record McpToolDescriptorDto(
     /// and omitted when written, so a manifest round trip does not start carrying it.
     /// </remarks>
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Policy = null);
+    string? Policy = null,
+    /// <summary>
+    /// The workspace Owner's rule for this tool (<c>approval</c> or <c>blocked</c>), or null for
+    /// "member's choice". Filled in only where a workspace is known - the catalog read with a
+    /// workspace, and the tool list WarpBot is offered - so the Manage dialog can show a tool the
+    /// member cannot loosen.
+    /// </summary>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? WorkspacePolicy = null);
 
 public record McpToolExecutionRequest(
     Guid? WorkspaceId,
@@ -351,4 +359,11 @@ public record McpToolExecutionResult(
     /// allow": the tool has stopped asking, and nothing else on the way back says so — the
     /// assistant needs to be able to tell the user that the next one will just run.
     /// </summary>
-    string? AppliedToolPolicy = null);
+    string? AppliedToolPolicy = null,
+    /// <summary>
+    /// False on a confirmation request when the workspace requires asking every time: "Always
+    /// allow" would be stored on the member's account and change nothing, so it must not be
+    /// offered. Null everywhere else.
+    /// </summary>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? AlwaysAllowOffered = null);

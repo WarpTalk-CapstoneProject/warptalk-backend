@@ -66,6 +66,15 @@ public class PluginInstallationService : IPluginInstallationService
             pendingPluginIds.UnionWith(pending.Select(r => r.PluginId));
         }
 
+        // The workspace Owner's per-tool rules, for the lock the member's Manage dialog shows.
+        IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>> workspaceToolRules = availability is null
+            ? new Dictionary<Guid, IReadOnlyDictionary<string, string>>()
+            : await WorkspaceToolRules.LoadAsync(
+                _unitOfWork,
+                availability.WorkspaceId,
+                plugins.Select(plugin => plugin.Id).ToList(),
+                ct);
+
         var items = plugins
             .Where(plugin => IsListed(plugin, availability, installations))
             .Select(plugin =>
@@ -108,7 +117,8 @@ public class PluginInstallationService : IPluginInstallationService
                     blockReason,
                     workspaceAvailability,
                     pendingPluginIds.Contains(plugin.Id) ? WorkspacePluginConstants.RequestStatus.Pending : null,
-                    canAdd);
+                    canAdd,
+                    WorkspaceToolRules.ForPlugin(workspaceToolRules, plugin.Id));
             })
             .ToList();
 

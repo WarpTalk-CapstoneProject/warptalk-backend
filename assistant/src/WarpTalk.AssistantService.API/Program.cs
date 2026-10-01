@@ -97,6 +97,7 @@ try
     // The workspace plugin marketplace: which plugins a workspace has, private MCP plugins, and
     // members asking the Owner for more. Notifies through the notification service's gRPC.
     builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();
+    builder.Services.AddScoped<IWorkspaceToolPolicyService, WorkspaceToolPolicyService>();
     builder.Services.AddScoped<IWorkspaceDirectoryClient, WorkspaceDirectoryGrpcClient>();
     builder.Services.AddScoped<IWorkspacePluginMemberService, WorkspacePluginMemberService>();
     builder.Services.AddScoped<IUserNotificationClient, UserNotificationGrpcClient>();
