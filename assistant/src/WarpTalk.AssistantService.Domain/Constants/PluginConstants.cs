@@ -354,6 +354,14 @@ public static class PluginConstants
         /// rather than as an exception.
         /// </summary>
         public const string ClientRegistrationUnsupported = "client_registration_unsupported";
+
+        /// <summary>
+        /// GMCAL1001. An <c>alsoConnect</c> list on a connect request named something that cannot
+        /// ride on this consent: a plugin of a different provider, the clicked plugin itself, an
+        /// API-key row, a blank key, or more keys than the cap. Unknown, uninstalled and
+        /// policy-refused keys keep their own codes.
+        /// </summary>
+        public const string InvalidAlsoConnect = "invalid_also_connect";
     }
 
     /// <summary>
