@@ -443,14 +443,21 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // than erroring. Without this write the transcript's origin is gone once the
                 // meeting is over, and its offsets can no longer be aligned with a recording.
                 //
-                // Updating the tracked entity is safe here, unlike total_segments/total_duration_ms
-                // above: those are advanced by an atomic UPDATE ... RETURNING and would be reverted
-                // by a tracked write, while this column is touched nowhere else.
+                // NOT through the tracked entity. This used to be `transcript.TimelineAnchorAt = ...;
+                // unitOfWork.Transcripts.Update(transcript)`, on the reasoning that this column is
+                // touched nowhere else. But Update() marks EVERY column modified, so it also wrote
+                // back the stale last_sequence_order/total_segments/total_duration_ms read before
+                // AdvanceTranscriptForNewSegmentAsync ran — reverting the counter on the first
+                // segment of every meeting. The second segment then collided on sequence_order,
+                // was retried by the stale reclaim a minute later, and landed at the END of the
+                // transcript with its real start time: the out-of-order line. One targeted UPDATE
+                // with an IS NULL guard; see StampTranscriptTimelineAnchorAsync.
                 if (anchorMs > 0 && transcript.TimelineAnchorAt is null)
                 {
-                    transcript.TimelineAnchorAt =
-                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime;
-                    unitOfWork.Transcripts.Update(transcript);
+                    await unitOfWork.StampTranscriptTimelineAnchorAsync(
+                        transcript.Id,
+                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime,
+                        cancellationToken);
                 }
 
                 // total_segments/total_duration_ms were already advanced atomically inside

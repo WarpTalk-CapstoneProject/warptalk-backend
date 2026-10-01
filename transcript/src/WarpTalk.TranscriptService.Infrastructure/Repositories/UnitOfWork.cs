@@ -90,6 +90,20 @@ public class UnitOfWork : IUnitOfWork
         return result.Single();
     }
 
+    public async Task<bool> StampTranscriptTimelineAnchorAsync(Guid transcriptId, DateTime anchorUtc, CancellationToken cancellationToken = default)
+    {
+        // Only this column, and only while it is unset — see the interface doc comment.
+        var rows = await _context.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE transcript.transcripts
+            SET timeline_anchor_at = {1}
+            WHERE id = {0} AND timeline_anchor_at IS NULL
+            """,
+            new object[] { transcriptId, anchorUtc },
+            cancellationToken);
+        return rows > 0;
+    }
+
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         return await _context.SaveChangesAsync(cancellationToken);
