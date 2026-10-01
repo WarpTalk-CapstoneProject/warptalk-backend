@@ -169,6 +169,11 @@ message GetTranslationRoomResponse {
   // means "no requester_email was sent, or this server predates the field" — the reader must NOT
   // treat absent as an answer either way, only as "ask the room-read predicate instead".
   optional bool is_requester_invited = 20;
+  // (21 is bridge_capturer_user_id, added on the bridge-claim branch.)
+  // EXTERNAL_BRIDGE: the Google Meet link the room bridges, as stored. TranscriptService's
+  // post-meeting relabel needs it to find the Meet conference whose transcript names the far-side
+  // speakers. Empty for every other room type, and from an older server.
+  string external_meeting_url = 22;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

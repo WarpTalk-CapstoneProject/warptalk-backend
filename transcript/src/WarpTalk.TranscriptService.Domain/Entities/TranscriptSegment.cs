@@ -56,6 +56,21 @@ public partial class TranscriptSegment
     /// <summary>WT-716: subset of filler_only, fillers_removed, stutter_removed, escalate. Null exactly when <see cref="CleanText"/> is.</summary>
     public string[]? CleanFlags { get; set; }
 
+    /// <summary>
+    /// EXTERNAL_BRIDGE only: which person on the Google Meet side said this stand-in segment — the
+    /// Meet participant resource name (<c>conferenceRecords/{id}/participants/{id}</c>) when
+    /// Google's transcript attributed it, or a host-chosen key. Null means "the Meet side, nobody
+    /// in particular" and <see cref="SpeakerName"/> then reads "Google Meet participants".
+    /// <see cref="SpeakerName"/> always carries the display name; this is the identity behind it.
+    /// </summary>
+    public string? FarSpeakerKey { get; set; }
+
+    /// <summary>Where <see cref="FarSpeakerKey"/> came from — see <see cref="Domain.FarSpeakerSources"/>. Null exactly when the key is.</summary>
+    public string? FarSpeakerSource { get; set; }
+
+    /// <summary>For <c>google_transcript</c>: the fraction of this segment's time the chosen Meet transcript entry covers (0..1).</summary>
+    public float? FarSpeakerConfidence { get; set; }
+
     public virtual Transcript Transcript { get; set; } = null!;
 
     public virtual ICollection<TranscriptCorrection> TranscriptCorrections { get; set; } = new List<TranscriptCorrection>();

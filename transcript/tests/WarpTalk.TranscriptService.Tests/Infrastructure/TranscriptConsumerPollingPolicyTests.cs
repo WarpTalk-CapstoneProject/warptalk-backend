@@ -126,6 +126,21 @@ public class TranscriptConsumerPollingPolicyTests
     }
 
     [Fact]
+    public void TryResolveSpeaker_NamesTheBridgeStandInAsTheMeetSideRatherThanItsGuid()
+    {
+        var standIn = WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId;
+        var values = new Dictionary<string, string> { ["speaker_id"] = standIn.ToString() };
+
+        Assert.True(TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName));
+        // The id is kept: it is how the relabel job and the web recognise a far-side segment.
+        Assert.Equal(standIn, speakerId);
+        Assert.Equal("Google Meet participants", speakerName);
+        Assert.True(TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId));
+        Assert.False(TranscriptConsumerPollingPolicy.IsBridgeStandIn(Guid.NewGuid()));
+        Assert.False(TranscriptConsumerPollingPolicy.IsBridgeStandIn(null));
+    }
+
+    [Fact]
     public void ResolveConfidence_StoresNullWhenTheMessageCarriesNoConfidenceAtAll()
     {
         // WT-277: this used to fall back to 1.0f, so a segment whose confidence was never reported

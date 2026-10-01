@@ -120,7 +120,13 @@ public static class TranscriptConsumerPollingPolicy
         if (Guid.TryParse(rawSpeakerId, out var participantId))
         {
             speakerId = participantId;
-            speakerName = participantId.ToString();
+            // The EXTERNAL_BRIDGE stand-in is one mixed stream of everybody on the Google Meet
+            // side, not a person: it has no user row to look a name up in, and its GUID is not a
+            // name anybody should read. The post-meeting relabel may replace this per segment with
+            // the Meet participant Google's own transcript attributes the words to.
+            speakerName = IsBridgeStandIn(participantId)
+                ? MeetConferenceErrorCodes.MeetSideFallbackSpeakerName
+                : participantId.ToString();
             return true;
         }
 
@@ -128,6 +134,10 @@ public static class TranscriptConsumerPollingPolicy
         speakerName = string.Empty;
         return false;
     }
+
+    /// <summary>The far side of an EXTERNAL_BRIDGE room — see <see cref="ExternalBridgeConstants"/>.</summary>
+    public static bool IsBridgeStandIn(Guid? speakerId) =>
+        speakerId == ExternalBridgeConstants.ParticipantUserId;
 
     /// <summary>
     /// The Redis field carrying the STT model's own confidence for a transcribed segment.

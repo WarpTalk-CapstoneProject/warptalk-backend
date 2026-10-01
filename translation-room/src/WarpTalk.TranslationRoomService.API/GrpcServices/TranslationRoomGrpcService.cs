@@ -109,6 +109,10 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         };
         response.TargetLanguages.AddRange(result.Value!.TargetLanguages ?? []);
 
+        // Bridge relabel: the Meet link, so TranscriptService can find the conference whose
+        // transcript names the far-side speakers. Empty for non-bridge rooms.
+        response.ExternalMeetingUrl = result.Value!.ExternalMeetingUrl ?? string.Empty;
+
         // WT-704: `resolved` is set only alongside a real answer. An empty list with resolved=true
         // means "nothing may be generated"; resolved=false means "no answer" and the consumer falls
         // back to source + targets above. Never set it without the list, or a computation failure

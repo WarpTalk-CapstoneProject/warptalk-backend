@@ -401,7 +401,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // instead of being set on the tracked `transcript` object below.
                 var sequenceOrder = await unitOfWork.AdvanceTranscriptForNewSegmentAsync(transcript.Id, endMs, cancellationToken);
 
-                if (speakerId.HasValue)
+                // The bridge stand-in has no user row; its name was settled by TryResolveSpeaker.
+                if (speakerId.HasValue && !TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId))
                 {
                     try
                     {
