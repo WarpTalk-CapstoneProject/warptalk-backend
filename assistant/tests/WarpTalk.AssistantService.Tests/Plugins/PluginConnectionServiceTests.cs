@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -1127,12 +1128,13 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task ConnectAsync_ConnectsOnTheSpot_WhenTheProvidersGrantAlreadyCoversThePlugin()
     {
-        // Calendar is connected and its grant carries calendar.events, which is all Meet needs.
-        // Connecting Meet is a decision the user makes, but not one that needs Google again.
+        // The provider's grant already carries everything Meet needs (calendar.events and
+        // meetings.space.readonly). Connecting Meet is a decision the user makes, but not one that
+        // needs Google again.
         var meet = GoogleMeetPlugin();
         var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
         var connection = ConnectedConnection();
-        connection.ScopesJson = """["https://www.googleapis.com/auth/calendar.events"]""";
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { CalendarEventsScope, MeetingsSpaceReadonlyScope });
         ConfigureConnect(meet, installation, connection);
 
         var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
@@ -1180,6 +1182,55 @@ public class PluginConnectionServiceTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.Connected);
         Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_AsksGoogleForMeetingsSpaceReadonly_WhenTheGrantOnlyCoversCalendarEvents()
+    {
+        // A grant obtained before Meet required meetings.space.readonly (Calendar, or Meet itself
+        // under the old catalog row) carries calendar.events only. That no longer covers Meet, so
+        // connecting it must reach Google and ask for Meet's whole set - include_granted_scopes
+        // makes it incremental - rather than switching Meet on with a grant that cannot read
+        // participants.
+        var meet = GoogleMeetPlugin();
+        var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
+        var connection = ConnectedConnection();
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { CalendarEventsScope });
+        ConfigureConnect(meet, installation, connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.Connected);
+        Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+        Assert.Null(installation.ConnectedAt);
+        _oauthClient.Received(1).BuildAuthorizationUrl(
+            meet,
+            Arg.Is<IReadOnlyList<string>>(scopes =>
+                scopes.Contains(CalendarEventsScope) && scopes.Contains(MeetingsSpaceReadonlyScope)),
+            "state-token",
+            Arg.Any<PluginOAuthStateDto>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsPartial_WhenMeetConsentLeavesOutMeetingsSpaceReadonly()
+    {
+        // The user reconnects Meet but clears the "see Meet conferences" box on Google's consent
+        // screen. The grant still creates meetings, but Meet cannot read participants, so the
+        // outcome is partial rather than a Connected the first participant lookup would contradict.
+        var meet = GoogleMeetPlugin();
+        ConfigureInstalledPlugin(meet, GoogleMeetKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(meet, [CalendarEventsScope]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleMeetKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Partial, result.Status);
     }
 
     [Fact]
@@ -1306,10 +1357,17 @@ public class PluginConnectionServiceTests
     private static Plugin GoogleCalendarPlugin() =>
         GooglePlugin(CalendarPluginId, GoogleCalendarKey, "Google Calendar", "https://www.googleapis.com/auth/calendar.events");
 
-    private static Plugin GoogleMeetPlugin() =>
-        GooglePlugin(MeetPluginId, GoogleMeetKey, "Google Meet", "https://www.googleapis.com/auth/calendar.events");
+    private const string CalendarEventsScope = "https://www.googleapis.com/auth/calendar.events";
+    private const string MeetingsSpaceReadonlyScope = "https://www.googleapis.com/auth/meetings.space.readonly";
 
-    private static Plugin GooglePlugin(Guid id, string key, string label, string scope)
+    /// <summary>
+    /// The google_meet row as 20261001100000 leaves it: calendar.events for creating meetings, and
+    /// meetings.space.readonly for reading participants of meetings the user attends.
+    /// </summary>
+    private static Plugin GoogleMeetPlugin() =>
+        GooglePlugin(MeetPluginId, GoogleMeetKey, "Google Meet", CalendarEventsScope, MeetingsSpaceReadonlyScope);
+
+    private static Plugin GooglePlugin(Guid id, string key, string label, params string[] scopes)
     {
         return new Plugin
         {
@@ -1319,7 +1377,7 @@ public class PluginConnectionServiceTests
             Description = label,
             Provider = PluginConstants.Providers.Google,
             IsActive = true,
-            RequiredScopesJson = $"[\"{scope}\"]",
+            RequiredScopesJson = JsonSerializer.Serialize(scopes),
             ToolsJson = "[]",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
