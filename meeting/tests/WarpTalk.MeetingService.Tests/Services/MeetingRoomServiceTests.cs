@@ -1669,7 +1669,7 @@ public class MeetingRoomServiceTests
     // so the tests that matter most are the two REFUSALS. A regression that widens either gate
     // would not break any of the happy-path assertions.
 
-    private void SetupBridgeRoom(Guid translationRoomId, string hostId, string roomType, string status = "IN_PROGRESS")
+    private void SetupBridgeRoom(Guid translationRoomId, string hostId, string roomType, string status = "IN_PROGRESS", string capturerUserId = "")
     {
         _grpcServiceMock
             .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
@@ -1678,6 +1678,7 @@ public class MeetingRoomServiceTests
                 HostId = hostId,
                 Status = status,
                 TranslationRoomType = roomType,
+                BridgeCapturerUserId = capturerUserId,
             }));
         _tokenServiceMock
             .Setup(t => t.GenerateToken(
@@ -1722,6 +1723,54 @@ public class MeetingRoomServiceTests
         _tokenServiceMock.Verify(t => t.GenerateToken(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
             Times.Never);
+    }
+
+    // ---- One shared bridge room per Meet code: the CAPTURER mints the stand-in ------------------
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_MintsForTheCapturer_WhoIsNotTheHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(ExternalBridgeConstants.ParticipantUserId.ToString(), result.Value!.ParticipantIdentity);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_RefusesAMember_AndTheHost_WhenSomeoneElseCaptures()
+    {
+        // Two stand-in publishers would double the far side: only the capturer may mint.
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType, capturerUserId: Guid.NewGuid().ToString());
+
+        var member = await _sut.GenerateBridgeTokenAsync(translationRoomId, Guid.NewGuid());
+        var host = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
+
+        Assert.Equal(ErrorCodes.Forbidden, member.ErrorCode);
+        Assert.Equal(ErrorCodes.Forbidden, host.ErrorCode);
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_LegacyRoomWithoutACapturer_StillMintsForTheHost()
+    {
+        // capturerUserId "" = a room from before bridge claim (or an older server): the host rule.
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType, capturerUserId: "");
+
+        Assert.True((await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId)).IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, (await _sut.GenerateBridgeTokenAsync(translationRoomId, Guid.NewGuid())).ErrorCode);
     }
 
     [Fact]
