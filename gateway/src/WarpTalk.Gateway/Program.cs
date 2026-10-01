@@ -233,6 +233,10 @@ builder.Services.AddSingleton<IPresenceStore, RedisPresenceStore>();
 builder.Services.AddSingleton<IPresenceNotifier, PresenceNotifier>();
 builder.Services.AddHostedService<PresenceHeartbeatService>();
 
+// The room-scoped sibling: which rooms still have a live hub socket, so the room service's
+// abandoned-room reapers can stop believing a CONNECTED row whose disconnect was never delivered.
+builder.Services.AddHostedService<RoomLivenessHeartbeatService>();
+
 // One gateway pod at a time relays pub/sub events into SignalR; see RealtimeRelay. Registered
 // before the subscribers so the elector starts first and stops (releasing its lease) last.
 builder.Services.AddWarpTalkPubSubLeadership(RealtimeRelay.LeaseResource, RealtimeRelay.RequiredSubscriptions);

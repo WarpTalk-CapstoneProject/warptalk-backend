@@ -127,6 +127,91 @@ public sealed class AbandonedRoomSweepWorkerTests
             "the scope must not leak past the sweep's own call");
     }
 
+    // ── A CONNECTED row whose disconnect was never delivered ─────────────────
+    //
+    // Production, 1 Oct: six rooms IN_PROGRESS since August, each held by rows still reading
+    // CONNECTED — a host row seeded CONNECTED at creation (WT-450's seeding, fixed only for new
+    // rooms), and guests whose participant-offline never reached the room service. The row cannot
+    // tell a live host from a dead one; only the Gateway, which holds the sockets, can.
+
+    private static readonly TimeSpan HeartbeatWarm = RoomHubLiveness.Warmup + TimeSpan.FromMinutes(1);
+
+    [Fact]
+    public async Task ARoomHeldOnlyByConnectedRows_WithNoHubSocketOnIt_StartsItsGrace()
+    {
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+
+        await harness.SweepAsync();
+
+        harness.Ended.Should().BeEmpty("the first empty observation only writes the time down");
+        harness.Redis.Has(EmptyKey(room)).Should().BeTrue(
+            "no Gateway holds a socket on the room, so its CONNECTED row is not a person — before the fix no grace ever started");
+    }
+
+    [Fact]
+    public async Task ARoomHeldOnlyByConnectedRows_WithNoHubSocketOnIt_IsEndedOnceTheGraceHasRun()
+    {
+        // The "test daily mode" shape: the seeded host row and two guests, all CONNECTED.
+        var room = Room();
+        var harness = new Harness(
+            room,
+            Host(room, TranslationRoomParticipantStatuses.Connected),
+            Guest(room, TranslationRoomParticipantStatuses.Connected),
+            Guest(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+        harness.Redis.ObservedEmpty(EmptyKey(room), PastGrace);
+
+        await harness.SweepAsync();
+
+        harness.Ended.Should().Equal(room.Id);
+        harness.Redis.Has(EmptyKey(room)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARoomSomeGatewayHoldsASocketOn_IsLeftAlone()
+    {
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+        harness.Redis.HubSocketOn(room.Id);
+        harness.Redis.ObservedEmpty(EmptyKey(room), PastGrace);
+
+        await harness.SweepAsync();
+
+        harness.Ended.Should().BeEmpty();
+        harness.Redis.Has(EmptyKey(room)).Should().BeFalse("somebody is in the room, so the old observation is void");
+    }
+
+    [Fact]
+    public async Task WithNoGatewayHeartbeat_TheRowsAreStillBelieved()
+    {
+        // An older Gateway build, a Redis flush, a heartbeat that is down: no room key exists for
+        // ANY room, and reading that as "nobody anywhere" would end every meeting in progress.
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.ObservedEmpty(EmptyKey(room), PastGrace);
+
+        await harness.SweepAsync();
+
+        harness.Ended.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task WhileTheGatewayHeartbeatIsWarmingUp_TheRowsAreStillBelieved()
+    {
+        // The first rollout: replicas still on the older build hold sockets they do not report.
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(TimeSpan.FromMinutes(2));
+        harness.Redis.ObservedEmpty(EmptyKey(room), PastGrace);
+
+        await harness.SweepAsync();
+
+        harness.Ended.Should().BeEmpty();
+    }
+
     private sealed class Harness
     {
         private readonly AbandonedRoomSweepWorker _worker;

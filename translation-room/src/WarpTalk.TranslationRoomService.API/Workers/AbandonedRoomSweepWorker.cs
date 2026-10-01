@@ -62,13 +62,6 @@ public class AbandonedRoomSweepWorker : BackgroundService
     /// </summary>
     private static readonly string[] LiveStatuses = { "IN_PROGRESS", "WAITING", "PAUSED" };
 
-    /// <summary>
-    /// Old enough to be somebody else's problem. A room left open a month ago is not going to be
-    /// rejoined, and ending it would republish its artifacts into Knowledge as if it just
-    /// happened. Anything older than this needs a deliberate backfill, not a background sweep.
-    /// </summary>
-    private readonly TimeSpan _lookback = TimeSpan.FromDays(7);
-
     /// <summary>One sweep must not stampede the finalizer, which holds a semaphore of 4.</summary>
     private const int MaxRoomsPerSweep = 20;
 
@@ -132,7 +125,7 @@ public class AbandonedRoomSweepWorker : BackgroundService
         var roomService = scope.ServiceProvider.GetRequiredService<ITranslationRoomService>();
 
         var now = DateTime.UtcNow;
-        var startedAfter = now - _lookback;
+        var startedAfter = now - AbandonedRoomPolicy.Lookback;
 
         var live = await unitOfWork.TranslationRoomRepository.FindAsync(
             room =>
@@ -152,18 +145,40 @@ public class AbandonedRoomSweepWorker : BackgroundService
         // People, not seats. An EXTERNAL_BRIDGE room's far-side stand-in holds a seat from creation
         // until End and has no socket that could ever release it, so counting seats here made
         // every bridge room look occupied forever — see RoomPresence.
+        var roomIds = live.Select(room => room.Id).ToList();
         var occupancy = await unitOfWork.TranslationRoomParticipantRepository
-            .CountPeopleInRoomsAsync(live.Select(room => room.Id).ToList(), ct);
+            .CountPeopleInRoomsAsync(roomIds, ct);
+
+        var db = _redis.GetDatabase();
+
+        // A CONNECTED row is not proof of a person: its disconnect can be lost, and then it holds
+        // the room open forever. Where the Gateway says no socket is left on the room, the rows
+        // are overruled — see RoomHubLivenessSnapshot for exactly when.
+        var liveness = await RoomHubLivenessSnapshot.ReadAsync(db, roomIds, now, _logger);
+        var peopleByRoom = new Dictionary<Guid, int>(live.Count);
+        foreach (var room in live)
+        {
+            var byRows = occupancy.GetValueOrDefault(room.Id);
+            var people = liveness.PeopleIn(room, byRows, now);
+            if (people != byRows)
+            {
+                _logger.LogInformation(
+                    "Room {RoomId} has {Rows} CONNECTED participant row(s) but no hub connection on any Gateway; counting it as empty.",
+                    room.Id,
+                    byRows);
+            }
+
+            peopleByRoom[room.Id] = people;
+        }
 
         // The live-rooms gauges on the Meetings dashboard. Taken here because this is the one
         // place that already reads both halves every five minutes; see RecordRoomSnapshot for why
         // only the lock holder's value is reported.
         MeetingLifecycleMetrics.RecordRoomSnapshot(
             live.Count,
-            live.Count(room => occupancy.GetValueOrDefault(room.Id) > 0),
+            live.Count(room => peopleByRoom[room.Id] > 0),
             DateTimeOffset.UtcNow);
 
-        var db = _redis.GetDatabase();
         var ended = 0;
 
         foreach (var room in live)
@@ -178,7 +193,7 @@ public class AbandonedRoomSweepWorker : BackgroundService
             }
 
             var key = $"translationRoom:{room.Id}:empty_since";
-            var people = occupancy.GetValueOrDefault(room.Id);
+            var people = peopleByRoom[room.Id];
             var emptySince = await EmptyRoomObservation.ReadAsync(db, key);
 
             switch (AbandonedRoomPolicy.Decide(people, emptySince, now))
