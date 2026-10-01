@@ -26,7 +26,7 @@ using WarpTalk.TranslationRoomService.Domain.ValueObjects;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
 
-public class TranslationRoomService : ITranslationRoomService
+public partial class TranslationRoomService : ITranslationRoomService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomRepository _translationRoomRepository;
@@ -372,11 +372,26 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <inheritdoc />
-    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
+    public Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
         CreateTranslationRoomRequest request,
         Guid hostId,
         CancellationToken ct = default,
-        SeriesOccurrenceContext? occurrence = null)
+        SeriesOccurrenceContext? occurrence = null) =>
+        CreateTranslationRoomCoreAsync(request, hostId, ct, occurrence, bridgeMeetCode: null);
+
+    /// <summary>
+    /// The one creation path. <paramref name="bridgeMeetCode"/> is set only by bridge claim
+    /// (<see cref="ClaimBridgeRoomAsync"/>): the room is stamped with that normalized Meet code and
+    /// the creator as its first capturer BEFORE the insert, so the per-workspace unique index on
+    /// open bridge rooms is what decides a concurrent claim. A loser of that race gets
+    /// <see cref="ErrorCodes.Conflict"/> with nothing left tracked, and re-reads the winner's room.
+    /// </summary>
+    private async Task<Result<TranslationRoomDto>> CreateTranslationRoomCoreAsync(
+        CreateTranslationRoomRequest request,
+        Guid hostId,
+        CancellationToken ct,
+        SeriesOccurrenceContext? occurrence,
+        string? bridgeMeetCode)
     {
         try
         {
@@ -507,6 +522,15 @@ public class TranslationRoomService : ITranslationRoomService
             room.SeriesId = occurrence?.SeriesId;
             room.SeriesOccurrenceLocalDate = occurrence?.LocalDate;
 
+            // Bridge claim: the Meet code and the first capturer are part of the INSERT, never a
+            // follow-up update, so the unique index sees them at the moment it has to decide.
+            if (bridgeMeetCode is not null)
+            {
+                room.ExternalMeetingCode = bridgeMeetCode;
+                room.BridgeCapturerUserId = hostId;
+                room.BridgeCapturerHeartbeatAt = _utcNow();
+            }
+
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
@@ -527,14 +551,32 @@ public class TranslationRoomService : ITranslationRoomService
             // they are actually sitting in. The stand-in is seeded here, at creation, rather than
             // when the room starts, because the audio mesh is built from whoever holds a seat and
             // a bridge room with one seat would generate no routes at all.
+            TranslationRoomParticipant? standIn = null;
             if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
             {
-                await _participantRepository.AddAsync(
-                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs, externalMeetingLanguage),
-                    ct);
+                standIn = TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs, externalMeetingLanguage);
+                await _participantRepository.AddAsync(standIn, ct);
             }
 
-            await _unitOfWork.SaveChangesAsync(ct);
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+            catch (Exception ex) when (bridgeMeetCode is not null && PersistenceConflict.IsUniqueViolation(ex))
+            {
+                // Another desktop claimed this Meet code first. Untrack the losing rows — Remove on
+                // an Added entity detaches it — so the caller's follow-up join does not try to
+                // insert them again on its own SaveChanges.
+                if (standIn is not null) _participantRepository.Remove(standIn);
+                _participantRepository.Remove(hostParticipant);
+                _translationRoomRepository.Remove(room);
+
+                _logger.LogInformation(
+                    "Bridge claim for Meet code {MeetCode} in workspace {WorkspaceId} lost the create race; joining the existing room.",
+                    bridgeMeetCode, room.WorkspaceId);
+                return Result.Failure<TranslationRoomDto>(
+                    "An open room for this Google Meet call already exists.", ErrorCodes.Conflict);
+            }
             await PublishRoomTargetLanguagesAsync(room, ct);
 
             // Send invitations
@@ -1154,7 +1196,7 @@ public class TranslationRoomService : ITranslationRoomService
                 !isHost &&
                 !TranslationRoomParticipantStatuses.HoldsSeat(participant?.Status))
             {
-                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct);
+                var seatsTaken = await CountSeatsAgainstCapacityAsync(translationRoom, ct);
                 if (seatsTaken >= translationRoom.MaxParticipants)
                 {
                     // Conflict, not Forbidden or InvalidState: the caller is permitted and the room
