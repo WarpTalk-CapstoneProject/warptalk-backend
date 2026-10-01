@@ -284,8 +284,47 @@ public record TranslationRoomDto(
     /// EXTERNAL_BRIDGE: whose desktop publishes the far side right now. <c>null</c> on a legacy room,
     /// where the host holds that authority. Trailing and defaulted.
     /// </summary>
-    Guid? BridgeCapturerUserId = null
+    Guid? BridgeCapturerUserId = null,
+    /// <summary>
+    /// WT-708: what the workspace's CURRENT language whitelist did to this meeting's languages
+    /// when it was started — see <see cref="RoomLanguagePolicyNoticeDto"/>. Set only by
+    /// <c>StartTranslationRoomAsync</c>, and only when something was actually narrowed;
+    /// <c>null</c> on every other read and on every start that changed nothing.
+    ///
+    /// Trailing and defaulted so every existing positional construction site still compiles.
+    /// </summary>
+    RoomLanguagePolicyNoticeDto? LanguagePolicyNotice = null
 );
+
+/// <summary>
+/// WT-708: the host-facing half of the L1 drift check.
+///
+/// A meeting's languages (L2) are validated against the workspace whitelist (L1) when the room is
+/// created and when it is edited, and never again — so an admin who narrows L1 afterwards leaves
+/// every already-booked room carrying languages the workspace no longer allows, and Start shipped
+/// them to the AI workers unexamined. Start now recomputes L2 ∩ L1 and publishes only that.
+///
+/// The host has to be told, because from their chair nothing else says it: they booked a meeting
+/// in three languages and one of them is simply not going to be translated. It rides on the Start
+/// RESPONSE rather than going out as a notification on purpose — the person who needs this fact is
+/// the person who just pressed the button and is watching the room open, and the room page already
+/// reads this DTO. A notification would arrive in an inbox they are not looking at, for a meeting
+/// that is already live.
+///
+/// All three lists are normalized primary subtags ("vi", not "vi-VN"), and all three are meeting
+/// languages — source plus targets, the same L2 the join screen and the artifact policy build.
+/// Nothing here is persisted: the room keeps the languages the host booked, so widening L1 again
+/// restores them with no edit.
+/// </summary>
+/// <param name="Requested">L2 as stored on the room: everything the host booked.</param>
+/// <param name="Effective">L2 ∩ L1 — what this meeting will actually run in.</param>
+/// <param name="Dropped">L2 \ L1 — what the workspace no longer allows. Never empty when this DTO is present.</param>
+/// <param name="Message">One sentence naming both sets, ready to show as-is.</param>
+public record RoomLanguagePolicyNoticeDto(
+    IReadOnlyList<string> Requested,
+    IReadOnlyList<string> Effective,
+    IReadOnlyList<string> Dropped,
+    string Message);
 
 /// <summary>
 /// WT-703: the languages a finished meeting's shared artifacts (summary renderings, summary

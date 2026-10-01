@@ -86,6 +86,16 @@ public static class NotificationValidator
             }
         },
         {
+            // WT-708. series_id + series_title are exactly what
+            // TranslationRoomSeriesService.NotifySeriesLanguagePolicyBlockedAsync puts in
+            // Metadata. A series, NOT a room: there is no room to link to — the whole point of
+            // the notification is that none is being created.
+            NotificationConstants.TypeMeetingSeriesBlocked, new PayloadSchema
+            {
+                RequiredFields = { { "series_id", JsonValueKind.String }, { "series_title", JsonValueKind.String } }
+            }
+        },
+        {
             // Every field the producer sends is declared. An UNDECLARED field does not get
             // ignored — it rejects the whole payload with UNSUPPORTED_PAYLOAD_FIELD.
             NotificationConstants.TypeActionItemAssigned, new PayloadSchema
