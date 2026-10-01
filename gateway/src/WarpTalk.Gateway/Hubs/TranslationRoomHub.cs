@@ -25,6 +25,7 @@ public class TranslationRoomHub : Hub
     private readonly IConnectionMultiplexer _redis;
     private readonly IRoomHostAuthority _hostAuthority;
     private readonly IRoomLanguagePolicy _languagePolicy;
+    private readonly FarSpeakerHintIngest _farSpeakerHints;
     private readonly ILogger<TranslationRoomHub> _logger;
 
     // Track which connection belongs to which room
@@ -59,6 +60,7 @@ public class TranslationRoomHub : Hub
         IConnectionMultiplexer redis,
         IRoomHostAuthority hostAuthority,
         IRoomLanguagePolicy languagePolicy,
+        FarSpeakerHintIngest farSpeakerHints,
         ILogger<TranslationRoomHub> logger)
     {
         _connectionManager = connectionManager;
@@ -68,6 +70,7 @@ public class TranslationRoomHub : Hub
         _redis = redis;
         _hostAuthority = hostAuthority;
         _languagePolicy = languagePolicy;
+        _farSpeakerHints = farSpeakerHints;
         _logger = logger;
     }
 
@@ -715,6 +718,44 @@ public class TranslationRoomHub : Hub
         _logger.LogInformation(
             "TranslationRoomHub: capturer {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
             userId, normalized, translationRoomId);
+    }
+
+    /// <summary>
+    /// Live Google Meet speaker names for the far side of an EXTERNAL_BRIDGE room. The capturer's
+    /// desktop reads Meet's captions; the main window forwards each "this name was speaking from
+    /// tStartMs to tEndMs" here, and they land on the Redis stream
+    /// <c>meeting:{translationRoomId}:far_speaker_hints</c> that stt_worker reads to name the
+    /// stand-in's lines (warptalk-ai <c>shared/far_speaker.py</c>). See
+    /// <see cref="FarSpeakerHintIngest"/> for the validation, clock alignment and expansion.
+    ///
+    /// A hub method rather than REST because the main window is already connected and a caption
+    /// is only useful for a few seconds.
+    ///
+    /// Same gate as <see cref="SetExternalMeetingLanguage"/>: only the bridge audio owner of a live
+    /// EXTERNAL_BRIDGE room (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>),
+    /// cached for a few seconds because this is called several times a second. A refusal is a
+    /// HubException the client may ignore; calls over the room's budget (10/s) are dropped and
+    /// answered with 0.
+    /// </summary>
+    /// <param name="translationRoomId">The bridge room.</param>
+    /// <param name="hints">At most 20 caption observations on the client's clock.</param>
+    /// <param name="clientNowMs">The client's <c>Date.now()</c> when it sent this call.</param>
+    /// <returns>How many stream entries were written (0 when nothing new or rate-limited).</returns>
+    public async Task<int> ReportFarSpeakerHints(Guid translationRoomId, FarSpeakerHintDto[]? hints, long clientNowMs)
+    {
+        var userId = GetUserId();
+        var (outcome, written) = await _farSpeakerHints.IngestAsync(
+            translationRoomId,
+            userId,
+            hints,
+            clientNowMs,
+            ct => _hostAuthority.CanSetExternalMeetingLanguageAsync(translationRoomId, userId, ct),
+            Context.ConnectionAborted);
+
+        if (outcome == FarSpeakerHintOutcome.Refused)
+            throw new HubException("Only the participant capturing the external meeting can report its speakers.");
+
+        return written;
     }
 
     /// <summary>

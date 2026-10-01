@@ -41,5 +41,25 @@ public interface IUnitOfWork : IDisposable
     /// </summary>
     Task<int> AdvanceTranscriptForNewSegmentAsync(Guid transcriptId, int endTimeMs, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Stamps <c>transcripts.timeline_anchor_at</c> if, and only if, it is still NULL — a single
+    /// "UPDATE ... WHERE timeline_anchor_at IS NULL" that touches no other column. Returns whether
+    /// this call was the one that set it.
+    ///
+    /// It exists for the same reason as <see cref="AdvanceTranscriptForNewSegmentAsync"/>, and
+    /// because the warning above was not followed: the anchor used to be written with
+    /// <c>Transcripts.Update(transcript)</c> on the entity read before the counter advanced. That
+    /// Update() marked EVERY column modified, so the first segment of every meeting wrote
+    /// last_sequence_order back to its stale value, the meeting's SECOND segment was handed a
+    /// sequence_order that already existed, failed the unique index, sat pending until the stale
+    /// reclaim ~70 s later, and was then stored with the LAST sequence_order of the meeting while
+    /// keeping its real start time — the "line at 0:05 shown at the bottom" transcript order bug
+    /// (prod room 01a0f630, 1 Oct 2026).
+    ///
+    /// The IS NULL guard also makes first-write-wins hold across replicas, which the in-memory
+    /// check on a tracked entity could not.
+    /// </summary>
+    Task<bool> StampTranscriptTimelineAnchorAsync(Guid transcriptId, DateTime anchorUtc, CancellationToken cancellationToken = default);
+
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

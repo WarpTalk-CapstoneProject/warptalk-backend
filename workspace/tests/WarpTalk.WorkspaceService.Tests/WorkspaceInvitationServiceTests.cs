@@ -1039,6 +1039,145 @@ public class WorkspaceInvitationServiceTests
             "a deleted workspace still barred this account from joining an Enterprise workspace — this is the 403 in WT-417");
     }
 
+    /// <summary>
+    /// WT-624 — the rule only applies where an Internal seat IS an enterprise identity.
+    ///
+    /// A workspace created from a public address never turns the domain policy on (see
+    /// WorkspaceService.CreateWorkspaceAsync: with no domain to claim, requireVerified stays
+    /// false), so every invitation it issues is legally Internal — Internal there means nothing
+    /// more than "not an outside collaborator". Acceptance nevertheless applied the
+    /// one-Enterprise-workspace rule to it, so anyone who held a real internal seat somewhere was
+    /// refused 403 by a rule that does not govern this workspace at all. The join-request path
+    /// has always checked isEnterpriseWorkspace first; this door did not.
+    /// </summary>
+    [Fact]
+    public async Task AcceptInvitationAsync_ShouldSucceed_WhenTheInvitingWorkspaceIsNotEnterprise()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var userEmail = "someone@gmail.com";
+
+        var workspace = new Workspace { Id = workspaceId, RequireVerifiedDomainForInternal = false };
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = userEmail,
+            RoleId = Guid.NewGuid(),
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.Internal.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(1)
+        };
+
+        _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+
+        // They really are internal to a real Enterprise workspace. That is allowed to stand
+        // alongside a seat in a workspace that draws no internal/external line at all.
+        var otherEnterpriseWorkspace = new Workspace { Id = Guid.NewGuid(), RequireVerifiedDomainForInternal = true };
+        _workspaceMemberRepository.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Is("Workspace"), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new WorkspaceMember { UserId = userId, Workspace = otherEnterpriseWorkspace, MembershipType = "Internal" }
+            });
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null);
+
+        var result = await _workspaceInvitationService.AcceptInvitationAsync(
+            new AcceptInvitationRequest("valid_token"), userId, userEmail);
+
+        Assert.True(
+            result.IsSuccess,
+            "a non-Enterprise workspace refused its own invitation on the one-Enterprise-workspace rule — this is the 403 in WT-624");
+    }
+
+    /// <summary>
+    /// WT-624 — the invite path has to refuse what acceptance refuses.
+    ///
+    /// It did not ask this question at all, so an Owner could create an Internal invitation that
+    /// nobody could ever accept: the email went out, the row sat PENDING, and the only person who
+    /// ever learned it was dead was the invitee, as a bare 403.
+    /// </summary>
+    [Fact]
+    public async Task InviteMemberAsync_ShouldRefuseInternal_WhenTheInviteeAlreadyHoldsAnInternalSeatElsewhere()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, verifiedDomains: "company.com");
+        StubUserEmail("employee@company.com", Guid.NewGuid());
+
+        var otherEnterpriseWorkspace = new Workspace { Id = Guid.NewGuid(), RequireVerifiedDomainForInternal = true };
+        _workspaceMemberRepository.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Is("Workspace"), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new WorkspaceMember { Workspace = otherEnterpriseWorkspace, MembershipType = "Internal" }
+            });
+
+        var request = new InviteMemberRequest("employee@company.com", "Member", "Internal");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.InviteeAlreadyInternalElsewhere, result.Error);
+        await _workspaceInvitationRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceInvitation>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// WT-624 — and the rows already out there need a way out.
+    ///
+    /// Invitations created before the check above existed are still PENDING and still
+    /// unacceptable. The Owner's remedy is to re-invite the same person as External, which was
+    /// answered "an active pending invitation already exists" — the WT-375 trap, reopened for a
+    /// second reason. IsNoLongerAcceptableAsync now recognises this one too, so the re-invite
+    /// supersedes the dead row instead of colliding with it.
+    /// </summary>
+    [Fact]
+    public async Task InviteMemberAsync_ShouldSupersedeTheStuckInternalInvitation_WhenReinvitedAsExternal()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, verifiedDomains: "company.com");
+        StubRoleName(roleId, "Member");
+        StubUserEmail("employee@company.com", Guid.NewGuid());
+
+        var stranded = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = "employee@company.com",
+            RoleId = roleId,
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.Internal.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(1),
+        };
+        _workspaceInvitationRepository
+            .GetPendingByEmailAsync(workspaceId, "employee@company.com", Arg.Any<CancellationToken>())
+            .Returns(stranded);
+
+        var otherEnterpriseWorkspace = new Workspace { Id = Guid.NewGuid(), RequireVerifiedDomainForInternal = true };
+        _workspaceMemberRepository.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Is("Workspace"), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new WorkspaceMember { Workspace = otherEnterpriseWorkspace, MembershipType = "Internal" }
+            });
+
+        var request = new InviteMemberRequest("employee@company.com", "Member", "External");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(InvitationStatus.REVOKED.ToString(), stranded.Status);
+        await _workspaceInvitationRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceInvitation>(i => i.MembershipType == MembershipType.External.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task AcceptInvitationAsync_ShouldSucceed_WhenExternalMemberJoinsMultipleEnterpriseWorkspaces()
     {

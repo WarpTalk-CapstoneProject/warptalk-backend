@@ -279,6 +279,10 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 // because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
 // WorkspaceService — the same two clauses the REST paths enforce.
 builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+// Live Meet speaker names from the bridge capturer's desktop -> meeting:{room}:far_speaker_hints.
+// Singleton: it holds the per-room rate budget, a short authorization cache and the high-water
+// marks that stop a re-reported caption block from being written twice.
+builder.Services.AddSingleton<WarpTalk.Gateway.Services.FarSpeakerHintIngest>();
 // Server-side check of the workspace's allowed-language policy for SetSpeakLanguage and
 // SetListenLanguage. Composes the same two clients for the same reason: the room says which
 // workspace it belongs to, the workspace says which languages it permits. Until this existed the
