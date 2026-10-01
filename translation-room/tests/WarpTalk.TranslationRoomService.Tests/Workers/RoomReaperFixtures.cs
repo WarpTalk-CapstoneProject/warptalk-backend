@@ -1,6 +1,7 @@
 using System.Globalization;
 using Moq;
 using StackExchange.Redis;
+using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -50,6 +51,21 @@ internal static class RoomReaperFixtures
         LeftAt = status == TranslationRoomParticipantStatuses.Left ? DateTime.UtcNow.AddSeconds(-10) : null,
     };
 
+    /// <summary>An ordinary participant who joined over REST, half an hour into the meeting.</summary>
+    public static TranslationRoomParticipant Guest(TranslationRoom room, string status) => new()
+    {
+        Id = Guid.NewGuid(),
+        TranslationRoomId = room.Id,
+        UserId = Guid.NewGuid(),
+        DisplayName = "Guest",
+        Role = "PARTICIPANT",
+        SpeakLanguage = "en",
+        ListenLanguage = "en",
+        Status = status,
+        ConnectionType = "webrtc",
+        JoinedAt = DateTime.UtcNow.AddMinutes(-30),
+    };
+
     /// <summary>The far side of the Google Meet call: CONNECTED from creation until End, no socket.</summary>
     public static TranslationRoomParticipant StandIn(TranslationRoom room) => new()
     {
@@ -84,6 +100,11 @@ internal sealed class FakeRedisKeys
             .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync((RedisKey key, CommandFlags _) =>
                 _keys.TryGetValue(key.ToString()!, out var value) ? (RedisValue)value : RedisValue.Null);
+        database
+            .Setup(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()))
+            .ReturnsAsync((RedisKey[] keys, CommandFlags _) => keys
+                .Select(key => _keys.TryGetValue(key.ToString()!, out var value) ? (RedisValue)value : RedisValue.Null)
+                .ToArray());
         // StackExchange.Redis 3.x resolves StringSetAsync(key, value, TimeSpan) to the
         // Expiration/ValueCondition overload (see ReminderNotificationWorkerTests).
         database
@@ -109,4 +130,14 @@ internal sealed class FakeRedisKeys
     /// <summary>Pretend an earlier tick first saw the room empty <paramref name="ago"/>.</summary>
     public void ObservedEmpty(string key, TimeSpan ago) =>
         _keys[key] = (DateTime.UtcNow - ago).ToString("O", CultureInfo.InvariantCulture);
+
+    /// <summary>Pretend the Gateway's room heartbeat has been running unbroken for <paramref name="for"/>.</summary>
+    public void HubHeartbeatRunning(TimeSpan @for) =>
+        _keys[RoomHubLiveness.HeartbeatKey] =
+            (DateTimeOffset.UtcNow - @for).ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Pretend some Gateway replica holds a hub connection on <paramref name="roomId"/>.</summary>
+    public void HubSocketOn(Guid roomId) =>
+        _keys[RoomHubLiveness.RoomKey(roomId)] =
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
 }

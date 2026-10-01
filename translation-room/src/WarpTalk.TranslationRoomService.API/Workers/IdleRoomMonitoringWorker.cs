@@ -73,6 +73,10 @@ public class IdleRoomMonitoringWorker : BackgroundService
         // Find all rooms that are WAITING or IN_PROGRESS
         var activeRooms = await roomRepo.FindAsync(r => r.Status == "WAITING" || r.Status == "IN_PROGRESS", "", ct);
 
+        // Read once per tick: which of these rooms the Gateway still holds a hub socket on.
+        var liveness = await RoomHubLivenessSnapshot.ReadAsync(
+            db, activeRooms.Select(r => r.Id).ToList(), now, _logger);
+
         foreach (var room in activeRooms)
         {
             // Get participants
@@ -83,7 +87,18 @@ public class IdleRoomMonitoringWorker : BackgroundService
             // one seat that is not a person: an EXTERNAL_BRIDGE room's far-side stand-in, which
             // holds its seat until End and has no socket that could release it. Counting it kept
             // every bridge room alive after its host left or crashed. See RoomPresence.
-            var peopleInRoom = participants.Count(RoomPresence.IsPersonInRoom);
+            var peopleByRows = participants.Count(RoomPresence.IsPersonInRoom);
+
+            // And a CONNECTED row whose disconnect was lost is not a person either: with no hub
+            // socket left on the room it held the room open forever. See RoomHubLivenessSnapshot.
+            var peopleInRoom = liveness.PeopleIn(room, peopleByRows, now);
+            if (peopleInRoom != peopleByRows)
+            {
+                _logger.LogInformation(
+                    "Room {RoomId} has {Rows} CONNECTED participant row(s) but no hub connection on any Gateway; counting it as empty.",
+                    room.Id,
+                    peopleByRows);
+            }
 
             // The idle clock starts when a tick first SEES the room empty, not at the
             // participants' last LeftAt. It used to fall back to JoinedAt when LeftAt was null, and

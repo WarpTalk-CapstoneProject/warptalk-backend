@@ -54,6 +54,13 @@ public static class AbandonedRoomPolicy
     /// </summary>
     public static readonly TimeSpan GracePeriod = TimeSpan.FromMinutes(20);
 
+    /// <summary>
+    /// Old enough to be somebody else's problem. A room left open a month ago is not going to be
+    /// rejoined, and ending it would republish its artifacts into Knowledge as if it just
+    /// happened. Anything older than this needs a deliberate backfill, not a background sweep.
+    /// </summary>
+    public static readonly TimeSpan Lookback = TimeSpan.FromDays(7);
+
     /// <param name="peopleInRoom">
     /// Real people currently in the room — <c>RoomPresence.IsPersonInRoom</c>, which is seat
     /// holders minus an EXTERNAL_BRIDGE room's far-side stand-in.

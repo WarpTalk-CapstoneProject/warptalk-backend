@@ -35,6 +35,15 @@ public class TranslationRoomHub : Hub
     private static readonly ConcurrentDictionary<string, string> _roomUserToConnection = new();
 
     /// <summary>
+    /// The rooms THIS replica holds at least one connection on, for
+    /// <see cref="Presence.RoomLivenessHeartbeatService"/>. A lobby connection counts: its row is
+    /// WAITING, which never makes a room look occupied on its own, so including it only means the
+    /// CONNECTED rows beside it are still believed while somebody is knocking.
+    /// </summary>
+    public static IReadOnlyCollection<string> RoomsWithConnections() =>
+        _connectionToRoom.Values.Distinct().ToArray();
+
+    /// <summary>
     /// WT-354: the live roster, per room, in Redis rather than in this process.
     ///
     /// The hub only ever announced arrivals — `ParticipantJoined` to OthersInGroup — and never
@@ -297,6 +306,13 @@ public class TranslationRoomHub : Hub
 
         // Set target language for AI Translation Worker
         var db = _redis.GetDatabase();
+
+        // Asserted now rather than on the next heartbeat, so the room's first joiner is never
+        // read as "no live socket" for up to a beat by a reaper tick that lands in between.
+        await db.StringSetAsync(
+            WarpTalk.Shared.RoomHubLiveness.RoomKey(roomIdStr),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            WarpTalk.Shared.RoomHubLiveness.Ttl);
 
         // WT-354: hand the joiner the room as it already is, before recording their own arrival.
         //
