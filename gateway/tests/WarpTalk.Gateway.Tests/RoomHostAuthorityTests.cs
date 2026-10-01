@@ -253,6 +253,20 @@ public class RoomHostAuthorityTests
             Times.Never);
     }
 
+    [Fact]
+    public async Task ExternalMeetingLanguage_FollowsTheCapturer_NotTheHost_InASharedBridgeRoom()
+    {
+        var hostId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = BridgeRoom(hostId);
+        room.BridgeCapturerUserId = capturer.ToString();
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.True(await sut.CanSetExternalMeetingLanguageAsync(RoomId, capturer.ToString()));
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, hostId.ToString()));
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, Guid.NewGuid().ToString()));
+    }
+
     [Theory]
     [InlineData("ENDED")]
     [InlineData("CANCELLED")]

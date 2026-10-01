@@ -146,4 +146,23 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
         IReadOnlyCollection<string> fromStatuses,
         string toStatus,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// The open EXTERNAL_BRIDGE room in <paramref name="workspaceId"/> that bridges the Meet call
+    /// <paramref name="meetCode"/> (normalized), or null. "Open" is the complement of
+    /// BridgeRoomConstants.ClosedStatuses — the same predicate as the unique index, so there is at
+    /// most one. Untracked-safe: callers may update the returned entity.
+    /// </summary>
+    Task<TranslationRoom?> GetOpenBridgeRoomByMeetCodeAsync(Guid workspaceId, string meetCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomically makes <paramref name="userId"/> the room's bridge capturer, stamping its
+    /// heartbeat, when the room has no capturer, the caller already is it, or the current lease
+    /// was last renewed before <paramref name="staleBefore"/>. One conditional UPDATE, so two
+    /// desktops racing for an empty seat cannot both win. True when the caller is now capturer.
+    /// </summary>
+    Task<bool> TryAcquireBridgeCapturerAsync(Guid roomId, Guid userId, DateTime now, DateTime staleBefore, CancellationToken ct = default);
+
+    /// <summary>Renews the lease only if <paramref name="userId"/> is still the capturer.</summary>
+    Task<bool> TryRenewBridgeCapturerAsync(Guid roomId, Guid userId, DateTime now, CancellationToken ct = default);
 }
