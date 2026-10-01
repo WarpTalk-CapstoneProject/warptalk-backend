@@ -935,6 +935,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (room == null || room.WorkspaceId == Guid.Empty)
                 return Result.Success(EmptyJoinLanguagePolicy);
 
+            // WT-866: a link to a meeting that is over opened the full pre-join screen — camera,
+            // microphone, language pickers — and only the Join press learned it was dead. The
+            // join refuses with exactly this fact (see JoinTranslationRoomAsync), so saying it
+            // here first reveals nothing the join does not, and spares the round trip.
+            if (TranslationRoomConstants.TerminalStatuses.Contains(room.Status))
+                return Result.Success(EmptyJoinLanguagePolicy with { RoomEnded = true });
+
             // WT-490: the languages this ROOM declares — its source plus its targets, deduped.
             // A room is defined by the set of languages that will be spoken in it, and the screen
             // was ignoring that set entirely: a workspace permitting four languages and a room
