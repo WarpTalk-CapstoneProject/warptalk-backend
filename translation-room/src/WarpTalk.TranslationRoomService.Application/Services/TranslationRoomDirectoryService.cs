@@ -39,6 +39,22 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
 
     private readonly ILogger<TranslationRoomDirectoryService>? _logger;
 
+    /// <summary>
+    /// WT-422: turns an invitation's email address into the invitee's name. Optional so existing
+    /// test construction keeps compiling; DI always supplies it. Without it the people names carry
+    /// everyone on the roster and simply no invitee who has not joined yet.
+    /// </summary>
+    private readonly IUserSettingsDirectory? _userSettingsDirectory;
+
+    /// <summary>WT-422: how many names GetPeopleNamesAsync returns when the caller does not say.</summary>
+    private const int DefaultMaxPeopleNames = 12;
+
+    /// <summary>
+    /// WT-422: the most it will ever return, whatever the caller asks. Also the bound on Auth
+    /// lookups per call, which is the real cost — one GetUserByEmail per invitee.
+    /// </summary>
+    private const int MaxPeopleNames = 50;
+
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
     private const string ParticipantRejectedCommand = "ParticipantRejected";
 
@@ -48,7 +64,8 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         IUnitOfWork unitOfWork,
         IRedisStateRepository? redisStateRepository = null,
         IRoomArtifactLanguagePolicy? artifactLanguagePolicy = null,
-        ILogger<TranslationRoomDirectoryService>? logger = null)
+        ILogger<TranslationRoomDirectoryService>? logger = null,
+        IUserSettingsDirectory? userSettingsDirectory = null)
     {
         _translationRoomRepository = translationRoomRepository;
         _participantRepository = participantRepository;
@@ -56,6 +73,7 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
         _redisStateRepository = redisStateRepository;
         _artifactLanguagePolicy = artifactLanguagePolicy;
         _logger = logger;
+        _userSettingsDirectory = userSettingsDirectory;
     }
 
     /// <inheritdoc />
@@ -164,6 +182,134 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
             .ToList();
 
         return Result.Success<IReadOnlyList<TranslationRoomParticipantSummaryDto>>(summaries);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<string>>> GetPeopleNamesAsync(
+        Guid translationRoomId,
+        int maxNames,
+        CancellationToken ct = default)
+    {
+        var limit = maxNames <= 0 ? DefaultMaxPeopleNames : Math.Min(maxNames, MaxPeopleNames);
+
+        var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (room == null)
+            return Result.Failure<IReadOnlyList<string>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        var participants = await _participantRepository.FindAsync(
+            p => p.TranslationRoomId == translationRoomId, "", ct);
+
+        var names = new List<string>(limit);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Roster first, in order of how certainly the person is part of this conversation. Ties
+        // keep arrival order, so in a room too big for the budget the people who came first win.
+        var roster = participants
+            .Select(p => (Participant: p, Rank: PeopleNameRank(room, p)))
+            .Where(x => x.Rank >= 0)
+            .OrderBy(x => x.Rank)
+            .ThenBy(x => x.Participant.JoinedAt ?? x.Participant.CreatedAt);
+        foreach (var (participant, _) in roster)
+        {
+            if (TryAddPeopleName(names, seen, participant.DisplayName) && names.Count >= limit)
+                return Result.Success<IReadOnlyList<string>>(names);
+        }
+
+        if (_userSettingsDirectory is null)
+            return Result.Success<IReadOnlyList<string>>(names);
+
+        // Then invitees. An invitation is only an email address until the person joins, so the
+        // name comes from Auth. Someone already on the roster is usually invited too; their name
+        // comes back identical and the de-duplication drops it, which costs one lookup, not a slot.
+        var invitations = await _unitOfWork.TranslationRoomInvitationRepository.FindAsync(
+            i => i.TranslationRoomId == translationRoomId && i.Status != "DECLINED", ct: ct);
+        var emails = invitations
+            .OrderBy(i => i.CreatedAt)
+            .Select(i => i.Email?.Trim())
+            .Where(e => !string.IsNullOrEmpty(e))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(limit - names.Count)
+            .ToList();
+        if (emails.Count == 0)
+            return Result.Success<IReadOnlyList<string>>(names);
+
+        var directory = _userSettingsDirectory;
+        var invitees = await Task.WhenAll(emails.Select(async email =>
+        {
+            try
+            {
+                return await directory.GetDisplayNameByEmailAsync(email!, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The directory already swallows RpcException; this is the belt for anything else.
+                // A name is never worth failing the call over.
+                _logger?.LogWarning(ex, "Could not resolve an invitee's name for room {RoomId}", translationRoomId);
+                return null;
+            }
+        }));
+
+        foreach (var name in invitees)
+        {
+            if (TryAddPeopleName(names, seen, name) && names.Count >= limit)
+                break;
+        }
+
+        return Result.Success<IReadOnlyList<string>>(names);
+    }
+
+    /// <summary>
+    /// WT-422: where a roster row sits in the people names, or -1 to leave it out.
+    /// <para>
+    /// The host first, whatever their row says — they are seeded INVITED and promoted on arrival,
+    /// and they are in the meeting either way. Then anyone admitted and still holding a seat, then
+    /// anyone who was admitted and left.
+    /// </para>
+    /// <para>
+    /// Left out: the bridge stand-in (its name is a label, not a person); KICKED and REJECTED (the
+    /// host's decision that they are not part of this meeting); and WAITING and non-host INVITED,
+    /// which on the roster only ever mean "knocked and was never admitted" (WT-563) — a stranger at
+    /// the door is not someone the host asked for. Real invitees come in through the invitation
+    /// table instead.
+    /// </para>
+    /// </summary>
+    private static int PeopleNameRank(TranslationRoom room, TranslationRoomParticipant participant)
+    {
+        if (participant.UserId == TranslationRoomConstants.ExternalBridgeParticipantUserId)
+            return -1;
+        if (participant.UserId is { } userId && room.IsHostedBy(userId))
+            return 0;
+
+        return participant.Status switch
+        {
+            TranslationRoomParticipantStatuses.Connected => 1,
+            TranslationRoomParticipantStatuses.Disconnected => 1,
+            TranslationRoomParticipantStatuses.Left => 2,
+            _ => -1,
+        };
+    }
+
+    /// <summary>
+    /// WT-422: adds one name if it is a real, new one. Whitespace is collapsed the way the STT
+    /// worker collapses it, so two spellings that differ only in spacing are one person.
+    /// </summary>
+    private static bool TryAddPeopleName(List<string> names, HashSet<string> seen, string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        var cleaned = string.Join(" ", raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (string.Equals(cleaned, TranslationRoomConstants.HostDisplayNameFallback, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(cleaned, TranslationRoomConstants.ExternalBridgeDisplayName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!seen.Add(cleaned))
+            return false;
+
+        names.Add(cleaned);
+        return true;
     }
 
     public async Task<Result<int>> CountActiveRoomsByWorkspaceAsync(

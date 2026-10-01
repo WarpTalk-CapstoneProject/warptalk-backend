@@ -8,6 +8,17 @@ service TranslationRoomService {
   rpc GetTranslationRoomById (GetTranslationRoomRequest) returns (GetTranslationRoomResponse);
   rpc GetTranslationRoomByCode (GetTranslationRoomByCodeRequest) returns (GetTranslationRoomResponse);
   rpc GetParticipantsByRoomId (GetParticipantsByRoomIdRequest) returns (GetParticipantsByRoomIdResponse);
+
+  // WT-422: the names of the people this meeting is WITH — its host, the people who joined, and
+  // the people invited who have not arrived yet — so TranscriptService can bias STT toward them.
+  // Proper nouns are exactly what the recogniser gets wrong ("Huỳnh Thái Tú", "Tanaka Haruto"),
+  // and nothing else in the system knows who is in a room.
+  //
+  // Not GetParticipantsByRoomId: an invitee has no roster row until they join (an invitation is an
+  // email address), so their name has to be looked up in Auth, and that lookup belongs with the
+  // service that owns the invitations. Read-only, names only.
+  rpc GetRoomPeopleNames (GetRoomPeopleNamesRequest) returns (GetRoomPeopleNamesResponse);
+
   rpc GetActiveRoomCountByWorkspace (GetActiveRoomCountByWorkspaceRequest) returns (GetActiveRoomCountByWorkspaceResponse);
 
   // WT-359: the ONE write on this service. MeetingService owns the Transfer Host action and
@@ -239,6 +250,21 @@ message GetParticipantsByRoomIdRequest {
 
 message GetParticipantsByRoomIdResponse {
   repeated Participant participants = 1;
+}
+
+message GetRoomPeopleNamesRequest {
+  string room_id = 1;
+  // At most this many names, and at most this many invitation lookups against Auth. 0 means the
+  // server default; the server also clamps it to its own ceiling.
+  int32 max_names = 2;
+}
+
+message GetRoomPeopleNamesResponse {
+  // Most relevant first: the host, then people in the room now, then people who were here and
+  // left, then invitees who have not joined. Whitespace-collapsed, de-duplicated
+  // case-insensitively, and never a placeholder ("Host", the bridge's "External Meeting").
+  // Kicked, rejected and lobby-only rows are not people this meeting is with, and are left out.
+  repeated string display_names = 1;
 }
 
 message GetActiveRoomCountByWorkspaceRequest {
