@@ -92,6 +92,21 @@ public class TranslationRoomService : ITranslationRoomService
     private const string TranslationStoppedCommand = "TranslationStopped";
 
     /// <summary>
+    /// WT-709: the relay command TranslationRoomRedisSubscriberService turns into the
+    /// "RoomLanguagesChanged" SignalR event, after the host adds a language to a running meeting.
+    ///
+    /// Carries the room's languages rather than just the one that was added, and that is the
+    /// point: every client's picker shows the SET, so a client that missed an earlier event (a
+    /// reconnect, a second addition while a tab was backgrounded) repaints correctly from any
+    /// single message instead of accumulating deltas it may have holes in.
+    ///
+    /// Relayed to the lobby group as well as the room group. The person this feature exists for
+    /// is usually still at the door: a guest knocks, the host sees they need Korean and adds it,
+    /// and the pre-join picker they are looking at has to grow the option without a reload.
+    /// </summary>
+    private const string RoomLanguagesChangedCommand = "RoomLanguagesChanged";
+
+    /// <summary>
     /// WT-187: the channel NotificationRedisSubscriberService relays to the
     /// "workspace:{workspaceId}" SignalR group, which the web client's
     /// RealtimeNotificationProvider joins via SubscribeWorkspace. Anything published here
@@ -2470,6 +2485,168 @@ public class TranslationRoomService : ITranslationRoomService
                 translationRoomId,
                 hostId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<RoomLanguagesDto>> AddRoomLanguageAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string language,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+
+            if (translationRoom == null)
+                return Result.Failure<RoomLanguagesDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            // The EFFECTIVE host, like every other host gate here, so a handover carries this with
+            // it. Checked before the status and the code, because "you may not do this at all" is
+            // a different answer from "not in this state" and a non-host must not learn the room's
+            // lifecycle by probing.
+            if (!translationRoom.IsHostedBy(hostId))
+                return Result.Failure<RoomLanguagesDto>(
+                    TranslationRoomConstants.ErrorUnauthorizedAddRoomLanguage, ErrorCodes.Unauthorized);
+
+            if (!TranslationRoomConstants.RoomLanguageAddableStatuses.Contains(translationRoom.Status))
+                return Result.Failure<RoomLanguagesDto>(
+                    string.Format(
+                        TranslationRoomConstants.ErrorRoomLanguagesNotAddable,
+                        string.Join("/", TranslationRoomConstants.RoomLanguageAddableStatuses)),
+                    ErrorCodes.InvalidState);
+
+            if (string.IsNullOrWhiteSpace(language))
+                return Result.Failure<RoomLanguagesDto>(
+                    TranslationRoomConstants.ValidationRoomLanguageRequired, ErrorCodes.ValidationError);
+
+            var normalized = LanguageHelper.NormalizeLanguageCode(language);
+
+            if (!await _languagePolicy.IsSupportedAsync(normalized))
+                return Result.Failure<RoomLanguagesDto>(
+                    string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, normalized),
+                    ErrorCodes.ValidationError);
+
+            var sourceLanguage = LanguageHelper.NormalizeLanguageCode(translationRoom.SourceLanguage);
+            var targetLanguages = LanguageHelper.ParseTargetLanguages(translationRoom.TargetLanguages);
+
+            // Already declared — by the source or by a target — is a no-op SUCCESS, not a conflict.
+            // The host asked for a room that speaks Korean and the room speaks Korean; reporting an
+            // error would make two hosts clicking the same button a failure for one of them, and
+            // would make the web retry logic have to tell "already there" apart from "refused".
+            // Returning before the write also keeps the quota check off a call that adds nothing,
+            // so a room already at its plan limit can still answer this idempotently.
+            if (string.Equals(sourceLanguage, normalized, StringComparison.OrdinalIgnoreCase)
+                || targetLanguages.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                return Result.Success(new RoomLanguagesDto(sourceLanguage, targetLanguages));
+            }
+
+            var updatedTargets = targetLanguages.Append(normalized).ToList();
+
+            // L1 and the plan's max_languages quota, together, from the one gate that already
+            // enforces both on the room-edit path (WT-707). Passed the WHOLE new target set rather
+            // than the single code, because the quota counts the set: a room at its limit must be
+            // refused the fifth language even though each language on its own is whitelisted.
+            //
+            // Fails CLOSED, as it does on the edit path: this is the enforcement of a rule an owner
+            // set deliberately, and an unreachable WorkspaceService must not become the way around
+            // it. Safe to fail closed HERE, unlike on the join, because refusing this refuses an
+            // addition — nobody currently in the meeting loses anything.
+            //
+            // An external-bridge room carries Guid.Empty and belongs to no workspace, so there is
+            // no whitelist to ask for; the same carve-out the settings edit makes.
+            if (translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                    translationRoom.WorkspaceId,
+                    sourceLanguage,
+                    updatedTargets,
+                    ct);
+
+                if (!languagePolicy.IsSuccess)
+                    return Result.Failure<RoomLanguagesDto>(
+                        languagePolicy.Error ?? "The workspace does not allow that language in meetings.",
+                        languagePolicy.ErrorCode);
+            }
+
+            translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(updatedTargets);
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+            translationRoom.UpdatedBy = hostId;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Persisted FIRST, then told to the workers, then to the clients. The order is the
+            // point: the stored set is what the room's L2 snapshot is read from when the meeting
+            // ends, so a language announced but not saved would be one the artifact rules never
+            // see — exactly the hole WT-709 closes on the participant side.
+            //
+            // The AI workers read meeting:{id}:target_languages, not the database, so a new target
+            // that never reaches Redis is a language the room accepts and then does not translate.
+            await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+            await PublishRoomLanguagesChangedAsync(translationRoom, ct);
+
+            _logger.LogInformation(
+                "room_language_added: RoomId={RoomId} HostId={HostId} Language={Language}",
+                translationRoom.Id,
+                hostId,
+                normalized);
+
+            return Result.Success(new RoomLanguagesDto(sourceLanguage, updatedTargets));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Error adding a language to a room. RoomId: {RoomId}, HostId: {HostId}, Language: {Language}",
+                translationRoomId,
+                hostId,
+                language);
+            return Result.Failure<RoomLanguagesDto>(
+                TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-709: tells everyone in the room — and everyone still at its door — that the meeting's
+    /// declared languages just grew, so their pickers can offer the new one without a reload.
+    ///
+    /// Never throws, like every other publisher on this channel. The addition is already committed
+    /// and in Redis by the time this runs; failing the host's click over an undelivered broadcast
+    /// would report "could not add the language" about a language that IS added, and the clients
+    /// pick the new set up on their next room fetch anyway.
+    /// </summary>
+    private async Task PublishRoomLanguagesChangedAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+            return;
+
+        try
+        {
+            // camelCase deliberately: the Gateway forwards the `languages` element to clients
+            // untouched, exactly as it does the RoomStarted state and the poll payloads.
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = RoomLanguagesChangedCommand,
+                RoomId = room.Id.ToString(),
+                Languages = new
+                {
+                    sourceLanguage = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage),
+                    targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages)
+                }
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to publish {Command} for RoomId: {RoomId}. The language is saved; participants' pickers will show it after their next room fetch.",
+                RoomLanguagesChangedCommand,
+                room.Id);
         }
     }
 

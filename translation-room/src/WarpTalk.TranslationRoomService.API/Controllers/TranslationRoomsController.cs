@@ -580,6 +580,56 @@ public class TranslationRoomsController : ControllerBase
         return File(bytes, "text/calendar", "meeting.ics");
     }
 
+    /// <summary>
+    /// WT-709: the host adds ONE language to a meeting that is already open.
+    ///
+    /// REST and not a hub method, even though it is invoked from inside a live meeting and its
+    /// result is broadcast over SignalR. The write lands in this service's own tables and has to
+    /// be validated against the workspace whitelist and the plan quota, none of which the Gateway
+    /// hub can reach — a hub method would have to call straight back here over gRPC, and the room
+    /// gRPC surface is deliberately read-mostly (its three writes exist only because MeetingService
+    /// owns those actions and this service owns the data). Every other host control over a running
+    /// room — start, pause, stop, end, invite — is a REST call on this controller for the same
+    /// reason, and the realtime fan-out already has its own channel.
+    ///
+    /// POST to a collection, not PUT: the payload is the language being ADDED, never the resulting
+    /// set. A PUT of the whole set would make removal expressible, and removing a language people
+    /// are already speaking is exactly what this narrow door exists to avoid.
+    ///
+    /// 409 for a room in the wrong state — the caller and the request are both fine, the meeting
+    /// is simply not open — matching the invite endpoint beside it.
+    /// </summary>
+    [HttpPost("{id:guid}/languages")]
+    public async Task<IActionResult> AddRoomLanguage(
+        Guid id,
+        [FromBody] AddRoomLanguageRequest request,
+        CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.AddRoomLanguageAsync(
+            id, hostId.Value, request?.Language ?? string.Empty, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        // Spelled out rather than returning the record, so the wire names are pinned here the way
+        // the join-language-policy endpoint pins its two: the meeting screen repaints its pickers
+        // from exactly these keys.
+        return Ok(new
+        {
+            sourceLanguage = result.Value!.SourceLanguage,
+            targetLanguages = result.Value!.TargetLanguages,
+        });
+    }
+
     //Chua co enpoint PATCH nen tach rieng settings
     [HttpPut("{id}/settings")]
     public async Task<IActionResult> UpdateTranslationRoomSettings(Guid id, [FromBody] UpdateRoomSettingsRequest request, CancellationToken ct)
