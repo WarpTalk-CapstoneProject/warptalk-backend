@@ -157,6 +157,59 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     }
 
     [Fact]
+    public async Task ProcessDocumentUploadAsync_ShouldFailClosed_WhenPiiDetected_ButMaskedContentIsIdenticalToRawText()
+    {
+        // Arrange
+        var documentId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var rawText = "Nguyễn Văn A có CCCD số 079198001234 sinh năm 1998.";
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            FileName = "unmasked_pii_doc.txt",
+            FileExtension = ".txt",
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
+            IngestionStatus = "pending",
+            AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
+                AllowExternalLlm: true,
+                RedactPii: new PiiRedactionConfiguration(Enabled: true),
+                Dlp: new DlpConfiguration(Enabled: false, KeywordsBlacklist: null),
+                TranslationProfile: null
+            ))
+        };
+
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        var contentStream = new MemoryStream(Encoding.UTF8.GetBytes(rawText));
+        _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
+
+        var contentModel = new ExtractedDocumentContent { FullText = rawText };
+        _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
+        // Security scanner detected PII, but returned the UNMASKED raw text verbatim (Fail-open bug scenario)
+        _securityScanner.ScanAsync(rawText, true, false, null, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new DocumentSecurityScanResult(
+                ViolationFound: true,
+                PiiDetected: true,
+                DlpDetected: false,
+                MaskedContent: rawText)));
+
+        // Act
+        await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
+
+        // Assert
+        Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
+        Assert.False(document.AiEligible);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionFailureReasons.PiiUnmasked, document.IngestionFailureReason);
+        await _embeddingPublisher.DidNotReceiveWithAnyArgs().PublishEmbeddingIndexRequestAsync(default!, default!, default, default);
+        _workspaceDocumentRepository.Received().Update(document);
+    }
+
+    [Fact]
     public async Task ProcessDocumentUploadAsync_ShouldMarkSensitiveAndNotEligible_WhenDlpKeywordDetected()
     {
         // Arrange
