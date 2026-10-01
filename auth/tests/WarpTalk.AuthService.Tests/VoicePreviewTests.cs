@@ -66,6 +66,7 @@ public class VoicePreviewTests
             _catalog,
             Substitute.For<IVoiceCloneRequestQueue>(),
             _previews,
+            Substitute.For<IVoiceEnrollmentChallengeService>(),
             Substitute.For<ILogger<VoiceProfileService>>());
     }
 
