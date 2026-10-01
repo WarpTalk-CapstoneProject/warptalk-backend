@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using WarpTalk.AssistantService.API.Controllers;
@@ -259,7 +260,68 @@ public class AssistantPluginsOAuthCallbackTests
         return (url[..separator], query);
     }
 
-    private AssistantPluginsController CreateSut()
+    [Fact]
+    public async Task AProviderErrorIsLoggedByItsCode_SoTheQuotedRefLeadsSomewhere()
+    {
+        // WT-905: the user quoted a ref and the logs had nothing under it, because a refusal decided
+        // from the query string never reached the exchange that does the logging.
+        ConfigureState(GoogleDriveKey);
+        var logger = new CapturingLogger();
+
+        await CreateSut(logger).GoogleOAuthCallback(
+            null, "state-token", "invalid_scope\r\nFAKE line \"quoted\"", CancellationToken.None);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Contains("invalid_scopeFAKElinequoted", entry.Message);
+        Assert.Contains(GoogleDriveKey, entry.Message);
+        Assert.Contains(CorrelationId, entry.Message);
+        Assert.DoesNotContain("state-token", entry.Message);
+        Assert.DoesNotContain("\n", entry.Message);
+    }
+
+    [Fact]
+    public async Task ACancelledConsentIsNotLoggedAsAFailure()
+    {
+        ConfigureState(GoogleDriveKey);
+        var logger = new CapturingLogger();
+
+        await CreateSut(logger).GoogleOAuthCallback(null, "state-token", "access_denied", CancellationToken.None);
+
+        Assert.Empty(logger.Entries);
+    }
+
+    [Fact]
+    public async Task ACallbackWithNeitherCodeNorErrorIsLogged_WithoutTheState()
+    {
+        ConfigureState(GoogleDriveKey);
+        var logger = new CapturingLogger();
+
+        await CreateSut(logger).GoogleOAuthCallback(null, "state-token", null, CancellationToken.None);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Contains(PluginConstants.ErrorCodes.ProviderUnavailable, entry.Message);
+        Assert.DoesNotContain("state-token", entry.Message);
+    }
+
+    private sealed class CapturingLogger : ILogger<AssistantPluginsController>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    private AssistantPluginsController CreateSut(ILogger<AssistantPluginsController>? logger = null)
     {
         var httpContext = new DefaultHttpContext();
         httpContext.Items["CorrelationId"] = CorrelationId;
@@ -267,7 +329,7 @@ public class AssistantPluginsOAuthCallbackTests
         return new AssistantPluginsController(
             _installationService,
             _connectionService,
-            NullLogger<AssistantPluginsController>.Instance,
+            logger ?? NullLogger<AssistantPluginsController>.Instance,
             new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["AppBaseUrl"] = AppBaseUrl })
                 .Build())

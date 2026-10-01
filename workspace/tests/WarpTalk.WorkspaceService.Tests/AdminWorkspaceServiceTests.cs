@@ -536,6 +536,55 @@ public class AdminWorkspaceServiceTests
         Assert.Equal(WorkspaceAdminActionTypes.Suspend, existingSuspend.Action);
     }
 
+    // ── Delete releases the workspace's domains ──────────────────
+    //
+    // The admin delete copied WT-417's member cleanup from the Owner's own delete and not the
+    // line beside it that revokes verified domains. A workspace deleted from the admin portal
+    // therefore held its domain forever — prod, 30 Sep 2026: fpt.edu.vn, held by the deleted
+    // "FPT" workspace, refused every fpt.edu.vn user who tried to create a workspace.
+
+    [Fact]
+    public async Task DeleteAsync_RevokesEveryHeldDomain_SoTheDomainCanBeClaimedAgain()
+    {
+        var id = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        var workspace = Entity(id, isActive: true);
+        workspace.RequireVerifiedDomainForInternal = true;
+        _workspaceRepository.GetByIdAsync(id, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceRepository.GetAdminDetailAsync(id, Arg.Any<CancellationToken>())
+            .Returns(Row(id, workspace.OwnerId, deletedAt: Now));
+
+        var memberRepository = Substitute.For<IWorkspaceMemberRepository>();
+        memberRepository.GetActiveMembersByWorkspaceAsync(id, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>());
+        _unitOfWork.WorkspaceMemberRepository.Returns(memberRepository);
+
+        var held = new WorkspaceVerifiedDomain
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = id,
+            Domain = "fpt.edu.vn",
+            Status = "verified",
+            VerifiedAt = Now.AddDays(-30),
+        };
+        var domainRepository = Substitute.For<IWorkspaceVerifiedDomainRepository>();
+        domainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain> { held });
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(domainRepository);
+
+        var result = await _service.DeleteAsync(id, "Duplicate of FPTU", actorId, null);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal("revoked", held.Status);
+        Assert.Equal(Now, held.RevokedAt);
+        Assert.Equal(actorId, held.UpdatedBy);
+        domainRepository.Received(1).Update(held);
+        Assert.False(workspace.RequireVerifiedDomainForInternal);
+    }
+
     private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
