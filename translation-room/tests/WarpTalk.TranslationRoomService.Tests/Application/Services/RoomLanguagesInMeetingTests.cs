@@ -226,6 +226,33 @@ public class RoomLanguagesInMeetingTests
         _published.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// WT-708 × WT-709. The room was booked vi→en,es; the workspace has since dropped es. Adding ko
+    /// must not be refused over es, and must not republish es to the workers either — while the
+    /// booking itself keeps es, so widening L1 again restores it.
+    /// </summary>
+    [Fact]
+    public async Task Adding_to_a_room_the_workspace_has_since_narrowed_works_from_what_it_runs_in()
+    {
+        var room = Room();
+        room.TargetLanguages = "[\"en\",\"es\"]";
+        var service = Service(room);
+        _workspacePolicy
+            .Setup(p => p.GetAllowedLanguagesAsync(WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<IReadOnlyList<string>>(new[] { "vi", "en", "ko" }));
+
+        var result = await service.AddRoomLanguageAsync(RoomId, HostId, "ko");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _workspacePolicy.Verify(p => p.ValidateRoomLanguagesAsync(
+            WorkspaceId, "vi",
+            It.Is<IEnumerable<string>>(t => string.Join(",", t) == "en,ko"),
+            It.IsAny<CancellationToken>()), Times.Once);
+        JsonSerializer.Deserialize<List<string>>(_stored[$"meeting:{RoomId}:target_languages"])
+            .Should().Equal("en", "ko");
+        room.TargetLanguages.Should().Contain("es").And.Contain("ko");
+    }
+
     // ── the join: a profile default is not a choice ───────────────────────────────
 
     /// <summary>

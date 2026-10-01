@@ -3316,6 +3316,18 @@ public partial class TranslationRoomService : ITranslationRoomService
 
             var updatedTargets = targetLanguages.Append(normalized).ToList();
 
+            // WT-708 × WT-709: a room booked before the workspace narrowed its whitelist still
+            // STORES the languages L1 has since dropped (Start narrows what is published, never
+            // what is saved). Those must neither block this addition — validating the stored set
+            // would refuse "ko" because of an "es" nobody is translating — nor come back to life
+            // through it. So the gate and the publish both work from what the room is actually
+            // running in (L2 ∩ L1 now) plus the new language; the row keeps the booking as it was.
+            var running = await ResolveEffectiveStartLanguagesAsync(translationRoom, ct);
+            var liveTargets = (running.IsSuccess ? running.Value!.TargetLanguages : new List<string>())
+                .Append(normalized)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             // L1 and the plan's max_languages quota, together, from the one gate that already
             // enforces both on the room-edit path (WT-707). Passed the WHOLE new target set rather
             // than the single code, because the quota counts the set: a room at its limit must be
@@ -3333,7 +3345,7 @@ public partial class TranslationRoomService : ITranslationRoomService
                 var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
                     translationRoom.WorkspaceId,
                     sourceLanguage,
-                    updatedTargets,
+                    liveTargets,
                     ct);
 
                 if (!languagePolicy.IsSuccess)
@@ -3356,7 +3368,7 @@ public partial class TranslationRoomService : ITranslationRoomService
             //
             // The AI workers read meeting:{id}:target_languages, not the database, so a new target
             // that never reaches Redis is a language the room accepts and then does not translate.
-            await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+            await PublishRoomTargetLanguagesAsync(translationRoom, ct, liveTargets);
             await PublishRoomLanguagesChangedAsync(translationRoom, ct);
 
             _logger.LogInformation(
