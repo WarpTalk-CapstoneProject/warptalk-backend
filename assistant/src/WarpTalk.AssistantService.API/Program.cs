@@ -15,6 +15,7 @@ using WarpTalk.AssistantService.Infrastructure.Repositories;
 using WarpTalk.AssistantService.Infrastructure.Clients;
 using WarpTalk.AssistantService.Infrastructure.Messaging;
 using WarpTalk.AssistantService.Infrastructure.Mcp;
+using WarpTalk.AssistantService.Infrastructure.Meet;
 using WarpTalk.AssistantService.Infrastructure.OAuth;
 using WarpTalk.AssistantService.Infrastructure.Plugins;
 using WarpTalk.AssistantService.Infrastructure.Security;
@@ -53,6 +54,11 @@ try
     builder.WebHost.ConfigureKestrel(options =>
     {
         options.ListenAnyIP(5108, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+        // Internal gRPC (meet_conference.proto): Google Meet REST through a user's own grant, for
+        // translation-room's conference-end worker and transcript's far-speaker relabel.
+        options.ListenAnyIP(
+            builder.Configuration.GetValue("Grpc:Port", 50058),
+            listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
     builder.Services.AddDbContext<AssistantDbContext>(options =>
@@ -123,6 +129,14 @@ try
     builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
     builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
 
+    // Google Meet REST v2 (conference records, participants, transcripts) with the host's own
+    // grant. The bridge's conference-end detection, post-meeting relabel and Meet roster use it.
+    builder.Services.Configure<GoogleMeetApiOptions>(builder.Configuration.GetSection("Plugins:GoogleWorkspace:MeetApi"));
+    builder.Services.AddHttpClient<IGoogleMeetRestClient, GoogleMeetRestClient>();
+    builder.Services.AddScoped<IHostMeetConferenceService, HostMeetConferenceService>();
+    builder.Services.AddScoped<IBridgeRoomDirectory, BridgeRoomDirectoryGrpcClient>();
+    builder.Services.AddScoped<IBridgeMeetRosterService, BridgeMeetRosterService>();
+
     // MCP client registration ladder (WT-602). Registration order below IS the spec's priority
     // order - MCP Authorization 2026-07-28 requires walking pre-registered, then Client ID
     // Metadata Documents, then Dynamic Client Registration, in that order. Do not reorder these
@@ -173,6 +187,18 @@ try
     // The recorder reads the admin's e-mail, address and user agent from the request it serves.
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
+
+    // The bridge Meet roster checks that the caller is the room's host or participant, and finds
+    // the Meet link, through translation-room's existing room/participant reads.
+    builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:TranslationRoomServiceUrl",
+            "http://localhost:50052");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
     // Plugin request notifications (member asks the Owner; the Owner decides). Required outside
     // Development like every other gRPC address: GetRequiredServiceUri throws when it is missing, and
@@ -379,6 +405,7 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
+    app.MapGrpcService<WarpTalk.AssistantService.API.GrpcServices.MeetConferenceGrpcService>();
     // WebSockets only: reached through the gateway's YARP route to the Kubernetes Service, which
     // pins nothing to a pod. See SignalRBackplaneExtensions.UseWebSocketsOnly.
     app.MapHub<AssistantHub>("/api/v1/assistant/chat-hub", SignalRBackplaneExtensions.UseWebSocketsOnly);

@@ -20,6 +20,9 @@ public static class MeetConferenceErrorCodes
     /// <summary>The meeting reference is not a Meet code or a meet.google.com link.</summary>
     public const string InvalidMeeting = "invalid_meeting";
 
+    /// <summary>Google refused the read for a reason other than scope (403 PERMISSION_DENIED).</summary>
+    public const string PermissionDenied = "meet_permission_denied";
+
     /// <summary>Google answered 404 for a resource that was named explicitly.</summary>
     public const string NotFound = "not_found";
 
