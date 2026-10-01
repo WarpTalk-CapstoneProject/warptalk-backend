@@ -30,4 +30,9 @@
     <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- AssistantChatResultConsumerService.FinalizeMessageAsync is internal and tested directly. -->
+    <InternalsVisibleTo Include="WarpTalk.AssistantService.Tests" />
+  </ItemGroup>
+
 </Project>

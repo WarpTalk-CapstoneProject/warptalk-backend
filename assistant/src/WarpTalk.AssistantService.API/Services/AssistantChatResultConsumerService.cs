@@ -301,7 +301,9 @@ public class AssistantChatResultConsumerService : BackgroundService
         }
     }
 
-    private async Task FinalizeMessageAsync(
+    // Internal for the tests: the recording rules (workspace messages only, never failing the
+    // finalisation) are this method's, not the recorder's.
+    internal async Task FinalizeMessageAsync(
         IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, string sourcesJson, bool failed, string resultScope, CancellationToken ct)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -340,6 +342,23 @@ public class AssistantChatResultConsumerService : BackgroundService
 
         unitOfWork.AssistantMessageRepository.Update(message);
         await unitOfWork.SaveChangesAsync(ct);
+
+        // Wave 4: one assistant_tool_calls row per tool call, for Insights. Workspace answers only
+        // (a platform answer returned above). After the message is saved and in its own try/catch:
+        // the answer is what the user is waiting for, and a count that could not be written must
+        // never fail it or send it back to the stream for a retry.
+        if (!string.IsNullOrEmpty(toolCallsJson))
+        {
+            try
+            {
+                var recorder = scope.ServiceProvider.GetRequiredService<IAssistantToolCallRecorder>();
+                await recorder.RecordAsync(message, toolCallsJson, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "AssistantChatResultConsumerService: could not record tool calls for message {MessageId}.", messageId);
+            }
+        }
 
         if (failed)
         {
