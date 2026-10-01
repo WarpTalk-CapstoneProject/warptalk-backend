@@ -83,11 +83,7 @@ public class LanguagePolicy : ILanguagePolicy
         //    whitelist gets everywhere else. A room with no declared languages is a fixture or an
         //    external bridge, and refusing every join into one would be a regression with no rule
         //    behind it.
-        var roomLanguages = new List<string> { Helpers.LanguageHelper.NormalizeLanguageCode(room.SourceLanguage) }
-            .Concat(Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages))
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var roomLanguages = DeclaredLanguages(room);
 
         if (roomLanguages.Count > 0)
         {
@@ -105,6 +101,30 @@ public class LanguagePolicy : ILanguagePolicy
         }
 
         return null; // Null means no validation errors (Success)
+    }
+
+    /// <summary>
+    /// WT-709: the languages a participant may pick in this room — its L2, source plus targets,
+    /// normalized to primary subtags — or an EMPTY list when the room places no L2 limit on them.
+    ///
+    /// Empty for two kinds of room. One with no declared languages at all (a fixture, or a row
+    /// that predates them): empty means "unknown", never "nothing allowed". And an
+    /// EXTERNAL_BRIDGE room: it is one shared room per Google Meet code, joined by every WarpTalk
+    /// user in that call with whatever "My language" they picked in the popup, and its far-side
+    /// stand-in speaks whatever the Meet side speaks. Nobody in a bridge chose its languages
+    /// ahead of time, so there is no L2 to hold them to and no host action that would make one
+    /// up — the workspace whitelist (L1) still applies there, enforced at the hub and the join.
+    /// </summary>
+    public static IReadOnlyList<string> DeclaredLanguages(TranslationRoom room)
+    {
+        if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            return Array.Empty<string>();
+
+        return new List<string> { Helpers.LanguageHelper.NormalizeLanguageCode(room.SourceLanguage) }
+            .Concat(Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public bool IsTranslationRequired(string speakLanguage, string listenLanguage)

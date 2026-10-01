@@ -158,7 +158,14 @@ public sealed class RoomLanguagePolicy : IRoomLanguagePolicy
             .Where(code => code.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
 
-        if (roomLanguages.Count > 0 && !roomLanguages.Contains(normalized))
+        // An EXTERNAL_BRIDGE room has no L2 to hold anyone to: it is one shared room per Meet
+        // code, joined with whatever language each WarpTalk user picked in the popup, and its
+        // far-side stand-in speaks whatever the Meet side speaks. Only the workspace limit below
+        // applies there — the same carve-out translation-room's LanguagePolicy.DeclaredLanguages
+        // makes for the REST join.
+        var isBridge = string.Equals(room.TranslationRoomType, "EXTERNAL_BRIDGE", StringComparison.OrdinalIgnoreCase);
+
+        if (!isBridge && roomLanguages.Count > 0 && !roomLanguages.Contains(normalized))
         {
             return RoomLanguageVerdict.NotInRoomLanguages;
         }

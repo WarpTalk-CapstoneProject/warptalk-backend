@@ -199,6 +199,18 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("ParticipantRejected", payload.UserId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantRejected to the lobby of room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
                 }
+                // WT-709: the host added a language to a running meeting. The payload carries the
+                // whole set (source + targets), so a client that missed an earlier change repaints
+                // correctly from this one. The lobby gets it too: the person this exists for is
+                // usually still at the door, looking at a pre-join picker that has to grow the
+                // option without a reload.
+                else if (payload.Command == "RoomLanguagesChanged" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("RoomLanguagesChanged", payload.Languages, stoppingToken);
+                    await _hubContext.Clients.Group(LobbyGroupName(payload.RoomId)).SendAsync("RoomLanguagesChanged", payload.Languages, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted RoomLanguagesChanged to room {RoomId} and its lobby", payload.RoomId);
+                }
                 // WT-04/WT-06/WT-08: MeetingService (a separate microservice/process from this
                 // Gateway) publishes these on the same channel — it cannot inject
                 // IHubContext<TranslationRoomHub> directly since it doesn't own this hub's
@@ -358,6 +370,10 @@ public class TranslationRoomCommandMessage
     // WT-322 — the room's TranslationRoomStateDto, already serialized camelCase by
     // TranslationRoomService.PublishRoomStartedAsync and forwarded to clients untouched.
     public JsonElement? State { get; set; }
+
+    // WT-709 — { sourceLanguage, targetLanguages } after a host added a language mid-meeting,
+    // serialized camelCase by TranslationRoomService.PublishRoomLanguagesChangedAsync.
+    public JsonElement? Languages { get; set; }
 
     // Polls + Q&A — Poll/Question/FinalResult are already-serialized (camelCase) JSON
     // element payloads produced by PollsService/QuestionsService; Tally is an

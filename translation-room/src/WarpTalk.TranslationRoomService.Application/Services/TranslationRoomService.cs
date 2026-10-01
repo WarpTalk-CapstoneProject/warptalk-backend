@@ -1191,8 +1191,27 @@ public partial class TranslationRoomService : ITranslationRoomService
                 var userDefaults = await _userSettingsDirectory.GetDefaultsAsync(userId, ct);
                 if (userDefaults != null)
                 {
-                    speakLang ??= userDefaults.DefaultSpeakLanguage;
-                    listenLang ??= userDefaults.DefaultListenLanguage;
+                    var declared = LanguagePolicy.LanguagePolicy.DeclaredLanguages(translationRoom);
+
+                    // WT-709: a profile default is not a choice the joiner made for THIS meeting,
+                    // so it is not refused like one. A default outside the meeting's languages
+                    // falls back to the meeting's source language; only a language the joiner
+                    // actually picked is held to the rule and refused with "ask the host".
+                    string? FitDefault(string? fallback)
+                    {
+                        if (string.IsNullOrWhiteSpace(fallback) || declared.Count == 0)
+                            return fallback;
+
+                        var normalized = LanguageHelper.NormalizeLanguageCode(fallback);
+                        return declared.Contains(normalized, StringComparer.OrdinalIgnoreCase)
+                            ? fallback
+                            : LanguageHelper.NormalizeLanguageCode(translationRoom.SourceLanguage);
+                    }
+
+                    if (string.IsNullOrWhiteSpace(speakLang))
+                        speakLang = FitDefault(userDefaults.DefaultSpeakLanguage);
+                    if (string.IsNullOrWhiteSpace(listenLang))
+                        listenLang = FitDefault(userDefaults.DefaultListenLanguage);
                 }
             }
 

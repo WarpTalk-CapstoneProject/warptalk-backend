@@ -75,31 +75,41 @@ public class TranslationRoomHub : Hub
     }
 
     /// <summary>
-    /// Refuse a language the room's workspace does not permit.
+    /// Refuse a language the meeting does not declare (its L2, WT-709) or the room's workspace
+    /// does not permit (L1).
     ///
     /// Throws rather than returning a bool, for the same reason
     /// <see cref="EnsureHostAuthorityAsync"/> does: a caller that forgets to check a return value
     /// re-opens the hole silently, and a HubException surfaces on the client as a rejected invoke
-    /// with this text, which is the sentence the participant needs to read.
+    /// with this text, which is the sentence the participant needs to read. The two refusals say
+    /// different things because they have different exits: the host can add a language to the
+    /// meeting from inside the call; only an Owner can change the workspace's list.
     ///
     /// See <see cref="IRoomLanguagePolicy"/> for why an unreachable WorkspaceService permits here
     /// while it refuses in the host check.
     /// </summary>
     private async Task EnsureLanguageAllowedAsync(Guid translationRoomId, string language)
     {
-        if (await _languagePolicy.IsLanguageAllowedAsync(
-                translationRoomId, language, Context.ConnectionAborted))
+        var verdict = await _languagePolicy.EvaluateLanguageAsync(
+            translationRoomId, language, Context.ConnectionAborted);
+
+        if (verdict == RoomLanguageVerdict.Allowed)
         {
             return;
         }
 
         _logger.LogWarning(
-            "TranslationRoomHub: refused language {Language} in room {RoomId} for user {UserId} — "
-            + "the workspace's allowed-language policy does not include it.",
-            language, translationRoomId, GetUserId());
+            "TranslationRoomHub: refused language {Language} in room {RoomId} for user {UserId} — {Verdict}.",
+            language, translationRoomId, GetUserId(), verdict);
 
-        throw new HubException("This workspace does not allow that language in meetings.");
+        throw new HubException(verdict == RoomLanguageVerdict.NotInRoomLanguages
+            ? RoomLanguageNotInMeetingMessage
+            : "This workspace does not allow that language in meetings.");
     }
+
+    /// <summary>WT-709: the web client matches on this sentence to offer "ask the host".</summary>
+    public const string RoomLanguageNotInMeetingMessage =
+        "That language is not one of this meeting's languages. Ask the host to add it to the meeting.";
 
     /// <summary>
     /// Closes the KNOWN GAP that used to be documented (and left open) on MuteAll,
