@@ -337,6 +337,29 @@ public static class TranscriptConsumerPollingPolicy
     private static string NonBlankOr(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
+    /// <summary>
+    /// Whether a segment's <c>start_ms</c> can be compared with the start times already stored for
+    /// its transcript — i.e. it was measured from the same origin. True when the message states an
+    /// anchor and the transcript either has none yet (this message is the one stamping it) or has
+    /// exactly that one. A message with no anchor (an older producer) or a DIFFERENT one (the STT
+    /// worker lost its Redis anchor mid-meeting and started a new clock) is not placed by start
+    /// time: comparing two clocks would move lines to the wrong place, which is worse than arrival
+    /// order.
+    /// </summary>
+    public static bool StartTimeIsOnTranscriptClock(long anchorMs, DateTime? transcriptAnchorUtc)
+    {
+        if (anchorMs <= 0)
+        {
+            return false;
+        }
+        if (transcriptAnchorUtc is null)
+        {
+            return true;
+        }
+        var stored = new DateTimeOffset(DateTime.SpecifyKind(transcriptAnchorUtc.Value, DateTimeKind.Utc));
+        return stored.ToUnixTimeMilliseconds() == anchorMs;
+    }
+
     public static bool ShouldDeadLetter(long deliveryAttempts) =>
         deliveryAttempts >= MaxDeliveryAttempts;
 
