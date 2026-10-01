@@ -104,7 +104,8 @@ public sealed class TranscriptConsumerHousekeepingIntegrationTests : IAsyncLifet
         const string self = "transcript-self";
 
         await db.StreamCreateConsumerGroupAsync(stream, Group, "0-0", true);
-        for (var i = 0; i < 3; i++)
+        // One line for each of the four consumers below.
+        for (var i = 0; i < 4; i++)
         {
             await db.StreamAddAsync(stream, [new NameValueEntry("text", $"line {i}")]);
         }
