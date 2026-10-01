@@ -44,6 +44,7 @@ public class TranslationRoomHubTests
             redisMock.Object,
             AlwaysHost(),
             AnyLanguage(),
+            new FarSpeakerHintIngest(redisMock.Object, new NullLogger<FarSpeakerHintIngest>()),
             new NullLogger<TranslationRoomHub>()
         );
 
@@ -740,6 +741,7 @@ public class TranslationRoomHubTests
             redisMock.Object,
             AlwaysHost(),
             AnyLanguage(),
+            new FarSpeakerHintIngest(redisMock.Object, new NullLogger<FarSpeakerHintIngest>()),
             new NullLogger<TranslationRoomHub>());
 
         var clientsMock = new Mock<IHubCallerClients>();
@@ -820,6 +822,7 @@ public class TranslationRoomHubTests
             redisMock.Object,
             hostAuthority ?? AlwaysHost(),
             languagePolicy ?? AnyLanguage(),
+            new FarSpeakerHintIngest(redisMock.Object, new NullLogger<FarSpeakerHintIngest>()),
             new NullLogger<TranslationRoomHub>());
 
         var clientsMock = new Mock<IHubCallerClients>();
