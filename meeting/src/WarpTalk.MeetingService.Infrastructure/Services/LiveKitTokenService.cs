@@ -42,6 +42,14 @@ public class LiveKitTokenService : ILiveKitTokenService
                 { "canSubscribe", canSubscribe }
             };
 
+            // A person joining the room (subscribes) may publish their own avatar URL as participant
+            // metadata, which is how the recorder's camera-off tile gets a face. The bridge stand-in
+            // does not subscribe and has no avatar, so it does not get the grant.
+            if (canSubscribe)
+            {
+                videoGrant["canUpdateOwnMetadata"] = true;
+            }
+
             var payloadDict = new Dictionary<string, object>
             {
                 { "iss", _apiKey },
