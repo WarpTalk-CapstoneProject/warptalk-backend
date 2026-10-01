@@ -120,6 +120,25 @@ public class SubscriptionOwnershipTests
         DueForExpiry(inPeriod).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(SubscriptionConstants.RenewalModes.Invoice)]
+    [InlineData(SubscriptionConstants.RenewalModes.Stripe)]
+    public void A_row_cancelled_the_old_way_is_ended_by_the_sweep_at_its_period_end_and_never_renewed(string mode)
+    {
+        // WT-878: pre-WT-878 cancel-at-period-end — status cancelled, still is_active, renewal off.
+        var inPeriod = Row(mode, autoRenew: false, periodEnd: Now.AddDays(5));
+        inPeriod.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
+        inPeriod.GrantsPlanEntitlements(Now).Should().BeTrue("the plan runs to the end of the period paid for");
+        DueForExpiry(inPeriod).Should().BeFalse();
+        DueForCycleClose(inPeriod, inPeriod.CurrentPeriodEnd).Should().BeFalse("renewal is off: nothing renews it");
+
+        var ended = Row(mode, autoRenew: false, periodEnd: Now.AddMinutes(-1));
+        ended.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
+        ended.GrantsPlanEntitlements(Now).Should().BeFalse();
+        DueForExpiry(ended).Should().BeTrue("the sweep must end it, or it would hold the workspace's live slot forever");
+        DueForCycleClose(ended).Should().BeFalse();
+    }
+
     [Fact]
     public void No_row_is_ever_owned_by_both_workers()
     {

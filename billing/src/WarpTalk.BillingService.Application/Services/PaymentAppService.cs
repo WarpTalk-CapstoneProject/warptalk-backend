@@ -79,7 +79,10 @@ public class PaymentAppService : IPaymentAppService
             s => s.WorkspaceId == workspaceId
                 && s.DeletedAt == null
                 && s.IsActive
-                && s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                && (s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                    // WT-878: a row cancelled at period end the pre-WT-878 way
+                    // (Subscription.IsLegacyCancelledInPeriod).
+                    || (s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled && s.CancelledAt == null))
                 && s.CurrentPeriodEnd >= now);
     }
 

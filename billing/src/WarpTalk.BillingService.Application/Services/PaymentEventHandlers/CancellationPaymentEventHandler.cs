@@ -16,6 +16,10 @@ public sealed class CancellationPaymentEventHandler : IPaymentEventHandler
         {
             context.Subscription.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
             context.Subscription.AutoRenew = false;
+            // WT-878: stamped so this cancellation (a refund, a cancelled payment) is told apart
+            // from a pre-WT-878 cancel-at-period-end, which kept the plan in force until the period
+            // ended and left cancelled_at null (Subscription.IsLegacyCancelledInPeriod).
+            context.Subscription.CancelledAt ??= DateTime.UtcNow;
             context.Subscription.UpdatedAt = DateTime.UtcNow;
         }
 
