@@ -47,6 +47,20 @@ public static class NotificationConstants
     public const string TypeMeetingSummaryReady = "MEETING_SUMMARY_READY";
 
     /// <summary>
+    /// WT-708: a recurring booking has stopped producing meetings because the workspace's language
+    /// whitelist no longer covers its template. Sent to the host by
+    /// TranslationRoomSeriesService.MaterializeOneAsync, which otherwise refuses the whole series
+    /// silently on every sweep, forever — the host sees a daily meeting that simply stops
+    /// appearing and has nothing anywhere to tell them why.
+    ///
+    /// Registered here WITH its schema below in the same change as the producer, because a
+    /// constant without a schema entry is exactly how MEETING_STARTED, MEETING_SUMMARY_READY,
+    /// MEETING_INVITED and WORKSPACE_ROLE_CHANGED each spent months being logged as sent and
+    /// discarded at validation.
+    /// </summary>
+    public const string TypeMeetingSeriesBlocked = "MEETING_SERIES_BLOCKED";
+
+    /// <summary>
     /// Somebody was given work by an approved biên bản. Registered in the same commit as its
     /// producer, because this constant existing without a schema entry below is exactly how
     /// MEETING_STARTED, MEETING_SUMMARY_READY, MEETING_INVITED and WORKSPACE_ROLE_CHANGED each
