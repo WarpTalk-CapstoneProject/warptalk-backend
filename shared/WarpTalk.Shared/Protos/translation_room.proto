@@ -178,6 +178,10 @@ message GetTranslationRoomResponse {
   // "anyone": the failure this guards is minting a second identity into someone else's meeting.
   // See ExternalBridgeConstants.IsBridgeAudioOwner.
   string bridge_capturer_user_id = 21;
+  // EXTERNAL_BRIDGE: the Google Meet link the room bridges, as stored. TranscriptService's
+  // post-meeting relabel needs it to find the Meet conference whose transcript names the far-side
+  // speakers. Empty for every other room type, and from an older server.
+  string external_meeting_url = 22;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

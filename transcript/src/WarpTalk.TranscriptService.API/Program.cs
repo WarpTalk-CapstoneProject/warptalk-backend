@@ -151,6 +151,28 @@ builder.Services.AddGrpcClient<AdminAuditService.AdminAuditServiceClient>(o =>
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.TranscriptService);
 
+// Google Meet bridge: after a bridge room ends, its far-side (stand-in) segments are named from
+// Google Meet's own transcript. AssistantService holds the host's Google grant and reads Meet REST
+// on our behalf; the job's lease keeps it on one replica per tick.
+builder.Services.AddGrpcClient<MeetConferenceService.MeetConferenceServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:AssistantServiceUrl",
+        "http://localhost:50058");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IBridgeRoomLookup,
+    WarpTalk.TranscriptService.Application.FarSpeakers.BridgeRoomLookup>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IMeetTranscriptSource,
+    WarpTalk.TranscriptService.Application.FarSpeakers.MeetTranscriptSource>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IFarSpeakerRelabelStore,
+    WarpTalk.TranscriptService.Infrastructure.Repositories.FarSpeakerRelabelStore>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IFarSpeakerRelabelService,
+    WarpTalk.TranscriptService.Application.FarSpeakers.FarSpeakerRelabelService>();
+WarpTalk.Shared.Coordination.CoordinationServiceCollectionExtensions.AddWarpTalkDistributedLocks(builder.Services);
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Workers.FarSpeakerRelabelWorker>();
+
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {

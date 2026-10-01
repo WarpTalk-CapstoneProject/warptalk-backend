@@ -139,6 +139,29 @@ public class GatewayRouteCoverageTests
     }
 
     /// <summary>
+    /// The Google Meet roster of a bridge room is served by AssistantService (which holds the
+    /// host's Google grant), under the translation-rooms prefix that translation-room owns. Same
+    /// trap as the minutes route: without the lower Order the catch-all hands it to
+    /// TranslationRoomService, which answers 404.
+    /// </summary>
+    [Fact]
+    public void BridgeMeetParticipantsGoToAssistantAndOutrankTheTranslationRoomCatchAll()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(AppSettingsPath()));
+        var routes = document.RootElement.GetProperty("ReverseProxy").GetProperty("Routes");
+
+        var roster = routes.EnumerateObject()
+            .Single(route => route.Value.GetProperty("Match").GetProperty("Path").GetString()
+                == "/api/v1/translation-rooms/{roomId}/bridge/meet-participants");
+        var catchAll = routes.GetProperty("translation-room-route");
+
+        Assert.Equal("assistant-cluster", roster.Value.GetProperty("ClusterId").GetString());
+        Assert.True(
+            roster.Value.GetProperty("Order").GetInt32() < catchAll.GetProperty("Order").GetInt32(),
+            "The bridge meet-participants route must outrank the translation-rooms catch-all.");
+    }
+
+    /// <summary>
     /// GET /api/v1/auth/sessions — the caller's own session list — is authenticated AT THE GATEWAY.
     ///
     /// It is exactly one segment under /api/v1/auth, so without its own route it falls into

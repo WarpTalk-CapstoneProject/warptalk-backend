@@ -297,6 +297,8 @@ public class TranscriptRedisConsumerService : BackgroundService
         var cleanFlags = cleanText is null
             ? null
             : TranscriptConsumerPollingPolicy.ParseFlags(values.GetValueOrDefault("clean_flags"));
+        // Bridge only: stt_worker's live guess at which Meet participant spoke a stand-in segment.
+        var farSpeaker = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, speakerId);
 
         // stt_worker publishes early per-sentence segments as they're ready, then ONE trailing
         // empty marker (text="", is_final_chunk=true) once the whole audio chunk finishes — it
@@ -401,7 +403,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // instead of being set on the tracked `transcript` object below.
                 var sequenceOrder = await unitOfWork.AdvanceTranscriptForNewSegmentAsync(transcript.Id, endMs, cancellationToken);
 
-                if (speakerId.HasValue)
+                // The bridge stand-in has no user row; its name was settled by TryResolveSpeaker.
+                if (speakerId.HasValue && !TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId))
                 {
                     try
                     {
@@ -427,7 +430,10 @@ public class TranscriptRedisConsumerService : BackgroundService
                     SequenceOrder = sequenceOrder,
                     IsFinal = isFinal,
                     CleanText = cleanText,
-                    CleanFlags = cleanFlags
+                    CleanFlags = cleanFlags,
+                    FarSpeakerKey = farSpeaker.Key,
+                    FarSpeakerSource = farSpeaker.Source,
+                    FarSpeakerConfidence = farSpeaker.Confidence
                 };
 
                 await unitOfWork.TranscriptSegments.AddAsync(segment, cancellationToken);
