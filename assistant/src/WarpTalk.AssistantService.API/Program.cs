@@ -23,6 +23,7 @@ using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.PlatformSettings;
 using WarpTalk.Shared.Protos;
 
 Log.Logger = new LoggerConfiguration()
@@ -87,6 +88,10 @@ try
     // Same instance behind the narrow refresh slice McpToolOrchestrator depends on.
     builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
     builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
+    // The WarpBot tools page: the worker's built-in manifest (Redis), the web search switch and the
+    // orchestrator's own plugin list. Singleton source: it holds the 60-second manifest cache.
+    builder.Services.AddScoped<IAssistantToolsService, AssistantToolsService>();
+    builder.Services.AddSingleton<IAssistantToolManifestSource, RedisAssistantToolManifestSource>();
     builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
     builder.Services.AddScoped<IWorkspaceMembershipClient, WorkspaceMembershipGrpcClient>();
     // WT-646. The single place a workspace's plugin policy is applied - the catalog, install,
@@ -227,6 +232,8 @@ try
         _ => StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     // One replica reads assistant:chat_results at a time (ordered reply chunks); see
     // AssistantChatResultConsumerService.LeaseResource.
+    // flags.warpbot_web_search, read the way ai_assistant_worker reads it, for the tools page.
+    builder.Services.AddWarpTalkPlatformSettings();
     builder.Services.AddWarpTalkLeaderElection(AssistantChatResultConsumerService.LeaseResource);
     builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
