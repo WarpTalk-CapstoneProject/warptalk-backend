@@ -147,7 +147,28 @@ public record PluginConnectUrlDto(string Url);
 /// provider's consent page, exactly as <see cref="PluginConnectUrlDto"/> carries it.
 /// </remarks>
 /// <param name="ApiKeyRequired">An <c>api_key</c> row: there is no consent page, the user pastes a key on the plugins page.</param>
-public record PluginConnectResultDto(bool Connected, string? Url, bool ApiKeyRequired = false);
+/// <param name="ConnectedPluginKeys">
+/// GMCAL1001. Every plugin this call connected on the spot - the clicked one and any
+/// <c>alsoConnect</c> sibling the existing grant already covered - so the client knows which tiles
+/// to refresh. Null when nothing was connected on the spot. Last and defaulted so the record stays
+/// positionally compatible with every existing construction.
+/// </param>
+public record PluginConnectResultDto(
+    bool Connected,
+    string? Url,
+    bool ApiKeyRequired = false,
+    IReadOnlyList<string>? ConnectedPluginKeys = null);
+
+/// <summary>
+/// The optional body of <c>POST {pluginKey}/connect</c>. GMCAL1001.
+/// </summary>
+/// <remarks>
+/// <see cref="AlsoConnect"/> names sibling plugins of the same provider the user explicitly asked to
+/// connect along with the clicked one ("connect your other Google plugins too?"). Absent or empty
+/// is the connect exactly as it was: only the clicked plugin's own scopes are asked for, and only it
+/// is marked connected. A bodiless POST is that case.
+/// </remarks>
+public record ConnectPluginRequest(IReadOnlyList<string>? AlsoConnect = null);
 
 /// <summary>
 /// What has to survive the browser round trip between building an authorization URL and handling
@@ -186,7 +207,13 @@ public record PluginOAuthStateDto(
     /// omit <c>scope</c> when it is identical to what was requested, so the exchange needs this to
     /// know what was granted; reading an omitted scope as "nothing" marked every such grant partial.
     /// </summary>
-    IReadOnlyList<string>? RequestedScopes = null);
+    IReadOnlyList<string>? RequestedScopes = null,
+    /// <summary>
+    /// GMCAL1001. Sibling plugins (same provider) the user opted to connect with this one consent.
+    /// The callback marks each connected only if the grant that came back covers its scopes. Null on
+    /// every state minted before this existed, which then completes exactly as it always did.
+    /// </summary>
+    IReadOnlyList<string>? AlsoConnect = null);
 
 /// <summary>
 /// What a finished OAuth callback has to say, in the terms the redirect needs.
