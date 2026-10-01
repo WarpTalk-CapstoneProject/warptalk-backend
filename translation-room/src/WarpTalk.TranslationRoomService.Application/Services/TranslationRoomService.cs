@@ -2458,7 +2458,8 @@ public partial class TranslationRoomService : ITranslationRoomService
             // saying why.
             //
             // Stopping stays host-only below and in StopTranslationAsync: opening a meeting up is
-            // not the same as letting anyone cut it off for everybody.
+            // not the same as letting anyone cut it off for everybody. (Exception, both ways: the
+            // current capturer of an EXTERNAL_BRIDGE room — RoomBridgeControlAccess.)
             if (!await RoomStartTranslationAccess.CanStartTranslationAsync(
                     translationRoom, hostId, _workspaceMemberDirectory, _participantRepository, ct))
             {
@@ -2540,7 +2541,9 @@ public partial class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            // Host (IsHostedBy, unchanged) OR — EXTERNAL_BRIDGE only — the current capturer
+            // (PO 2026-10-01). Every other room type answers exactly as IsHostedBy did.
+            if (!RoomBridgeControlAccess.CanControlBridgeSession(translationRoom, hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             // Only a live room can stop translating. A PAUSED room is not translating either, but
             // resuming it is a different act with a different endpoint, and quietly accepting the

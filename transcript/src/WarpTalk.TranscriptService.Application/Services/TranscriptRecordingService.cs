@@ -54,7 +54,7 @@ public class TranscriptRecordingService : ITranscriptRecordingService
     {
         try
         {
-            if (!await _pauseAccess.IsRoomHostAsync(translationRoomId, callerId, cancellationToken))
+            if (!await _pauseAccess.CanPauseTranscriptAsync(translationRoomId, callerId, cancellationToken))
                 return Result.Failure("Only the host can pause the transcript.", "FORBIDDEN");
 
             var active = await _unitOfWork.TranscriptPauseWindows.GetActiveWindowByRoomIdAsync(translationRoomId, cancellationToken);
@@ -91,7 +91,7 @@ public class TranscriptRecordingService : ITranscriptRecordingService
     {
         try
         {
-            if (!await _pauseAccess.IsRoomHostAsync(translationRoomId, callerId, cancellationToken))
+            if (!await _pauseAccess.CanPauseTranscriptAsync(translationRoomId, callerId, cancellationToken))
                 return Result.Failure("Only the host can resume the transcript.", "FORBIDDEN");
 
             var active = await _unitOfWork.TranscriptPauseWindows.GetActiveWindowByRoomIdAsync(translationRoomId, cancellationToken);

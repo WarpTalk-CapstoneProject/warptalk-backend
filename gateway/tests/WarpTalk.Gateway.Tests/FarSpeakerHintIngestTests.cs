@@ -312,6 +312,22 @@ public sealed class FarSpeakerHintIngestTests
         Assert.False(RoomHostAuthority.IsExternalBridgeHost(Room(bridge, host, capturer, "ENDED"), capturer));
     }
 
+    [Fact]
+    public void Authorization_TheySpeak_IsWiderThanHints_HostOrCapturer()
+    {
+        // "They speak" follows the PO's host-OR-capturer rule; the hints above stay capturer-only.
+        var host = Guid.NewGuid().ToString();
+        var capturer = Guid.NewGuid().ToString();
+        var bridge = ExternalBridgeConstants.RoomType;
+
+        Assert.True(RoomHostAuthority.CanSetExternalMeetingLanguage(Room(bridge, host, capturer), capturer));
+        Assert.True(RoomHostAuthority.CanSetExternalMeetingLanguage(Room(bridge, host, capturer), host));
+        Assert.False(RoomHostAuthority.CanSetExternalMeetingLanguage(Room(bridge, host, capturer), Guid.NewGuid().ToString()));
+        Assert.False(RoomHostAuthority.CanSetExternalMeetingLanguage(Room("MEETING", host, capturer), capturer));
+        Assert.False(RoomHostAuthority.CanSetExternalMeetingLanguage(Room("MEETING", host, capturer), host));
+        Assert.False(RoomHostAuthority.CanSetExternalMeetingLanguage(Room(bridge, host, capturer, "ENDED"), host));
+    }
+
     // ── The hub method ────────────────────────────────────────────────────────────────────
 
     private static (TranslationRoomHub Hub, Mock<IDatabase> Db) CreateHub(Mock<IRoomHostAuthority> authority, string userId)
@@ -348,7 +364,7 @@ public sealed class FarSpeakerHintIngestTests
     public async Task Hub_Capturer_WritesHints_AskingAboutItsOwnIdentity()
     {
         var authority = new Mock<IRoomHostAuthority>();
-        authority.Setup(a => a.CanSetExternalMeetingLanguageAsync(RoomId, "capturer-1", It.IsAny<CancellationToken>()))
+        authority.Setup(a => a.CanReportFarSpeakerHintsAsync(RoomId, "capturer-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
         var (hub, db) = CreateHub(authority, "capturer-1");
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -366,7 +382,7 @@ public sealed class FarSpeakerHintIngestTests
     public async Task Hub_NotTheCapturer_GetsAHubException_AndNothingIsWritten()
     {
         var authority = new Mock<IRoomHostAuthority>();
-        authority.Setup(a => a.CanSetExternalMeetingLanguageAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        authority.Setup(a => a.CanReportFarSpeakerHintsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
         var (hub, db) = CreateHub(authority, "host-not-capturer");
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

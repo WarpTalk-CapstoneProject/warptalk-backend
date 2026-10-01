@@ -888,6 +888,136 @@ public class TranslationRoomServiceTests
             Times.Never);
     }
 
+    // ── PO 2026-10-01: bridge session controls = host OR current capturer ───────────────────
+    // After a capturer takeover the person in the Meet call may not be the host; /resume and
+    // /stop-translation must accept them in an EXTERNAL_BRIDGE room, and only there.
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_LetsTheBridgeCapturerStart_EvenWhenNotHostAndNotOptedIn()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        room.BridgeCapturerUserId = capturer;
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_RefusesAPlainMemberOfABridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        room.BridgeCapturerUserId = Guid.NewGuid();
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_IgnoresTheCapturerColumn_OutsideABridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid()); // INSTANT
+        room.Status = "IN_PROGRESS";
+        room.BridgeCapturerUserId = capturer;
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_LetsTheBridgeCapturerStop_EvenWhenNotHost()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "EXTERNAL_BRIDGE",
+            BridgeCapturerUserId = capturer
+        };
+        var session = new TranslationRoomSession
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Status = TranslationRoomSessionStatus.ACTIVE.ToString()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        _mockSessionRepo.Setup(r => r.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        var result = await _service.StopTranslationAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        session.Status.Should().Be(TranslationRoomSessionStatus.ENDED.ToString());
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_StillLetsTheHostOfABridgeRoomStop_WhenSomeoneElseCaptures()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "EXTERNAL_BRIDGE",
+            BridgeCapturerUserId = Guid.NewGuid()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Theory]
+    [InlineData("EXTERNAL_BRIDGE", false)] // a plain member of a bridge room
+    [InlineData("INSTANT", true)]          // the capturer column means nothing outside a bridge
+    public async Task StopTranslationAsync_RefusesNonHostNonCapturer(string roomType, bool callerIsInCapturerColumn)
+    {
+        var roomId = Guid.NewGuid();
+        var caller = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            TranslationRoomType = roomType,
+            BridgeCapturerUserId = callerIsInCapturerColumn ? caller : Guid.NewGuid()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, caller);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
     private static TranslationRoom NewStartableRoom(Guid roomId, Guid hostId) => new()
     {
         Id = roomId,

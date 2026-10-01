@@ -31,7 +31,9 @@ namespace WarpTalk.TranslationRoomService.Application.Authorization;
 /// STOPPING IS DELIBERATELY NOT HERE
 ///     <c>StopTranslationAsync</c> and <c>PauseTranslationRoomAsync</c> stay host-only. Letting a
 ///     room decide who may start translation is not the same as letting anyone cut it off for
-///     everybody, and WT-371 only ever opened the starting half.
+///     everybody, and WT-371 only ever opened the starting half. (The one exception is the
+///     EXTERNAL_BRIDGE capturer, who may both start and stop — see
+///     <see cref="RoomBridgeControlAccess"/>.)
 /// </summary>
 public static class RoomStartTranslationAccess
 {
@@ -45,6 +47,13 @@ public static class RoomStartTranslationAccess
         // Host identity first, for the reason RoomHostAccess documents: the host path must not
         // depend on WorkspaceService being reachable, and must not cost a gRPC hop per press.
         if (await RoomHostAccess.HasHostAuthorityAsync(room, requestedByUserId, workspaceMemberDirectory, ct))
+        {
+            return true;
+        }
+
+        // PO 2026-10-01: in an EXTERNAL_BRIDGE room the current capturer drives the bridge
+        // session too (RoomBridgeControlAccess). No-op for every other room type.
+        if (RoomBridgeControlAccess.IsCurrentBridgeCapturer(room, requestedByUserId))
         {
             return true;
         }
