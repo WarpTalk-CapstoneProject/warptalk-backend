@@ -61,5 +61,31 @@ public interface IUnitOfWork : IDisposable
     /// </summary>
     Task<bool> StampTranscriptTimelineAnchorAsync(Guid transcriptId, DateTime anchorUtc, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Moves an already-saved segment to its place on the meeting clock: before every segment of
+    /// the same transcript that STARTED later than it, after every one that started at the same
+    /// time or earlier (ties keep arrival order). Returns the segment's new
+    /// <c>sequence_order</c>, or <c>null</c> when it was already in place (the normal case).
+    ///
+    /// WHY. <c>sequence_order</c> is what every reader orders by (REST, export, gRPC, the
+    /// summary/minutes input, the web's saved view), and it used to be handed out in PROCESSING
+    /// order. Processing order is not speech order: two transcript-service replicas share the
+    /// <c>stt:results</c> consumer group and race, and a retried message comes back a minute late.
+    /// Prod, 14 days to 1 Oct 2026: 53 lines stored out of start-time order, 16 of them by the
+    /// replica race alone. The owner's rule is that a later sentence never shows before an earlier
+    /// one, in the saved transcript as much as live.
+    ///
+    /// HOW. One transaction that takes the transcript row lock first (the same row
+    /// <see cref="AdvanceTranscriptForNewSegmentAsync"/> updates, so placements and allocations of
+    /// one transcript are serialized across replicas), then shifts the overtaken range up by one and
+    /// drops the segment into the hole. The shift goes through negative numbers because the
+    /// (transcript_id, sequence_order) unique index is not deferrable.
+    ///
+    /// Only call it when the segment's start_time_ms is on the transcript's own clock (its message
+    /// stated the anchor the transcript was stamped with); otherwise start times of two clocks would
+    /// be compared.
+    /// </summary>
+    Task<int?> PlaceSegmentByStartTimeAsync(Guid transcriptId, Guid segmentId, CancellationToken cancellationToken = default);
+
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

@@ -337,9 +337,76 @@ public static class TranscriptConsumerPollingPolicy
     private static string NonBlankOr(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
+    /// <summary>
+    /// Whether a segment's <c>start_ms</c> can be compared with the start times already stored for
+    /// its transcript — i.e. it was measured from the same origin. True when the message states an
+    /// anchor and the transcript either has none yet (this message is the one stamping it) or has
+    /// exactly that one. A message with no anchor (an older producer) or a DIFFERENT one (the STT
+    /// worker lost its Redis anchor mid-meeting and started a new clock) is not placed by start
+    /// time: comparing two clocks would move lines to the wrong place, which is worse than arrival
+    /// order.
+    /// </summary>
+    public static bool StartTimeIsOnTranscriptClock(long anchorMs, DateTime? transcriptAnchorUtc)
+    {
+        if (anchorMs <= 0)
+        {
+            return false;
+        }
+        if (transcriptAnchorUtc is null)
+        {
+            return true;
+        }
+        var stored = new DateTimeOffset(DateTime.SpecifyKind(transcriptAnchorUtc.Value, DateTimeKind.Utc));
+        return stored.ToUnixTimeMilliseconds() == anchorMs;
+    }
+
     public static bool ShouldDeadLetter(long deliveryAttempts) =>
         deliveryAttempts >= MaxDeliveryAttempts;
 
     public static string DeadLetterStream(string sourceStream) =>
         $"{sourceStream}:transcript-persistence:dead-letter";
+
+    // ── Consumer-group hygiene ──────────────────────────────
+    //
+    // The consumer name carries a per-process Guid, so every pod that ever ran left a consumer
+    // behind in transcript-persistence: 95 on stt/translate/tts:results and 22 on transcript:clean
+    // (prod, 1 Oct). Same disease the gateway had (backend#487). Unlike the gateway's live
+    // broadcasts, an entry pending here is DATA, so nothing in this pass acknowledges anything:
+    // RecoverStaleMessagesAsync already XAUTOCLAIMs entries idle past PendingClaimIdle and
+    // PROCESSES them. That claim is what empties a dead consumer's pending list, and only an
+    // empty one is ever removed.
+
+    /// <summary>
+    /// A live consumer issues XREADGROUP on every stream at least every few seconds (IdleDelay is
+    /// 250 ms, the error back-off 5 s), so an hour of silence means its process is gone.
+    /// Deliberately far above anything a Redis blip or a slow rollout could produce.
+    /// </summary>
+    public static TimeSpan DeadConsumerIdle { get; } = TimeSpan.FromHours(1);
+
+    public static TimeSpan ConsumerHousekeepingInterval { get; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>One row of XINFO CONSUMERS — what the dead-consumer selection reads.</summary>
+    public sealed record ConsumerState(string Name, long PendingCount, long IdleMs);
+
+    /// <summary>
+    /// Which consumers a housekeeping pass may delete: nothing pending, idle for at least
+    /// <paramref name="minIdle"/>, and never the caller itself.
+    /// </summary>
+    /// <remarks>
+    /// Idle is XINFO CONSUMERS <c>idle</c>, which Redis 7.2+ defines as time since the last
+    /// ATTEMPTED interaction — an XREADGROUP that returned nothing counts — so a live consumer on
+    /// a quiet stream never looks dead. A consumer still holding entries is never selected:
+    /// DELCONSUMER would discard them, and here they are transcript lines nobody has written yet.
+    /// </remarks>
+    public static IReadOnlyList<string> SelectDeadConsumers(
+        IEnumerable<ConsumerState> consumers,
+        string selfConsumerName,
+        TimeSpan minIdle) =>
+        consumers
+            .Where(c => c.PendingCount == 0
+                && c.IdleMs >= (long)minIdle.TotalMilliseconds
+                && !string.IsNullOrEmpty(c.Name)
+                && !string.Equals(c.Name, selfConsumerName, StringComparison.Ordinal))
+            .Select(c => c.Name)
+            .ToList();
 }

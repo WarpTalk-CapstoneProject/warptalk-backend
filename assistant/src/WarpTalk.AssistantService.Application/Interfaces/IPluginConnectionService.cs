@@ -16,12 +16,18 @@ public interface IPluginConnectionService
     /// workspace context and arrives after the user has already consented. Null - the default -
     /// skips the gate, so a connect made outside any workspace behaves as it did before.
     /// </param>
+    /// <param name="alsoConnect">
+    /// GMCAL1001. Sibling plugins of the same provider to connect with this one consent. Each is
+    /// gated exactly like the clicked plugin; any that fails refuses the whole request. Null or
+    /// empty - the default - asks for the clicked plugin's scopes only, as before.
+    /// </param>
     Task<Result<PluginConnectUrlDto>> GetConnectUrlAsync(
         string pluginKey,
         Guid userId,
         string? client = null,
         Guid? workspaceId = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlyList<string>? alsoConnect = null);
 
     /// <summary>
     /// Connects a plugin, going through the provider only when it has to.
@@ -31,13 +37,19 @@ public interface IPluginConnectionService
     /// the plugin needs - Meet after Calendar, say - the plugin is connected on the spot and no URL
     /// is returned. Otherwise this is <see cref="GetConnectUrlAsync"/>, with the same gates.
     /// A plugin that is already connected always goes to the provider: asking again is a reconnect.
+    /// <para>
+    /// GMCAL1001: with <paramref name="alsoConnect"/>, the same decision is made per plugin. Every
+    /// one the grant already covers is connected on the spot; the rest share ONE consent URL that
+    /// asks for the union of their scopes, and the callback connects each whose scopes came back.
+    /// </para>
     /// </remarks>
     Task<Result<PluginConnectResultDto>> ConnectAsync(
         string pluginKey,
         Guid userId,
         string? client = null,
         Guid? workspaceId = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlyList<string>? alsoConnect = null);
 
     /// <summary>
     /// Connects an <c>api_key</c> row with the user's own key.

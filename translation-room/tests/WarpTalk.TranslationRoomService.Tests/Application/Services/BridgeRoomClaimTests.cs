@@ -322,6 +322,147 @@ public class BridgeRoomClaimTests
         AbandonedRoomPolicy.Decide(people, emptySince: null, DateTime.UtcNow).Should().Be(AbandonedRoomAction.Leave);
     }
 
+    // ---- GMCAL1001: a Meet room WarpBot files through the ordinary POST /translation-rooms ----
+
+    /// <summary>The AI worker's payload: languages omitted (user defaults), a future slot.</summary>
+    private CreateTranslationRoomRequest WarpBotCreate(
+        Guid workspaceId,
+        string meetUrl = "https://meet.google.com/abc-defg-hij",
+        string type = TranslationRoomTypes.ExternalBridge,
+        string? provider = TranslationRoomConstants.ExternalProviderGoogleMeet) =>
+        new(
+            WorkspaceId: workspaceId,
+            Title: "Weekly sync",
+            Description: null,
+            TranslationRoomType: type,
+            MaxParticipants: null,
+            SourceLanguage: null,
+            TargetLanguages: null,
+            Settings: null,
+            ScheduledAt: _now.AddDays(1),
+            InvitedEmails: null,
+            ExternalProvider: provider,
+            ExternalMeetingUrl: provider is null ? null : meetUrl,
+            ExternalCalendarEventId: "evt-1",
+            ExternalCalendarEventUrl: "https://calendar.google.com/event?eid=evt-1");
+
+    [Fact]
+    public async Task WarpBotCreate_StampsTheMeetCode_ButNotTheCapturer()
+    {
+        var alice = Member(WorkspaceA);
+
+        var result = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.ExternalMeetingCode.Should().Be(MeetCode);
+        result.Value.Status.Should().Be(WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus.SCHEDULED);
+        var room = _store.Rooms.Single();
+        room.ExternalMeetingCode.Should().Be(MeetCode);
+        room.BridgeCapturerUserId.Should().BeNull("only a desktop claim makes someone the capturer");
+        room.BridgeCapturerHeartbeatAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task WarpBotCreate_TwiceForTheSameCode_ReturnsTheFirstRoom()
+    {
+        var alice = Member(WorkspaceA);
+        var first = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice);
+
+        var second = await Service().CreateTranslationRoomAsync(
+            WarpBotCreate(WorkspaceA, "https://meet.google.com/ABC-DEFG-HIJ?authuser=0"), alice);
+
+        second.IsSuccess.Should().BeTrue(second.Error);
+        second.Value!.Id.Should().Be(first.Value!.Id);
+        _store.Rooms.Should().ContainSingle();
+        _store.Pending.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task WarpBotCreate_LosingTheRaceOnTheIndex_ReturnsTheWinnersRoom()
+    {
+        var alice = Member(WorkspaceA);
+        var first = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice);
+
+        _store.StaleLookupsRemaining = 1; // the pre-check misses; the unique index decides
+        var second = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice);
+
+        second.IsSuccess.Should().BeTrue(second.Error);
+        second.Value!.Id.Should().Be(first.Value!.Id);
+        _store.UniqueViolationsRaised.Should().Be(1);
+        _store.Rooms.Should().ContainSingle();
+        _store.Pending.Should().BeEmpty("the losing rows must not linger in the change tracker");
+    }
+
+    [Fact]
+    public async Task WarpBotCreate_ForACodeAnotherMembersRoomHolds_IsAConflict_UntilTheyAreInIt()
+    {
+        var alice = Member(WorkspaceA);
+        var bob = Member(WorkspaceA);
+        var alices = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice);
+
+        var refused = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), bob);
+        refused.IsSuccess.Should().BeFalse();
+        refused.ErrorCode.Should().Be(ErrorCodes.Conflict);
+
+        await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), bob);
+        var asParticipant = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), bob);
+        asParticipant.IsSuccess.Should().BeTrue(asParticipant.Error);
+        asParticipant.Value!.Id.Should().Be(alices.Value!.Id);
+        _store.Rooms.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Claim_AfterAWarpBotScheduledRoom_JoinsThatRoom_AndTheFirstClaimerCaptures()
+    {
+        var alice = Member(WorkspaceA);
+        var bob = Member(WorkspaceA);
+        var booked = (await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice)).Value!;
+
+        var hosts = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), alice);
+        var bobs = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), bob);
+
+        hosts.IsSuccess.Should().BeTrue(hosts.Error);
+        hosts.Value!.Created.Should().BeFalse();
+        hosts.Value.Room.Id.Should().Be(booked.Id);
+        hosts.Value.BridgeRole.Should().Be(BridgeRoomConstants.RoleCapturer);
+        bobs.Value!.Room.Id.Should().Be(booked.Id);
+        bobs.Value.BridgeRole.Should().Be(BridgeRoomConstants.RoleMember);
+        _store.Rooms.Should().ContainSingle();
+        _store.Rooms.Single().BridgeCapturerUserId.Should().Be(alice);
+    }
+
+    [Fact]
+    public async Task Claim_ByAMemberFirst_AdoptsTheWarpBotRoom_AsItsCapturer()
+    {
+        var alice = Member(WorkspaceA);
+        var bob = Member(WorkspaceA);
+        var booked = (await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA), alice)).Value!;
+
+        var bobs = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), bob);
+
+        bobs.IsSuccess.Should().BeTrue(bobs.Error);
+        bobs.Value!.Room.Id.Should().Be(booked.Id);
+        bobs.Value.BridgeRole.Should().Be(BridgeRoomConstants.RoleCapturer);
+        _store.Rooms.Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(TranslationRoomTypes.Event, null, null)]
+    [InlineData(TranslationRoomTypes.ExternalBridge, TranslationRoomConstants.ExternalProviderGoogleMeet, "https://meet.google.com/landing")]
+    public async Task OrdinaryCreate_WithoutAParsableMeetLink_StampsNoCode_AndIsNeverDeduplicated(
+        string type, string? provider, string? url)
+    {
+        var alice = Member(WorkspaceA);
+
+        var first = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA, url ?? "", type, provider), alice);
+        var second = await Service().CreateTranslationRoomAsync(WarpBotCreate(WorkspaceA, url ?? "", type, provider), alice);
+
+        first.IsSuccess.Should().BeTrue(first.Error);
+        second.IsSuccess.Should().BeTrue(second.Error);
+        second.Value!.Id.Should().NotBe(first.Value!.Id);
+        _store.Rooms.Should().HaveCount(2).And.OnlyContain(r => r.ExternalMeetingCode == null);
+    }
+
     [Theory]
     [InlineData("abc-defg-hij", "abc-defg-hij")]
     [InlineData(" ABC-DEFG-HIJ ", "abc-defg-hij")]
@@ -463,6 +604,8 @@ public class BridgeRoomClaimTests
                 .ReturnsAsync((Guid ws, Guid user, CancellationToken _) => Locked(() => Members.Contains((ws, user))));
 
             var userSettings = new Mock<IUserSettingsDirectory>();
+            userSettings.Setup(d => d.GetDefaultsAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new UserLanguageDefaults("vi", "en"));
             userSettings.Setup(d => d.GetDisplayNameAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((Guid user, CancellationToken _) => $"User {user.ToString()[..4]}");
 
