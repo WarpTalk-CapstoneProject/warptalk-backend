@@ -26,5 +26,12 @@ public record JoinLanguagePolicyDto(
     /// code resolves to no room, which every consumer reads as "no restriction" for the same reason
     /// the endpoint answers 200 for a half-typed code.
     /// </summary>
-    IReadOnlyList<string> RoomLanguages
+    IReadOnlyList<string> RoomLanguages,
+    /// <summary>
+    /// WT-866: the code resolves to a room that is over (ENDED, CANCELLED or EXPIRED), so the
+    /// pre-join screen should say so instead of opening camera and microphone for a join the
+    /// server will refuse. Not a new oracle: the join itself already answers "already ended"
+    /// for such a code and "not found" for an unknown one.
+    /// </summary>
+    bool RoomEnded = false
 );

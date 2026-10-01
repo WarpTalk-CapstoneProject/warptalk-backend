@@ -29,32 +29,42 @@ public class TranslationRoomAudioRouteController : ControllerBase
         _noiseReduction = noiseReduction;
     }
 
+    /// <summary>
+    /// WT-713: host only. These three endpoints used to take no user, so any signed-in account
+    /// could read, regenerate or rewrite another tenant's live route mesh. Nothing outside this
+    /// service calls them today (the web client's generateAudioRoutes has no caller; the AI
+    /// workers read routes from Redis), so the gate breaks no legitimate path.
+    /// </summary>
     [HttpPost("generate")]
     public async Task<IActionResult> GenerateRoutes(Guid roomId, CancellationToken ct)
     {
-        var result = await _audioRouteService.GenerateRoutesAsync(roomId, ct);
-
-        if (result.IsSuccess)
+        var userId = User.GetUserId();
+        if (userId == null)
         {
-            return Ok(result.Value);
+            return Unauthorized();
         }
 
-        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+        var result = await _audioRouteService.GenerateRoutesForCallerAsync(roomId, userId.Value, ct);
+
+        return result.IsSuccess ? Ok(result.Value) : RouteFailure(result.Error, result.ErrorCode);
     }
 
+    /// <summary>WT-713: host and room participants only; anyone else gets 404.</summary>
     [HttpGet]
     public async Task<IActionResult> GetRoutes(Guid roomId, CancellationToken ct)
     {
-        var result = await _audioRouteService.GetRoutesAsync(roomId, ct);
-
-        if (result.IsSuccess)
+        var userId = User.GetUserId();
+        if (userId == null)
         {
-            return Ok(result.Value);
+            return Unauthorized();
         }
 
-        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+        var result = await _audioRouteService.GetRoutesAsync(roomId, userId.Value, ct);
+
+        return result.IsSuccess ? Ok(result.Value) : RouteFailure(result.Error, result.ErrorCode);
     }
 
+    /// <summary>WT-713: host only — see <see cref="GenerateRoutes"/>.</summary>
     [HttpPatch("{routeId:guid}/runtime")]
     public async Task<IActionResult> UpdateRuntimeContext(
         [FromRoute] Guid roomId,
@@ -62,15 +72,24 @@ public class TranslationRoomAudioRouteController : ControllerBase
         [FromBody] UpdateAudioRouteRuntimeContextDto dto,
         CancellationToken ct)
     {
-        var result = await _audioRouteService.UpdateRuntimeContextAsync(roomId, routeId, dto, ct);
-
-        if (result.IsSuccess)
+        var userId = User.GetUserId();
+        if (userId == null)
         {
-            return Ok(result.Value);
+            return Unauthorized();
         }
 
-        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+        var result = await _audioRouteService.UpdateRuntimeContextAsync(roomId, routeId, userId.Value, dto, ct);
+
+        return result.IsSuccess ? Ok(result.Value) : RouteFailure(result.Error, result.ErrorCode);
     }
+
+    private IActionResult RouteFailure(string? error, string? code) => code switch
+    {
+        ErrorCodes.Forbidden => StatusCode(403, new { Error = error, Code = code }),
+        ErrorCodes.NotFound => NotFound(new { Error = error, Code = code }),
+        ErrorCodes.InternalServerError => StatusCode(500, new { Error = error, Code = code }),
+        _ => BadRequest(new { Error = error, Code = code }),
+    };
 
     [HttpPatch("{routeId:guid}/voice-clone")]
     public async Task<IActionResult> ToggleVoiceClone(

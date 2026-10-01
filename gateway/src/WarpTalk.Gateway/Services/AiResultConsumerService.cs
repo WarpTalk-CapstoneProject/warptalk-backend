@@ -69,6 +69,13 @@ public sealed class AiResultConsumerService : BackgroundService
 
     private readonly MeetingCaptionMetrics _captionMetrics;
 
+    /// <summary>
+    /// How sure stt_worker must be of a live far-side speaker name before a bridge stand-in line
+    /// carries it — <see cref="WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey"/>, the same
+    /// key TranscriptService reads, so the live line and the saved row agree.
+    /// </summary>
+    private readonly double _farSpeakerMinConfidence;
+
     // ── Pending-list hygiene (WarpTalkAiPendingStuck) ────────
     //
     // Every stream this service reads, for the housekeeping pass. Kept in step with the consume
@@ -107,8 +114,11 @@ public sealed class AiResultConsumerService : BackgroundService
         IHubContext<TranslationRoomHub> hubContext,
         WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
         WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
-        ILogger<AiResultConsumerService> logger)
+        ILogger<AiResultConsumerService> logger,
+        IConfiguration? configuration = null)
     {
+        _farSpeakerMinConfidence = WarpTalk.Shared.FarSpeakerNames.NormalizeMinConfidence(
+            configuration?.GetValue<double?>(WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey));
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _hubContext = hubContext;
@@ -476,7 +486,12 @@ public sealed class AiResultConsumerService : BackgroundService
                         // had this problem: TranscriptRedisConsumerService resolves the name over
                         // auth gRPC before it writes the row, so the two copies of the same
                         // meeting disagreed about who spoke.
-                        SpeakerName: await ResolveSpeakerNameAsync(translationRoomId, speakerId),
+                        //
+                        // A bridge stand-in line is not looked up at all: its LiveKit name is the
+                        // seat ("External Meeting"), not whoever spoke. It is named from the live
+                        // far-side hint on the entry, by the rule the saved row uses.
+                        SpeakerName: TryResolveStandInSpeakerName(entry, _farSpeakerMinConfidence)
+                            ?? await ResolveSpeakerNameAsync(translationRoomId, speakerId),
                         OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
@@ -509,6 +524,30 @@ public sealed class AiResultConsumerService : BackgroundService
                 await Task.Delay(1000, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// The live name of a bridge stand-in line, or <c>null</c> when the entry's speaker is not the
+    /// stand-in (<see cref="WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId"/>).
+    /// </summary>
+    /// <remarks>
+    /// <c>far_speaker_name</c> when stt_worker attached one with <c>far_speaker_confidence</c> at
+    /// or above <paramref name="minConfidence"/>, "Google Meet participants" otherwise — see
+    /// <see cref="WarpTalk.Shared.FarSpeakerNames"/>, which TranscriptService applies to the saved
+    /// row too. Pure and static so the rule is testable without a running consumer.
+    /// </remarks>
+    public static string? TryResolveStandInSpeakerName(StreamEntry entry, double minConfidence)
+    {
+        if (!Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var speaker)
+            || speaker != WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId)
+        {
+            return null;
+        }
+
+        return WarpTalk.Shared.FarSpeakerNames.ResolveLive(
+            RedisStreamService.GetField(entry, "far_speaker_name"),
+            WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
+            minConfidence);
     }
 
     /// <summary>

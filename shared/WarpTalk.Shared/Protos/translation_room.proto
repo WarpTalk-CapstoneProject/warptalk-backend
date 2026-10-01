@@ -169,6 +169,19 @@ message GetTranslationRoomResponse {
   // means "no requester_email was sent, or this server predates the field" — the reader must NOT
   // treat absent as an answer either way, only as "ask the room-read predicate instead".
   optional bool is_requester_invited = 20;
+  // EXTERNAL_BRIDGE: the participant whose desktop publishes the far side's audio as the stand-in
+  // (one shared bridge room per Google Meet code, one capturer). Meeting Service mints the bridge
+  // token for this user and the Gateway lets only this user set the external meeting's language.
+  //
+  // Empty means either a room with no capturer (created before bridge claim existed) or an older
+  // server. In both cases the reader MUST fall back to `hostId` - the pre-claim rule - and never to
+  // "anyone": the failure this guards is minting a second identity into someone else's meeting.
+  // See ExternalBridgeConstants.IsBridgeAudioOwner.
+  string bridge_capturer_user_id = 21;
+  // EXTERNAL_BRIDGE: the Google Meet link the room bridges, as stored. TranscriptService's
+  // post-meeting relabel needs it to find the Meet conference whose transcript names the far-side
+  // speakers. Empty for every other room type, and from an older server.
+  string external_meeting_url = 22;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

@@ -274,7 +274,17 @@ public record TranslationRoomDto(
     /// documents for the same reason. Trailing and defaulted so every existing positional
     /// construction site still compiles.
     /// </summary>
-    bool? IsRequesterInvited = null
+    bool? IsRequesterInvited = null,
+    /// <summary>
+    /// EXTERNAL_BRIDGE: the normalized Google Meet code the room is claimed for, or <c>null</c> for
+    /// a room that was not created through bridge claim. Trailing and defaulted.
+    /// </summary>
+    string? ExternalMeetingCode = null,
+    /// <summary>
+    /// EXTERNAL_BRIDGE: whose desktop publishes the far side right now. <c>null</c> on a legacy room,
+    /// where the host holds that authority. Trailing and defaulted.
+    /// </summary>
+    Guid? BridgeCapturerUserId = null
 );
 
 /// <summary>

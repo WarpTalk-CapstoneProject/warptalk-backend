@@ -556,10 +556,78 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         return existingRoutes.Any(r => r.SourceParticipantId == speakerParticipantId);
     }
 
-    public async Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, CancellationToken ct = default)
+    /// <summary>
+    /// WT-713: who is asking, relative to this room. These three HTTP doors used to take no user
+    /// at all, so any signed-in account in any tenant could read another meeting's route mesh,
+    /// regenerate it, or rewrite a route's status mid-meeting. Effective host first
+    /// (<see cref="TranslationRoom.IsHostedBy"/>, which survives a host transfer), then the
+    /// participant row — the same row every sibling in this service gates on.
+    /// </summary>
+    private async Task<RouteCallerAccess> ResolveCallerAccessAsync(Guid roomId, Guid callerUserId, CancellationToken ct)
+    {
+        var room = await _translationRoomRepository.GetByIdAsync(roomId, ct);
+        if (room == null)
+        {
+            return RouteCallerAccess.Outsider;
+        }
+
+        if (room.IsHostedBy(callerUserId))
+        {
+            return RouteCallerAccess.Host;
+        }
+
+        var participant = await _translationRoomParticipantRepository.GetByRoomAndUserAsync(roomId, callerUserId, ct);
+        return participant == null ? RouteCallerAccess.Outsider : RouteCallerAccess.Participant;
+    }
+
+    private enum RouteCallerAccess
+    {
+        Outsider,
+        Participant,
+        Host,
+    }
+
+    /// <summary>
+    /// The refusal for each kind of caller, or null when they may go ahead. An outsider is told
+    /// the room does not exist — the WT-334 convention — so these routes cannot be used to learn
+    /// which room ids are live elsewhere.
+    /// </summary>
+    private static (string Error, string Code)? RefusalFor(RouteCallerAccess access, bool hostOnly) => access switch
+    {
+        RouteCallerAccess.Outsider => (TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound),
+        RouteCallerAccess.Participant when hostOnly => (AudioRouteConstants.ErrorHostOnlyRouteAction, ErrorCodes.Forbidden),
+        _ => null,
+    };
+
+    public async Task<Result<List<TranslationRoomAudioRouteDto>>> GenerateRoutesForCallerAsync(Guid roomId, Guid callerUserId, CancellationToken ct = default)
     {
         try
         {
+            var refusal = RefusalFor(await ResolveCallerAccessAsync(roomId, callerUserId, ct), hostOnly: true);
+            if (refusal is { } r)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(r.Error, r.Code);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while authorizing route generation for Room {RoomId}", roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+
+        return await GenerateRoutesAsync(roomId, ct);
+    }
+
+    public async Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, Guid callerUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var refusal = RefusalFor(await ResolveCallerAccessAsync(roomId, callerUserId, ct), hostOnly: false);
+            if (refusal is { } r)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(r.Error, r.Code);
+            }
+
             var routes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
             var dtos = routes.Select(TranslationRoomAudioRouteMapper.ToDto).ToList();
             return Result.Success(dtos);
@@ -571,10 +639,17 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         }
     }
 
-    public async Task<Result<TranslationRoomAudioRouteDto>> UpdateRuntimeContextAsync(Guid roomId, Guid routeId, UpdateAudioRouteRuntimeContextDto dto, CancellationToken ct = default)
+    public async Task<Result<TranslationRoomAudioRouteDto>> UpdateRuntimeContextAsync(Guid roomId, Guid routeId, Guid callerUserId, UpdateAudioRouteRuntimeContextDto dto, CancellationToken ct = default)
     {
         try
         {
+            // Before the route lookup, so an outsider cannot tell a real route id from a made-up one.
+            var refusal = RefusalFor(await ResolveCallerAccessAsync(roomId, callerUserId, ct), hostOnly: true);
+            if (refusal is { } r)
+            {
+                return Result.Failure<TranslationRoomAudioRouteDto>(r.Error, r.Code);
+            }
+
             var route = await _translationRoomAudioRouteRepository.GetByIdAsync(routeId, ct);
             if (route == null)
             {
