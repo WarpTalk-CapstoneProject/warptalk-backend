@@ -127,6 +127,16 @@ public static class PaymentConstants
 
         /// <summary>#466: whether the plan checkout was sold as a recurring Stripe Subscription.</summary>
         public const string AutoRenew = "AutoRenew";
+
+        /// <summary>
+        /// WT-878, plan checkouts: the period total (before any coupon) and currency the server
+        /// priced the session at. Activation checks the payment against these rather than the
+        /// plan's CURRENT price, so an admin repricing a plan while a buyer is on the Stripe page
+        /// cannot leave a paid checkout with no plan. Absent on sessions created before this.
+        /// </summary>
+        public const string ExpectedAmount = "ExpectedAmount";
+
+        public const string ExpectedCurrency = "ExpectedCurrency";
     }
 
     public static class StripeEvents

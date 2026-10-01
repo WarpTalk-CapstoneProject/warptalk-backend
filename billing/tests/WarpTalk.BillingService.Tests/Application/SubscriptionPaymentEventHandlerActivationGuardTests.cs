@@ -7,6 +7,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
@@ -79,7 +80,9 @@ public class SubscriptionPaymentEventHandlerActivationGuardTests
         string billingCycle = PaymentConstants.BillingCycles.Yearly,
         string currency = PaymentConstants.Currencies.Vnd,
         string couponId = "",
-        Subscription? subscription = null)
+        Subscription? subscription = null,
+        decimal expectedAmount = 0,
+        string expectedCurrency = "")
     {
         var request = new StripePaymentEventRequest(
             StripeSessionId: "cs_test_wt878",
@@ -92,7 +95,9 @@ public class SubscriptionPaymentEventHandlerActivationGuardTests
             Status: PaymentConstants.PaymentStatuses.Paid,
             PlanSlug: "enterprise",
             BillingCycle: billingCycle,
-            CouponId: couponId);
+            CouponId: couponId,
+            ExpectedAmount: expectedAmount,
+            ExpectedCurrency: expectedCurrency);
 
         return new PaymentEventContext(
             request,
@@ -243,5 +248,97 @@ public class SubscriptionPaymentEventHandlerActivationGuardTests
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingInvalidAmount);
         VerifyNothingGranted();
+    }
+    [Fact]
+    public async Task A_price_raised_after_the_checkout_still_activates_at_the_quoted_price()
+    {
+        // The session was priced at the old yearly total; an admin then raised the plan's price.
+        _plan.Price = MonthlyPrice * 2m;
+
+        var context = Context(YearlyPrice, expectedAmount: YearlyPrice, expectedCurrency: PaymentConstants.Currencies.Vnd);
+        var result = await _handler.HandleAsync(context);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        context.SubscriptionChanged.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_quoted_price_with_a_coupon_still_takes_the_coupon_off_the_quote()
+    {
+        _plan.Price = MonthlyPrice * 2m;
+        var coupon = new Coupon
+        {
+            Id = Guid.NewGuid(),
+            DiscountType = PackageCatalogConstants.DiscountTypes.Percent,
+            PercentOff = 50m,
+        };
+        _coupons.Setup(r => r.GetByIdAsync(coupon.Id, It.IsAny<CancellationToken>())).ReturnsAsync(coupon);
+
+        var result = await _handler.HandleAsync(Context(
+            YearlyPrice / 2m, couponId: coupon.Id.ToString(),
+            expectedAmount: YearlyPrice, expectedCurrency: PaymentConstants.Currencies.Vnd));
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Fact]
+    public async Task Paying_less_than_the_quoted_price_is_still_refused()
+    {
+        var result = await _handler.HandleAsync(Context(
+            15_000m, expectedAmount: YearlyPrice, expectedCurrency: PaymentConstants.Currencies.Vnd));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingInvalidAmount);
+        VerifyNothingGranted();
+    }
+
+    [Fact]
+    public async Task Paying_in_a_currency_other_than_the_quote_is_refused()
+    {
+        var result = await _handler.HandleAsync(Context(
+            YearlyPrice, currency: PaymentConstants.Currencies.Usd,
+            expectedAmount: YearlyPrice, expectedCurrency: PaymentConstants.Currencies.Vnd));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingInvalidAmount);
+        VerifyNothingGranted();
+    }
+
+    [Fact]
+    public async Task Without_a_quote_an_old_session_is_checked_against_the_current_price()
+    {
+        _plan.Price = MonthlyPrice * 2m;
+
+        var result = await _handler.HandleAsync(Context(YearlyPrice));
+
+        result.IsSuccess.Should().BeFalse("no quote on the session: today's price is the only reference");
+        result.ErrorCode.Should().Be(ErrorCodes.BillingInvalidAmount);
+        VerifyNothingGranted();
+    }
+
+    [Fact]
+    public async Task A_quote_never_activates_a_plan_taken_off_sale()
+    {
+        _plan.IsActive = false;
+
+        var result = await _handler.HandleAsync(Context(
+            YearlyPrice, expectedAmount: YearlyPrice, expectedCurrency: PaymentConstants.Currencies.Vnd));
+
+        result.ErrorCode.Should().Be(ErrorCodes.BillingPlanInactive);
+        VerifyNothingGranted();
+    }
+
+    [Fact]
+    public void The_quote_is_read_back_off_the_session_metadata()
+    {
+        var request = new StripePaymentEventRequest("cs", "pi", 1m, "vnd", "", "", PaymentConstants.PaymentTypes.Subscription, "paid")
+            .WithCatalogMetadata(new Dictionary<string, string>
+            {
+                [PaymentConstants.StripeMetadata.ExpectedAmount] = "4740000",
+                [PaymentConstants.StripeMetadata.ExpectedCurrency] = "vnd",
+            });
+
+        request.ExpectedAmount.Should().Be(4_740_000m);
+        request.ExpectedCurrency.Should().Be("vnd");
     }
 }
