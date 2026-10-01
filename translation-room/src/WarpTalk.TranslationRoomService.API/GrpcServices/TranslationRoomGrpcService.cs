@@ -105,7 +105,10 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty,
             // WT-704: the meeting's declared languages (L2). Always sent, so a consumer whose
             // opt-in could not be answered still has the room's own set to fall back to.
-            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty
+            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty,
+            // Bridge claim: whose desktop owns the far side's audio. Empty = no capturer, and the
+            // consumer falls back to the host (ExternalBridgeConstants.IsBridgeAudioOwner).
+            BridgeCapturerUserId = result.Value!.BridgeCapturerUserId?.ToString() ?? string.Empty
         };
         response.TargetLanguages.AddRange(result.Value!.TargetLanguages ?? []);
 

@@ -49,7 +49,7 @@ public class MeetingTypeDefaultsTests
         { TranslationRoomTypes.CompanyMeeting,      false,  true,  true,   true,      500 },
         { TranslationRoomTypes.VirtualAppointment,  true,   false, false,  false,       2 },
         { TranslationRoomTypes.LiveEvent,           true,   true,  true,   false,    1000 },
-        { TranslationRoomTypes.ExternalBridge,      false,  false, false,  false,       2 },
+        { TranslationRoomTypes.ExternalBridge,      false,  false, false,  false,      20 },
     };
 
     [Theory]

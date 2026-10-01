@@ -27,6 +27,33 @@ public interface ITranslationRoomService
         Guid hostId,
         CancellationToken ct = default,
         SeriesOccurrenceContext? occurrence = null);
+    /// <summary>
+    /// POST /translation-rooms/bridge/claim: find the open EXTERNAL_BRIDGE room for this Google
+    /// Meet code in the caller's workspace, or create it through the ordinary create path; seat the
+    /// caller through the ordinary join; and make them the audio capturer when there is none or the
+    /// current one's lease is stale. Workspace members only.
+    /// </summary>
+    Task<Result<ClaimBridgeRoomResponse>> ClaimBridgeRoomAsync(
+        ClaimBridgeRoomRequest request,
+        Guid userId,
+        string? userEmail = null,
+        CancellationToken ct = default);
+
+    /// <summary>Renews the caller's capturer lease. Conflict when the caller is not the capturer.</summary>
+    Task<Result<BridgeCapturerStatusDto>> HeartbeatBridgeCapturerAsync(
+        Guid translationRoomId,
+        Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Makes a participant the capturer when there is none or the lease is stale. Conflict while a
+    /// live capturer holds it.
+    /// </summary>
+    Task<Result<BridgeCapturerStatusDto>> TakeOverBridgeCapturerAsync(
+        Guid translationRoomId,
+        Guid userId,
+        CancellationToken ct = default);
+
     Task<Result<TranslationRoomListResponse>> GetTranslationRoomsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>
     /// WT-334: the room detail read, for a HUMAN caller. <paramref name="userId"/> and
