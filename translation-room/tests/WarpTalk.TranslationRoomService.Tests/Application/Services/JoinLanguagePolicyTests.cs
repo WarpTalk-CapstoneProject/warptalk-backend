@@ -50,7 +50,7 @@ public class JoinLanguagePolicyTests
             redisStateRepository: new Mock<IRedisStateRepository>().Object);
     }
 
-    private void GivenRoom(string sourceLanguage, List<string> targetLanguages, Guid? workspaceId = null)
+    private void GivenRoom(string sourceLanguage, List<string> targetLanguages, Guid? workspaceId = null, string status = "SCHEDULED")
     {
         _mockRoomRepo
             .Setup(repository => repository.GetByCodeAsync(
@@ -61,7 +61,7 @@ public class JoinLanguagePolicyTests
                 WorkspaceId = workspaceId ?? Guid.NewGuid(),
                 TranslationRoomCode = "ktw-xcag-bcr",
                 Title = "QBR",
-                Status = "SCHEDULED",
+                Status = status,
                 TranslationRoomType = "INSTANT",
                 SourceLanguage = sourceLanguage,
                 TargetLanguages = LanguageHelper.SerializeTargetLanguages(targetLanguages),
@@ -148,5 +148,51 @@ public class JoinLanguagePolicyTests
         Assert.True(result.IsSuccess);
         Assert.Empty(result.Value!.AllowedTargetLanguages);
         Assert.Equal(new[] { "vi", "en" }, result.Value.RoomLanguages);
+    }
+
+    [Theory]
+    [InlineData("ENDED")]
+    [InlineData("CANCELLED")]
+    [InlineData("EXPIRED")]
+    public async Task GetJoinLanguagePolicy_SaysTheRoomIsOver_ForATerminalRoom(string status)
+    {
+        // WT-866: the pre-join screen opened for a meeting that was already over, and only the
+        // Join press found out. This is how the screen learns it before asking for a camera.
+        GivenRoom("vi-VN", new List<string> { "en-US" }, status: status);
+        GivenWorkspaceAllows("vi", "en");
+
+        var result = await _roomService.GetJoinLanguagePolicyByCodeAsync("ktw-xcag-bcr");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.RoomEnded);
+    }
+
+    [Theory]
+    [InlineData("SCHEDULED")]
+    [InlineData("OPEN")]
+    [InlineData("IN_PROGRESS")]
+    public async Task GetJoinLanguagePolicy_DoesNotCallALiveRoomOver(string status)
+    {
+        GivenRoom("vi-VN", new List<string> { "en-US" }, status: status);
+        GivenWorkspaceAllows("vi", "en");
+
+        var result = await _roomService.GetJoinLanguagePolicyByCodeAsync("ktw-xcag-bcr");
+
+        Assert.False(result.Value!.RoomEnded);
+        Assert.Equal(new[] { "vi", "en" }, result.Value.RoomLanguages);
+    }
+
+    [Fact]
+    public async Task GetJoinLanguagePolicy_DoesNotCallAnUnknownCodeOver()
+    {
+        // An unknown code stays indistinguishable from a half-typed one.
+        _mockRoomRepo
+            .Setup(repository => repository.GetByCodeAsync(
+                It.IsAny<string>(), It.IsAny<IEnumerable<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoom?)null);
+
+        var result = await _roomService.GetJoinLanguagePolicyByCodeAsync("ktw-xcag-bcr");
+
+        Assert.False(result.Value!.RoomEnded);
     }
 }

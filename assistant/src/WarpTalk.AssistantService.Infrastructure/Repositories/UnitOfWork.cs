@@ -24,6 +24,7 @@ public class UnitOfWork : IUnitOfWork
         WorkspacePluginCurationRepository = new WorkspacePluginCurationRepository(db);
         PluginRequestRepository = new PluginRequestRepository(db);
         WorkspacePluginOverrideRepository = new WorkspacePluginOverrideRepository(db);
+        WorkspacePluginToolPolicyRepository = new WorkspacePluginToolPolicyRepository(db);
     }
 
     public IAssistantConversationRepository AssistantConversationRepository { get; }
@@ -40,6 +41,7 @@ public class UnitOfWork : IUnitOfWork
     public IWorkspacePluginCurationRepository WorkspacePluginCurationRepository { get; }
     public IPluginRequestRepository PluginRequestRepository { get; }
     public IWorkspacePluginOverrideRepository WorkspacePluginOverrideRepository { get; }
+    public IWorkspacePluginToolPolicyRepository WorkspacePluginToolPolicyRepository { get; }
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _db.SaveChangesAsync(ct);

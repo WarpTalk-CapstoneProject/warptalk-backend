@@ -29,6 +29,7 @@ public class TranscriptRedisConsumerService : BackgroundService
     private readonly string _consumerName = $"transcript-{Environment.MachineName}-{Guid.NewGuid():N}";
     private readonly Dictionary<string, RedisValue> _claimCursors = new();
     private readonly Dictionary<string, DateTime> _lastRecoveryAt = new();
+    private readonly Dictionary<string, DateTime> _lastHousekeepingAt = new();
 
     // Cache the resolved AllowExternalLlm flag per workspace so PublishEmbeddingIndexRequestAsync
     // (called once per persisted segment — i.e. potentially many times a second across a busy
@@ -99,6 +100,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                 foreach (var stream in streamKeys)
                 {
                     messagesRead += await RecoverStaleMessagesAsync(db, stream, stoppingToken);
+                    await HousekeepConsumersAsync(db, stream);
 
                     var messages = await db.StreamReadGroupAsync(stream, ConsumerGroup, _consumerName, count: 10);
 
@@ -186,6 +188,85 @@ public class TranscriptRedisConsumerService : BackgroundService
         }
 
         return claimed.ClaimedEntries.Length;
+    }
+
+    /// <summary>
+    /// Removes the consumers dead processes left in <c>transcript-persistence</c> on
+    /// <paramref name="stream"/>, at most once per <see cref="TranscriptConsumerPollingPolicy.ConsumerHousekeepingInterval"/>.
+    /// Runs right after <see cref="RecoverStaleMessagesAsync"/>, which is what moves a dead
+    /// consumer's pending entries onto this one and persists them — only then is it removable.
+    /// </summary>
+    /// <remarks>
+    /// Every replica runs it, with no leader: a consumer idle for an hour with nothing pending is
+    /// dead on any replica's view, and DELCONSUMER on one already gone is a no-op. A failure only
+    /// logs; housekeeping must never stop persistence, and the next interval tries again.
+    /// </remarks>
+    private async Task HousekeepConsumersAsync(IDatabase db, string stream)
+    {
+        var now = DateTime.UtcNow;
+        if (_lastHousekeepingAt.TryGetValue(stream, out var lastAt) &&
+            now - lastAt < TranscriptConsumerPollingPolicy.ConsumerHousekeepingInterval)
+        {
+            return;
+        }
+        _lastHousekeepingAt[stream] = now;
+
+        try
+        {
+            var removed = await RemoveDeadConsumersAsync(
+                db, stream, _consumerName, TranscriptConsumerPollingPolicy.DeadConsumerIdle, _logger);
+            if (removed.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Removed {Count} dead consumer(s) idle longer than {Idle} from {Stream}/{Group}",
+                    removed.Count,
+                    TranscriptConsumerPollingPolicy.DeadConsumerIdle,
+                    stream,
+                    ConsumerGroup);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Consumer housekeeping failed on {Stream}/{Group}; retrying next interval",
+                stream,
+                ConsumerGroup);
+        }
+    }
+
+    internal static async Task<IReadOnlyList<string>> RemoveDeadConsumersAsync(
+        IDatabase db,
+        string stream,
+        string selfConsumerName,
+        TimeSpan minIdle,
+        ILogger logger)
+    {
+        var consumers = (await db.StreamConsumerInfoAsync(stream, ConsumerGroup))
+            .Select(c => new TranscriptConsumerPollingPolicy.ConsumerState(
+                c.Name.ToString(), c.PendingMessageCount, c.IdleTimeInMilliseconds));
+
+        var removed = new List<string>();
+        foreach (var name in TranscriptConsumerPollingPolicy.SelectDeadConsumers(consumers, selfConsumerName, minIdle))
+        {
+            // DELCONSUMER drops whatever the consumer has pending and returns the count. Selection
+            // required zero, so anything here was read in between — which only a live process
+            // does. Its XREADGROUP recreates the consumer, but those entries leave the pending
+            // list: say so loudly, they are transcript lines.
+            var dropped = await db.StreamDeleteConsumerAsync(stream, ConsumerGroup, name);
+            if (dropped > 0)
+            {
+                logger.LogError(
+                    "Deleting consumer {Consumer} from {Stream}/{Group} discarded {Dropped} pending entries it read after it was selected",
+                    name,
+                    stream,
+                    ConsumerGroup,
+                    dropped);
+            }
+            removed.Add(name);
+        }
+
+        return removed;
     }
 
     private async Task FinalizeDeliveryAsync(
@@ -466,14 +547,21 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // than erroring. Without this write the transcript's origin is gone once the
                 // meeting is over, and its offsets can no longer be aligned with a recording.
                 //
-                // Updating the tracked entity is safe here, unlike total_segments/total_duration_ms
-                // above: those are advanced by an atomic UPDATE ... RETURNING and would be reverted
-                // by a tracked write, while this column is touched nowhere else.
+                // NOT through the tracked entity. This used to be `transcript.TimelineAnchorAt = ...;
+                // unitOfWork.Transcripts.Update(transcript)`, on the reasoning that this column is
+                // touched nowhere else. But Update() marks EVERY column modified, so it also wrote
+                // back the stale last_sequence_order/total_segments/total_duration_ms read before
+                // AdvanceTranscriptForNewSegmentAsync ran — reverting the counter on the first
+                // segment of every meeting. The second segment then collided on sequence_order,
+                // was retried by the stale reclaim a minute later, and landed at the END of the
+                // transcript with its real start time: the out-of-order line. One targeted UPDATE
+                // with an IS NULL guard; see StampTranscriptTimelineAnchorAsync.
                 if (anchorMs > 0 && transcript.TimelineAnchorAt is null)
                 {
-                    transcript.TimelineAnchorAt =
-                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime;
-                    unitOfWork.Transcripts.Update(transcript);
+                    await unitOfWork.StampTranscriptTimelineAnchorAsync(
+                        transcript.Id,
+                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime,
+                        cancellationToken);
                 }
 
                 // total_segments/total_duration_ms were already advanced atomically inside
@@ -790,6 +878,18 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // arrives. Ack rather than retry-then-dead-letter.
                 if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var pauseRoomId)
                     && await WasSegmentSkippedForPauseAsync(pauseRoomId, segmentId, cancellationToken))
+                {
+                    return true;
+                }
+
+                // WT-587: an ephemeral meeting (save_transcript=false) is dubbed like any other,
+                // but the STT and translate handlers above deliberately wrote no segment and no
+                // link for it, so this lookup can never succeed. Retrying it dead-lettered every
+                // dubbed line of such a meeting (prod, 28 Sep: 7 entries, room "Test no save
+                // transcript") and kept WarpTalkDeadLetterPresent firing. Checked only here, on
+                // the miss, so a normal dub costs no extra lookup.
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var retentionRoomId)
+                    && !await ShouldPersistRoomAsync(retentionRoomId, cancellationToken))
                 {
                     return true;
                 }

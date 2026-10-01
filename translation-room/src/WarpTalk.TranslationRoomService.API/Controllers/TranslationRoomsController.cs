@@ -203,6 +203,7 @@ public class TranslationRoomsController : ControllerBase
         {
             allowedTargetLanguages = result.Value?.AllowedTargetLanguages ?? Array.Empty<string>(),
             roomLanguages = result.Value?.RoomLanguages ?? Array.Empty<string>(),
+            roomEnded = result.Value?.RoomEnded ?? false,
         });
     }
 

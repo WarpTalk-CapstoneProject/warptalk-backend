@@ -633,21 +633,11 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
-            var heldDomains = await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-                vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
-                "",
-                ct);
-
-            foreach (var heldDomain in heldDomains)
-            {
-                heldDomain.SoftRevoke(userId);
-                _unitOfWork.WorkspaceVerifiedDomainRepository.Update(heldDomain);
-            }
-
             var deletedAt = DateTime.UtcNow;
+            await WorkspaceHelper.ReleaseVerifiedDomainsAsync(_unitOfWork, workspace, userId, deletedAt, ct);
+
             workspace.DeletedAt = deletedAt;
             workspace.UpdatedBy = userId;
-            workspace.RequireVerifiedDomainForInternal = false;
 
             // WT-417: the members go with it.
             //

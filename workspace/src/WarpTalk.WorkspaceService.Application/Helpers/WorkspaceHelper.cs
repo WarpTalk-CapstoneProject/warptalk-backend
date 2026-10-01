@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
+using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Settings;
 using WarpTalk.WorkspaceService.Domain.ValueObjects;
@@ -251,16 +252,24 @@ public static class WorkspaceHelper
     /// <summary>
     /// Which workspace currently holds <paramref name="domain"/>, if any.
     ///
-    /// Deliberately blind to the owning workspace's lifecycle. It used to skip suspended and
-    /// soft-deleted workspaces, which disagreed with the partial unique index behind the same
-    /// rule — the index only looks at <c>status</c>. A caller was told the domain was free,
-    /// the INSERT then hit the index, and the request failed as a 500 instead of a refusal.
+    /// It does not filter the owning workspace's lifecycle out of the query. It used to skip
+    /// suspended and soft-deleted workspaces, which disagreed with the partial unique index
+    /// behind the same rule — the index only looks at <c>status</c>. A caller was told the domain
+    /// was free, the INSERT then hit the index, and the request failed as a 500 instead of a
+    /// refusal.
     ///
     /// Suspension is reversible, so it must not release a claim: the workspace is coming back
     /// and expects to still hold its domain. Deletion is terminal, and releases the claim by
-    /// revoking the rows outright (see SoftDeleteWorkspaceAsync) rather than by being filtered
-    /// out here — which keeps a single rule, "a domain is taken while its row is verified",
-    /// true at both layers.
+    /// revoking the rows (see <see cref="ReleaseVerifiedDomainsAsync"/>), which keeps a single rule —
+    /// "a domain is taken while its row is verified" — true at both layers.
+    ///
+    /// A row still verified under a deleted workspace is therefore a delete that skipped that
+    /// step, and nothing else can ever clear it: the workspace is gone, so no Owner is left to
+    /// revoke it. The admin delete did skip it until 1 Oct 2026, and prod's fpt.edu.vn sat under
+    /// the deleted "FPT" workspace refusing every fpt.edu.vn user who created a workspace. So
+    /// this finishes that delete here — revokes the row and saves it BEFORE reporting the domain
+    /// free, so the caller's INSERT never meets the stale row at the index. Both callers reach
+    /// this with nothing else pending in the unit of work, so the early save flushes only this.
     /// </summary>
     public static async Task<Guid?> GetWorkspaceIdVerifyingDomainAsync(IUnitOfWork unitOfWork, string domain, CancellationToken ct)
     {
@@ -275,7 +284,46 @@ public static class WorkspaceHelper
             "Workspace",
             ct);
 
+        if (verifiedDomain?.Workspace?.DeletedAt != null)
+        {
+            // Attributed to whoever deleted the workspace: the release is the remainder of their
+            // delete, not a decision made by the caller now claiming the domain.
+            verifiedDomain.SoftRevoke(verifiedDomain.Workspace.UpdatedBy ?? Guid.Empty);
+            unitOfWork.WorkspaceVerifiedDomainRepository.Update(verifiedDomain);
+            await unitOfWork.SaveChangesAsync(ct);
+            return null;
+        }
+
         return verifiedDomain?.WorkspaceId;
+    }
+
+    /// <summary>
+    /// The domain half of deleting a workspace: revokes every claim it holds, so the domains are
+    /// free for another workspace, and turns its domain-verified policy off to match an empty
+    /// domain list.
+    ///
+    /// Both delete paths — the Owner's and the admin portal's — call this. They used to carry
+    /// their own copies of delete, and the admin one dropped this step.
+    /// </summary>
+    public static async Task ReleaseVerifiedDomainsAsync(
+        IUnitOfWork unitOfWork,
+        Workspace workspace,
+        Guid actorId,
+        DateTime utcNow,
+        CancellationToken ct)
+    {
+        var heldDomains = await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+            vd => vd.WorkspaceId == workspace.Id && vd.RevokedAt == null,
+            "",
+            ct);
+
+        foreach (var heldDomain in heldDomains)
+        {
+            heldDomain.SoftRevoke(actorId, utcNow);
+            unitOfWork.WorkspaceVerifiedDomainRepository.Update(heldDomain);
+        }
+
+        workspace.RequireVerifiedDomainForInternal = false;
     }
 
     /// <summary>
