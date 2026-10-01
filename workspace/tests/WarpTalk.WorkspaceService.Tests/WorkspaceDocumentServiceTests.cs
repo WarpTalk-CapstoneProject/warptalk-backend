@@ -1983,6 +1983,271 @@ public class WorkspaceDocumentServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
     }
 
+    // ── WT-854: a corrected version of a PUBLISHED document waits in its own slot ───────────
+    //
+    // Re-uploading used to overwrite StorageKey at once, so readers, downloads and the AI index
+    // switched to an unreviewed file the moment it was uploaded, and Reject had nothing to
+    // restore. These pin the replacement: the approved file keeps being served until a reviewer
+    // approves, approval promotes the new one, and rejection deletes it and leaves the old.
+
+    /// <summary>A published document, a caller with <paramref name="role"/>, and the uploader.</summary>
+    private WorkspaceDocument ArrangePublishedDocument(
+        Guid workspaceId, Guid documentId, Guid callerId, string role, Guid? uploaderId = null)
+    {
+        var document = ArrangeRejectedDocument(workspaceId, documentId, callerId, role);
+        document.Status = WorkspaceDocumentStatus.@public.ToString();
+        document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
+        document.UploadedBy = uploaderId ?? callerId;
+        document.OwnerId = uploaderId ?? callerId;
+        document.SizeBytes = 1234;
+        document.ConfidentialityLevel = "general";
+        return document;
+    }
+
+    private async Task<WorkspaceDocument> ArrangePendingRevisionAsync(
+        Guid workspaceId, Guid documentId, Guid callerId, string role, Guid? uploaderId = null)
+    {
+        var document = ArrangePublishedDocument(workspaceId, documentId, callerId, role, uploaderId);
+        var staged = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId,
+            new ReuploadDocumentApiRequest(StubFile("plan-v2.docx"), Note: "Fixed the totals."),
+            callerId);
+        Assert.True(staged.IsSuccess, staged.Error);
+        _storage.ClearReceivedCalls();
+        _eventPublisher.ClearReceivedCalls();
+        _chunkWriter.ClearReceivedCalls();
+        return document;
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_OnAPublishedDocument_KeepsServingTheApprovedFile()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        var document = ArrangePublishedDocument(workspaceId, documentId, uploaderId, "Member");
+        var approvedKey = document.StorageKey;
+
+        WorkspaceDocument? written = null;
+        await _storage.SaveDocumentContentAsync(
+            Arg.Do<WorkspaceDocument>(d => written = d), Arg.Any<Stream>(), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId,
+            new ReuploadDocumentApiRequest(StubFile("plan-v2.docx"), Note: "Fixed the totals."),
+            uploaderId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        // Readers see exactly what they saw before.
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
+        Assert.Equal(approvedKey, document.StorageKey);
+        Assert.Equal("plan.pdf", document.FileName);
+        Assert.Equal(".pdf", document.FileExtension);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        // The new bytes went to their own key, never over the approved blob.
+        Assert.NotNull(written);
+        Assert.NotSame(document, written);
+        Assert.Equal(document.PendingStorageKey, written!.StorageKey);
+        Assert.NotEqual(approvedKey, document.PendingStorageKey);
+        Assert.Equal("plan-v2.docx", document.PendingFileName);
+        Assert.Equal(uploaderId, document.PendingUploadedBy);
+        // The index is untouched: nothing purged, nothing re-ingested.
+        await _chunkWriter.DidNotReceiveWithAnyArgs().DeleteDocumentChunksAsync(default, default, default);
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentDeletedAsync(default, default, default);
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(default, default, default!, default!, default!, default, default, default);
+        // The API says a revision is waiting.
+        Assert.Equal("plan-v2.docx", result.Value!.PendingRevision!.FileName);
+        Assert.Equal("Fixed the totals.", result.Value.PendingRevision.Note);
+        Assert.Equal("plan.pdf", result.Value.FileName);
+    }
+
+    [Fact]
+    public async Task DownloadDocumentAsync_WhileARevisionIsPending_ServesTheApprovedFile()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        var document = await ArrangePendingRevisionAsync(workspaceId, documentId, uploaderId, "Member");
+        var reader = Guid.NewGuid();
+        _accessEvaluator.EvaluateAccessAsync(reader, workspaceId, documentId, WorkspaceDocumentPermissions.Download, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        WorkspaceDocument? read = null;
+        _storage.GetDecryptedStreamAsync(Arg.Do<WorkspaceDocument>(d => read = d), Arg.Any<CancellationToken>())
+            .Returns(new MemoryStream());
+
+        var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, reader);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal($"documents/{workspaceId}/{documentId}.pdf", read!.StorageKey);
+        Assert.Equal("plan.pdf", result.Value!.FileName);
+        Assert.NotNull(document.PendingStorageKey);
+    }
+
+    [Fact]
+    public async Task ReuploadDocumentAsync_RefusesASecondRevisionWhileOneIsPending()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        var document = await ArrangePendingRevisionAsync(workspaceId, documentId, uploaderId, "Member");
+        var pendingObject = document.PendingStorageKey;
+
+        var result = await _documentService.ReuploadDocumentAsync(
+            workspaceId, documentId, new ReuploadDocumentApiRequest(StubFile("plan-v3.pdf")), uploaderId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Conflict, result.ErrorCode);
+        Assert.Equal(pendingObject, document.PendingStorageKey);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_OnAPendingRevision_PromotesItAndReindexesTheNewFile()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var document = await ArrangePendingRevisionAsync(workspaceId, documentId, adminId, "Admin", uploaderId: Guid.NewGuid());
+        var approvedKey = document.StorageKey;
+        var pendingObject = document.PendingStorageKey!;
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId, new ApproveDocumentRequest(true), adminId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
+        Assert.Equal(pendingObject, document.StorageKey);
+        Assert.Equal("plan-v2.docx", document.FileName);
+        Assert.Equal(".docx", document.FileExtension);
+        Assert.Null(document.PendingStorageKey);
+        Assert.Null(document.PendingFileName);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), document.IngestionStatus);
+        // The old file's chunks go, and the new file goes through the ingestion pipeline.
+        await _chunkWriter.Received(1).DeleteDocumentChunksAsync(workspaceId, documentId, Arg.Any<CancellationToken>());
+        await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
+            documentId, workspaceId, pendingObject, "plan-v2.docx", ".docx", Arg.Any<Guid>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+        // The superseded blob stays, as every revision's does — the audit row names it.
+        await _storage.DidNotReceiveWithAnyArgs().DeleteDocumentContentAsync(default!, default);
+        Assert.NotEqual(approvedKey, document.StorageKey);
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_RejectingAPendingRevision_KeepsTheApprovedFileAndDeletesTheNewOne()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var document = await ArrangePendingRevisionAsync(workspaceId, documentId, adminId, "Admin", uploaderId: Guid.NewGuid());
+        var approvedKey = document.StorageKey;
+        var pendingObject = document.PendingStorageKey!;
+
+        WorkspaceDocument? deleted = null;
+        await _storage.DeleteDocumentContentAsync(Arg.Do<WorkspaceDocument>(d => deleted = d), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId, new ApproveDocumentRequest(false, "The totals are still wrong."), adminId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        // Nothing to restore, because nothing a reader sees ever changed.
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
+        Assert.Equal(approvedKey, document.StorageKey);
+        Assert.Equal("plan.pdf", document.FileName);
+        Assert.Null(document.PendingStorageKey);
+        // The rejected object is deleted — and only it.
+        Assert.NotNull(deleted);
+        Assert.Equal(pendingObject, deleted!.StorageKey);
+        await _storage.Received(1).DeleteDocumentContentAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
+        await _chunkWriter.DidNotReceiveWithAnyArgs().DeleteDocumentChunksAsync(default, default, default);
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(default, default, default!, default!, default!, default, default, default);
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_RejectingAPendingRevisionWithoutAReason_IsRefused()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var document = await ArrangePendingRevisionAsync(workspaceId, documentId, adminId, "Admin", uploaderId: Guid.NewGuid());
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId, new ApproveDocumentRequest(false, "  "), adminId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.NotNull(document.PendingStorageKey);
+        await _storage.DidNotReceiveWithAnyArgs().DeleteDocumentContentAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task ApproveDocumentAsync_OnAPublishedDocumentWithNothingPending_IsRefused()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        ArrangePublishedDocument(workspaceId, documentId, adminId, "Admin");
+
+        var result = await _documentService.ApproveDocumentAsync(
+            workspaceId, documentId, new ApproveDocumentRequest(true), adminId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DownloadPendingRevisionAsync_GivesAReviewerTheNewFile()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var document = await ArrangePendingRevisionAsync(workspaceId, documentId, adminId, "Admin", uploaderId: Guid.NewGuid());
+
+        WorkspaceDocument? read = null;
+        _storage.GetDecryptedStreamAsync(Arg.Do<WorkspaceDocument>(d => read = d), Arg.Any<CancellationToken>())
+            .Returns(new MemoryStream());
+
+        var result = await _documentService.DownloadPendingRevisionAsync(workspaceId, documentId, adminId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(document.PendingStorageKey, read!.StorageKey);
+        Assert.Equal("plan-v2.docx", result.Value!.FileName);
+    }
+
+    [Fact]
+    public async Task DownloadPendingRevisionAsync_RefusesAMemberWhoNeitherReviewsNorUploadedIt()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var uploaderId = Guid.NewGuid();
+        await ArrangePendingRevisionAsync(workspaceId, documentId, uploaderId, "Member");
+        var reader = Guid.NewGuid();
+        var readerRole = Guid.NewGuid();
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = reader, RoleId = readerRole });
+        StubRoleName(readerRole, "Member");
+
+        var result = await _documentService.DownloadPendingRevisionAsync(workspaceId, documentId, reader);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().GetDecryptedStreamAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task DownloadPendingRevisionAsync_IsNotFound_WhenNothingIsPending()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        ArrangePublishedDocument(workspaceId, documentId, adminId, "Admin");
+
+        var result = await _documentService.DownloadPendingRevisionAsync(workspaceId, documentId, adminId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
     [Fact]
     public async Task GetDocumentHistoryAsync_ShouldReturnTheDecisions_WithTheirReasons()
     {

@@ -198,6 +198,35 @@ public class WorkspaceDocumentsController : ControllerBase
         return File(dto.Stream, dto.ContentType, dto.FileName);
     }
 
+    /// <summary>
+    /// WT-854 — the corrected file awaiting review for a published document, so a reviewer can
+    /// read what they are approving. `download` keeps serving the approved file to everyone else.
+    /// Owner/Admin or the uploader only; 404 when nothing is pending.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{documentId:guid}/revision/download")]
+    public async Task<IActionResult> DownloadPendingRevision(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.DownloadPendingRevisionAsync(workspaceId, documentId, userId.Value, ct);
+        if (!result.IsSuccess || result.Value == null)
+        {
+            return ToActionResult(result);
+        }
+
+        var dto = result.Value;
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        // Never cached by an intermediary: the same URL serves a different file after the next
+        // revision, and none at all once this one is decided.
+        Response.Headers["Cache-Control"] = "no-store";
+        return File(dto.Stream, dto.ContentType, dto.FileName);
+    }
+
     [Authorize]
     [HttpGet("{documentId:guid}/extracted-text")]
     public async Task<IActionResult> GetExtractedText(
