@@ -1473,7 +1473,15 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (translationRoom.Status == "IN_PROGRESS")
             {
-                await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+                // WT-708: the re-Start republishes the room's languages, so it is a drift check
+                // like any other start — a host who restarts after an admin narrowed L1 must not
+                // push the forbidden languages back at the AI workers.
+                var restartLanguages = await ResolveEffectiveStartLanguagesAsync(translationRoom, ct);
+                if (!restartLanguages.IsSuccess)
+                    return Result.Failure<TranslationRoomDto>(restartLanguages.Error!, restartLanguages.ErrorCode);
+
+                await PublishRoomTargetLanguagesAsync(
+                    translationRoom, ct, restartLanguages.Value!.TargetLanguages);
 
                 // S7. This early return used to skip route generation entirely, which is why
                 // "just restart the room" never recovered a late joiner who had no route row.
@@ -1490,7 +1498,8 @@ public class TranslationRoomService : ITranslationRoomService
 
                 return Result.Success(translationRoom.ToResponseDto(
                     await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
-                    await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                    await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct))
+                    with { LanguagePolicyNotice = restartLanguages.Value!.Notice });
             }
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -1509,6 +1518,13 @@ public class TranslationRoomService : ITranslationRoomService
                 translationRoom.WorkspaceId, ct);
             if (!lifecycle.IsSuccess)
                 return Result.Failure<TranslationRoomDto>(lifecycle.Error!, lifecycle.ErrorCode);
+
+            // WT-708: and the workspace's language whitelist as it stands RIGHT NOW, not as it
+            // stood when the room was booked. Ordered after the suspension gate and before
+            // anything is written, so a refusal leaves the room exactly SCHEDULED/WAITING.
+            var startLanguages = await ResolveEffectiveStartLanguagesAsync(translationRoom, ct);
+            if (!startLanguages.IsSuccess)
+                return Result.Failure<TranslationRoomDto>(startLanguages.Error!, startLanguages.ErrorCode);
 
             // (Re)generate audio routes for the participants currently in the room so speech is
             // routed correctly once translation starts. Routes form a full mesh between
@@ -1530,7 +1546,7 @@ public class TranslationRoomService : ITranslationRoomService
             _translationRoomRepository.Update(translationRoom);
 
             await _unitOfWork.SaveChangesAsync(ct);
-            await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+            await PublishRoomTargetLanguagesAsync(translationRoom, ct, startLanguages.Value!.TargetLanguages);
 
             // WT-322: tell everyone already in the room that translation is now live. Published
             // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
@@ -1562,7 +1578,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
-                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct))
+                with { LanguagePolicyNotice = startLanguages.Value!.Notice });
         }
         catch (Exception ex)
         {
@@ -1623,6 +1640,156 @@ public class TranslationRoomService : ITranslationRoomService
 
         return Result.Success();
     }
+
+    /// <summary>
+    /// WT-708 — what this room may actually be translated into, judged against the workspace
+    /// whitelist AS IT STANDS NOW rather than as it stood when the room was booked.
+    ///
+    /// THE DRIFT
+    ///   A meeting's languages (L2 = source ∪ targets) are checked against the workspace whitelist
+    ///   (L1) at creation and at edit, and by nothing afterwards. An admin who narrows L1 on Monday
+    ///   therefore leaves every room booked before Monday carrying languages the workspace no
+    ///   longer allows — and Start handed that stored set straight to the AI workers via
+    ///   <see cref="PublishRoomTargetLanguagesAsync"/>, so the owner's setting was enforced against
+    ///   the booking form and against nothing that actually costs money.
+    ///
+    /// WHAT IT DOES ABOUT IT
+    ///   Nothing at all when L1 is empty — empty means UNRESTRICTED here exactly as it does
+    ///   everywhere else that reads this list, and reading it the other way would refuse every
+    ///   meeting in every workspace that never configured languages, which is most of them.
+    ///
+    ///   Otherwise it recomputes L2 ∩ L1. A partially narrowed meeting PROCEEDS with the
+    ///   intersection — that is what reaches the workers, and the host is told in the response what
+    ///   was dropped. A meeting with no translatable language left is REFUSED, naming both sets,
+    ///   because starting it would open a billable room that translates into nothing.
+    ///
+    /// WHAT IT DELIBERATELY DOES NOT DO
+    ///   It does not write. The room keeps the languages the host booked, so an admin who widens L1
+    ///   back restores them with no edit and no migration — and a stale narrowing can never become
+    ///   the room's permanent shape.
+    ///
+    ///   It does not touch the SOURCE language on the wire. That is the language people in the room
+    ///   are already speaking, and the summary language has to agree with the transcript that
+    ///   actually happens; rewriting it here would be reclassification, not enforcement. It is
+    ///   still reported to the host in <see cref="RoomLanguagePolicyNoticeDto.Dropped"/> when the
+    ///   whitelist no longer covers it.
+    ///
+    ///   It does not touch anybody already in the room. Participants keep the languages they chose
+    ///   until the meeting ends — nobody is kicked and nobody is switched. The narrowing bounds
+    ///   what this service PRODUCES, not who may sit here.
+    ///
+    /// FAILURE
+    ///   Fails OPEN, like every other workspace check on the start path (see
+    ///   <c>EnsureWorkspaceCanHostMeetingsAsync</c> and the interface docs on why start and join
+    ///   differ from create): a WorkspaceService outage must not become "no meeting in the product
+    ///   can begin". An unreadable whitelist leaves the behaviour exactly as it was before this
+    ///   change and says so in the log.
+    /// </summary>
+    private async Task<Result<StartLanguagePolicyOutcome>> ResolveEffectiveStartLanguagesAsync(
+        TranslationRoom room,
+        CancellationToken ct)
+    {
+        var storedTargets = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+        var unchanged = Result.Success(new StartLanguagePolicyOutcome(storedTargets, null));
+
+        // A room outside any workspace has no whitelist to apply — the same Guid.Empty guard
+        // ValidateSeriesLanguagesAsync and RoomArtifactLanguagePolicy use.
+        if (room.WorkspaceId == Guid.Empty)
+            return unchanged;
+
+        IReadOnlyList<string>? whitelist;
+        try
+        {
+            var lookup = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+            if (lookup is null || !lookup.IsSuccess || lookup.Value is null)
+            {
+                _logger.LogWarning(
+                    "WT-708: workspace language whitelist unreadable for workspace {WorkspaceId} (room {RoomId}): {Error}. Starting with the room's own languages, unchanged.",
+                    room.WorkspaceId, room.Id, lookup?.Error);
+                return unchanged;
+            }
+
+            whitelist = lookup.Value;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "WT-708: workspace language whitelist lookup threw for workspace {WorkspaceId} (room {RoomId}). Starting with the room's own languages, unchanged.",
+                room.WorkspaceId, room.Id);
+            return unchanged;
+        }
+
+        // Both sides normalized: rooms store primary subtags ("vi") while a workspace may have
+        // stored a regional code ("vi-VN"), and a raw comparison would drop languages the owner
+        // allows. Same fold WorkspaceMeetingPolicyGrpcClient applies on the create/edit path.
+        var allowed = new HashSet<string>(
+            whitelist.Select(LanguageHelper.NormalizeLanguageCode).Where(code => code.Length > 0),
+            StringComparer.Ordinal);
+
+        if (allowed.Count == 0)
+            return unchanged;
+
+        var sourceLanguage = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
+
+        // L2, built exactly as the join screen and the artifact policy build it, so the three can
+        // never disagree about what "this meeting's languages" means.
+        var meetingLanguages = new List<string> { sourceLanguage }
+            .Concat(storedTargets)
+            .Where(code => code.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var dropped = meetingLanguages.Where(code => !allowed.Contains(code)).ToList();
+        if (dropped.Count == 0)
+            return unchanged;
+
+        var effectiveTargets = storedTargets.Where(allowed.Contains).ToList();
+
+        // No target survives, so there is nothing left to translate INTO. Refused rather than
+        // started empty: a room whose published target list is [] looks to every worker and every
+        // client exactly like a room whose configuration failed to arrive, and the host would be
+        // left diagnosing silence instead of reading a sentence that names the problem.
+        if (effectiveTargets.Count == 0)
+        {
+            _logger.LogWarning(
+                "WT-708: refusing to start room {RoomId}; its languages [{Meeting}] have no overlap with workspace {WorkspaceId}'s current whitelist [{Allowed}].",
+                room.Id, string.Join(", ", meetingLanguages), room.WorkspaceId, string.Join(", ", allowed.OrderBy(code => code, StringComparer.Ordinal)));
+
+            return Result.Failure<StartLanguagePolicyOutcome>(
+                string.Format(
+                    TranslationRoomConstants.ErrorStartLanguagesNotAllowed,
+                    string.Join(", ", meetingLanguages),
+                    string.Join(", ", allowed.OrderBy(code => code, StringComparer.Ordinal))),
+                ErrorCodes.Forbidden);
+        }
+
+        var effectiveMeetingLanguages = meetingLanguages.Where(allowed.Contains).ToList();
+
+        _logger.LogWarning(
+            "WT-708: room {RoomId} starts narrowed; [{Dropped}] are no longer allowed by workspace {WorkspaceId} and will not be produced.",
+            room.Id, string.Join(", ", dropped), room.WorkspaceId);
+
+        return Result.Success(new StartLanguagePolicyOutcome(
+            effectiveTargets,
+            new RoomLanguagePolicyNoticeDto(
+                meetingLanguages,
+                effectiveMeetingLanguages,
+                dropped,
+                string.Format(
+                    TranslationRoomConstants.WarningStartLanguagesNarrowed,
+                    string.Join(", ", dropped),
+                    string.Join(", ", effectiveMeetingLanguages)))));
+    }
+
+    /// <summary>
+    /// WT-708: the two things the start path needs out of the drift check — what to publish, and
+    /// what to tell the host. <see cref="Notice"/> is null when nothing was narrowed, which is the
+    /// overwhelmingly common case and the one that must stay invisible to existing clients.
+    /// </summary>
+    private sealed record StartLanguagePolicyOutcome(
+        List<string> TargetLanguages,
+        RoomLanguagePolicyNoticeDto? Notice);
 
     /// <summary>
     /// WT-341 — tells the people invited to this meeting that it has begun.
@@ -1836,17 +2003,26 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    private async Task PublishRoomTargetLanguagesAsync(TranslationRoom room, CancellationToken ct)
+    /// <param name="targetLanguages">
+    /// WT-708: the languages that may actually be produced for this room, when the caller has
+    /// already worked them out. The start path passes L2 ∩ L1(current) here so a language the
+    /// workspace has since forbidden never reaches the AI workers; everyone else omits it and
+    /// gets the room's stored set, which is what this method always did.
+    /// </param>
+    private async Task PublishRoomTargetLanguagesAsync(
+        TranslationRoom room,
+        CancellationToken ct,
+        IReadOnlyList<string>? targetLanguages = null)
     {
         if (_redisStateRepository is null)
             return;
 
         try
         {
-            var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+            var effectiveTargets = targetLanguages?.ToList() ?? LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
             await _redisStateRepository.StringSetAsync(
                 $"meeting:{room.Id}:target_languages",
-                JsonSerializer.Serialize(targetLanguages),
+                JsonSerializer.Serialize(effectiveTargets),
                 TimeSpan.FromHours(24));
 
                 // The language the automatic summary is written in, so the first one and any

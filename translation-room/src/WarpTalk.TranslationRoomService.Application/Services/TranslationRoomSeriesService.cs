@@ -47,13 +47,42 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     /// </summary>
     private readonly Func<DateTime> _utcNow;
 
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+    private readonly IRedisStateRepository? _redisStateRepository;
+
+    /// <summary>
+    /// WT-708: the notification type for "this booking has stopped producing meetings". Registered
+    /// in NotificationConstants and in the notification service's validator schema table in the
+    /// same change as this producer — an unregistered type carrying metadata is rejected outright
+    /// and the producer never sees it, which is how four previous notification types spent months
+    /// being logged as sent and never created.
+    /// </summary>
+    private const string SeriesBlockedNotificationType = "MEETING_SERIES_BLOCKED";
+
+    /// <summary>
+    /// WT-708: how long one "your series is stuck" notice suppresses the next for the SAME series.
+    ///
+    /// The sweep runs every few minutes and a refused template stays refused until somebody edits
+    /// the booking or widens the policy, so without a marker the host would be told every few
+    /// minutes for as long as the problem lasts. A week is the re-arm rather than "once ever": a
+    /// booking still stuck seven days later is worth saying again, and a host who fixed it and
+    /// broke it again next month gets told again.
+    /// </summary>
+    private static readonly TimeSpan SeriesBlockedAlertInterval = TimeSpan.FromDays(7);
+
     public TranslationRoomSeriesService(
         IUnitOfWork unitOfWork,
         ITranslationRoomService translationRoomService,
         IWorkspaceMeetingPolicy workspaceMeetingPolicy,
         ILanguagePolicy languagePolicy,
         ILogger<TranslationRoomSeriesService> logger,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        // WT-708: both optional, and trailing, for the same two reasons TranslationRoomService's
+        // clients are — every existing construction site (and the whole test suite) keeps
+        // working, and a deployment that cannot reach the notification mesh still materialises
+        // occurrences; it just cannot tell the host when it stops.
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
+        IRedisStateRepository? redisStateRepository = null)
     {
         _unitOfWork = unitOfWork;
         _seriesRepository = unitOfWork.TranslationRoomSeriesRepository;
@@ -62,6 +91,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
         _languagePolicy = languagePolicy;
         _logger = logger;
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
+        _notificationClient = notificationClient;
+        _redisStateRepository = redisStateRepository;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -624,6 +655,15 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
                 _logger.LogWarning(
                     "WT-707: series {SeriesId} template languages refused ({Code}: {Error}); not materialising, will retry after the booking or policy changes",
                     series.Id, policy.ErrorCode, policy.Error);
+
+                // WT-708: and TELL the host, because the line above only reaches us. WT-707 made
+                // the sweep stop instead of attempting N doomed creates, which is right, but it
+                // made it stop SILENTLY: the watermark does not move, so the same refusal repeats
+                // every few minutes for as long as the booking and the policy disagree, and from
+                // the host's chair a daily meeting simply stops appearing with no error anywhere
+                // they can see. The retry loop is the correct behaviour; being the only witness
+                // to it is not.
+                await NotifySeriesLanguagePolicyBlockedAsync(series, policy.Error, ct);
                 return 0;
             }
         }
@@ -721,6 +761,127 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     // ─────────────────────────────────────────────────────────────────────────
     // Internals
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// WT-708 — tells the host that their recurring booking has stopped producing meetings,
+    /// ONCE per problem rather than once per sweep.
+    ///
+    /// WHY THE MARKER IS IN REDIS AND NOT ON THE SERIES ROW
+    ///   <see cref="TranslationRoomSeries"/> has no field that fits: Status is the materialiser's
+    ///   own state machine and moving the series out of ACTIVE would take it out of
+    ///   <c>GetSeriesNeedingMaterializationAsync</c> — the booking would then never recover when
+    ///   the policy widens, which is exactly the outcome WT-707 refused. A new column would need a
+    ///   migration staged into infra before this can ship, which is a heavier round trip than the
+    ///   fact deserves: "we have already told them" is a piece of delivery bookkeeping with a
+    ///   natural expiry, not a property of the booking.
+    ///
+    ///   <see cref="IRedisStateRepository.StringSetIfAbsentAsync"/> is the right primitive anyway,
+    ///   and a plain read-then-write is not the same thing and cannot be made into it: the sweep
+    ///   runs on every replica, so two workers meeting the same stuck series in the same second
+    ///   would both see nothing and both send. The claim and the write are one server-side step.
+    ///
+    ///   The bound: a lost marker (Redis restarted, key evicted) costs one duplicate notice, and
+    ///   the TTL re-arms the alert after <see cref="SeriesBlockedAlertInterval"/>. Both failure
+    ///   directions are one notification, never a stream of them.
+    ///
+    ///   NO REDIS AT ALL means no way to know whether we have already said this, so we stay
+    ///   SILENT rather than send on every pass. A missed notice is a bug the log still records;
+    ///   a notification every few minutes forever is one the host cannot escape.
+    ///
+    /// The claim is RELEASED when the send fails, so a transient NotificationService outage costs
+    /// a retry on the next sweep rather than a week of silence.
+    ///
+    /// Never throws. The sweep's job is materialising occurrences for every other series; failing
+    /// it over an undelivered notice would trade the work for the announcement of it.
+    /// </summary>
+    private async Task NotifySeriesLanguagePolicyBlockedAsync(
+        TranslationRoomSeries series,
+        string? reason,
+        CancellationToken ct)
+    {
+        if (_notificationClient is null)
+        {
+            _logger.LogWarning(
+                "WT-708: series {SeriesId} is blocked by the workspace language policy and the host cannot be told — no notification client is configured.",
+                series.Id);
+            return;
+        }
+
+        if (_redisStateRepository is null)
+        {
+            _logger.LogWarning(
+                "WT-708: series {SeriesId} is blocked by the workspace language policy and the host cannot be told — no Redis to record that we already have, and notifying on every sweep is worse than not notifying.",
+                series.Id);
+            return;
+        }
+
+        var alertKey = $"series:{series.Id}:language_policy_alert";
+
+        try
+        {
+            var claimed = await _redisStateRepository.StringSetIfAbsentAsync(
+                alertKey,
+                _utcNow().ToString("O", CultureInfo.InvariantCulture),
+                SeriesBlockedAlertInterval);
+
+            // Somebody — an earlier sweep, or another replica a millisecond ago — already told
+            // them. Nothing to do and nothing to log at warning: this is the normal outcome for
+            // every pass after the first.
+            if (!claimed)
+                return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "WT-708: could not claim the notification marker for blocked series {SeriesId}; staying silent this pass rather than risking one notice per sweep.",
+                series.Id);
+            return;
+        }
+
+        try
+        {
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = series.HostId.ToString(),
+                Type = SeriesBlockedNotificationType,
+                Title = $"\"{series.Title}\" has stopped scheduling",
+                // The workspace's own refusal, verbatim: it already names the offending language,
+                // and paraphrasing it here would be a second copy of a rule that lives elsewhere.
+                Body = string.IsNullOrWhiteSpace(reason)
+                    ? $"No new occurrences of \"{series.Title}\" are being created: its languages are no longer allowed by your workspace. Edit the booking's languages, or ask a workspace admin to allow them again."
+                    : $"No new occurrences of \"{series.Title}\" are being created. {reason} Edit the booking's languages, or ask a workspace admin to allow them again.",
+            };
+            request.Metadata.Add("series_id", series.Id.ToString());
+            request.Metadata.Add("series_title", series.Title);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+
+            _logger.LogInformation(
+                "WT-708: told host {HostId} that series {SeriesId} is blocked by the workspace language policy.",
+                series.HostId, series.Id);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(
+                ex,
+                "WT-708: failed to tell host {HostId} that series {SeriesId} is blocked; releasing the marker so the next sweep tries again.",
+                series.HostId, series.Id);
+
+            try
+            {
+                await _redisStateRepository.KeyDeleteAsync(alertKey);
+            }
+            catch (Exception releaseFailure) when (releaseFailure is not OperationCanceledException)
+            {
+                // The TTL still releases it eventually; the host waits rather than never hearing.
+                _logger.LogWarning(
+                    releaseFailure,
+                    "WT-708: could not release the notification marker for series {SeriesId}; it expires on its own.",
+                    series.Id);
+            }
+        }
+    }
 
     /// <summary>
     /// Builds and persists ONE occurrence through the ordinary room-creation path.

@@ -143,6 +143,26 @@ public static class TranslationRoomConstants
     public const string ErrorInvalidTransitionToExpired = "Room must be SCHEDULED or WAITING to expire.";
     public const string ErrorNoAudioRoutesConfigured = "The room needs at least one source/target audio route configured before it can start.";
 
+    /// <summary>
+    /// WT-708: the workspace's language whitelist was narrowed after this meeting was booked and
+    /// now excludes every language it could translate into.
+    ///
+    /// {0} is the meeting's own languages, {1} the ones the workspace currently allows. BOTH are
+    /// named because either alone sends the reader hunting: the host knows what they booked and
+    /// not what changed, and an admin reading it over their shoulder knows the policy and not the
+    /// booking. Actionable in one read — edit the meeting, or ask for the policy to be widened.
+    /// </summary>
+    public const string ErrorStartLanguagesNotAllowed =
+        "This meeting's languages ({0}) are no longer allowed by your workspace, which now allows {1}. Edit the meeting's languages, or ask a workspace admin to allow these again.";
+
+    /// <summary>
+    /// WT-708: the same drift, but some language survived — the meeting runs, narrowed. {0} is
+    /// what was dropped, {1} what remains. Carried on the start response rather than raised as an
+    /// error: the meeting is live and this is the one moment the host is looking.
+    /// </summary>
+    public const string WarningStartLanguagesNarrowed =
+        "Your workspace no longer allows {0}, so this meeting is running in {1} only.";
+
     public const string ErrorFailedToCreateRoomTitle = "Failed to create room";
     public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";
     public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";
