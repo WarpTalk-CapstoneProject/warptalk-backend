@@ -162,7 +162,8 @@ public class SubscriptionService : ISubscriptionService
 
     public async Task<Result<SubscriptionDto>> CreateWorkspaceContractSubscriptionAsync(
         CreateWorkspaceContractSubscriptionRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? replaceLiveReason = null)
     {
         try
         {
@@ -179,7 +180,7 @@ public class SubscriptionService : ISubscriptionService
                 s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
                 cancellationToken);
 
-            if (existing is not null)
+            if (existing is not null && replaceLiveReason is null)
                 return Result.Failure<SubscriptionDto>(
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
                     ErrorCodes.BillingSubscriptionAlreadyActive);
@@ -194,6 +195,13 @@ public class SubscriptionService : ISubscriptionService
                     validation.ErrorCode);
 
             subscription.ApplyContractTerms(request.ContractTerms);
+
+            if (existing is not null)
+            {
+                var retire = await RetireLiveSubscriptionsAsync(request.WorkspaceId, replaceLiveReason!, cancellationToken);
+                if (!retire.IsSuccess)
+                    return Result.Failure<SubscriptionDto>(retire.Error!, retire.ErrorCode);
+            }
 
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -426,6 +434,57 @@ public class SubscriptionService : ISubscriptionService
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCancellingStripeSubscription, sub.WorkspaceId);
             return StripeFailure(null);
         }
+    }
+
+    /// <summary>
+    /// WT-878: retire every live row of the workspace so a contract row can take the one live slot
+    /// (migration 016's unique index on is_active). Staged only: the caller's SaveChanges commits
+    /// it with the new row, the same deactivate-previous pattern as a plan change
+    /// (SubscriptionPaymentEventHandler.ActivateSubscriptionAsync).
+    ///
+    /// Stripe is asked FIRST, exactly as the legacy cancel does: a row Stripe would keep charging
+    /// is not retired, and the whole conversion fails with nothing changed locally.
+    ///
+    /// CREDITS: the retired row keeps its balance, and the frozen-credit sweep handles it as any
+    /// ended subscription. Purchased and granted credits are frozen and then released into the
+    /// new live (contract) row; plan-included credits follow the plan's rollover rule, with a
+    /// ledger row for anything forfeited (CreditFreezeService).
+    /// </summary>
+    private async Task<Result> RetireLiveSubscriptionsAsync(Guid workspaceId, string reason, CancellationToken cancellationToken)
+    {
+        var live = await _unitOfWork.SubscriptionRepository.FindAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        foreach (var row in live)
+        {
+            // Renewal already off (cancelled at period end, or auto-renew switched off) means
+            // Stripe has already been told; only a renewing row needs the call.
+            if (row.AutoRenew)
+            {
+                var stripeFailure = await StopStripeRenewalAsync(row, cancellationToken);
+                if (stripeFailure is not null)
+                    return stripeFailure;
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        foreach (var row in live)
+        {
+            row.IsActive = false;
+            row.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
+            row.AutoRenew = false;
+            row.CancelledAt ??= now;
+            row.CancellationReason ??= reason;
+            row.UpdatedAt = now;
+            _unitOfWork.SubscriptionRepository.Update(row);
+
+            _logger.LogInformation(
+                "subscription_retired_for_contract WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} CreditsRemaining={CreditsRemaining}",
+                workspaceId, row.Id, row.CreditsRemaining);
+        }
+
+        return Result.Success();
     }
 
     private static Result StripeFailure(string? error) =>

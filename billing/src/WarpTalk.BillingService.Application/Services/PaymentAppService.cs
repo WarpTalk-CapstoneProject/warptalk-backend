@@ -79,7 +79,10 @@ public class PaymentAppService : IPaymentAppService
             s => s.WorkspaceId == workspaceId
                 && s.DeletedAt == null
                 && s.IsActive
-                && s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                && (s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                    // WT-878: a row cancelled at period end the pre-WT-878 way
+                    // (Subscription.IsLegacyCancelledInPeriod).
+                    || (s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled && s.CancelledAt == null))
                 && s.CurrentPeriodEnd >= now);
     }
 
@@ -634,6 +637,10 @@ public class PaymentAppService : IPaymentAppService
         var metadata = new Dictionary<string, string>(extras.Metadata)
         {
             [PaymentConstants.StripeMetadata.AutoRenew] = autoRenew ? "true" : "false",
+            // WT-878: what this session was priced at, so activation honours it if the plan is
+            // repriced before the buyer finishes paying.
+            [PaymentConstants.StripeMetadata.ExpectedAmount] = amount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            [PaymentConstants.StripeMetadata.ExpectedCurrency] = currency,
         };
         var line = new CatalogCheckoutLine(
             plan.Name,

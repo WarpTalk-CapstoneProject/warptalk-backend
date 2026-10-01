@@ -135,11 +135,16 @@ public sealed class CreditFreezeService : ICreditFreezeService
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditFreezeService> _logger;
+    private readonly ISuspensionLiftService? _suspensionLift;
 
-    public CreditFreezeService(IUnitOfWork unitOfWork, ILogger<CreditFreezeService> logger)
+    public CreditFreezeService(
+        IUnitOfWork unitOfWork,
+        ILogger<CreditFreezeService> logger,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _suspensionLift = suspensionLift;
     }
 
     /// <summary>The policy in the class summary, as a pure function.</summary>
@@ -311,10 +316,21 @@ public sealed class CreditFreezeService : ICreditFreezeService
                 continue;
             }
 
+            var wasSuspended = target.ServiceState == SubscriptionConstants.ServiceStates.Suspended;
             if (await StageReleaseIntoAsync(target, nowUtc, ct) > 0)
             {
                 await _unitOfWork.SaveChangesAsync(ct);
                 released++;
+
+                // WT-878: a release that lifted an overage_cap suspension must reach the AI key the
+                // billing_worker reads, or the workspace's rooms stay stopped until the next charge.
+                // After the commit, exactly as CompPeriodAsync / InvoiceService push a lift.
+                var lifted = wasSuspended && target.ServiceState != SubscriptionConstants.ServiceStates.Suspended;
+                if (lifted && _suspensionLift is not null)
+                {
+                    await _suspensionLift.PushServiceStateAsync(target, ct);
+                    await _suspensionLift.PublishCreditsUpdatedAsync(target, resumed: true, ct);
+                }
             }
         }
 

@@ -132,6 +132,26 @@ public sealed partial class SubscriptionPaymentEventHandler : IPaymentEventHandl
 
         var price = PlanPricing.PeriodTotal(plan, request.BillingCycle);
         var planCurrency = PlanPricing.StripeCurrency(plan);
+
+        // WT-878: the checkout stamped the price it quoted on the session (server-written metadata,
+        // read back off Stripe, so not a client input). That quote is the contract: an admin who
+        // reprices the plan while the buyer is on the Stripe page must not leave them charged with
+        // no plan. Sessions created before the stamp fall back to the plan's current price.
+        var quotedCurrency = (request.ExpectedCurrency ?? string.Empty).Trim().ToLowerInvariant();
+        if (request.ExpectedAmount > 0 && quotedCurrency.Length > 0)
+        {
+            if (request.ExpectedAmount != price || !string.Equals(quotedCurrency, planCurrency, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "subscription_activation_quoted_price_differs: WorkspaceId={WorkspaceId} Plan={PlanSlug} Cycle={BillingCycle} "
+                    + "Quoted={Quoted} {QuotedCurrency} Current={Current} {PlanCurrency} Session={SessionId}",
+                    context.WorkspaceId, plan.Slug, request.BillingCycle,
+                    request.ExpectedAmount, quotedCurrency, price, planCurrency, request.StripeSessionId);
+            }
+
+            price = request.ExpectedAmount;
+            planCurrency = quotedCurrency;
+        }
         var paidCurrency = (request.Currency ?? string.Empty).Trim().ToLowerInvariant();
 
         // A coupon the checkout applied legitimately lowers what was paid: the expected amount is

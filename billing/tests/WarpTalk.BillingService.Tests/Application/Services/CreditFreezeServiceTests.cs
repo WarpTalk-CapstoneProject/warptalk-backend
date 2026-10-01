@@ -285,6 +285,43 @@ public class CreditFreezeServiceTests
     }
 
     [Fact]
+    public async Task The_sweep_pushes_the_ai_state_after_a_release_lifts_an_overage_cap_suspension()
+    {
+        var lift = new Mock<WarpTalk.BillingService.Application.Interfaces.ISuspensionLiftService>();
+        var service = new CreditFreezeService(_unitOfWork.Object, NullLogger<CreditFreezeService>.Instance, lift.Object);
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 500;
+        ended.CreditsFrozenAt = Now.AddDays(-3);
+        var capped = AddSubscription(plan, balance: -100, active: true);
+        capped.ServiceState = SubscriptionConstants.ServiceStates.Suspended;
+        capped.SuspendedReason = SubscriptionConstants.SuspendedReasons.OverageCap;
+
+        (await service.ReleaseFrozenCreditsAsync(Now)).Should().Be(1);
+
+        capped.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        lift.Verify(l => l.PushServiceStateAsync(capped, It.IsAny<CancellationToken>()), Times.Once,
+            "the billing_worker reads the AI key; without the push the rooms stay stopped");
+        lift.Verify(l => l.PublishCreditsUpdatedAsync(capped, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task The_sweep_does_not_push_when_the_release_lifted_nothing()
+    {
+        var lift = new Mock<WarpTalk.BillingService.Application.Interfaces.ISuspensionLiftService>();
+        var service = new CreditFreezeService(_unitOfWork.Object, NullLogger<CreditFreezeService>.Instance, lift.Object);
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 500;
+        ended.CreditsFrozenAt = Now.AddDays(-3);
+        AddSubscription(plan, balance: 100, active: true);
+
+        (await service.ReleaseFrozenCreditsAsync(Now)).Should().Be(1);
+
+        lift.Verify(l => l.PushServiceStateAsync(It.IsAny<Subscription>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Frozen_credits_turn_dormant_after_the_grace_window_and_are_kept()
     {
         var plan = AddPlan(rolloverCap: 0);
