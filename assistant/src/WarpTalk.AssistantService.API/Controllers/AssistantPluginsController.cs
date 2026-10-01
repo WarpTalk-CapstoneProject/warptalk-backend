@@ -281,7 +281,7 @@ public class AssistantPluginsController : ControllerBase
         var hint = _connectionService.ReadFlowHint(state);
 
         var refusal = ClassifyBeforeExchange(hint?.PluginKey, code, state, error);
-        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+        if (refusal != null) return Redirect(RefuseBeforeExchange(hint, refusal, error));
 
         return await CompleteAsync(
             hint,
@@ -327,7 +327,7 @@ public class AssistantPluginsController : ControllerBase
         var hint = _connectionService.ReadFlowHint(state);
 
         var refusal = ClassifyBeforeExchange(hint?.PluginKey, code, state, error);
-        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+        if (refusal != null) return Redirect(RefuseBeforeExchange(hint, refusal, error));
 
         return await CompleteAsync(
             hint,
@@ -365,7 +365,7 @@ public class AssistantPluginsController : ControllerBase
             ?? new PluginOAuthFlowHintDto(pluginKey, PluginConstants.OAuthClient.Web);
 
         var refusal = ClassifyBeforeExchange(pluginKey, code, state, error);
-        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+        if (refusal != null) return Redirect(RefuseBeforeExchange(hint, refusal, error));
 
         return await CompleteAsync(
             hint,
@@ -398,6 +398,55 @@ public class AssistantPluginsController : ControllerBase
         // A response with neither an error nor a code is not something any provider should send;
         // there is nothing to exchange either way.
         return string.IsNullOrWhiteSpace(code) ? PluginConstants.ErrorCodes.ProviderUnavailable : null;
+    }
+
+    /// <summary>
+    /// Logs a refusal decided from the query string, then sends the browser back to the plugins page.
+    /// </summary>
+    /// <remarks>
+    /// WT-905. When the provider itself answers the redirect with <c>error=...</c> (anything but a
+    /// cancel), the user reads "The provider could not complete the sign-in" and, before this, the
+    /// logs held nothing at all - the exchange never ran, so the exchange's own error log never
+    /// fired, and the <c>ref</c> the user quoted pointed at a request with no line explaining it.
+    /// <para>
+    /// Only the provider's error CODE is written, and only after it is reduced to the characters an
+    /// OAuth error code is made of (RFC 6749 section 4.1.2.1) and bounded. Never the code, the state or
+    /// any description text: the query string is attacker-controlled, and the code and state are
+    /// credentials for the length of the flow.
+    /// </para>
+    /// </remarks>
+    private string RefuseBeforeExchange(PluginOAuthFlowHintDto? hint, string reason, string? providerError)
+    {
+        if (!string.IsNullOrWhiteSpace(providerError)
+            && !string.Equals(reason, PluginConstants.ErrorCodes.AccessDenied, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "OAuth provider returned error {ProviderError} instead of a code for plugin {PluginKey} ({Reason}, ref {CorrelationId}).",
+                SanitizeProviderError(providerError),
+                hint?.PluginKey,
+                reason,
+                CorrelationId);
+        }
+        else if (!string.Equals(reason, PluginConstants.ErrorCodes.AccessDenied, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "OAuth callback for plugin {PluginKey} was refused before the code exchange ({Reason}, ref {CorrelationId}).",
+                hint?.PluginKey,
+                reason,
+                CorrelationId);
+        }
+
+        return RefusedUrl(hint, reason);
+    }
+
+    /// <summary>An OAuth error code is printable ASCII without quotes or backslash; keep a safe subset, bounded.</summary>
+    private static string SanitizeProviderError(string providerError)
+    {
+        var kept = new string(providerError
+            .Where(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.')
+            .Take(64)
+            .ToArray());
+        return kept.Length == 0 ? "(unprintable)" : kept;
     }
 
     /// <summary>
