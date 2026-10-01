@@ -59,6 +59,7 @@ builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
 builder.Services.AddScoped<IVoiceConsentRepository, VoiceConsentRepository>();
 builder.Services.AddScoped<IVoiceSampleRepository, VoiceSampleRepository>();
+builder.Services.AddScoped<IVoiceEnrollmentChallengeRepository, VoiceEnrollmentChallengeRepository>();
 builder.Services.AddScoped<IStaffMemberRepository, StaffMemberRepository>();
 builder.Services.AddScoped<IStaffInvitationRepository, StaffInvitationRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
@@ -116,7 +117,8 @@ builder.Services.AddWarpTalkIntegrationStatus("auth", sp =>
         (IntegrationKeys.Resend, new IntegrationReport(
             IntegrationReport.FromConfiguration(configuration, null, "Resend:ApiKey").Configured
             || IntegrationReport.FromConfiguration(configuration, null, "RESEND_API_KEY").Configured, "auth e-mail")),
-        (IntegrationKeys.ObjectStorage, IntegrationReport.ObjectStorage(configuration, "voice samples")));
+        (IntegrationKeys.ObjectStorage, IntegrationReport.ObjectStorage(configuration, "voice samples")),
+        (IntegrationKeys.OpenAi, IntegrationReport.FromConfiguration(configuration, "voice recording check", "OpenAI:ApiKey")));
 });
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
@@ -128,6 +130,14 @@ builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
 builder.Services.AddScoped<IUserDirectoryService, UserDirectoryService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
+// WT-888 — a voice profile is made only from a live recording that reads a server-issued phrase.
+// The recording is checked with the platform's own speech-to-text provider (OpenAI), called
+// directly: it is one short request a person is waiting on, not pipeline work for the AI side.
+builder.Services.AddScoped<IVoiceEnrollmentChallengeService, VoiceEnrollmentChallengeService>();
+builder.Services.AddHttpClient<ISpeechTranscriber, OpenAISpeechTranscriber>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(45);
+});
 builder.Services.AddScoped<IVoiceConsentService, VoiceConsentService>();
 builder.Services.AddScoped<IVoiceCarryOverService, VoiceCarryOverService>();
 // G10 — platform staff and roles. This service is the source of truth, so its own permission
