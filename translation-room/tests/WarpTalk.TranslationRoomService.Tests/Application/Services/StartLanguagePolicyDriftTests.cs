@@ -64,6 +64,13 @@ public class StartLanguagePolicyDriftTests
         _unitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_participantRepository.Object);
         _unitOfWork.Setup(u => u.TranslationRoomSessionRepository).Returns(_sessionRepository.Object);
 
+        // Start takes the room live through a compare-and-set; this request always wins it, so
+        // the publish under test is the one the winner makes.
+        _roomRepository
+            .Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
         _participantRepository
             .Setup(p => p.CountSeatHoldingParticipantsAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(0);
