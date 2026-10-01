@@ -204,6 +204,82 @@ public class TranscriptTimelineAnchorWriteTests
             Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
     }
 
+    // ── A late line is placed where it was spoken ─────────────────────────────
+
+    /// <summary>
+    /// Prod, 14 days to 1 Oct 2026: 53 lines stored out of start-time order — every reader orders
+    /// by sequence_order, which was handed out in PROCESSING order (two replicas race on the
+    /// stt:results group; a retry lands a minute late). A segment on the transcript's own clock is
+    /// now placed by its start time after it is stored.
+    /// </summary>
+    [Fact]
+    public async Task ASegmentOnTheTranscriptClock_IsPlacedByItsStartTime()
+    {
+        var fixture = new AnchorFixture();
+        var later = Guid.NewGuid();
+        var earlier = Guid.NewGuid();
+
+        Assert.True(await fixture.ProcessSttAsync(FirstAnchorMs.ToString(), later, startMs: "9000"));
+        Assert.True(await fixture.ProcessSttAsync(FirstAnchorMs.ToString(), earlier, startMs: "4000"));
+
+        await fixture.UnitOfWork.Received(1).PlaceSegmentByStartTimeAsync(
+            fixture.Transcript.Id, later, Arg.Any<CancellationToken>());
+        await fixture.UnitOfWork.Received(1).PlaceSegmentByStartTimeAsync(
+            fixture.Transcript.Id, earlier, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// A start time measured from a DIFFERENT origin (the STT worker lost its Redis anchor and
+    /// started a new clock) or from no stated origin cannot be compared with the stored ones, so the
+    /// line keeps its arrival position rather than being moved to a wrong one.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0")]
+    [InlineData("later")]
+    public async Task ASegmentOffTheTranscriptClock_KeepsItsArrivalPosition(string? anchor)
+    {
+        var fixture = new AnchorFixture();
+        Assert.True(await fixture.ProcessSttAsync(FirstAnchorMs.ToString(), startMs: "9000"));
+        fixture.UnitOfWork.ClearReceivedCalls();
+
+        var offClock = Guid.NewGuid();
+        Assert.True(await fixture.ProcessSttAsync(
+            anchor == "later" ? LaterAnchorMs.ToString() : anchor, offClock, startMs: "4000"));
+
+        Assert.Equal(2, fixture.AddedSegments.Count);
+        await fixture.UnitOfWork.DidNotReceive().PlaceSegmentByStartTimeAsync(
+            Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>The line is stored either way; a failed placement must not redeliver it.</summary>
+    [Fact]
+    public async Task AFailedPlacement_StillAcknowledgesTheStoredLine()
+    {
+        var fixture = new AnchorFixture();
+        fixture.UnitOfWork
+            .PlaceSegmentByStartTimeAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns<Task<int?>>(_ => throw new InvalidOperationException("deadlock detected"));
+
+        Assert.True(await fixture.ProcessSttAsync(FirstAnchorMs.ToString(), startMs: "4000"));
+
+        Assert.Single(fixture.AddedSegments);
+    }
+
+    [Theory]
+    [InlineData(0L, null, false)]
+    [InlineData(FirstAnchorMs, null, true)]
+    [InlineData(FirstAnchorMs, FirstAnchorMs, true)]
+    [InlineData(LaterAnchorMs, FirstAnchorMs, false)]
+    public void StartTimeIsOnTranscriptClock_ComparesOrigins(long messageAnchor, long? storedAnchor, bool expected)
+    {
+        DateTime? stored = storedAnchor is null
+            ? null
+            : DateTimeOffset.FromUnixTimeMilliseconds(storedAnchor.Value).UtcDateTime;
+
+        Assert.Equal(expected, TranscriptConsumerPollingPolicy.StartTimeIsOnTranscriptClock(messageAnchor, stored));
+    }
+
     // ── Bridge stand-in: the live far-side name on the saved row ─────────────
 
     private static readonly string StandIn = ExternalBridgeConstants.ParticipantUserId.ToString();
@@ -396,6 +472,7 @@ public class TranscriptTimelineAnchorWriteTests
             string? anchorMs,
             Guid? segmentId = null,
             string speakerId = "system",
+            string startMs = "0",
             params (string Name, string Value)[] extra)
         {
             var fields = new List<(string Name, string Value)>
@@ -407,7 +484,7 @@ public class TranscriptTimelineAnchorWriteTests
                 ("speaker_id", speakerId),
                 ("text", "một câu đã được nghe ra"),
                 ("language", "vi"),
-                ("start_ms", "0"),
+                ("start_ms", startMs),
                 ("end_ms", "1500"),
                 ("is_final_chunk", "0"),
             };

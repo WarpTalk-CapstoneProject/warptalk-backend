@@ -372,470 +372,316 @@ public class GoogleWorkspaceMcpToolGatewayTests
         Assert.Equal(1, requestCount);
     }
 
+    // ---- GMCAL1001: the Meet tool calls the Meet API only --------------------------------------
+
     [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_RequestsConferenceDataAndReturnsHangoutLink()
+    public async Task ExecuteAsync_CreateMeetEvent_CreatesAMeetSpaceAndNeverCallsCalendar()
     {
-        HttpRequestMessage? capturedRequest = null;
-        JsonObject? capturedPayload = null;
+        var requests = new List<(HttpRequestMessage Request, string Body)>();
         var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
         {
-            capturedRequest = request;
-            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
+            requests.Add((request, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty));
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new JsonObject
                 {
-                    ["id"] = "event-1",
-                    ["summary"] = "Customer sync",
-                    ["htmlLink"] = "https://calendar.google.test/event-1",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
-                    ["start"] = new JsonObject { ["dateTime"] = "2026-09-05T15:00:00+07:00" },
-                    ["end"] = new JsonObject { ["dateTime"] = "2026-09-05T15:30:00+07:00" },
+                    ["name"] = "spaces/jQCFfuBOdN5z",
+                    ["meetingUri"] = "https://meet.google.com/abc-mnop-xyz",
+                    ["meetingCode"] = "abc-mnop-xyz",
+                    ["config"] = new JsonObject { ["accessType"] = "TRUSTED" },
                 }),
             };
         }));
-        var protector = Substitute.For<IPluginCredentialProtector>();
-        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
-        var sut = new GoogleWorkspaceMcpToolGateway(
-            httpClient,
-            protector,
-            Options.Create(new GoogleWorkspaceApiOptions
-            {
-                CalendarEventsEndpointFormat = "https://google.test/calendar/v3/calendars/{0}/events",
-            }));
+        var sut = MeetGateway(httpClient);
 
-        var result = await sut.ExecuteAsync(
-            GoogleDriveDefinition(),
-            MeetCreateTool(),
-            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
-            new McpToolExecutionRequest(
-                null,
-                GoogleDriveKey,
-                "google_calendar_create_meet_event",
-                new JsonObject
-                {
-                    ["summary"] = "Customer sync",
-                    ["start"] = "2026-09-05T15:00:00+07:00",
-                    ["end"] = "2026-09-05T15:30:00+07:00",
-                    ["timeZone"] = "Asia/Bangkok",
-                    ["description"] = "Quarterly customer sync",
-                    ["attendees"] = new JsonArray("nhi@example.com", "tu@example.com"),
-                },
-                null,
-                null,
-                null));
+        var result = await ExecuteMeetAsync(sut, new JsonObject
+        {
+            ["summary"] = "Customer sync",
+            ["start"] = "2026-09-05T15:00:00+07:00",
+            ["end"] = "2026-09-05T15:30:00+07:00",
+            ["timeZone"] = "Asia/Bangkok",
+            ["description"] = "Quarterly customer sync",
+            ["attendees"] = new JsonArray("nhi@example.com", "tu@example.com"),
+        });
 
         Assert.True(result.IsSuccess);
-        Assert.Equal("event-1", result.ProviderResourceRef);
-        Assert.Equal("google_meet", result.Data!["provider"]!.GetValue<string>());
-        Assert.Equal("event-1", result.Data["eventId"]!.GetValue<string>());
-        Assert.Equal("https://meet.google.com/abc-defg-hij", result.Data["meetLink"]!.GetValue<string>());
-        Assert.Equal("success", result.Data["meetLinkStatus"]!.GetValue<string>());
-        Assert.Contains("conferenceDataVersion=1", capturedRequest!.RequestUri!.Query);
+        var (request, body) = Assert.Single(requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("https://google.test/meet/v2/spaces", request.RequestUri!.ToString());
+        Assert.Equal("plain-access-token", request.Headers.Authorization!.Parameter);
+        Assert.Equal("{}", body);
+        Assert.DoesNotContain(requests, r => r.Request.RequestUri!.AbsolutePath.Contains("calendar", StringComparison.OrdinalIgnoreCase));
 
-        var payload = capturedPayload!;
-        Assert.Equal("Customer sync", payload["summary"]!.GetValue<string>());
-        Assert.Equal("Asia/Bangkok", payload["start"]!["timeZone"]!.GetValue<string>());
-        Assert.Equal("hangoutsMeet", payload["conferenceData"]!["createRequest"]!["conferenceSolutionKey"]!["type"]!.GetValue<string>());
-        Assert.False(string.IsNullOrWhiteSpace(payload["conferenceData"]!["createRequest"]!["requestId"]!.GetValue<string>()));
-        Assert.Equal("nhi@example.com", payload["attendees"]!.AsArray()[0]!["email"]!.GetValue<string>());
+        var data = result.Data!;
+        Assert.Equal("spaces/jQCFfuBOdN5z", result.ProviderResourceRef);
+        Assert.Equal("google_meet", data["provider"]!.GetValue<string>());
+        Assert.Equal("spaces/jQCFfuBOdN5z", data["spaceName"]!.GetValue<string>());
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", data["meetLink"]!.GetValue<string>());
+        Assert.Equal("abc-mnop-xyz", data["meetingCode"]!.GetValue<string>());
+        Assert.Equal("success", data["meetLinkStatus"]!.GetValue<string>());
+        // Echoed for the Calendar hop; Meet itself stored none of it.
+        Assert.Equal("Customer sync", data["summary"]!.GetValue<string>());
+        Assert.Equal("2026-09-05T15:00:00+07:00", data["start"]!.GetValue<string>());
+        Assert.Equal("2026-09-05T15:30:00+07:00", data["end"]!.GetValue<string>());
+        Assert.Equal("Asia/Bangkok", data["timeZone"]!.GetValue<string>());
+        Assert.Equal("Quarterly customer sync", data["description"]!.GetValue<string>());
+        Assert.Equal(["nhi@example.com", "tu@example.com"], data["attendees"]!.AsArray().Select(a => a!.GetValue<string>()));
+        Assert.Null(data["eventId"]);
+        Assert.Null(data["calendarEventLink"]);
+        Assert.Null(data["event"]);
     }
 
     [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_FallsBackToConferenceEntryPointWhenHangoutLinkIsMissing()
+    public async Task ExecuteAsync_CreateMeetEvent_LeavesTimesNullWhenNoneWereGiven()
     {
+        // Meet stores no time, so there is nothing to default any more: "now + 30 minutes" was a
+        // Calendar requirement and would put a made-up slot on the confirmation card.
         var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
             new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new JsonObject
                 {
-                    ["id"] = "event-2",
-                    ["htmlLink"] = "https://calendar.google.test/event-2",
-                    ["conferenceData"] = new JsonObject
-                    {
-                        ["entryPoints"] = new JsonArray
-                        {
-                            new JsonObject
-                            {
-                                ["entryPointType"] = "video",
-                                ["uri"] = "https://meet.google.com/xyz-abcd-efg",
-                            },
-                        },
-                    },
+                    ["name"] = "spaces/now",
+                    ["meetingUri"] = "https://meet.google.com/abc-defg-hij",
                 }),
             }));
-        var protector = Substitute.For<IPluginCredentialProtector>();
-        protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
-        var sut = new GoogleWorkspaceMcpToolGateway(
-            httpClient,
-            protector,
-            Options.Create(new GoogleWorkspaceApiOptions
-            {
-                CalendarEventsEndpointFormat = "https://google.test/calendar/v3/calendars/{0}/events",
-            }));
-
-        var result = await sut.ExecuteAsync(
-            GoogleDriveDefinition(),
-            MeetCreateTool(),
-            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
-            new McpToolExecutionRequest(
-                null,
-                GoogleDriveKey,
-                "google_calendar_create_meet_event",
-                new JsonObject
-                {
-                    ["summary"] = "Customer sync",
-                    ["start"] = "2026-09-05T15:00:00+07:00",
-                    ["end"] = "2026-09-05T15:30:00+07:00",
-                },
-                null,
-                null,
-                null));
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("https://meet.google.com/xyz-abcd-efg", result.Data!["meetLink"]!.GetValue<string>());
-        Assert.Equal("success", result.Data["meetLinkStatus"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_RejectsUnparseableStartWithoutEndBeforeProviderCall()
-    {
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            throw new InvalidOperationException("Provider must not be called.")));
         var sut = MeetGateway(httpClient);
-
-        var result = await ExecuteMeetAsync(sut, new JsonObject { ["start"] = "next tuesday-ish" });
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(PluginConstants.ErrorCodes.UnknownTool, result.ErrorCode);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_DefaultsToNowForThirtyMinutesWithDefaultTitle()
-    {
-        JsonObject? capturedPayload = null;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
-        {
-            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-now",
-                    ["summary"] = "Google Meet meeting",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
-                    ["start"] = new JsonObject { ["dateTime"] = "2026-09-17T08:42:00Z" },
-                    ["end"] = new JsonObject { ["dateTime"] = "2026-09-17T09:12:00Z" },
-                }),
-            };
-        }));
-        var clock = new FixedTimeProvider(new DateTimeOffset(2026, 9, 17, 8, 42, 37, 512, TimeSpan.Zero));
-        var sut = MeetGateway(httpClient, clock);
 
         var result = await ExecuteMeetAsync(sut, new JsonObject());
 
         Assert.True(result.IsSuccess);
-        var payload = capturedPayload!;
-        Assert.Equal("Google Meet meeting", payload["summary"]!.GetValue<string>());
-        Assert.Equal("2026-09-17T08:42:00Z", payload["start"]!["dateTime"]!.GetValue<string>());
-        Assert.Equal("2026-09-17T09:12:00Z", payload["end"]!["dateTime"]!.GetValue<string>());
-        Assert.Null(payload["start"]!["timeZone"]);
-        Assert.Equal("hangoutsMeet", payload["conferenceData"]!["createRequest"]!["conferenceSolutionKey"]!["type"]!.GetValue<string>());
+        var data = result.Data!;
+        Assert.Equal("Google Meet meeting", data["summary"]!.GetValue<string>());
+        Assert.Null(data["start"]);
+        Assert.Null(data["end"]);
+        Assert.Null(data["timeZone"]);
+        Assert.Empty(data["attendees"]!.AsArray());
+        // No meetingCode in the response: parsed from the link.
+        Assert.Equal("abc-defg-hij", data["meetingCode"]!.GetValue<string>());
     }
 
     [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_EndDefaultsToThirtyMinutesAfterGivenStartKeepingOffset()
+    public async Task ExecuteAsync_CreateMeetEvent_EchoesTheWorkspaceZoneForATimeThatCarriesNone()
     {
-        JsonObject? capturedPayload = null;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
-        {
-            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
-            return new HttpResponseMessage(HttpStatusCode.OK)
+        // The Calendar hop books whatever zone is echoed here, and Google refuses a bare
+        // date-time. The workspace zone is the one WarpBot's confirmation card prints.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new JsonObject
                 {
-                    ["id"] = "event-3",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
+                    ["name"] = "spaces/bare",
+                    ["meetingUri"] = "https://meet.google.com/abc-defg-hij",
+                    ["meetingCode"] = "abc-defg-hij",
                 }),
-            };
-        }));
-        var sut = MeetGateway(httpClient);
-
-        var result = await ExecuteMeetAsync(sut, new JsonObject { ["start"] = "2026-09-18T15:00:00+07:00" });
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("2026-09-18T15:30:00+07:00", capturedPayload!["end"]!["dateTime"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_EndKeepsNoOffsetWhenStartHasNone()
-    {
-        JsonObject? capturedPayload = null;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
-        {
-            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-3b",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
-                }),
-            };
-        }));
+            }));
         var sut = MeetGateway(httpClient);
 
         var result = await ExecuteMeetAsync(sut, new JsonObject
         {
-            ["start"] = "2026-09-18T15:00:00",
-            ["timeZone"] = "Asia/Bangkok",
-        });
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("2026-09-18T15:30:00", capturedPayload!["end"]!["dateTime"]!.GetValue<string>());
-        Assert.Equal("Asia/Bangkok", capturedPayload["end"]!["timeZone"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_StampsTheWorkspaceZoneOnATimeThatCarriesNone()
-    {
-        // Google refuses a date-time with neither an offset nor a timeZone, and a model told the
-        // local date sends exactly that. The zone stamped here is the one WarpBot's confirmation
-        // card prints, so what the user read and what was booked are the same moment.
-        JsonObject? capturedPayload = null;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
-        {
-            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-3c",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
-                }),
-            };
-        }));
-        var sut = MeetGateway(httpClient);
-
-        var result = await ExecuteMeetAsync(sut, new JsonObject
-        {
-            ["summary"] = "Roadmap",
             ["start"] = "2026-09-24T10:00:00",
             ["end"] = "2026-09-24T10:30:00",
         });
 
         Assert.True(result.IsSuccess);
-        Assert.Equal("Asia/Ho_Chi_Minh", capturedPayload!["start"]!["timeZone"]!.GetValue<string>());
-        Assert.Equal("Asia/Ho_Chi_Minh", capturedPayload["end"]!["timeZone"]!.GetValue<string>());
+        Assert.Equal("2026-09-24T10:00:00", result.Data!["start"]!.GetValue<string>());
+        Assert.Equal("Asia/Ho_Chi_Minh", result.Data["timeZone"]!.GetValue<string>());
     }
 
     [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_LeavesAnOffsetTimeWithoutAZone()
+    public async Task ExecuteAsync_CreateMeetEvent_MapsMissingMeetScopeToMissingScope()
     {
-        JsonObject? capturedPayload = null;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
-        {
-            capturedPayload = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
-            return new HttpResponseMessage(HttpStatusCode.OK)
+        // A Meet grant from before GMCAL1001 carries calendar.events, not meetings.space.created.
+        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.Forbidden)
             {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-3d",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
-                }),
-            };
-        }));
+                Content = new StringContent(
+                    """{"error":{"code":403,"message":"Request had insufficient authentication scopes.","status":"PERMISSION_DENIED","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}"""),
+            }));
         var sut = MeetGateway(httpClient);
 
-        var result = await ExecuteMeetAsync(sut, new JsonObject
+        var result = await ExecuteMeetAsync(sut, new JsonObject());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.MissingScope, result.ErrorCode);
+    }
+
+    // ---- GMCAL1001: Calendar create_event can carry an existing Meet link -------------------------
+
+    [Fact]
+    public async Task ExecuteAsync_CreateCalendarEvent_WithoutMeetLinkSendsTheSamePayloadAsBefore()
+    {
+        var requests = new List<(HttpRequestMessage Request, JsonObject Body)>();
+        var sut = MeetGateway(new HttpClient(new StubHttpMessageHandler(request =>
         {
+            requests.Add((request, ReadBody(request)));
+            return CalendarCreated("event-plain");
+        })));
+
+        var result = await ExecuteCalendarCreateAsync(sut, new JsonObject
+        {
+            ["summary"] = "Roadmap",
             ["start"] = "2026-09-24T10:00:00+07:00",
             ["end"] = "2026-09-24T10:30:00+07:00",
+            ["description"] = "Plan",
         });
 
         Assert.True(result.IsSuccess);
-        Assert.Null(capturedPayload!["start"]!["timeZone"]);
+        var (request, body) = Assert.Single(requests);
+        Assert.Equal("https://google.test/calendar/v3/calendars/primary/events", request.RequestUri!.ToString());
+        Assert.Equal("Plan", body["description"]!.GetValue<string>());
+        Assert.Null(body["conferenceData"]);
+        Assert.Null(body["location"]);
+        Assert.Null(body["attendees"]);
+        Assert.Null(body["start"]!["timeZone"]);
+
+        var data = result.Data!;
+        Assert.Equal("event-plain", result.ProviderResourceRef);
+        Assert.Equal("google_calendar", data["provider"]!.GetValue<string>());
+        Assert.Equal("event-plain", data["eventId"]!.GetValue<string>());
+        Assert.Equal("https://calendar.google.test/event-plain", data["htmlLink"]!.GetValue<string>());
+        Assert.Null(data["meetLink"]);
+        Assert.False(data["conferenceAttached"]!.GetValue<bool>());
+        Assert.Equal("event-plain", data["event"]!["id"]!.GetValue<string>());
     }
 
     [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_KeepsTheCreatedEventWhenTheRereadFails()
+    public async Task ExecuteAsync_CreateCalendarEvent_AttachesAnExistingMeetLinkAsConferenceData()
     {
-        // The meeting exists by then; reporting a failure would have the user book a second one.
-        var calls = 0;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+        var requests = new List<(HttpRequestMessage Request, JsonObject Body)>();
+        var sut = MeetGateway(new HttpClient(new StubHttpMessageHandler(request =>
         {
-            calls++;
-            if (calls == 1)
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = JsonContent.Create(new JsonObject
-                    {
-                        ["id"] = "event-3e",
-                        ["conferenceData"] = new JsonObject
-                        {
-                            ["createRequest"] = new JsonObject
-                            {
-                                ["status"] = new JsonObject { ["statusCode"] = "pending" },
-                            },
-                        },
-                    }),
-                };
-            }
+            requests.Add((request, ReadBody(request)));
+            return CalendarCreated("event-meet", withConference: true);
+        })));
 
-            throw new HttpRequestException("network went away");
-        }));
-        var sut = MeetGateway(httpClient);
-
-        var result = await ExecuteMeetAsync(sut, new JsonObject { ["summary"] = "Roadmap" });
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("event-3e", result.Data!["eventId"]!.GetValue<string>());
-        Assert.Equal("pending", result.Data["meetLinkStatus"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_TakesMeetingCodeFromConferenceId()
-    {
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-4",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij",
-                    ["conferenceData"] = new JsonObject
-                    {
-                        ["conferenceId"] = "xyz-wxyz-xyz",
-                        ["createRequest"] = new JsonObject
-                        {
-                            ["status"] = new JsonObject { ["statusCode"] = "success" },
-                        },
-                    },
-                }),
-            }));
-        var sut = MeetGateway(httpClient);
-
-        var result = await ExecuteMeetAsync(sut, new JsonObject { ["summary"] = "Sync", ["timeZone"] = "Asia/Bangkok" });
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("xyz-wxyz-xyz", result.Data!["meetingCode"]!.GetValue<string>());
-        Assert.Equal("Asia/Bangkok", result.Data["timeZone"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_ParsesMeetingCodeFromHangoutLinkWhenConferenceIdIsMissing()
-    {
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-5",
-                    ["hangoutLink"] = "https://meet.google.com/abc-defg-hij?authuser=0",
-                }),
-            }));
-        var sut = MeetGateway(httpClient);
-
-        var result = await ExecuteMeetAsync(sut, new JsonObject());
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("abc-defg-hij", result.Data!["meetingCode"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_RereadsPendingConferenceUntilLinkArrives()
-    {
-        var requests = new List<HttpRequestMessage>();
-        var responses = new Queue<HttpResponseMessage>([
-            new(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-6",
-                    ["htmlLink"] = "https://calendar.google.test/event-6",
-                    ["conferenceData"] = new JsonObject
-                    {
-                        ["createRequest"] = new JsonObject
-                        {
-                            ["status"] = new JsonObject { ["statusCode"] = "pending" },
-                        },
-                    },
-                }),
-            },
-            new(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-6",
-                    ["htmlLink"] = "https://calendar.google.test/event-6",
-                    ["hangoutLink"] = "https://meet.google.com/pen-ding-now",
-                    ["conferenceData"] = new JsonObject
-                    {
-                        ["conferenceId"] = "pen-ding-now",
-                        ["createRequest"] = new JsonObject
-                        {
-                            ["status"] = new JsonObject { ["statusCode"] = "success" },
-                        },
-                    },
-                }),
-            },
-        ]);
-        var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        var result = await ExecuteCalendarCreateAsync(sut, new JsonObject
         {
-            requests.Add(request);
-            return responses.Dequeue();
-        }));
-        var sut = MeetGateway(httpClient);
+            ["summary"] = "Customer sync",
+            ["start"] = "2026-09-24T10:00:00",
+            ["end"] = "2026-09-24T10:30:00",
+            ["description"] = "Agenda",
+            ["meetLink"] = "https://meet.google.com/abc-mnop-xyz",
+            ["attendees"] = new JsonArray("nhi@example.com"),
+        });
 
-        var result = await ExecuteMeetAsync(sut, new JsonObject());
+        Assert.True(result.IsSuccess);
+        var (request, body) = Assert.Single(requests);
+        Assert.Contains("conferenceDataVersion=1", request.RequestUri!.Query);
+        Assert.Contains("sendUpdates=all", request.RequestUri!.Query);
+
+        var conference = body["conferenceData"]!;
+        // Code derived from the link when the caller did not pass one.
+        Assert.Equal("abc-mnop-xyz", conference["conferenceId"]!.GetValue<string>());
+        Assert.Equal("hangoutsMeet", conference["conferenceSolution"]!["key"]!["type"]!.GetValue<string>());
+        var entryPoint = conference["entryPoints"]!.AsArray()[0]!;
+        Assert.Equal("video", entryPoint["entryPointType"]!.GetValue<string>());
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", entryPoint["uri"]!.GetValue<string>());
+        Assert.Equal("meet.google.com/abc-mnop-xyz", entryPoint["label"]!.GetValue<string>());
+        Assert.Null(conference["createRequest"]);
+
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", body["location"]!.GetValue<string>());
+        Assert.Contains("Agenda", body["description"]!.GetValue<string>());
+        Assert.Contains("https://meet.google.com/abc-mnop-xyz", body["description"]!.GetValue<string>());
+        Assert.Equal("nhi@example.com", body["attendees"]!.AsArray()[0]!["email"]!.GetValue<string>());
+        // A bare time on a Meet-linked event gets the workspace zone (the Meet tool echoes as-is).
+        Assert.Equal("Asia/Ho_Chi_Minh", body["start"]!["timeZone"]!.GetValue<string>());
+
+        var data = result.Data!;
+        Assert.Equal("google_calendar", data["provider"]!.GetValue<string>());
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", data["meetLink"]!.GetValue<string>());
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", data["hangoutLink"]!.GetValue<string>());
+        Assert.True(data["conferenceAttached"]!.GetValue<bool>());
+        Assert.Equal("Customer sync", data["summary"]!.GetValue<string>());
+        Assert.Equal("2026-09-24T10:00:00+07:00", data["start"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CreateCalendarEvent_RetriesOnceWithoutConferenceDataOnBadRequest()
+    {
+        var requests = new List<(HttpRequestMessage Request, JsonObject Body)>();
+        var sut = MeetGateway(new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            requests.Add((request, ReadBody(request)));
+            return requests.Count == 1
+                ? new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{"error":{"code":400,"message":"Invalid conference type value."}}"""),
+                }
+                : CalendarCreated("event-fallback");
+        })));
+
+        var result = await ExecuteCalendarCreateAsync(sut, new JsonObject
+        {
+            ["summary"] = "Customer sync",
+            ["start"] = "2026-09-24T10:00:00+07:00",
+            ["end"] = "2026-09-24T10:30:00+07:00",
+            ["meetLink"] = "https://meet.google.com/abc-mnop-xyz",
+            ["meetingCode"] = "abc-mnop-xyz",
+        });
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, requests.Count);
-        Assert.Equal(HttpMethod.Post, requests[0].Method);
-        Assert.Equal(HttpMethod.Get, requests[1].Method);
-        Assert.Equal("/calendar/v3/calendars/primary/events/event-6", requests[1].RequestUri!.AbsolutePath);
-        Assert.Contains("conferenceDataVersion=1", requests[1].RequestUri!.Query);
-        Assert.Equal("https://meet.google.com/pen-ding-now", result.Data!["meetLink"]!.GetValue<string>());
-        Assert.Equal("pen-ding-now", result.Data["meetingCode"]!.GetValue<string>());
-        Assert.Equal("success", result.Data["meetLinkStatus"]!.GetValue<string>());
+        Assert.NotNull(requests[0].Body["conferenceData"]);
+        Assert.Null(requests[1].Body["conferenceData"]);
+        Assert.DoesNotContain("conferenceDataVersion", requests[1].Request.RequestUri!.Query);
+        Assert.DoesNotContain("sendUpdates", requests[1].Request.RequestUri!.Query);
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", requests[1].Body["location"]!.GetValue<string>());
+        Assert.Contains("https://meet.google.com/abc-mnop-xyz", requests[1].Body["description"]!.GetValue<string>());
+        Assert.False(result.Data!["conferenceAttached"]!.GetValue<bool>());
+        Assert.Equal("https://meet.google.com/abc-mnop-xyz", result.Data["meetLink"]!.GetValue<string>());
     }
 
     [Fact]
-    public async Task ExecuteAsync_CreateMeetEvent_ReportsPendingAfterBoundedRereads()
+    public async Task ExecuteAsync_CreateCalendarEvent_DoesNotRetryASecondBadRequest()
     {
-        var requestCount = 0;
-        var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+        var calls = 0;
+        var sut = MeetGateway(new HttpClient(new StubHttpMessageHandler(_ =>
         {
-            requestCount++;
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            calls++;
+            return new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
-                Content = JsonContent.Create(new JsonObject
-                {
-                    ["id"] = "event-7",
-                    ["conferenceData"] = new JsonObject
-                    {
-                        ["createRequest"] = new JsonObject
-                        {
-                            ["status"] = new JsonObject { ["statusCode"] = "pending" },
-                        },
-                    },
-                }),
+                Content = new StringContent("""{"error":{"code":400,"message":"Bad start."}}"""),
             };
-        }));
-        var sut = MeetGateway(httpClient);
+        })));
 
-        var result = await ExecuteMeetAsync(sut, new JsonObject());
+        var result = await ExecuteCalendarCreateAsync(sut, new JsonObject
+        {
+            ["summary"] = "Customer sync",
+            ["start"] = "nope",
+            ["end"] = "nope",
+            ["meetLink"] = "https://meet.google.com/abc-mnop-xyz",
+        });
 
-        Assert.True(result.IsSuccess);
-        // One insert plus the three bounded re-reads.
-        Assert.Equal(4, requestCount);
-        Assert.Equal("pending", result.Data!["meetLinkStatus"]!.GetValue<string>());
-        Assert.Null(result.Data["meetLink"]);
-        Assert.Null(result.Data["meetingCode"]);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(2, calls);
     }
 
-    private static GoogleWorkspaceMcpToolGateway MeetGateway(HttpClient httpClient, TimeProvider? timeProvider = null)
+    private static JsonObject ReadBody(HttpRequestMessage request)
+    {
+        return JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!.AsObject();
+    }
+
+    private static HttpResponseMessage CalendarCreated(string eventId, bool withConference = false)
+    {
+        var json = new JsonObject
+        {
+            ["id"] = eventId,
+            ["summary"] = "Customer sync",
+            ["htmlLink"] = $"https://calendar.google.test/{eventId}",
+            ["start"] = new JsonObject { ["dateTime"] = "2026-09-24T10:00:00+07:00" },
+            ["end"] = new JsonObject { ["dateTime"] = "2026-09-24T10:30:00+07:00" },
+        };
+        if (withConference)
+        {
+            json["hangoutLink"] = "https://meet.google.com/abc-mnop-xyz";
+            json["conferenceData"] = new JsonObject { ["conferenceId"] = "abc-mnop-xyz" };
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(json) };
+    }
+
+    private static GoogleWorkspaceMcpToolGateway MeetGateway(HttpClient httpClient)
     {
         var protector = Substitute.For<IPluginCredentialProtector>();
         protector.Unprotect("encrypted-access-token").Returns("plain-access-token");
@@ -845,9 +691,8 @@ public class GoogleWorkspaceMcpToolGatewayTests
             Options.Create(new GoogleWorkspaceApiOptions
             {
                 CalendarEventsEndpointFormat = "https://google.test/calendar/v3/calendars/{0}/events",
-                MeetConferencePollDelayMilliseconds = 0,
-            }),
-            timeProvider);
+                MeetSpacesEndpoint = "https://google.test/meet/v2/spaces",
+            }));
     }
 
     private static Task<McpToolExecutionResult> ExecuteMeetAsync(GoogleWorkspaceMcpToolGateway sut, JsonObject arguments)
@@ -866,9 +711,20 @@ public class GoogleWorkspaceMcpToolGatewayTests
                 null));
     }
 
-    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    private static Task<McpToolExecutionResult> ExecuteCalendarCreateAsync(GoogleWorkspaceMcpToolGateway sut, JsonObject arguments)
     {
-        public override DateTimeOffset GetUtcNow() => now;
+        return sut.ExecuteAsync(
+            GoogleDefinition("google_calendar", PluginConstants.Providers.Google),
+            CalendarCreateTool(),
+            new PluginConnection { EncryptedAccessToken = "encrypted-access-token" },
+            new McpToolExecutionRequest(
+                null,
+                "google_calendar",
+                "google_calendar_create_event",
+                arguments,
+                null,
+                null,
+                null));
     }
 
     // ---- WT-646: the gateway serves a provider, not one catalog row --------------------------
@@ -997,11 +853,23 @@ public class GoogleWorkspaceMcpToolGatewayTests
     {
         return new McpToolDescriptorDto(
             "google_calendar_create_meet_event",
-            GoogleDriveKey,
+            "google_meet",
             "Create Google Meet meeting",
-            "Create a Google Calendar event with a Google Meet link.",
+            "Create a Google Meet meeting link (no calendar event).",
             PluginConstants.ToolEffect.Write,
-            [],
+            ["https://www.googleapis.com/auth/meetings.space.created"],
+            new JsonObject());
+    }
+
+    private static McpToolDescriptorDto CalendarCreateTool()
+    {
+        return new McpToolDescriptorDto(
+            "google_calendar_create_event",
+            "google_calendar",
+            "Create Google Calendar event",
+            "Create an event in the connected Google Calendar account after user confirmation.",
+            PluginConstants.ToolEffect.Write,
+            ["https://www.googleapis.com/auth/calendar.events"],
             new JsonObject());
     }
 

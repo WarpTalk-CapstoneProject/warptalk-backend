@@ -15,10 +15,14 @@ namespace WarpTalk.AuthService.API.Controllers;
 public class VoiceProfilesController : ControllerBase
 {
     private readonly IVoiceProfileService _voiceProfileService;
+    private readonly IVoiceEnrollmentChallengeService _challengeService;
 
-    public VoiceProfilesController(IVoiceProfileService voiceProfileService)
+    public VoiceProfilesController(
+        IVoiceProfileService voiceProfileService,
+        IVoiceEnrollmentChallengeService challengeService)
     {
         _voiceProfileService = voiceProfileService;
+        _challengeService = challengeService;
     }
 
     [Authorize]
@@ -48,7 +52,31 @@ public class VoiceProfilesController : ControllerBase
         var result = await _voiceProfileService.CreateProfileAsync(userId.Value, request, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // Status by code: a recording that could not be checked (speech-to-text down) is a
+            // 503 the page can call "try again", not a 400 that blames the recording.
+            return StatusCode(ApiErrorStatus.For(result.ErrorCode), new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// WT-888 — a phrase to read aloud for a new voice profile, in that profile's language.
+    ///
+    /// A profile is made only from a live recording that says this phrase: the recording is
+    /// uploaded to POST voice-profiles with the returned challengeId, transcribed, and refused
+    /// unless it matches. Single use and valid for ten minutes.
+    /// </summary>
+    [Authorize]
+    [HttpPost("challenges")]
+    public async Task<IActionResult> IssueChallenge([FromBody] IssueVoiceChallengeRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _challengeService.IssueAsync(userId.Value, request.Language, ct);
+        if (!result.IsSuccess)
+        {
+            return StatusCode(ApiErrorStatus.For(result.ErrorCode), new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }

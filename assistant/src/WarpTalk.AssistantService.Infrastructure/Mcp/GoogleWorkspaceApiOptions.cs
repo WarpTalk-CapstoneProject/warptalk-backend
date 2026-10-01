@@ -11,13 +11,11 @@ public class GoogleWorkspaceApiOptions
     public string CalendarEventsEndpointFormat { get; set; } = "https://www.googleapis.com/calendar/v3/calendars/{0}/events";
 
     /// <summary>
-    /// Google attaches a Meet conference asynchronously: the insert can answer with
-    /// conferenceData.createRequest.status "pending" and no link yet. The gateway re-reads the
-    /// event this many times, this far apart, before giving up and reporting the link as pending.
+    /// Meet REST v2 spaces.create. The google_meet plugin creates its meeting here (scope
+    /// meetings.space.created) rather than as a Calendar event, so connecting only Meet never
+    /// writes to the user's Calendar. The space comes back with its meetingUri synchronously.
     /// </summary>
-    public int MeetConferencePollAttempts { get; set; } = 3;
-
-    public int MeetConferencePollDelayMilliseconds { get; set; } = 700;
+    public string MeetSpacesEndpoint { get; set; } = "https://meet.googleapis.com/v2/spaces";
 
     /// <summary>
     /// The zone a date-time without one is read in. Google refuses "2026-09-24T10:00:00" with

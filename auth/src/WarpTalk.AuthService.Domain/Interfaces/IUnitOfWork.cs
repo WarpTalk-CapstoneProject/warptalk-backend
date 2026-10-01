@@ -13,6 +13,7 @@ public interface IUnitOfWork : IDisposable
     IVoiceProfileRepository VoiceProfileRepository { get; }
     IVoiceSampleRepository VoiceSampleRepository { get; }
     IVoiceConsentRepository VoiceConsentRepository { get; }
+    IVoiceEnrollmentChallengeRepository VoiceEnrollmentChallengeRepository { get; }
     IStaffMemberRepository StaffMemberRepository { get; }
     IStaffInvitationRepository StaffInvitationRepository { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
