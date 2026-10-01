@@ -26,8 +26,27 @@ public interface ITranslationRoomAudioRouteService
     /// every AI worker per joiner.
     /// </summary>
     Task<Result<List<TranslationRoomAudioRouteDto>>> AddRoutesForParticipantAsync(Guid roomId, Guid participantId, CancellationToken ct = default);
-    Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, CancellationToken ct = default);
-    Task<Result<TranslationRoomAudioRouteDto>> UpdateRuntimeContextAsync(Guid roomId, Guid routeId, UpdateAudioRouteRuntimeContextDto dto, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-713: <see cref="GenerateRoutesAsync"/> on behalf of a signed-in caller — the HTTP
+    /// <c>POST audio-routes/generate</c> door. The unchecked overload stays for the in-process
+    /// callers (Start Translation, mid-meeting language changes) that have already decided.
+    /// Host only; anyone outside the room is told the room does not exist (404, as WT-334 does
+    /// for the room read), a participant who is not the host gets 403.
+    /// </summary>
+    Task<Result<List<TranslationRoomAudioRouteDto>>> GenerateRoutesForCallerAsync(Guid roomId, Guid callerUserId, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-713: the room's route mesh, readable by the host and by the room's participants only.
+    /// Anyone else gets the same NotFound as a room that does not exist.
+    /// </summary>
+    Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, Guid callerUserId, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-713: rewrites a route's stream id / status, which every AI worker acts on. Host only,
+    /// with the same 404-outside / 403-inside split as <see cref="GenerateRoutesForCallerAsync"/>.
+    /// </summary>
+    Task<Result<TranslationRoomAudioRouteDto>> UpdateRuntimeContextAsync(Guid roomId, Guid routeId, Guid callerUserId, UpdateAudioRouteRuntimeContextDto dto, CancellationToken ct = default);
     /// <summary>
     /// Flip voice cloning on ONE route. WT-699 / TC1905: only the route's SPEAKER may do this —
     /// the flag decides whether THEIR voice is cloned, which is consent-bound biometric processing,
