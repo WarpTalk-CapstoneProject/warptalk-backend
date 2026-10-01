@@ -79,6 +79,29 @@ public partial class TranslationRoom
 
     public string? ExternalCalendarEventUrl { get; set; }
 
+    /// <summary>
+    /// EXTERNAL_BRIDGE: the normalized Google Meet code (xxx-xxxx-xxx) this room bridges. Set only
+    /// by bridge claim, never by the ordinary create path. Unique per workspace among open bridge
+    /// rooms, which is what makes "one room per Meet call" hold under concurrent claims.
+    /// </summary>
+    public string? ExternalMeetingCode { get; set; }
+
+    /// <summary>
+    /// EXTERNAL_BRIDGE: the participant whose desktop publishes the far side's audio as the
+    /// stand-in identity. Null on a room from before this column, where the booker
+    /// (<see cref="HostId"/>) keeps that authority — see <see cref="BridgeAudioOwnerId"/>.
+    /// </summary>
+    public Guid? BridgeCapturerUserId { get; set; }
+
+    /// <summary>The capturer's lease. Stale after BridgeCapturerLease.StaleAfter.</summary>
+    public DateTime? BridgeCapturerHeartbeatAt { get; set; }
+
+    /// <summary>
+    /// Who may mint the stand-in's bridge token and set the external meeting's language: the
+    /// capturer, or the booker for a legacy room that has none.
+    /// </summary>
+    public Guid BridgeAudioOwnerId => BridgeCapturerUserId ?? HostId;
+
     public int MaxParticipants { get; set; }
 
     public string SourceLanguage { get; set; } = null!;

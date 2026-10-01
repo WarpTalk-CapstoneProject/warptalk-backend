@@ -20,10 +20,11 @@ public static class TranslationRoomTypes
 
     /// <summary>
     /// The meeting happens somewhere else — Google Meet, Zoom, Teams — and WarpTalk only
-    /// translates for it. The room holds exactly two participants: the WarpTalk user, and one
-    /// pseudo-participant standing in for everyone on the far side of the external call. That
-    /// pairing is what makes the existing audio-route mesh produce the two routes the bridge
-    /// needs, without the AI pipeline knowing this room is any different.
+    /// translates for it. The room holds the WarpTalk users in the call (one shared room per
+    /// Google Meet code per workspace — see BridgeRoomConstants) and one pseudo-participant
+    /// standing in for everyone on the far side of the external call. That pairing is what makes
+    /// the existing audio-route mesh produce the routes the bridge needs, without the AI pipeline
+    /// knowing this room is any different.
     /// </summary>
     public const string ExternalBridge = "EXTERNAL_BRIDGE";
 
@@ -102,13 +103,15 @@ public static class TranslationRoomTypePolicy
             [TranslationRoomTypes.LiveEvent] =
                 new(RequiresApproval: true, MuteOnEntry: true, AutoRecord: true, BreakoutsEnabled: false, MaxParticipants: 1000),
 
-            // Exactly two seats and nothing else can join: the WarpTalk user, and the
-            // pseudo-participant that stands in for the external call. A lobby would have
-            // nobody to admit and breakouts nowhere to break out to. Auto-record stays off
-            // because the far side never agreed to anything — see the voice-clone rule that
+            // One room per Google Meet code: every WarpTalk user in the call (same workspace)
+            // joins it as their own participant, plus the one pseudo-participant that stands in
+            // for the far side. 20 humans; the stand-in's seat is not counted against them (see
+            // the bridge branch of the join capacity check). No lobby — claim only admits members
+            // of the room's workspace. Breakouts have nowhere to break out to. Auto-record stays
+            // off because the far side never agreed to anything — see the voice-clone rule that
             // travels with this type.
             [TranslationRoomTypes.ExternalBridge] =
-                new(RequiresApproval: false, MuteOnEntry: false, AutoRecord: false, BreakoutsEnabled: false, MaxParticipants: 2),
+                new(RequiresApproval: false, MuteOnEntry: false, AutoRecord: false, BreakoutsEnabled: false, MaxParticipants: 20),
         };
 
     /// <summary>Falls back to the neutral profile for an unknown type rather than throwing —

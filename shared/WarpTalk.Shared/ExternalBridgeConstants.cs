@@ -42,4 +42,29 @@ public static class ExternalBridgeConstants
     /// </summary>
     public static bool IsBridgeRoomType(string? translationRoomType) =>
         string.Equals(translationRoomType, RoomType, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether <paramref name="callerUserId"/> owns a bridge room's far-side audio — may mint the
+    /// stand-in's token and say what language the far side speaks.
+    ///
+    /// One shared bridge room per Google Meet code means many WarpTalk users in one room, and only
+    /// ONE of their desktops (the capturer) may publish as the stand-in; two would double the far
+    /// side. So the owner is the room's current capturer. A room with no capturer — one created
+    /// before bridge claim, or a response from an older server — falls back to the HOST, which is
+    /// exactly the rule this replaced, never to "anyone".
+    ///
+    /// Spelled once here because Meeting (bridge token) and the Gateway (external meeting
+    /// language) must give the same answer.
+    /// </summary>
+    public static bool IsBridgeAudioOwner(string? capturerUserId, string? hostId, string? callerUserId)
+    {
+        if (string.IsNullOrWhiteSpace(callerUserId))
+        {
+            return false;
+        }
+
+        var owner = string.IsNullOrWhiteSpace(capturerUserId) ? hostId : capturerUserId;
+        return !string.IsNullOrWhiteSpace(owner)
+            && string.Equals(owner, callerUserId, StringComparison.OrdinalIgnoreCase);
+    }
 }

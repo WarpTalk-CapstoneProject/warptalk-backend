@@ -103,7 +103,9 @@ public static class TranslationRoomMapper
             ExternalCalendarEventUrl: room.ExternalCalendarEventUrl,
             // The host every host-gate in this service actually compares against. Carried so the
             // mesh can ask the same question rather than re-deriving it from the booker column.
-            EffectiveHostId: room.EffectiveHostId
+            EffectiveHostId: room.EffectiveHostId,
+            ExternalMeetingCode: room.ExternalMeetingCode,
+            BridgeCapturerUserId: room.BridgeCapturerUserId
         );
     }
 

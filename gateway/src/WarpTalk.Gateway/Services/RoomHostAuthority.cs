@@ -37,8 +37,9 @@ public interface IRoomHostAuthority
     ///
     /// Deliberately NARROWER than <see cref="HasHostAuthorityAsync"/>: the same two gates as the
     /// bridge-token endpoint (MeetingRoomService.GenerateBridgeTokenAsync), because it acts on the
-    /// same identity. Only an EXTERNAL_BRIDGE room has a stand-in, and only its host — the one
-    /// person whose device publishes the far side's audio — speaks for it. A workspace Owner/Admin
+    /// same identity. Only an EXTERNAL_BRIDGE room has a stand-in, and only its capturer — the one
+    /// participant whose device publishes the far side's audio (the host, for a legacy room with no
+    /// capturer) — speaks for it. A workspace Owner/Admin
     /// who is not in the call has no way to know what the far side is speaking. An ended room is
     /// refused: there is no mesh left to re-route.
     /// </summary>
@@ -212,8 +213,9 @@ public sealed class RoomHostAuthority : IRoomHostAuthority
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(room.HostId)
-            || !string.Equals(room.HostId, userId, StringComparison.OrdinalIgnoreCase))
+        // The capturer — the one desktop publishing the far side — or the host of a legacy room
+        // that has none. Same predicate as the bridge-token endpoint.
+        if (!ExternalBridgeConstants.IsBridgeAudioOwner(room.BridgeCapturerUserId, room.HostId, userId))
         {
             return false;
         }
