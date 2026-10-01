@@ -65,7 +65,10 @@ public class BridgeMeetParticipantsController : ControllerBase
 
 /// <summary>One person in the bridged Google Meet.</summary>
 /// <param name="Key">The Meet participant resource name; stable for the conference.</param>
+/// <param name="DisplayName">The name Meet shows for the participant.</param>
 /// <param name="Kind">signedin | anonymous | phone.</param>
+/// <param name="JoinedAt">When the participant first joined the conference.</param>
+/// <param name="LeftAt">When the participant last left; null while still in the call.</param>
 public sealed record MeetParticipantResponse(
     string Key,
     string DisplayName,
