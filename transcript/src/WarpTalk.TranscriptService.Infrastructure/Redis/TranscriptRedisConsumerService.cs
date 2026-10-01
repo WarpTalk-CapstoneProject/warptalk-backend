@@ -882,6 +882,18 @@ public class TranscriptRedisConsumerService : BackgroundService
                     return true;
                 }
 
+                // WT-587: an ephemeral meeting (save_transcript=false) is dubbed like any other,
+                // but the STT and translate handlers above deliberately wrote no segment and no
+                // link for it, so this lookup can never succeed. Retrying it dead-lettered every
+                // dubbed line of such a meeting (prod, 28 Sep: 7 entries, room "Test no save
+                // transcript") and kept WarpTalkDeadLetterPresent firing. Checked only here, on
+                // the miss, so a normal dub costs no extra lookup.
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var retentionRoomId)
+                    && !await ShouldPersistRoomAsync(retentionRoomId, cancellationToken))
+                {
+                    return true;
+                }
+
                 _logger.LogWarning("No current translation link for segment {SegmentId}/{TargetLang} — deferring audio_dubbings write", segmentId, targetLang);
                 return false; // Retry later
             }
