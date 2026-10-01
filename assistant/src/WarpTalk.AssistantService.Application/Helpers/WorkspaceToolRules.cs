@@ -52,6 +52,18 @@ public static class WorkspaceToolRules
         rules.TryGetValue(toolName, out var rule) ? rule : null;
 
     /// <summary>
+    /// One tool as <see cref="Apply"/> leaves it with <c>effective: false</c>, turned into what
+    /// WarpBot will actually do: Policy becomes the stricter of the member's choice and the
+    /// workspace rule. A tool with no rule is returned as it is.
+    /// </summary>
+    public static McpToolDescriptorDto Effective(McpToolDescriptorDto tool)
+    {
+        if (tool.WorkspacePolicy is null) return tool;
+        var memberPolicy = tool.Policy ?? PluginConstants.ToolPolicy.DefaultFor(tool.Effect);
+        return tool with { Policy = PluginConstants.ToolPolicy.Strictest(memberPolicy, tool.WorkspacePolicy) };
+    }
+
+    /// <summary>
     /// Tools that already carry the member's <see cref="McpToolDescriptorDto.Policy"/>, with the
     /// workspace's rule added beside it. When <paramref name="effective"/> is set, Policy becomes
     /// the stricter of the two - what WarpBot will actually do; otherwise it stays the member's own
