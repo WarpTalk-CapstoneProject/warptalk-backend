@@ -54,6 +54,18 @@ public interface ITranslationRoomService
         Guid userId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Sets the CALLER's own bridge audio mode ("voice" / "text") in an open EXTERNAL_BRIDGE room.
+    /// Voice → text is always allowed; text → voice is a Conflict
+    /// (<c>BRIDGE_AUDIO_MODE_LOCKED</c>) while a translation session is active. A change is
+    /// republished to the AI workers at once.
+    /// </summary>
+    Task<Result<BridgeAudioModeDto>> SetBridgeAudioModeAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? mode,
+        CancellationToken ct = default);
+
     Task<Result<TranslationRoomListResponse>> GetTranslationRoomsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>
     /// WT-334: the room detail read, for a HUMAN caller. <paramref name="userId"/> and

@@ -43,5 +43,13 @@ public partial class TranslationRoomDbContext
                 .IsUnique()
                 .HasFilter(BridgeRoomIndexFilter);
         });
+
+        // Text-only bridge mode — migration 20261001150000_bridge_participant_text_only.sql.
+        modelBuilder.Entity<TranslationRoomParticipant>(entity =>
+        {
+            entity.Property(e => e.IsBridgeTextOnly)
+                .HasDefaultValue(false)
+                .HasColumnName("is_bridge_text_only");
+        });
     }
 }

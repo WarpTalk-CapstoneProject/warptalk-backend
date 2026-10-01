@@ -39,4 +39,34 @@ public static class BridgeRoomConstants
     public const string ErrorCapturerStillLive = "Another participant is still capturing this call's audio.";
     public const string ErrorNotParticipant = "Only a participant of this meeting can capture its audio.";
     public const string ErrorRoomClosed = "This translation room has already ended or been cancelled.";
+
+    /// <summary>
+    /// Bridge audio mode (text-only bridge, PO 2026-10-01). <c>voice</c>: the person's Meet
+    /// microphone is a virtual cable carrying their dub. <c>text</c>: they use their real mic and
+    /// speakers, so no outbound dub is synthesized for them.
+    /// </summary>
+    public const string AudioModeVoice = "voice";
+    public const string AudioModeText = "text";
+
+    /// <summary>"voice" / "text" (any case) → canonical value; anything else → null.</summary>
+    public static string? NormalizeAudioMode(string? mode) =>
+        mode?.Trim().ToLowerInvariant() switch
+        {
+            AudioModeVoice => AudioModeVoice,
+            AudioModeText => AudioModeText,
+            _ => null,
+        };
+
+    public static string AudioModeOf(bool isTextOnly) => isTextOnly ? AudioModeText : AudioModeVoice;
+
+    /// <summary>
+    /// 409. Text → voice once translation has started: the person is speaking into Meet with their
+    /// real mic, and switching the dub on mid-meeting would put a second copy of every sentence
+    /// into the call the moment a cable appeared. Voice → text is always allowed.
+    /// </summary>
+    public const string ErrorCodeAudioModeLocked = "BRIDGE_AUDIO_MODE_LOCKED";
+
+    public const string ErrorInvalidAudioMode = "Audio mode must be \"voice\" or \"text\".";
+    public const string ErrorAudioModeLocked = "Text-only mode cannot be switched back to voice while translation is running.";
+    public const string ErrorNotParticipantForAudioMode = "Only a participant of this meeting can change their bridge audio mode.";
 }
