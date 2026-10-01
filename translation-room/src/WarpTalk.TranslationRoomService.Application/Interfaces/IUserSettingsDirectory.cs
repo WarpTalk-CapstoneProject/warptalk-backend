@@ -41,6 +41,18 @@ public interface IUserSettingsDirectory
         CancellationToken ct = default);
 
     /// <summary>
+    /// WT-422: the display name of the account behind an invitation address, so an invitee who has
+    /// not joined yet can still be named to the recogniser. Invitations store only the email.
+    ///
+    /// Same contract as <see cref="GetDisplayNameAsync"/>: null when there is no account for the
+    /// address or Auth cannot be reached, never an exception. Nobody is refused anything over a
+    /// name.
+    /// </summary>
+    Task<string?> GetDisplayNameByEmailAsync(
+        string email,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// WT-401. Returns null when the preference cannot be read (unknown user, guest, Auth
     /// unreachable) — callers must treat that as "no preference expressed" and leave the route
     /// off, never as a reason to fail. A preference that defaults ON when Auth is down would

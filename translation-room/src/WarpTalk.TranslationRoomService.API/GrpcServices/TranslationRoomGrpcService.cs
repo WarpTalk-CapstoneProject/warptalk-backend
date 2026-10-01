@@ -172,6 +172,27 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
     }
 
     /// <summary>
+    /// WT-422: who this meeting is with, as names, for TranscriptService's STT keywords. The
+    /// ordering, exclusions and the invitee lookup all live in the directory service.
+    /// </summary>
+    public override async Task<GetRoomPeopleNamesResponse> GetRoomPeopleNames(
+        GetRoomPeopleNamesRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var parsedRoomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        var result = await _directoryService.GetPeopleNamesAsync(
+            parsedRoomId, request.MaxNames, context.CancellationToken);
+        if (!result.IsSuccess)
+            throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+        var response = new GetRoomPeopleNamesResponse();
+        response.DisplayNames.AddRange(result.Value!);
+        return response;
+    }
+
+    /// <summary>
     /// WT-564. MeetingService owns the kick and authorizes it; the TERMINAL status lives here,
     /// because this is the service whose join path refuses on it. A kick that stopped at
     /// MeetingService left the roster row CONNECTED — later DISCONNECTED — which the rejoin path
