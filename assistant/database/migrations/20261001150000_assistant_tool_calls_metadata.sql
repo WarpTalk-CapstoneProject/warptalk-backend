@@ -48,10 +48,8 @@ CREATE INDEX IF NOT EXISTS idx_assistant_tool_calls_created
 CREATE INDEX IF NOT EXISTS idx_assistant_tool_calls_tool_created
     ON assistant.assistant_tool_calls (tool_name, created_at);
 
--- A re-finalised answer deletes its message's rows before writing them again, and the FK's
--- cascade scans by message_id when a conversation is deleted. Neither had an index.
-CREATE INDEX IF NOT EXISTS idx_assistant_tool_calls_message_id
-    ON assistant.assistant_tool_calls (message_id);
+-- message_id already has IX_assistant_tool_calls_message_id from InitialCreate; the delete-and-
+-- rewrite of a re-finalised answer and the FK cascade use it.
 
 COMMENT ON TABLE assistant.assistant_tool_calls IS
     'One row per WarpBot tool call (builtin, plugin, web_search): metadata only. arguments_json is always '''' and result_json always NULL - no argument or result text is stored.';
