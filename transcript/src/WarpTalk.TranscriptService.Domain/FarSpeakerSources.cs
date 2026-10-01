@@ -1,8 +1,10 @@
 namespace WarpTalk.TranscriptService.Domain;
 
 /// <summary>
-/// The values of <c>transcript_segments.far_speaker_source</c>: who decided which Google Meet
-/// participant a bridge stand-in segment belongs to.
+/// The values of <c>transcript_segments.far_speaker_source</c> this service writes itself: who
+/// decided which Google Meet participant a bridge stand-in segment belongs to. Live values come
+/// from warptalk-ai's stt_worker (<c>far_speaker_source</c> on stt:results) and are stored as sent;
+/// the post-meeting relabel overrides them.
 /// </summary>
 public static class FarSpeakerSources
 {

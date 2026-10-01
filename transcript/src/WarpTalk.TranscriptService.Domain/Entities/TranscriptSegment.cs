@@ -65,10 +65,10 @@ public partial class TranscriptSegment
     /// </summary>
     public string? FarSpeakerKey { get; set; }
 
-    /// <summary>Where <see cref="FarSpeakerKey"/> came from — see <see cref="Domain.FarSpeakerSources"/>. Null exactly when the key is.</summary>
+    /// <summary>Where <see cref="FarSpeakerKey"/> came from: <see cref="Domain.FarSpeakerSources"/>, or the live source stt_worker reported on stt:results.</summary>
     public string? FarSpeakerSource { get; set; }
 
-    /// <summary>For <c>google_transcript</c>: the fraction of this segment's time the chosen Meet transcript entry covers (0..1).</summary>
+    /// <summary>0..1. For <c>google_transcript</c>, the fraction of this segment's time the chosen Meet transcript entry covers; for a live source, the producer's own score.</summary>
     public float? FarSpeakerConfidence { get; set; }
 
     public virtual Transcript Transcript { get; set; } = null!;

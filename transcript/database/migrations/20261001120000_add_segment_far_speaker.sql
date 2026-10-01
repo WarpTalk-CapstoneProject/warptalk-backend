@@ -14,8 +14,12 @@
 -- from a person's:
 --
 --   far_speaker_key         the Meet participant resource name
---                           (conferenceRecords/{id}/participants/{id}) or a host-chosen key.
---   far_speaker_source      'google_transcript' | 'host' | NULL (not attributed).
+--                           (conferenceRecords/{id}/participants/{id}), a host-chosen key, or
+--                           the live far_speaker_name stt_worker attached to the segment.
+--   far_speaker_source      'google_transcript' | 'host' | a live source stt_worker reports
+--                           (far_speaker_source on stt:results) | NULL (not attributed).
+--                           Deliberately no CHECK: the live producer's vocabulary is
+--                           warptalk-ai's, and a value it adds must not dead-letter segments.
 --   far_speaker_confidence  for google_transcript, the fraction of the segment's time the chosen
 --                           Meet transcript entry covers (0..1).
 --
@@ -26,22 +30,9 @@ ALTER TABLE transcript.transcript_segments
     ADD COLUMN IF NOT EXISTS far_speaker_source text NULL,
     ADD COLUMN IF NOT EXISTS far_speaker_confidence real NULL;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'transcript_segments_far_speaker_source_check'
-          AND conrelid = 'transcript.transcript_segments'::regclass
-    ) THEN
-        ALTER TABLE transcript.transcript_segments
-            ADD CONSTRAINT transcript_segments_far_speaker_source_check
-            CHECK (far_speaker_source IS NULL OR far_speaker_source IN ('google_transcript', 'host'));
-    END IF;
-END $$;
-
 COMMENT ON COLUMN transcript.transcript_segments.far_speaker_key IS
     'EXTERNAL_BRIDGE stand-in segments: the Google Meet participant (conferenceRecords/{id}/participants/{id}) or host-chosen key this segment is attributed to. speaker_name carries its display name.';
 COMMENT ON COLUMN transcript.transcript_segments.far_speaker_source IS
-    'Who attributed far_speaker_key: google_transcript (automatic, from Meet''s transcript) or host. NULL = not attributed.';
+    'Who attributed far_speaker_key: google_transcript (post-meeting, from Meet''s transcript), host, or the live source stt_worker reported. NULL = not attributed.';
 COMMENT ON COLUMN transcript.transcript_segments.far_speaker_confidence IS
-    'google_transcript only: overlap ratio (0..1) between the segment and the chosen Meet transcript entry.';
+    'Confidence (0..1) of the attribution: for google_transcript the overlap ratio with the chosen Meet transcript entry; for a live source the producer''s own score.';

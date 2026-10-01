@@ -139,6 +139,46 @@ public static class TranscriptConsumerPollingPolicy
     public static bool IsBridgeStandIn(Guid? speakerId) =>
         speakerId == ExternalBridgeConstants.ParticipantUserId;
 
+    /// <summary>A live far-side speaker hint on a stand-in segment, as stt_worker publishes it.</summary>
+    public sealed record FarSpeakerHint(string? Key, string? Source, float? Confidence);
+
+    /// <summary>
+    /// Reads the optional live far-side speaker fields warptalk-ai's stt_worker attaches to
+    /// stand-in segments: <c>far_speaker_name</c> (stored as <c>far_speaker_key</c>),
+    /// <c>far_speaker_source</c> and <c>far_speaker_confidence</c> (an invariant-culture float in
+    /// 0..1). Absent or blank fields are null, and so is a confidence that is not a finite number in
+    /// range — an unknown is stored as unknown, never as a made-up score.
+    ///
+    /// Only the stand-in's segments carry them; on any other speaker they are ignored, because a
+    /// real participant's identity is their participant id, not a hint. The post-meeting relabel
+    /// from Google Meet's transcript overrides whatever is stored here.
+    /// </summary>
+    public static FarSpeakerHint ResolveFarSpeaker(IReadOnlyDictionary<string, string> values, Guid? speakerId)
+    {
+        if (!IsBridgeStandIn(speakerId))
+            return new FarSpeakerHint(null, null, null);
+
+        static string? Field(IReadOnlyDictionary<string, string> v, string name)
+        {
+            var raw = v.GetValueOrDefault(name);
+            return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+        }
+
+        float? confidence = null;
+        if (Field(values, "far_speaker_confidence") is { } rawConfidence
+            && float.TryParse(rawConfidence, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+            && float.IsFinite(parsed)
+            && parsed is >= 0f and <= 1f)
+        {
+            confidence = parsed;
+        }
+
+        return new FarSpeakerHint(
+            Field(values, "far_speaker_name"),
+            Field(values, "far_speaker_source"),
+            confidence);
+    }
+
     /// <summary>
     /// The Redis field carrying the STT model's own confidence for a transcribed segment.
     /// </summary>
