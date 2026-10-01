@@ -14,7 +14,8 @@ internal static class PluginCatalogItemMapper
         string? workspacePolicyBlockReason = null,
         string? workspaceAvailability = null,
         string? requestStatus = null,
-        bool canAdd = false)
+        bool canAdd = false,
+        IReadOnlyDictionary<string, string>? workspaceToolRules = null)
     {
         var installationStatus = installation?.Status ?? PluginConstants.InstallationStatus.NotInstalled;
         // The grant is the provider's; being connected is the plugin's. A row the user never
@@ -41,7 +42,12 @@ internal static class PluginCatalogItemMapper
             connection?.ProviderEmail,
             // Each tool carries this user's choice for it, so the Manage dialog shows what WarpBot
             // will actually do rather than what the tool's effect alone would suggest. WT-687.
-            PluginToolPolicyStore.WithPolicies(plugin.Tools, installation?.ConfigJson),
+            // Beside it, the workspace Owner's rule, so the dialog can show a choice the member
+            // cannot loosen. Policy stays the member's own: it is what the dialog edits.
+            WorkspaceToolRules.Apply(
+                PluginToolPolicyStore.WithPolicies(plugin.Tools, installation?.ConfigJson),
+                workspaceToolRules ?? WorkspaceToolRules.None,
+                effective: false),
             grantedScopes,
             workspacePolicyBlockReason,
             plugin.IsFeatured,

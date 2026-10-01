@@ -68,9 +68,40 @@ public class TranscriptTimelineAnchorWriteTests
             fixture.Transcript.TimelineAnchorAt);
         Assert.Equal(DateTimeKind.Utc, fixture.Transcript.TimelineAnchorAt!.Value.Kind);
 
-        // The tracked write has to actually be flagged for EF, or the column stays NULL in the
-        // database however right the in-memory object looks.
-        fixture.Transcripts.Received(1).Update(fixture.Transcript);
+        // The write has to actually reach the database, or the column stays NULL however right
+        // the in-memory object looks — and it has to go through the targeted statement, never a
+        // whole-entity Update (see AStampedAnchor_NeverRewritesTheTranscriptRow).
+        await fixture.UnitOfWork.Received(1).StampTranscriptTimelineAnchorAsync(
+            fixture.Transcript.Id,
+            DateTimeOffset.FromUnixTimeMilliseconds(FirstAnchorMs).UtcDateTime,
+            Arg.Any<CancellationToken>());
+        fixture.Transcripts.DidNotReceive().Update(Arg.Any<Transcript>());
+    }
+
+    /// <summary>
+    /// Prod, room 01a0f630 (1 Oct 2026): the meeting's second line, spoken at 0:05, was stored
+    /// with the LAST sequence_order of the meeting and so read back at the bottom of the
+    /// transcript. The anchor used to be written with <c>Transcripts.Update(transcript)</c> on the
+    /// entity read before the atomic counter advance; EF's Update() marks every column modified,
+    /// so it wrote last_sequence_order back to its stale value and the next segment collided on
+    /// the (transcript_id, sequence_order) unique index, sat pending, and was re-processed by the
+    /// stale reclaim a minute later with a fresh, last-place sequence number.
+    ///
+    /// The counter is owned by AdvanceTranscriptForNewSegmentAsync and nothing else; this pins
+    /// that the anchor write never hands the whole row to the change tracker again, and that the
+    /// segments it stamps keep consecutive sequence numbers.
+    /// </summary>
+    [Fact]
+    public async Task AStampedAnchor_NeverRewritesTheTranscriptRow()
+    {
+        var fixture = new AnchorFixture();
+
+        Assert.True(await fixture.ProcessSttAsync(anchorMs: FirstAnchorMs.ToString()));
+        Assert.True(await fixture.ProcessSttAsync(anchorMs: FirstAnchorMs.ToString(), segmentId: Guid.NewGuid()));
+        Assert.True(await fixture.ProcessSttAsync(anchorMs: FirstAnchorMs.ToString(), segmentId: Guid.NewGuid()));
+
+        fixture.Transcripts.DidNotReceive().Update(Arg.Any<Transcript>());
+        Assert.Equal(new[] { 1, 2, 3 }, fixture.AddedSegments.Select(s => s.SequenceOrder));
     }
 
     /// <summary>
@@ -103,8 +134,9 @@ public class TranscriptTimelineAnchorWriteTests
             DateTimeOffset.FromUnixTimeMilliseconds(LaterAnchorMs).UtcDateTime,
             fixture.Transcript.TimelineAnchorAt);
 
-        // Once across both messages: the second must not even queue a write.
-        fixture.Transcripts.Received(1).Update(fixture.Transcript);
+        // Once across both messages: the second must not even issue the statement.
+        await fixture.UnitOfWork.Received(1).StampTranscriptTimelineAnchorAsync(
+            Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -125,6 +157,8 @@ public class TranscriptTimelineAnchorWriteTests
         Assert.Single(fixture.AddedSegments);
         Assert.Null(fixture.Transcript.TimelineAnchorAt);
         fixture.Transcripts.DidNotReceive().Update(Arg.Any<Transcript>());
+        await fixture.UnitOfWork.DidNotReceive().StampTranscriptTimelineAnchorAsync(
+            Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
     }
 
     /// <summary>0 is the producer's explicit "not stated" sentinel, not a real epoch instant.</summary>
@@ -141,6 +175,8 @@ public class TranscriptTimelineAnchorWriteTests
         Assert.Single(fixture.AddedSegments);
         Assert.Null(fixture.Transcript.TimelineAnchorAt);
         fixture.Transcripts.DidNotReceive().Update(Arg.Any<Transcript>());
+        await fixture.UnitOfWork.DidNotReceive().StampTranscriptTimelineAnchorAsync(
+            Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -164,6 +200,8 @@ public class TranscriptTimelineAnchorWriteTests
         Assert.Single(fixture.AddedSegments);
         Assert.Null(fixture.Transcript.TimelineAnchorAt);
         fixture.Transcripts.DidNotReceive().Update(Arg.Any<Transcript>());
+        await fixture.UnitOfWork.DidNotReceive().StampTranscriptTimelineAnchorAsync(
+            Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
     }
 
     // ── Bridge stand-in: the live far-side name on the saved row ─────────────
@@ -288,7 +326,24 @@ public class TranscriptTimelineAnchorWriteTests
                 .Do(call => AddedSegments.Add(call.Arg<TranscriptSegment>()));
 
             var unitOfWork = Substitute.For<IUnitOfWork>();
+            UnitOfWork = unitOfWork;
             unitOfWork.Transcripts.Returns(Transcripts);
+
+            // The database's `WHERE timeline_anchor_at IS NULL`, applied to the one row: the
+            // first stamp lands, any later one is a no-op that reports it changed nothing.
+            unitOfWork
+                .StampTranscriptTimelineAnchorAsync(Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    var row = rows.FirstOrDefault(t => t.Id == call.ArgAt<Guid>(0));
+                    if (row is null || row.TimelineAnchorAt is not null)
+                    {
+                        return Task.FromResult(false);
+                    }
+
+                    row.TimelineAnchorAt = call.ArgAt<DateTime>(1);
+                    return Task.FromResult(true);
+                });
             unitOfWork.TranscriptSegments.Returns(segments);
 
             // No open pause window: WT-605's gate would otherwise skip the segment before the
@@ -300,9 +355,9 @@ public class TranscriptTimelineAnchorWriteTests
             unitOfWork.TranscriptPauseWindows.Returns(pauseWindows);
 
             // The atomic UPDATE ... RETURNING that owns last_sequence_order/total_segments/
-            // total_duration_ms. Deliberately does NOT touch the tracked entity: the anchor write
-            // is the only thing allowed to mark the transcript modified, which is what lets the
-            // Update() assertions above mean what they say.
+            // total_duration_ms. Deliberately does NOT touch the tracked entity, and nothing in
+            // the consumer may either — which is what the DidNotReceive().Update() assertions
+            // above pin.
             unitOfWork
                 .AdvanceTranscriptForNewSegmentAsync(Arg.Any<Guid>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
                 .Returns(call => Task.FromResult(++_sequenceOrder));
@@ -330,6 +385,8 @@ public class TranscriptTimelineAnchorWriteTests
         public Transcript Transcript { get; }
 
         public ITranscriptRepository Transcripts { get; }
+
+        public IUnitOfWork UnitOfWork { get; }
 
         public List<TranscriptSegment> AddedSegments { get; } = new();
 
