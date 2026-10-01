@@ -50,6 +50,6 @@ sequenceDiagram
 
 - [x] Tạo ticket WT-519 trên Linear gán cho Nhi Ngô (`Todo`).
 - [x] Tạo nhánh `fix/wt-519-pii-masking-security-worker` từ `development`.
-- [ ] Cập nhật `warptalk-ai/security_worker/scanners.py` bổ sung prompt PII tiếng Việt & quy tắc bảo toàn văn bản.
-- [ ] Thêm Local Regex Scanner cho SĐT VN, Email, CCCD 12 số tại Python worker.
-- [ ] Cập nhật Backend `DocumentSecurityGuardrailConsumerService.cs` áp dụng quy tắc Fail-Closed khi PII bị rò rỉ hoặc unmasked.
+- [x] Cập nhật `warptalk-ai/security_worker/scanners.py` bổ sung prompt PII tiếng Việt & quy tắc bảo toàn văn bản.
+- [x] Thêm Local Regex Scanner cho SĐT VN, Email, CCCD 12 số tại Python worker.
+- [x] Cập nhật Backend `DocumentSecurityGuardrailConsumerService.cs` áp dụng quy tắc Fail-Closed khi PII bị rò rỉ hoặc unmasked.
