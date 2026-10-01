@@ -55,5 +55,16 @@ public record TranslationRoomAudioRouteDto(
     /// formatted once, with InvariantCulture, and passed through unparsed — a decimal
     /// round-tripped through a comma-decimal locale is how 0.006575 became 6575 in billing.
     /// </summary>
-    string? SourceAutoCloneScore = null
+    string? SourceAutoCloneScore = null,
+
+    /// <summary>
+    /// Text-only bridge mode: this route carries the SPEAKER's voice to the far-side stand-in of an
+    /// EXTERNAL_BRIDGE room, and the speaker is in Meet with their real mic, so there is no virtual
+    /// cable to play a dub into. tts_worker synthesizes nothing for a (speaker, target language)
+    /// whose every route is TextOnly; translation text and the transcript still flow.
+    ///
+    /// Per route, not the room status: the room-level TEXT_ONLY_MODE tts_worker already honours
+    /// would also silence the inbound side and every other participant's dub.
+    /// </summary>
+    bool TextOnly = false
 );

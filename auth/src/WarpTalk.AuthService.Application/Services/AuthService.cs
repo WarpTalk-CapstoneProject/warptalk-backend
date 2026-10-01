@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Security.Cryptography;
 using System.Threading;
@@ -31,8 +32,12 @@ public class AuthService : IAuthService
     private readonly AuthSettings _authSettings;
     private readonly ILogger<AuthService> _logger;
     private readonly TimeSpan _lockoutDuration;
+    private readonly IPlatformSettings? _platformSettings;
     private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
     private readonly IAuthEmailSender _authEmailSender;
+
+    // G10: optional so the many hand-built test instances keep compiling; DI always supplies it.
+    private readonly IStaffAccessService? _staffAccess;
 
     public AuthService(
         IUnitOfWork unitOfWork,
@@ -42,8 +47,12 @@ public class AuthService : IAuthService
         IOptions<AuthSettings> authSettings,
         ILogger<AuthService> logger,
         IWorkspaceInvitationClient workspaceInvitationClient,
-        IAuthEmailSender authEmailSender)
+        IAuthEmailSender authEmailSender,
+        IStaffAccessService? staffAccess = null,
+        IPlatformSettings? platformSettings = null)
     {
+        _staffAccess = staffAccess;
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
         _jwtGenerator = jwtGenerator;
@@ -55,6 +64,18 @@ public class AuthService : IAuthService
         _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
         _workspaceInvitationClient = workspaceInvitationClient;
         _authEmailSender = authEmailSender;
+    }
+
+    /// <summary>
+    /// Failed attempts before a lockout and how long it lasts: live from /admin/settings
+    /// (security.lockout.*), with AuthSettings as the deploy-time fallback. Read on each failure.
+    /// </summary>
+    public async Task<(int MaxAttempts, TimeSpan Duration)> LockoutPolicyAsync(CancellationToken ct = default)
+    {
+        if (_platformSettings is null) return (_authSettings.MaxFailedAttempts, _lockoutDuration);
+        var attempts = await _platformSettings.GetInt32Async(PlatformSettingsCatalog.LockoutMaxFailedAttempts, _authSettings.MaxFailedAttempts, ct: ct);
+        var minutes = await _platformSettings.GetInt32Async(PlatformSettingsCatalog.LockoutDurationMinutes, _authSettings.LockoutDurationMinutes, ct: ct);
+        return (attempts, TimeSpan.FromMinutes(minutes));
     }
 
     public async Task<Result<RegisterResponse>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
@@ -129,7 +150,7 @@ public class AuthService : IAuthService
                 return Result.Success(new RegisterResponse(EmailVerificationRequired: true, Auth: null));
             }
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(new RegisterResponse(EmailVerificationRequired: false, Auth: response));
         }
         catch (Exception ex)
@@ -168,10 +189,11 @@ public class AuthService : IAuthService
             if (user.PasswordHash is null || !_passwordHasher.Verify(request.Password, user.PasswordHash))
             {
                 user.FailedLoginAttempts++;
-                if (user.FailedLoginAttempts >= _authSettings.MaxFailedAttempts)
+                var (maxAttempts, lockoutDuration) = await LockoutPolicyAsync(ct);
+                if (user.FailedLoginAttempts >= maxAttempts)
                 {
                     user.IsLocked = true;
-                    user.LockedUntil = DateTime.UtcNow.Add(_lockoutDuration);
+                    user.LockedUntil = DateTime.UtcNow.Add(lockoutDuration);
                 }
                 _userRepository.Update(user);
                 await _unitOfWork.SaveChangesAsync(ct);
@@ -189,7 +211,7 @@ public class AuthService : IAuthService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(response);
         }
         catch (Exception ex)
@@ -423,7 +445,7 @@ public class AuthService : IAuthService
             await _unitOfWork.CommitTransactionAsync(ct);
 
             // 7. Create Auth response
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, staffAccess: _staffAccess);
             return Result.Success(response);
         }
         catch (Exception ex)
@@ -472,6 +494,21 @@ public class AuthService : IAuthService
         CancellationToken ct = default)
     {
         var email = request.Email.Trim().ToLowerInvariant();
+
+        // WT-841: keyed by email and checked before the user lookup. This endpoint had no rate
+        // limit at all, so an unauthenticated caller could spam reset emails at any address
+        // indefinitely. Checking by email rather than user id, and before the existence check,
+        // means the limiter also bounds requests against addresses with no account — otherwise
+        // an unknown address would stay a free, unlimited mail cannon since it never reaches a
+        // User row for a user-id-keyed limiter to key on. The response stays the same neutral
+        // Result.Success() either way, so being rate limited is still indistinguishable from an
+        // unknown address.
+        if (await IsForgotPasswordRateLimitedAsync(email, ct))
+        {
+            _logger.LogInformation("Forgot-password request rate limited for {Email}", email);
+            return Result.Success();
+        }
+
         var user = await _userRepository.GetByEmailWithRolesAsync(email, ct);
         if (user is null || user.DeletedAt is not null || !user.IsActive)
             return Result.Success();
@@ -493,6 +530,62 @@ public class AuthService : IAuthService
             _logger.LogError(ex, "Password reset email delivery failed for user {UserId}", user.Id);
         }
         return Result.Success();
+    }
+
+    /// <summary>
+    /// 60-second cooldown plus a 5-per-15-minutes window for forgot-password requests, keyed by
+    /// the submitted email address. Mirrors <see cref="SendVerificationEmailWithLimitsAsync"/>'s
+    /// limiter, but keyed by email rather than user id because a request against an unknown
+    /// address never reaches a User row to key on.
+    /// </summary>
+    private async Task<bool> IsForgotPasswordRateLimitedAsync(string email, CancellationToken ct)
+    {
+        var cooldownKey = $"forgot-password:cooldown:{email}";
+        var cooldownString = await _cache.GetStringAsync(cooldownKey, ct);
+        if (!string.IsNullOrEmpty(cooldownString))
+        {
+            return true;
+        }
+
+        var windowKey = $"forgot-password:window:{email}";
+        var attemptsString = await _cache.GetStringAsync(windowKey, ct);
+
+        int attemptsCount = 0;
+        DateTime expiryTime = DateTime.UtcNow.AddMinutes(15);
+
+        if (!string.IsNullOrEmpty(attemptsString))
+        {
+            var parts = attemptsString.Split('|');
+            if (parts.Length == 2 && int.TryParse(parts[0], out var count) && DateTime.TryParse(parts[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedExpiry))
+            {
+                attemptsCount = count;
+                expiryTime = parsedExpiry;
+            }
+            else if (parts.Length == 1 && int.TryParse(parts[0], out var countOnly))
+            {
+                attemptsCount = countOnly;
+            }
+        }
+
+        if (attemptsCount >= 5)
+        {
+            return true;
+        }
+
+        var cooldownOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(60) };
+        await _cache.SetStringAsync(cooldownKey, "1", cooldownOptions, ct);
+
+        var remainingTtl = expiryTime - DateTime.UtcNow;
+        if (remainingTtl < TimeSpan.Zero)
+        {
+            remainingTtl = TimeSpan.FromSeconds(1);
+        }
+
+        var windowOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = remainingTtl };
+        var nextAttemptsString = $"{attemptsCount + 1}|{expiryTime:O}";
+        await _cache.SetStringAsync(windowKey, nextAttemptsString, windowOptions, ct);
+
+        return false;
     }
 
     public async Task<Result> ResetPasswordAsync(

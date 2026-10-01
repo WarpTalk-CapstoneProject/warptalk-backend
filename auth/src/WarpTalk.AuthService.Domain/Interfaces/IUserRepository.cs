@@ -12,11 +12,21 @@ namespace WarpTalk.AuthService.Domain.Interfaces;
 /// mistake and is rejected before it reaches SQL.
 /// </param>
 /// <param name="Role">A platform role name — the same values auth.roles seeds.</param>
+/// <param name="CreatedFrom">Inclusive lower bound on created_at, already UTC.</param>
+/// <param name="CreatedTo">Exclusive upper bound on created_at, already UTC.</param>
+/// <param name="LastLoginFrom">Inclusive lower bound on last_login_at, already UTC.</param>
+/// <param name="LastLoginTo">Exclusive upper bound on last_login_at, already UTC.</param>
+/// <param name="NeverSignedIn">true = last_login_at IS NULL; false = IS NOT NULL; null = either.</param>
 public sealed record AdminUserDirectoryFilter(
     string? Search = null,
     string? Status = null,
     string? Role = null,
-    string Sort = "created_desc");
+    string Sort = "created_desc",
+    DateTime? CreatedFrom = null,
+    DateTime? CreatedTo = null,
+    DateTime? LastLoginFrom = null,
+    DateTime? LastLoginTo = null,
+    bool? NeverSignedIn = null);
 
 /// <summary>
 /// One account as the directory lists it.

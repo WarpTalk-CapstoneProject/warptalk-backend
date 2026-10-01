@@ -12,6 +12,7 @@ using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.WorkspaceService.API.Controllers;
@@ -46,6 +47,10 @@ public class WorkspacesController : ControllerBase
         "defaultLanguage",
         "timezone",
         "allowedTargetLanguages",
+        // WT-706's "Allow all languages" switch. Patchable on its own: turning the restriction
+        // off has to be expressible without also sending an empty allowedTargetLanguages, since
+        // the merge below would otherwise carry the current list forward.
+        "restrictLanguages",
         "voiceCloningEnabled",
         "maxActiveRooms",
         "artifactRetentionDays",
@@ -64,9 +69,12 @@ public class WorkspacesController : ControllerBase
         "allowAnyPlugins"
     };
 
-    public WorkspacesController(IWorkspaceService workspaceService)
+    private readonly IStaffAccessResolver? _staffAccess;
+
+    public WorkspacesController(IWorkspaceService workspaceService, IStaffAccessResolver? staffAccess = null)
     {
         _workspaceService = workspaceService;
+        _staffAccess = staffAccess;
     }
 
     [Authorize]
@@ -120,7 +128,10 @@ public class WorkspacesController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
-        var result = User.IsInRole("admin")
+        // G10: platform staff with workspaces.read see any workspace; everyone else only their own.
+        var asStaff = _staffAccess is not null
+            && await _staffAccess.StaffOverrideAllowsAsync(User, AdminPermissions.WorkspacesRead, ct);
+        var result = asStaff
             ? await _workspaceService.GetWorkspaceByIdForAdminAsync(id, ct)
             : await _workspaceService.GetWorkspaceByIdAsync(id, userId.Value, ct);
         if (!result.IsSuccess)

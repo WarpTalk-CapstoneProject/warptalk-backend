@@ -9,6 +9,24 @@ public static class InvoiceConstants
         public const string Paid = "paid";
         public const string Void = "void";
         public const string Uncollectible = "uncollectible";
+
+        /// <summary>
+        /// "issued" is the entity's and the schema's default status even though no constant above
+        /// names it, so a filter that could not select it would hide real rows.
+        /// </summary>
+        public const string Issued = "issued";
+
+        public static readonly string[] Filterable = [Draft, Issued, Open, Paid, Void, Uncollectible];
+    }
+
+    public static class Errors
+    {
+        public const string UnknownStatusFilter =
+            "Unknown status. Expected one of: draft, issued, open, paid, void, uncollectible.";
+        public const string UnknownSort =
+            "Unknown sort. Expected one of: issued_desc, issued_asc, total_desc, total_asc, due_asc.";
+        public const string InvalidCurrency = "currency must be a three-letter ISO 4217 code.";
+        public const string InvalidTotalRange = "'minTotal' must not be greater than 'maxTotal'.";
     }
 
     public static class Formats

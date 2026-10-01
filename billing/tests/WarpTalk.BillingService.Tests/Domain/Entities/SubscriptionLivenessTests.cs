@@ -35,15 +35,40 @@ public class SubscriptionLivenessTests
     }
 
     [Fact]
-    public void CancelledButStillInPeriodAndFlaggedActive_DoesNotGrantThePlan()
+    public void CancelledTheOldWayAndStillInPeriod_GrantsThePlanUntilThePeriodEnds()
     {
-        // The production row, reproduced. is_active said yes, the period said yes, status said no —
-        // and status is the one that decides, because a cancelled plan is not a plan in force.
+        // WT-878: the production row, reproduced — the pre-WT-878 cancel-at-period-end stamped
+        // status = cancelled on a row that stayed is_active with cancelled_at null. The customer
+        // paid for the period, so the plan stays in force until it ends.
         var subscription = Sub(status: SubscriptionConstants.SubscriptionStatuses.Cancelled);
 
         subscription.IsActive.Should().BeTrue();
         subscription.CurrentPeriodEnd.Should().BeAfter(Now);
+        subscription.GrantsPlanEntitlements(Now).Should().BeTrue();
+    }
+
+    [Fact]
+    public void CancelledTheOldWayButThePeriodHasPassed_DoesNotGrantThePlan()
+    {
+        Sub(status: SubscriptionConstants.SubscriptionStatuses.Cancelled, periodEndsInDays: -1)
+            .GrantsPlanEntitlements(Now).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CancelledWithACancellationStamp_DoesNotGrantThePlan()
+    {
+        // A refund (CancellationPaymentEventHandler) stamps cancelled_at: not a period-end cancel.
+        var subscription = Sub(status: SubscriptionConstants.SubscriptionStatuses.Cancelled);
+        subscription.CancelledAt = Now.AddDays(-1);
+
         subscription.GrantsPlanEntitlements(Now).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CancelledAndDeactivated_DoesNotGrantThePlan()
+    {
+        Sub(status: SubscriptionConstants.SubscriptionStatuses.Cancelled, isActive: false)
+            .GrantsPlanEntitlements(Now).Should().BeFalse();
     }
 
     [Fact]

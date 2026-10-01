@@ -83,6 +83,36 @@ public record AdminDateRange
 }
 
 /// <summary>
+/// Optional <c>...From</c>/<c>...To</c> bounds on an admin LIST (as opposed to
+/// <see cref="AdminDateRange"/>, which is a mandatory reporting window). Both ends are optional
+/// and there is no maximum span: a list filter narrows rows, it does not size an aggregation.
+/// </summary>
+public static class AdminDateFilter
+{
+    /// <summary>
+    /// A value that carries no offset (<c>?createdFrom=2026-08-01</c>) is read as UTC, not as the
+    /// server's local time — the admin APIs speak UTC, and a host timezone must not move a bound.
+    /// </summary>
+    public static DateTime? ToUtc(DateTime? value) => value switch
+    {
+        null => null,
+        { Kind: DateTimeKind.Utc } utc => utc,
+        { Kind: DateTimeKind.Unspecified } unspecified => DateTime.SpecifyKind(unspecified, DateTimeKind.Utc),
+        { } local => local.ToUniversalTime(),
+    };
+
+    /// <summary>
+    /// Returns a caller-facing message when <paramref name="from"/> is later than
+    /// <paramref name="to"/>, or null when the pair is acceptable (either end may be missing).
+    /// Equal bounds are accepted: with an exclusive <c>to</c> they simply match nothing.
+    /// </summary>
+    public static string? ValidateRange(DateTime? from, DateTime? to, string fromName, string toName)
+        => ToUtc(from) is { } f && ToUtc(to) is { } t && f > t
+            ? $"'{fromName}' must not be later than '{toName}'."
+            : null;
+}
+
+/// <summary>
 /// A monetary amount that always states its currency. A bare decimal on an admin dashboard is
 /// ambiguous the moment a second currency exists.
 /// </summary>

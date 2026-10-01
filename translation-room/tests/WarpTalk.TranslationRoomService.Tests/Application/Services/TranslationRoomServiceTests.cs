@@ -52,6 +52,10 @@ public class TranslationRoomServiceTests
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
+        // The conditional ENDED transition wins unless a test says a concurrent End got there first.
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                It.IsAny<Guid>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomSessionRepository).Returns(_mockSessionRepo.Object);
@@ -429,6 +433,62 @@ public class TranslationRoomServiceTests
         room.StartedAt.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// k8s multi-replica dedupe: a double-clicked Start on two replicas took the room live twice —
+    /// two RoomStarted broadcasts, two MEETING_STARTED rounds to the invite list. Only the Start
+    /// that wins the conditional transition does any of that; the other still reports success.
+    /// </summary>
+    [Fact]
+    public async Task StartTranslationRoomAsync_ConcurrentStarts_AnnounceTheStartOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() => NewStartableRoom(roomId, hostId));
+        var started = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "IN_PROGRESS", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref started, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.StartTranslationRoomAsync(roomId, hostId, null),
+            _service.StartTranslationRoomAsync(roomId, hostId, null));
+
+        results.Should().OnlyContain(result => result.IsSuccess && result.Value!.Status == RoomStatus.IN_PROGRESS);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.Is<string>(payload => payload.Contains("RoomStarted"))),
+            Times.Once);
+        _mockUow.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task OpenScheduledRoomAsync_ConcurrentOpens_AnnounceTheOpeningOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() =>
+            {
+                var room = NewStartableRoom(roomId, hostId);
+                room.Status = "SCHEDULED";
+                room.ScheduledAt = DateTime.UtcNow;
+                return room;
+            });
+        var opened = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "OPEN", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref opened, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.OpenScheduledRoomAsync(roomId),
+            _service.OpenScheduledRoomAsync(roomId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(It.IsAny<string>(), It.Is<string>(payload => payload.Contains(roomId.ToString()))),
+            Times.Once);
+    }
+
     [Fact]
     public async Task StartTranslationRoomAsync_InvalidState_ReturnsError()
     {
@@ -549,6 +609,57 @@ public class TranslationRoomServiceTests
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+    }
+
+    /// <summary>
+    /// THE LEAK. A workspace whose subscription expired on 23 Sep started translation on 24 Sep: the
+    /// Redis flags above describe a subscription that exists and cannot pay, and an expired one wrote
+    /// none. Start now asks the replicated entitlement snapshot — WT-515's own answer — and refuses
+    /// when it positively says there is no live subscription, before any session is opened.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_IsRefused_WhenTheWorkspaceHasNoActiveSubscription()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockWorkspaceMeetingPolicy
+            .Setup(p => p.HasActiveSubscriptionAsync(room.WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        result.Error.Should().Contain("subscription has expired");
+        _mockUow.Verify(u => u.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Unknown is not "no": the snapshot has not landed yet (seconds after a payment), or
+    /// WorkspaceService could not be asked. Billing still refuses every charge of a workspace with
+    /// no live subscription, which stops the room — so the source gate must not lock out a customer
+    /// who has just paid. And once the renewal lands the snapshot says true, and Start goes through.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(true)]
+    public async Task ResumeTranslationRoomAsync_Starts_WhenTheSubscriptionIsLiveOrUnknown(bool? hasActiveSubscription)
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockWorkspaceMeetingPolicy
+            .Setup(p => p.HasActiveSubscriptionAsync(room.WorkspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(hasActiveSubscription);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
     }
 
     [Fact]
@@ -777,6 +888,136 @@ public class TranslationRoomServiceTests
             Times.Never);
     }
 
+    // ── PO 2026-10-01: bridge session controls = host OR current capturer ───────────────────
+    // After a capturer takeover the person in the Meet call may not be the host; /resume and
+    // /stop-translation must accept them in an EXTERNAL_BRIDGE room, and only there.
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_LetsTheBridgeCapturerStart_EvenWhenNotHostAndNotOptedIn()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        room.BridgeCapturerUserId = capturer;
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_RefusesAPlainMemberOfABridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        room.BridgeCapturerUserId = Guid.NewGuid();
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_IgnoresTheCapturerColumn_OutsideABridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid()); // INSTANT
+        room.Status = "IN_PROGRESS";
+        room.BridgeCapturerUserId = capturer;
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_LetsTheBridgeCapturerStop_EvenWhenNotHost()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "EXTERNAL_BRIDGE",
+            BridgeCapturerUserId = capturer
+        };
+        var session = new TranslationRoomSession
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Status = TranslationRoomSessionStatus.ACTIVE.ToString()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        _mockSessionRepo.Setup(r => r.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        var result = await _service.StopTranslationAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        session.Status.Should().Be(TranslationRoomSessionStatus.ENDED.ToString());
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_StillLetsTheHostOfABridgeRoomStop_WhenSomeoneElseCaptures()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "EXTERNAL_BRIDGE",
+            BridgeCapturerUserId = Guid.NewGuid()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Theory]
+    [InlineData("EXTERNAL_BRIDGE", false)] // a plain member of a bridge room
+    [InlineData("INSTANT", true)]          // the capturer column means nothing outside a bridge
+    public async Task StopTranslationAsync_RefusesNonHostNonCapturer(string roomType, bool callerIsInCapturerColumn)
+    {
+        var roomId = Guid.NewGuid();
+        var caller = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            TranslationRoomType = roomType,
+            BridgeCapturerUserId = callerIsInCapturerColumn ? caller : Guid.NewGuid()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, caller);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
     private static TranslationRoom NewStartableRoom(Guid roomId, Guid hostId) => new()
     {
         Id = roomId,
@@ -799,7 +1040,8 @@ public class TranslationRoomServiceTests
     /// (isOriginalHost || isActiveHost) while this accepted only the ORIGINAL one — so after a host
     /// transfer the first call tore down LiveKit and marked the meeting FINISHED, the second was
     /// refused, and the translation room stayed IN_PROGRESS forever. Nothing repairs that:
-    /// ExpireTranslationRoomAsync has no production callers.
+    /// ExpireTranslationRoomAsync's only caller (WT-714's booking sweep) is about meetings that
+    /// never happened, and it cannot touch an IN_PROGRESS room.
     ///
     /// The rule here is now RoomHostAccess — host OR workspace Owner/Admin — which is what WT-188
     /// established and WT-313 reconciled, so an orphaned room is always recoverable by an
@@ -873,6 +1115,42 @@ public class TranslationRoomServiceTests
         room.EndedAt.Should().NotBeNull();
         room.DurationSeconds.Should().BeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
+    }
+
+    /// <summary>
+    /// k8s multi-replica dedupe. "End for everyone" reaches this service more than once per meeting,
+    /// and on two replicas the repeats run in parallel: each read its own copy of the room as
+    /// IN_PROGRESS, and each went on to process session_ends — which is what queues finalization,
+    /// so the meeting got two sets of artifacts and two "Summary ready" notifications. Only the End
+    /// that wins the conditional ENDED transition may do that.
+    /// </summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ConcurrentEnds_ProcessSessionEndsOnce()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        // Each call reads its own entity, as each replica reads its own row.
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default))
+            .ReturnsAsync(() => new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{}" });
+        var ended = 0;
+        _mockRoomRepo.Setup(r => r.TryTransitionStatusAsync(
+                roomId, It.IsAny<IReadOnlyCollection<string>>(), "ENDED", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Exchange(ref ended, 1) == 0);
+
+        var results = await Task.WhenAll(
+            _service.EndTranslationRoomAsync(roomId, hostId),
+            _service.EndTranslationRoomAsync(roomId, hostId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.IsAny<string>()),
+            Times.Once);
+        _mockUow.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _mockUow.Verify(u => u.RollbackTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // WT-191 — participants used to sit in an ended room until they pressed Leave, because

@@ -19,6 +19,9 @@ public class RoomArtifactLanguagePolicy : IRoomArtifactLanguagePolicy
     // A normalized code is the primary subtag only; anything else is not a language code.
     private static readonly Regex LanguageCodePattern = new("^[a-z]{2,3}$", RegexOptions.CultureInvariant);
 
+    internal const string SubscriptionExpiredMessage =
+        "AI summaries are unavailable because this workspace's subscription has expired. Ask a workspace owner to renew the plan.";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceMeetingPolicy _workspaceMeetingPolicy;
     private readonly ILogger<RoomArtifactLanguagePolicy> _logger;
@@ -66,6 +69,16 @@ public class RoomArtifactLanguagePolicy : IRoomArtifactLanguagePolicy
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(room);
+
+        // Every caller of this is about to spend an LLM call on the room (a summary rewrite, a
+        // summary variant). A workspace whose subscription has lapsed may not. Same answer, and
+        // same "unknown = allow" reading, as Start Translation: only the replicated entitlement
+        // snapshot positively saying "no live subscription" refuses.
+        if (room.WorkspaceId != Guid.Empty
+            && await _workspaceMeetingPolicy.HasActiveSubscriptionAsync(room.WorkspaceId, ct) == false)
+        {
+            return Result.Failure(SubscriptionExpiredMessage, ErrorCodes.Forbidden);
+        }
 
         // As spoken: the content follows the transcript, so no new language is being produced.
         if (string.IsNullOrWhiteSpace(requestedLanguage))

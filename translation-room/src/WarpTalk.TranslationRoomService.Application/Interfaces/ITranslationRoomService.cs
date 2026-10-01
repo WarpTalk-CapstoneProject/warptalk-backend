@@ -27,6 +27,45 @@ public interface ITranslationRoomService
         Guid hostId,
         CancellationToken ct = default,
         SeriesOccurrenceContext? occurrence = null);
+    /// <summary>
+    /// POST /translation-rooms/bridge/claim: find the open EXTERNAL_BRIDGE room for this Google
+    /// Meet code in the caller's workspace, or create it through the ordinary create path; seat the
+    /// caller through the ordinary join; and make them the audio capturer when there is none or the
+    /// current one's lease is stale. Workspace members only.
+    /// </summary>
+    Task<Result<ClaimBridgeRoomResponse>> ClaimBridgeRoomAsync(
+        ClaimBridgeRoomRequest request,
+        Guid userId,
+        string? userEmail = null,
+        CancellationToken ct = default);
+
+    /// <summary>Renews the caller's capturer lease. Conflict when the caller is not the capturer.</summary>
+    Task<Result<BridgeCapturerStatusDto>> HeartbeatBridgeCapturerAsync(
+        Guid translationRoomId,
+        Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Makes a participant the capturer when there is none or the lease is stale. Conflict while a
+    /// live capturer holds it.
+    /// </summary>
+    Task<Result<BridgeCapturerStatusDto>> TakeOverBridgeCapturerAsync(
+        Guid translationRoomId,
+        Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets the CALLER's own bridge audio mode ("voice" / "text") in an open EXTERNAL_BRIDGE room.
+    /// Voice → text is always allowed; text → voice is a Conflict
+    /// (<c>BRIDGE_AUDIO_MODE_LOCKED</c>) while a translation session is active. A change is
+    /// republished to the AI workers at once.
+    /// </summary>
+    Task<Result<BridgeAudioModeDto>> SetBridgeAudioModeAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? mode,
+        CancellationToken ct = default);
+
     Task<Result<TranslationRoomListResponse>> GetTranslationRoomsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>
     /// WT-334: the room detail read, for a HUMAN caller. <paramref name="userId"/> and
@@ -207,6 +246,15 @@ public interface ITranslationRoomService
     /// </summary>
     Task<Result> StopTranslationAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-612 — SCHEDULED to OPEN because the booked time arrived. Driven by
+    /// ScheduledRoomLifecycleWorker and by nothing else: there is no caller id because no human is
+    /// involved, and no endpoint because a host who wants to open early already has one
+    /// (<see cref="OpenWaitingRoomAsync"/>) and a host who wants to begin has Start.
+    /// Idempotent — a room already OPEN succeeds without notifying anyone a second time.
+    /// </summary>
+    Task<Result> OpenScheduledRoomAsync(Guid translationRoomId, CancellationToken ct = default);
 
     Task<Result<TranslationRoomHistoryResponse>> GetTranslationRoomHistoryAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 

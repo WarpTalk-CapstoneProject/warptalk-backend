@@ -23,7 +23,7 @@ public class TranscriptConsumerPollingPolicyTests
     public void InputStreams_UseGlobalStreamsInsteadOfScanningPerRoomKeys()
     {
         Assert.Equal(
-            ["stt:results", "translate:results", "translate:backfill_results", "tts:results"],
+            ["stt:results", "translate:results", "translate:backfill_results", "tts:results", "transcript:clean"],
             TranscriptConsumerPollingPolicy.InputStreams);
     }
 
@@ -42,6 +42,7 @@ public class TranscriptConsumerPollingPolicyTests
     [InlineData("translate:results", TranscriptResultStreamKind.Translation)]
     [InlineData("translate:backfill_results", TranscriptResultStreamKind.Translation)]
     [InlineData("tts:results", TranscriptResultStreamKind.Tts)]
+    [InlineData("transcript:clean", TranscriptResultStreamKind.CleanSentence)]
     [InlineData("stt:results:legacy-room", TranscriptResultStreamKind.Unknown)]
     public void Classify_RecognizesOnlyCanonicalGlobalStreams(
         string stream,
@@ -122,6 +123,93 @@ public class TranscriptConsumerPollingPolicyTests
         Assert.True(TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName));
         Assert.Equal(expected, speakerId);
         Assert.Equal(expected.ToString(), speakerName);
+    }
+
+    [Fact]
+    public void TryResolveSpeaker_NamesTheBridgeStandInAsTheMeetSideRatherThanItsGuid()
+    {
+        var standIn = WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId;
+        var values = new Dictionary<string, string> { ["speaker_id"] = standIn.ToString() };
+
+        Assert.True(TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName));
+        // The id is kept: it is how the relabel job and the web recognise a far-side segment.
+        Assert.Equal(standIn, speakerId);
+        Assert.Equal("Google Meet participants", speakerName);
+        Assert.True(TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId));
+        Assert.False(TranscriptConsumerPollingPolicy.IsBridgeStandIn(Guid.NewGuid()));
+        Assert.False(TranscriptConsumerPollingPolicy.IsBridgeStandIn(null));
+    }
+
+    [Fact]
+    public void ResolveFarSpeaker_MapsTheLiveFieldsOnAStandInSegment()
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["far_speaker_name"] = "Alice Nguyen",
+            ["far_speaker_source"] = "meet_captions",
+            ["far_speaker_confidence"] = "0.85",
+        };
+
+        var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId);
+
+        Assert.Equal("Alice Nguyen", hint.Key);
+        Assert.Equal("meet_captions", hint.Source);
+        Assert.Equal(0.85f, hint.Confidence);
+    }
+
+    [Fact]
+    public void ResolveFarSpeaker_ParsesConfidenceInvariantly_WhateverTheThreadCulture()
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("vi-VN"); // decimal comma
+            var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(
+                new Dictionary<string, string> { ["far_speaker_confidence"] = "0.5" },
+                WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId);
+
+            Assert.Equal(0.5f, hint.Confidence);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("high")]
+    [InlineData("1.5")]
+    [InlineData("-0.1")]
+    [InlineData("NaN")]
+    public void ResolveFarSpeaker_MissingOrUnusableConfidence_IsNull(string? raw)
+    {
+        var values = new Dictionary<string, string> { ["far_speaker_name"] = "Bob" };
+        if (raw is not null) values["far_speaker_confidence"] = raw;
+
+        var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId);
+
+        Assert.Equal("Bob", hint.Key);
+        Assert.Null(hint.Source);
+        Assert.Null(hint.Confidence);
+    }
+
+    [Fact]
+    public void ResolveFarSpeaker_IgnoresTheFieldsOnARealParticipant()
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["far_speaker_name"] = "Alice",
+            ["far_speaker_source"] = "meet_captions",
+            ["far_speaker_confidence"] = "0.9",
+        };
+
+        var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, Guid.NewGuid());
+
+        Assert.Null(hint.Key);
+        Assert.Null(hint.Source);
+        Assert.Null(hint.Confidence);
     }
 
     [Fact]
@@ -236,5 +324,73 @@ public class TranscriptConsumerPollingPolicyTests
         Assert.Equal(
             "translate:results:transcript-persistence:dead-letter",
             TranscriptConsumerPollingPolicy.DeadLetterStream("translate:results"));
+    }
+
+    // ── WT-716: clean transcript fields ──────────────────────
+
+    [Fact]
+    public void ResolveCleanText_KeepsAbsentAndEmptyApart()
+    {
+        // Absent = never cleaned (fall back to raw); "" = filler only (hide in Clean view).
+        Assert.Null(TranscriptConsumerPollingPolicy.ResolveCleanText(new Dictionary<string, string>()));
+        Assert.Equal(
+            string.Empty,
+            TranscriptConsumerPollingPolicy.ResolveCleanText(new Dictionary<string, string> { ["clean_text"] = "" }));
+    }
+
+    [Theory]
+    [InlineData(null, new string[0])]
+    [InlineData("", new string[0])]
+    [InlineData("  ", new string[0])]
+    [InlineData("filler_only", new[] { "filler_only" })]
+    [InlineData(" fillers_removed ,stutter_removed,,fillers_removed", new[] { "fillers_removed", "stutter_removed" })]
+    [InlineData("escalate,some_future_flag", new[] { "escalate", "some_future_flag" })]
+    public void ParseFlags_TrimsDropsBlanksAndDuplicates_ButKeepsUnknownFlags(string? raw, string[] expected)
+    {
+        Assert.Equal(expected, TranscriptConsumerPollingPolicy.ParseFlags(raw));
+    }
+
+    [Fact]
+    public void TryParseSegmentIds_PreservesOrder()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+
+        Assert.True(TranscriptConsumerPollingPolicy.TryParseSegmentIds($"[\"{b}\",\"{a}\",\"{b}\"]", out var ids));
+        Assert.Equal([b, a], ids);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("[]")]
+    [InlineData("not json")]
+    [InlineData("[\"not-a-guid\"]")]
+    [InlineData("{\"a\":1}")]
+    public void TryParseSegmentIds_RefusesAnythingThatIsNotANonEmptyGuidArray(string? json)
+    {
+        Assert.False(TranscriptConsumerPollingPolicy.TryParseSegmentIds(json, out _));
+    }
+
+    [Fact]
+    public void TryParseCleanSentence_RefusesAMissingRevision()
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["meeting_id"] = Guid.NewGuid().ToString(),
+            ["sentence_id"] = Guid.NewGuid().ToString(),
+            ["segment_ids"] = $"[\"{Guid.NewGuid()}\"]",
+            ["clean_text"] = "x",
+        };
+
+        Assert.False(TranscriptConsumerPollingPolicy.TryParseCleanSentence("transcript:clean", values, out _));
+
+        values["revision"] = "0";
+        Assert.True(TranscriptConsumerPollingPolicy.TryParseCleanSentence("transcript:clean", values, out var sentence));
+        Assert.Equal("unknown", sentence.Source);
+        Assert.Equal("unknown", sentence.Language);
+        Assert.Empty(sentence.Flags);
+        Assert.Null(sentence.SpeakerId);
+        Assert.Null(sentence.ProducedAt);
     }
 }

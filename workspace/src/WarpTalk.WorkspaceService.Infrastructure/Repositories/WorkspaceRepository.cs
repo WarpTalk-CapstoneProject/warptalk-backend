@@ -24,6 +24,13 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
     {
     }
 
+    public async Task<List<Workspace>> GetNotDeletedAsync(CancellationToken ct = default) =>
+        await _context.Workspaces
+            .AsNoTracking()
+            .Where(w => w.DeletedAt == null)
+            .OrderBy(w => w.Name)
+            .ToListAsync(ct);
+
     public async Task<(List<Workspace> Items, int TotalCount)> GetWorkspacesForUserAsync(Guid userId, int page, int pageSize, string? search = null, CancellationToken ct = default)
     {
         var activeMemberStatus = WorkspaceMemberStatus.Active.ToStorageValue();
@@ -56,6 +63,27 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
         WorkspaceDirectoryFilter filter,
         CancellationToken ct = default)
     {
+        var ordered = AdminDirectoryQuery(filter);
+
+        // Not ToPagedListAsync: the count must run against the filtered workspace rows, not
+        // against the projection, so the per-row count subqueries only execute for one page.
+        var safePage = filter.Page <= 0 ? 1 : filter.Page;
+        var safePageSize = filter.PageSize <= 0 ? 20 : filter.PageSize;
+        var totalCount = await ordered.CountAsync(ct);
+        var items = await Project(ordered)
+            .Skip((safePage - 1) * safePageSize)
+            .Take(safePageSize)
+            .ToListAsync(ct);
+
+        return (items, totalCount);
+    }
+
+    /// <summary>
+    /// The filtered, ordered directory query before paging and projection. Public so a test can
+    /// check PostgreSQL can be asked it (ToQueryString) without a database.
+    /// </summary>
+    public IOrderedQueryable<Workspace> AdminDirectoryQuery(WorkspaceDirectoryFilter filter)
+    {
         var query = _context.Workspaces.AsNoTracking();
 
         query = filter.Status switch
@@ -86,6 +114,18 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
             query = query.Where(w => w.WorkspaceMembers.Count(m => m.RemovedAt == null) <= maxMembers);
         }
 
+        // Inclusive from, exclusive to — the same half-open window CountCreatedBetweenAsync uses,
+        // so a directory filtered to a period lists exactly the workspaces the insight counted.
+        if (filter.CreatedFrom is { } createdFrom)
+        {
+            query = query.Where(w => w.CreatedAt >= createdFrom);
+        }
+
+        if (filter.CreatedTo is { } createdTo)
+        {
+            query = query.Where(w => w.CreatedAt < createdTo);
+        }
+
         IOrderedQueryable<Workspace> ordered = filter.Sort switch
         {
             WorkspaceDirectorySort.CreatedAsc => query.OrderBy(w => w.CreatedAt),
@@ -96,23 +136,12 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
             WorkspaceDirectorySort.MembersDesc =>
                 query.OrderByDescending(w => w.WorkspaceMembers.Count(m => m.RemovedAt == null)),
             WorkspaceDirectorySort.UpdatedDesc => query.OrderByDescending(w => w.UpdatedAt),
+            WorkspaceDirectorySort.UpdatedAsc => query.OrderBy(w => w.UpdatedAt),
             _ => query.OrderByDescending(w => w.CreatedAt),
         };
 
         // Id is the tiebreaker so pages stay stable when the sort key repeats.
-        ordered = ordered.ThenBy(w => w.Id);
-
-        // Not ToPagedListAsync: the count must run against the filtered workspace rows, not
-        // against the projection, so the per-row count subqueries only execute for one page.
-        var safePage = filter.Page <= 0 ? 1 : filter.Page;
-        var safePageSize = filter.PageSize <= 0 ? 20 : filter.PageSize;
-        var totalCount = await ordered.CountAsync(ct);
-        var items = await Project(ordered)
-            .Skip((safePage - 1) * safePageSize)
-            .Take(safePageSize)
-            .ToListAsync(ct);
-
-        return (items, totalCount);
+        return ordered.ThenBy(w => w.Id);
     }
 
     public Task<int> CountExistingAtAsync(DateTime instant, CancellationToken ct = default)

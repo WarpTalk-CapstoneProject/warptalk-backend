@@ -8,20 +8,36 @@ using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
+using WarpTalk.Shared.PlatformSettings;
 
 namespace WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
 
-public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
+public sealed partial class SubscriptionPaymentEventHandler : IPaymentEventHandler
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubscriptionPaymentEventHandler> _logger;
+    private readonly ICreditFreezeService? _creditFreeze;
+    private readonly ISubscriptionDomainService _domainService;
+    private readonly IStripeRecurringGateway? _recurring;
+    private readonly INotificationClient? _notifications;
+    private readonly IPlatformSettings? _settings;
 
     public SubscriptionPaymentEventHandler(
         IUnitOfWork unitOfWork,
-        ILogger<SubscriptionPaymentEventHandler> logger)
+        ILogger<SubscriptionPaymentEventHandler> logger,
+        ICreditFreezeService? creditFreeze = null,
+        ISubscriptionDomainService? domainService = null,
+        IStripeRecurringGateway? recurring = null,
+        INotificationClient? notifications = null,
+        IPlatformSettings? settings = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _creditFreeze = creditFreeze;
+        _domainService = domainService ?? new SubscriptionDomainService();
+        _recurring = recurring;
+        _notifications = notifications;
+        _settings = settings;
     }
 
     public bool CanHandle(PaymentEventContext context)
@@ -29,6 +45,14 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
 
     public async Task<Result> HandleAsync(PaymentEventContext context, CancellationToken cancellationToken = default)
     {
+        // #466: a Stripe renewal (invoice.paid / invoice.payment_failed on a subscription_cycle
+        // invoice) renews or dunns the row the Stripe subscription is linked to. See
+        // SubscriptionPaymentEventHandler.Renewal.cs.
+        if (context.Request.PaymentType == PaymentConstants.PaymentTypes.SubscriptionRenewal)
+        {
+            return await HandleStripeRenewalAsync(context, cancellationToken);
+        }
+
         var request = context.Request;
         var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
             p => p.Slug.ToLower() == request.PlanSlug.ToLower() && p.DeletedAt == null,
@@ -45,7 +69,14 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
             return Result.Success();
         }
 
+        var refusal = await RefuseActivationAsync(context, plan, cancellationToken);
+        if (refusal is not null)
+        {
+            return refusal;
+        }
+
         var subscription = await ActivateSubscriptionAsync(context, plan, cancellationToken);
+        LinkCheckoutToStripe(context, subscription);
         var topupTx = CreditMapper.CreateStripeSubscriptionTransaction(
             new StripeSubscriptionTransactionRequest(
                 subscription,
@@ -55,10 +86,108 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
                 context.PaymentId));
 
         await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken);
+
+        // Renewing brings back what the workspace kept when its last subscription ended — in the
+        // same commit as the payment, so there is no moment where the plan is live and the credits
+        // it was promised are still frozen. A checkout after expiry creates a NEW row, which is
+        // why this cannot be left to the old row's own state.
+        if (_creditFreeze is not null)
+        {
+            await _creditFreeze.StageReleaseIntoAsync(subscription, DateTime.UtcNow, cancellationToken);
+        }
+
         context.Subscription = subscription;
         context.SubscriptionChanged = true;
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// WT-878 — DEFENCE IN DEPTH behind the checkout allowlist. A paid checkout event activates a
+    /// plan only if the plan is still on sale and the money matches what the server charges for
+    /// it. The checkout now prices every plan itself, but a session minted before that fix (or by
+    /// any future path that forgets to) carried the client's Amount next to a server-trusted
+    /// PlanSlug — and this handler granted the plan, its period and its CreditsPerCycle on the
+    /// slug alone. Refused like a missing plan: logged, nothing granted, the failure surfaced.
+    ///
+    /// Returns null when activation may proceed.
+    /// </summary>
+    private const string ActivationAmountMismatch =
+        "The amount paid does not match the plan's price, so the plan was not activated.";
+
+    private async Task<Result?> RefuseActivationAsync(
+        PaymentEventContext context,
+        Plan plan,
+        CancellationToken cancellationToken)
+    {
+        var request = context.Request;
+
+        if (!plan.IsActive)
+        {
+            _logger.LogError(
+                "subscription_activation_refused_plan_inactive: WorkspaceId={WorkspaceId} Plan={PlanSlug} PaymentType={PaymentType} Session={SessionId}",
+                context.WorkspaceId, plan.Slug, request.PaymentType, request.StripeSessionId);
+            return Result.Failure(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanInactive);
+        }
+
+        var price = PlanPricing.PeriodTotal(plan, request.BillingCycle);
+        var planCurrency = PlanPricing.StripeCurrency(plan);
+
+        // WT-878: the checkout stamped the price it quoted on the session (server-written metadata,
+        // read back off Stripe, so not a client input). That quote is the contract: an admin who
+        // reprices the plan while the buyer is on the Stripe page must not leave them charged with
+        // no plan. Sessions created before the stamp fall back to the plan's current price.
+        var quotedCurrency = (request.ExpectedCurrency ?? string.Empty).Trim().ToLowerInvariant();
+        if (request.ExpectedAmount > 0 && quotedCurrency.Length > 0)
+        {
+            if (request.ExpectedAmount != price || !string.Equals(quotedCurrency, planCurrency, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "subscription_activation_quoted_price_differs: WorkspaceId={WorkspaceId} Plan={PlanSlug} Cycle={BillingCycle} "
+                    + "Quoted={Quoted} {QuotedCurrency} Current={Current} {PlanCurrency} Session={SessionId}",
+                    context.WorkspaceId, plan.Slug, request.BillingCycle,
+                    request.ExpectedAmount, quotedCurrency, price, planCurrency, request.StripeSessionId);
+            }
+
+            price = request.ExpectedAmount;
+            planCurrency = quotedCurrency;
+        }
+        var paidCurrency = (request.Currency ?? string.Empty).Trim().ToLowerInvariant();
+
+        // A coupon the checkout applied legitimately lowers what was paid: the expected amount is
+        // the plan's price less that coupon's discount, computed the way the checkout did.
+        var expected = price;
+        if (!string.IsNullOrWhiteSpace(request.CouponId))
+        {
+            var coupon = Guid.TryParse(request.CouponId, out var couponId)
+                ? await _unitOfWork.Coupons.GetByIdAsync(couponId, cancellationToken)
+                : null;
+            if (coupon is null)
+            {
+                _logger.LogError(
+                    "subscription_activation_refused_unknown_coupon: WorkspaceId={WorkspaceId} Plan={PlanSlug} CouponId={CouponId} Session={SessionId}",
+                    context.WorkspaceId, plan.Slug, request.CouponId, request.StripeSessionId);
+                return Result.Failure(ActivationAmountMismatch, ErrorCodes.BillingInvalidAmount);
+            }
+
+            expected = price - PackageCatalogRules.Discount(coupon, price, planCurrency);
+        }
+
+        // Stripe charges whole units in a zero-decimal currency and cents otherwise, so a yearly
+        // total such as price × 12 × 0.79 arrives rounded.
+        var tolerance = PackageCatalogConstants.Currencies.IsZeroDecimal(planCurrency) ? 1m : 0.01m;
+        if (!string.Equals(paidCurrency, planCurrency, StringComparison.Ordinal)
+            || request.Amount + tolerance < expected)
+        {
+            _logger.LogError(
+                "subscription_activation_refused_underpaid: WorkspaceId={WorkspaceId} Plan={PlanSlug} Cycle={BillingCycle} "
+                + "Paid={Paid} {PaidCurrency} Expected={Expected} {PlanCurrency} PaymentType={PaymentType} Session={SessionId}",
+                context.WorkspaceId, plan.Slug, request.BillingCycle,
+                request.Amount, paidCurrency, expected, planCurrency, request.PaymentType, request.StripeSessionId);
+            return Result.Failure(ActivationAmountMismatch, ErrorCodes.BillingInvalidAmount);
+        }
+
+        return null;
     }
 
     private async Task<Subscription> ActivateSubscriptionAsync(
@@ -81,6 +210,9 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
 
         foreach (var oldSub in oldSubs)
         {
+            // #466: a replaced plan's Stripe subscription must stop charging the card. Only after
+            // the new plan is committed — see PaymentEventContext.AfterCommit.
+            ScheduleStripeCancellation(context, oldSub.StripeSubscriptionId, context.Request.StripeSubscriptionId);
             oldSub.AutoRenew = false;
             oldSub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
             // IsActive is the flag every "does this workspace have a plan" query filters on, and

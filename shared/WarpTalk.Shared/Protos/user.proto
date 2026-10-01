@@ -29,6 +29,23 @@ service UserService {
   // active and not deleted — the notification service resolves "everyone" with it and needs
   // nothing else about the people it is writing to.
   rpc ListActiveUserIds (ListActiveUserIdsRequest) returns (ListActiveUserIdsResponse);
+
+  // G10: what this person may do in the platform-admin portal. Every service's admin endpoints ask
+  // this (through a short per-process cache) instead of trusting a role claim in the access token,
+  // so a suspended or removed staff member is refused within seconds rather than when their token
+  // expires. is_staff is false for "not staff", "suspended" and "no such user" alike.
+  rpc GetStaffAccess (GetUserRequest) returns (GetStaffAccessResponse);
+}
+
+message GetStaffAccessResponse {
+  bool is_staff = 1;
+  // Stable key of the staff role: super_admin, support, ... or a custom role's slug.
+  string role_slug = 2;
+  string role_name = 3;
+  // Super Admin holds every permission by rule; permissions below is empty for it.
+  bool is_super_admin = 4;
+  // Codes from WarpTalk.Shared.Authorization.AdminPermissions.
+  repeated string permissions = 5;
 }
 
 message ListActiveUserIdsRequest {
@@ -58,6 +75,8 @@ message GetUserResponse {
   string full_name = 3;
   string avatar_url = 4;
   string preferred_language = 5;
+  // ISO 8601 UTC. When the account was created — what "new users" announcement targeting reads.
+  string created_at = 6;
 }
 
 message GetUserSettingsResponse {

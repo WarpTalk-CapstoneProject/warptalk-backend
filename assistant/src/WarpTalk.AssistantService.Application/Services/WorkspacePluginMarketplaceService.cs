@@ -83,8 +83,19 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             .ToList();
 
         var inWorkspace = ordered.Where(availability.IsUsable).Select(ToItem).ToList();
+        // Only what the platform lets this workspace have: a plugin a platform admin turned off
+        // here is not offered to the Owner at all.
         var marketplace = ordered
-            .Where(plugin => plugin.OwnerWorkspaceId == null && !availability.IsUsable(plugin))
+            .Where(plugin => plugin.OwnerWorkspaceId == null
+                && availability.Of(plugin) == WorkspacePluginConstants.Availability.NotAdded)
+            .Select(ToItem)
+            .ToList();
+        // ...but one the workspace already had does not silently vanish: the Owner sees it, marked,
+        // with members' connections kept and unused.
+        var disabledByPlatform = ordered
+            .Where(plugin => plugin.OwnerWorkspaceId == null
+                && availability.Of(plugin) == WorkspacePluginConstants.Availability.DisabledByPlatform
+                && (availability.IsOnList(plugin) || usedCounts.ContainsKey(plugin.Id)))
             .Select(ToItem)
             .ToList();
 
@@ -96,7 +107,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             membership.IsOwner,
             inWorkspace,
             marketplace,
-            pending));
+            pending)
+        {
+            DisabledByPlatform = disabledByPlatform,
+        });
     }
 
     public async Task<Result<IReadOnlyList<WorkspacePluginRequestDto>>> ListPendingRequestsAsync(
@@ -473,6 +487,10 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         if (plugin is null) return UnknownPlugin<WorkspacePluginRequestDto>();
 
         var availability = await _guard.GetAvailabilityAsync(workspaceId, ct);
+        // Hidden from this workspace by the platform: not something a member here can ask for, and
+        // answered exactly as a key nobody holds, so the refusal reveals nothing.
+        if (availability.Of(plugin) == WorkspacePluginConstants.Availability.DisabledByPlatform)
+            return UnknownPlugin<WorkspacePluginRequestDto>();
         if (availability.IsUsable(plugin))
             return Result.Failure<WorkspacePluginRequestDto>(
                 $"{plugin.Label} is already available in this workspace.",
@@ -579,8 +597,14 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         var plugin = await _unitOfWork.PluginRepository.GetByIdAsync(request.PluginId, ct);
         if (plugin is null) return UnknownPlugin<WorkspacePluginRequestDto>();
 
+        // Retired, or turned off for this workspace by the platform since it was asked for: either
+        // way the Owner cannot add it, and nothing else would ever answer the request.
+        var platformClosed = !plugin.IsActive
+            || (decision == WorkspacePluginConstants.RequestStatus.Approved
+                && !(await _guard.GetAvailabilityAsync(workspaceId, ct)).PlatformVerdict(plugin).Allowed);
+
         IReadOnlyList<PluginRequest> settled;
-        if (decision == WorkspacePluginConstants.RequestStatus.Approved && !plugin.IsActive)
+        if (decision == WorkspacePluginConstants.RequestStatus.Approved && platformClosed)
         {
             // Retired since it was asked for. Refusing the approval left the request pending for
             // good - the Owner could not add it, and nothing else would ever answer it. Retirement
@@ -632,6 +656,13 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
             return Result.Failure<WorkspacePlugin>(
                 $"{plugin.Label} has been retired from the marketplace and can no longer be added.",
                 WorkspacePluginConstants.ErrorCodes.PluginRetired);
+
+        // The platform decides what an Owner may add; the Owner decides the rest.
+        var verdict = (await _guard.GetAvailabilityAsync(workspaceId, ct)).PlatformVerdict(plugin);
+        if (!verdict.Allowed)
+            return Result.Failure<WorkspacePlugin>(
+                PluginWorkspaceAccessConstants.Messages.DisabledByPlatform,
+                PluginWorkspaceAccessConstants.ErrorCodes.DisabledByPlatform);
 
         var curated = await EnsureCuratedAsync(workspaceId, callerId, ct);
         if (!curated.IsSuccess) return Result.Failure<WorkspacePlugin>(curated.Error!, curated.ErrorCode);
@@ -707,9 +738,19 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
 
         if (!allowedEverything) return Result.Success<IReadOnlyList<WorkspacePlugin>>([]);
 
-        var marketplace = await _unitOfWork.PluginRepository.FindAsync(
-            p => p.IsActive && p.OwnerWorkspaceId == null,
-            ct: ct);
+        // Seeds exactly what the guard was already allowing (WorkspacePluginAvailability.CarriedOver):
+        // the marketplace plugins members have used here. Seeding the whole marketplace wrote a list
+        // the Owner never chose, and handed members plugins they had never had.
+        var used = WorkspacePluginAvailability.CarriedOver(
+            allowedEverything,
+            await _unitOfWork.PluginToolAuditRepository.GetPluginIdsUsedInWorkspaceAsync(workspaceId, ct));
+        // A List, not the set: EF translates List.Contains into an IN, not IReadOnlySet.Contains.
+        var usedIds = used.ToList();
+        var marketplace = usedIds.Count == 0
+            ? Array.Empty<Plugin>()
+            : await _unitOfWork.PluginRepository.FindAsync(
+                p => p.IsActive && p.OwnerWorkspaceId == null && usedIds.Contains(p.Id),
+                ct: ct);
         var seeded = new List<WorkspacePlugin>(marketplace.Count);
         foreach (var plugin in marketplace)
         {
@@ -727,7 +768,7 @@ public class WorkspacePluginMarketplaceService : IWorkspacePluginMarketplaceServ
         }
 
         _logger.LogInformation(
-            "Workspace {WorkspaceId} curated its plugin list for the first time; seeded {Count} marketplace plugin(s) from AllowAnyPlugins=true.",
+            "Workspace {WorkspaceId} curated its plugin list for the first time; seeded the {Count} marketplace plugin(s) its members already used under AllowAnyPlugins=true.",
             workspaceId,
             marketplace.Count);
 

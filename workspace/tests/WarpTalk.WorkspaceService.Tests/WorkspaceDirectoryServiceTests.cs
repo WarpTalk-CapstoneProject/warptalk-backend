@@ -58,6 +58,36 @@ public class WorkspaceDirectoryServiceTests
         Assert.Equal(new[] { alice, bob }, result.Value);
     }
 
+    // ── Announcement targeting: who the viewer is ────────────────────────────────────
+
+    [Fact]
+    public async Task ListUserWorkspaceAudienceAsync_PairsEachActiveWorkspaceWithItsPlanAndRole()
+    {
+        var userId = Guid.NewGuid();
+        var onPro = Guid.NewGuid();
+        var noPlan = Guid.NewGuid();
+        var ownerRole = Guid.NewGuid();
+        var memberRole = Guid.NewGuid();
+        _unitOfWork.WorkspaceMemberRepository.GetActiveMembershipsForUserAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new() { WorkspaceId = onPro, UserId = userId, RoleId = ownerRole },
+                new() { WorkspaceId = noPlan, UserId = userId, RoleId = memberRole },
+            });
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetPlanSlugsAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, string> { [onPro] = "pro" });
+        _authIdentity.GetRoleByIdAsync(ownerRole, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRole, Name = "Owner" });
+        _authIdentity.GetRoleByIdAsync(memberRole, Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRole, Name = "Member" });
+
+        var result = await _service.ListUserWorkspaceAudienceAsync(userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            new[] { (onPro, (string?)"pro", (string?)"Owner"), (noPlan, (string?)null, (string?)"Member") },
+            result.Value!.Select(item => (item.WorkspaceId, item.PlanSlug, item.RoleName)));
+    }
+
     [Fact]
     public async Task ListActiveMemberUserIdsAsync_AnswersNull_ForADeletedOrUnknownWorkspace()
     {
@@ -302,6 +332,100 @@ public class WorkspaceDirectoryServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// WT-706. The whitelist was compared as raw strings here while translation-room's room-edit
+    /// gate (WT-707) and the gateway both compare primary subtags — so the two paths disagreed
+    /// about the same workspace. A workspace whose settings held "vi-VN" could create no meeting
+    /// at all, because rooms store "vi", while an EDIT to exactly those languages was permitted
+    /// one service over.
+    ///
+    /// Saves are normalized now, so only documents written before WT-706 can look like this —
+    /// which is precisely why the comparison, not just the save path, had to be fixed.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_WhenAStoredRegionalTagNamesTheRequestedLanguage()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi-VN\",\"EN\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi" }, sourceLanguage: "en");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>The same reduction on the asking side: a room requesting "vi-VN" is asking for "vi".</summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_WhenTheRequestedTagCarriesARegion()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi-VN" }, sourceLanguage: "vi_VN");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// Normalizing the comparison must not widen it. Reducing to the primary subtag makes
+    /// regional variants of an allowed language match; it does not make a DIFFERENT language
+    /// match, which is the whole policy.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_StillDenies_ALanguageOutsideTheNormalizedWhitelist()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi-VN\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "en-US" });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("not allowed", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -688,6 +812,39 @@ public class WorkspaceDirectoryServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Null(result.Value!.MaxLanguages);
+    }
+
+    /// <summary>
+    /// Start Translation (translation-room) reads these to refuse a lapsed workspace — the same
+    /// IsKnown rule the WT-515 creation gate applies: only a snapshot that exists may say "no".
+    /// </summary>
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task GetSettingsAsync_CarriesTheSnapshotsSubscriptionState(bool hasActiveSubscription, bool expected)
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{}" });
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")), hasActiveSubscription);
+
+        var result = await _service.GetSettingsAsync(workspaceId);
+
+        Assert.True(result.Value!.SubscriptionKnown);
+        Assert.Equal(expected, result.Value.HasActiveSubscription);
+    }
+
+    [Fact]
+    public async Task GetSettingsAsync_ReportsTheSubscriptionAsUnknown_WhenNoSnapshotExists()
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{}" });
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+
+        var result = await _service.GetSettingsAsync(workspaceId);
+
+        Assert.False(result.Value!.SubscriptionKnown);
     }
 
     [Fact]

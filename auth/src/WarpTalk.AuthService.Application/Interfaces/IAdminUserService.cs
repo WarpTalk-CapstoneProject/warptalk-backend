@@ -67,6 +67,17 @@ public interface IAdminUserService
     /// account stays usable until each token happens to expire, which is not what anybody reading
     /// "deactivated" on the screen would expect.
     /// </summary>
+    /// <summary>
+    /// The admin workspace page's force sign-out: <see cref="RevokeSessionsAsync"/> for each named
+    /// account, each recorded against <paramref name="workspaceId"/> so it lands on that
+    /// workspace's timeline.
+    /// </summary>
+    Task<Result<AdminWorkspaceSignOutResultDto>> RevokeSessionsForWorkspaceAsync(
+        Guid workspaceId,
+        AdminWorkspaceSignOutRequest request,
+        AdminActorContext actor,
+        CancellationToken ct = default);
+
     Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
         Guid userId,
         bool isActive,

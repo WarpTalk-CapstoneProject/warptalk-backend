@@ -46,6 +46,18 @@ public sealed record AdminMeetingRow(
 /// When one started meeting ran, as far as the row knows. <paramref name="EndedAt"/> is null while
 /// it is live — and, for a few terminal paths that never stamped it, forever.
 /// </summary>
+/// <summary>
+/// One meeting as the admin Providers page's LiveKit usage sees it (media-usage gRPC): which
+/// workspace it belongs to and when it could have held a LiveKit room open.
+/// </summary>
+public sealed record MediaUsageRoomSpan(
+    Guid RoomId,
+    Guid WorkspaceId,
+    DateTime StartedAt,
+    DateTime? EndedAt,
+    int? DurationSeconds,
+    string Status);
+
 public sealed record AdminMeetingSpan(
     DateTime StartedAt,
     DateTime? EndedAt,
@@ -93,6 +105,16 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
         DateTime from,
         DateTime to,
+        CancellationToken ct = default,
+        Guid? workspaceId = null);
+
+    /// <summary>
+    /// The same rooms as <see cref="GetAdminMeetingSpansAsync"/>, with their ids and workspaces, for
+    /// the LiveKit usage the admin Providers page reports (room and participant minutes per hour).
+    /// </summary>
+    Task<IReadOnlyList<MediaUsageRoomSpan>> GetMediaUsageRoomsAsync(
+        DateTime from,
+        DateTime to,
         CancellationToken ct = default);
 
     /// <summary>
@@ -106,4 +128,41 @@ public interface ITranslationRoomRepository : IGenericRepository<TranslationRoom
     Task<TranslationRoom?> GetByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default);
     Task<List<TranslationRoom>> GetHistoryByUserIdAsync(Guid userId, int limit, int offset, CancellationToken ct = default);
     Task<int> CountActiveByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Moves the room from one of <paramref name="fromStatuses"/> to <paramref name="toStatus"/> as
+    /// one conditional UPDATE, and returns whether THIS call did it. Only status and updated_at are
+    /// written; the caller saves the rest of the transition (ended_at, started_at...) in the same
+    /// transaction.
+    ///
+    /// Open, Start and End are each reached more than once for the same room — clients repeat the
+    /// request (prod: six "End for everyone" POSTs in 0.7 s), and with two replicas the repeats
+    /// run in parallel. A read-then-save lets every one of them see the old status and each fire
+    /// the once-per-transition side effects (notifications, finalization, meeting-ended metrics).
+    /// The winner of this compare-and-set is the only caller that does.
+    /// </summary>
+    Task<bool> TryTransitionStatusAsync(
+        Guid roomId,
+        IReadOnlyCollection<string> fromStatuses,
+        string toStatus,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The open EXTERNAL_BRIDGE room in <paramref name="workspaceId"/> that bridges the Meet call
+    /// <paramref name="meetCode"/> (normalized), or null. "Open" is the complement of
+    /// BridgeRoomConstants.ClosedStatuses — the same predicate as the unique index, so there is at
+    /// most one. Untracked-safe: callers may update the returned entity.
+    /// </summary>
+    Task<TranslationRoom?> GetOpenBridgeRoomByMeetCodeAsync(Guid workspaceId, string meetCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomically makes <paramref name="userId"/> the room's bridge capturer, stamping its
+    /// heartbeat, when the room has no capturer, the caller already is it, or the current lease
+    /// was last renewed before <paramref name="staleBefore"/>. One conditional UPDATE, so two
+    /// desktops racing for an empty seat cannot both win. True when the caller is now capturer.
+    /// </summary>
+    Task<bool> TryAcquireBridgeCapturerAsync(Guid roomId, Guid userId, DateTime now, DateTime staleBefore, CancellationToken ct = default);
+
+    /// <summary>Renews the lease only if <paramref name="userId"/> is still the capturer.</summary>
+    Task<bool> TryRenewBridgeCapturerAsync(Guid roomId, Guid userId, DateTime now, CancellationToken ct = default);
 }

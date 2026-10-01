@@ -186,8 +186,9 @@ public sealed class RecordingConsentHoldTests
             .Setup(item => item.CreateDownloadUrlAsync(
                 It.IsAny<string>(),
                 It.IsAny<TimeSpan>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string url, TimeSpan _, CancellationToken _) => url);
+            .ReturnsAsync((string url, TimeSpan _, string? _, CancellationToken _) => url);
         return new TranslationRoomArtifactService(
             unitOfWork.Object,
             NullLogger<TranslationRoomArtifactService>.Instance,

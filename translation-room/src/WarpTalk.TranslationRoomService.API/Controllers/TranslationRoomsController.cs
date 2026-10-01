@@ -94,6 +94,8 @@ public class TranslationRoomsController : ControllerBase
             {
                 ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
                 ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(result.Error, result.ErrorCode)),
+                // GMCAL1001: an open room for this Meet code exists that the caller cannot read.
+                ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
                 _ => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             };
         }
@@ -203,6 +205,7 @@ public class TranslationRoomsController : ControllerBase
         {
             allowedTargetLanguages = result.Value?.AllowedTargetLanguages ?? Array.Empty<string>(),
             roomLanguages = result.Value?.RoomLanguages ?? Array.Empty<string>(),
+            roomEnded = result.Value?.RoomEnded ?? false,
         });
     }
 

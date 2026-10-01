@@ -37,5 +37,5 @@ public static class VoiceConsentTextVersions
     /// changes in a way that alters what is being agreed to — an old row keeps its own version,
     /// which is the point of storing it.
     /// </summary>
-    public const string Current = "2026-08-13.v1";
+    public const string Current = "2026-09-29.v2";
 }

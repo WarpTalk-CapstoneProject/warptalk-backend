@@ -23,7 +23,7 @@ namespace WarpTalk.AuthService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/voice-consent")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
+[RequirePermission(AdminPermissions.AccountsRead)]
 public class AdminVoiceConsentController : ControllerBase
 {
     private readonly IVoiceConsentRepository _voiceConsentRepository;

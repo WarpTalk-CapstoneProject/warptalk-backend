@@ -46,7 +46,18 @@ public record WorkspaceSettingsSnapshotDto(
     /// local entitlement snapshot. Null means no quota is in force (no snapshot yet, no live
     /// subscription, or unlimited) — never "zero languages permitted".
     /// </summary>
-    int? MaxLanguages = null
+    int? MaxLanguages = null,
+    /// <summary>
+    /// The workspace's plan from the replicated entitlement snapshot; null when there is none.
+    /// </summary>
+    string? PlanSlug = null,
+    /// <summary>
+    /// Whether the entitlement snapshot exists for this workspace. False means unknown, and a
+    /// caller must not deny on <see cref="HasActiveSubscription"/> then (the WT-515 IsKnown rule).
+    /// </summary>
+    bool SubscriptionKnown = false,
+    /// <summary>The snapshot's has_active_subscription. Meaningful only when known.</summary>
+    bool HasActiveSubscription = false
 );
 
 public record WorkspacePreflightDto(
@@ -57,3 +68,22 @@ public record WorkspacePreflightDto(
     bool AllowExternalCollaboration,
     Guid? OwnerUserId = null
 );
+
+/// <summary>One workspace a person is an active member of, and its plan (null with no plan).</summary>
+public record UserWorkspaceAudienceDto(Guid WorkspaceId, string? PlanSlug, string? RoleName = null);
+
+/// <summary>
+/// One workspace as the platform admin's per-workspace plugin controls see it. Deleted workspaces
+/// are never listed.
+/// </summary>
+/// <param name="Status"><c>active</c> or <c>suspended</c>.</param>
+/// <param name="PlanSlug">From the replicated entitlement snapshot; null when there is none.</param>
+public record PlatformWorkspaceDto(
+    Guid WorkspaceId,
+    string Name,
+    string Slug,
+    string Status,
+    Guid OwnerUserId,
+    string? PlanSlug,
+    int MemberCount,
+    bool AllowAnyPlugins);

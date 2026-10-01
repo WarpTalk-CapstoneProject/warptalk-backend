@@ -1,4 +1,5 @@
 using WarpTalk.Shared;
+using WarpTalk.Shared.Email;
 using WarpTalk.NotificationService.Application.DTOs;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.Application.Mappers;
@@ -12,16 +13,27 @@ public class NotificationService : INotificationService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IEmailSender? _emailSender;
+    private readonly IEmailTemplateComposer _emailTemplates;
+    private readonly IEmailDeliveryRecorder? _deliveries;
     private readonly ILogger<NotificationService> _logger;
+
+    /// <summary>Where an email copy's button points when the notification's own link is unsafe.</summary>
+    public const string FallbackActionUrl = "https://warptalk.app";
 
     public NotificationService(
         IUnitOfWork unitOfWork,
         ILogger<NotificationService> logger,
-        IEmailSender? emailSender = null)
+        IEmailSender? emailSender = null,
+        IEmailTemplateComposer? emailTemplates = null,
+        IEmailDeliveryRecorder? deliveries = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _emailSender = emailSender;
+        // The email copy is the admin-editable "notification.email-copy" template, read from this
+        // service's own store.
+        _emailTemplates = emailTemplates ?? new EmailTemplateComposer(new EmailCms.EmailPublishedResolver(unitOfWork));
+        _deliveries = deliveries;
     }
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
@@ -118,13 +130,20 @@ public class NotificationService : INotificationService
                     var userEmail = ExtractEmailFromPayload(dto.PayloadJson);
                     if (!string.IsNullOrWhiteSpace(userEmail))
                     {
-                        var htmlBody = EmailTemplateRenderer.RenderGenericNotification(
-                            dto.Title,
-                            dto.Content,
-                            dto.ActionUrl);
-                        var delivered = await _emailSender.SendEmailAsync(
-                            new EmailMessage(userEmail, dto.Title, htmlBody),
+                        var email = await _emailTemplates.ComposeAsync(
+                            EmailTemplateCatalog.NotificationEmailCopy,
+                            new Dictionary<string, string>
+                            {
+                                ["Title"] = dto.Title,
+                                ["Content"] = dto.Content,
+                                ["ActionUrl"] = SafeActionUrl(dto.ActionUrl),
+                            },
+                            null,
                             ct);
+                        var delivered = await _emailSender.SendEmailAsync(
+                            new EmailMessage(userEmail, email.Subject, email.HtmlBody, TextBody: email.TextBody),
+                            ct);
+                        if (_deliveries is not null) await _deliveries.RecordAsync(email, delivered, ct);
                         if (!delivered)
                         {
                             _logger.LogWarning(
@@ -142,6 +161,16 @@ public class NotificationService : INotificationService
 
         return Result.Success(NotificationMessageMapper.ToDto(notification));
     }
+
+    /// <summary>
+    /// A notification's link, only if it is a web address. A producer's action_url is not trusted
+    /// to become an href in somebody's inbox.
+    /// </summary>
+    public static string SafeActionUrl(string? actionUrl) =>
+        Uri.TryCreate(actionUrl, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
+            ? uri.ToString()
+            : FallbackActionUrl;
 
     private static string? ExtractEmailFromPayload(string? json)
     {

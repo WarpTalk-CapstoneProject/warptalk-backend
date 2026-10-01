@@ -48,6 +48,24 @@ message RecordAdminActionRequest {
   // table has no DELETE grant, so a secret that reaches it cannot be taken back out.
   map<string, string> before_summary = 11;
   map<string, string> after_summary = 12;
+
+  // Everything below is optional context for the platform audit screen. Empty means "not
+  // recorded"; the store keeps NULL rather than "", and the screen says so instead of guessing.
+
+  // The actor as the calling service saw them in the token. The id above stays the identity;
+  // these are a snapshot so an entry still names its actor after the account is renamed or gone.
+  string actor_email = 13;
+  string actor_name = 14;
+  // A subject whose natural key is not a GUID: a language code, a plugin key. entity_id stays
+  // empty for those, so this is the only place their identity lives.
+  string entity_key = 15;
+  // What the subject was called at the time: a workspace name, a plan name, a term.
+  string entity_label = 16;
+  // Why a FAILED entry failed, in the words the caller returned. Empty on success.
+  string error_message = 17;
+  // The admin's own request, forwarded by the gateway — never the calling service's address.
+  string ip_address = 18;
+  string user_agent = 19;
 }
 
 message RecordAdminActionResponse {

@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package meet_conference;
+
+// Google Meet REST v2, read through a WarpTalk user's own Google grant.
+//
+// Served by AssistantService because that is where the grant lives: plugin_connections holds the
+// encrypted access/refresh tokens and PluginConnectionService is the only thing that may refresh
+// them. Callers never see a Google token — they name the user whose grant to use and get answers.
+//
+// Every RPC reports provider-side trouble IN BAND through `error_code` (see
+// WarpTalk.Shared.MeetConferenceErrorCodes) rather than as an RpcException, because the callers
+// are background workers that branch on the kind of failure: `meet_scope_missing` means "the host
+// never granted meetings.space.readonly, leave this room to the other reapers", which is not a
+// fault to retry; `plugin_not_connected` (the user has not connected the google_meet plugin in the
+// room's workspace) is the same kind of answer. RpcException is kept for transport failures and
+// malformed requests.
+service MeetConferenceService {
+  // conferenceRecords?filter=space.meeting_code="..." — every conference held under the code.
+  rpc GetConferenceRecords (MeetConferenceLookupRequest) returns (GetConferenceRecordsResponse);
+
+  // The roster of the live conference for the code (or the most recent one when none is live).
+  rpc ListMeetParticipants (MeetConferenceLookupRequest) returns (ListMeetParticipantsResponse);
+
+  // Google's own speaker-attributed transcript for the conferences that overlap the window.
+  rpc GetMeetTranscriptEntries (GetMeetTranscriptEntriesRequest) returns (GetMeetTranscriptEntriesResponse);
+}
+
+message MeetConferenceLookupRequest {
+  // The WarpTalk user whose Google grant is used — the room's host.
+  string user_id = 1;
+  // A Meet code (abc-mnop-xyz) or a meet.google.com link carrying one.
+  string meeting = 2;
+  // The bridge room's workspace. The user must have the google_meet plugin installed AND
+  // connected, and usable in this workspace, or the call answers `plugin_not_connected`. Empty
+  // (an older caller) is refused the same way: there is no workspace to judge the plugin by.
+  string workspace_id = 3;
+}
+
+message MeetConferenceRecord {
+  // conferenceRecords/{id}
+  string name = 1;
+  // RFC 3339; end_time is empty while the conference is live.
+  string start_time = 2;
+  string end_time = 3;
+}
+
+message GetConferenceRecordsResponse {
+  string error_code = 1;
+  string error = 2;
+  repeated MeetConferenceRecord records = 3;
+}
+
+message MeetParticipant {
+  // conferenceRecords/{id}/participants/{id} — stable for the conference.
+  string key = 1;
+  string display_name = 2;
+  // signedin | anonymous | phone
+  string kind = 3;
+  string joined_at = 4;
+  // Empty while the participant is still in the call.
+  string left_at = 5;
+}
+
+message ListMeetParticipantsResponse {
+  string error_code = 1;
+  string error = 2;
+  string conference_record = 3;
+  repeated MeetParticipant participants = 4;
+}
+
+message GetMeetTranscriptEntriesRequest {
+  string user_id = 1;
+  string meeting = 2;
+  // RFC 3339. Only conference records overlapping [window_start, window_end] are read.
+  string window_start = 3;
+  string window_end = 4;
+  // See MeetConferenceLookupRequest.workspace_id.
+  string workspace_id = 5;
+}
+
+message MeetTranscriptEntry {
+  // The participant resource name (conferenceRecords/{id}/participants/{id}).
+  string participant_key = 1;
+  string display_name = 2;
+  string text = 3;
+  string language_code = 4;
+  string start_time = 5;
+  string end_time = 6;
+}
+
+message GetMeetTranscriptEntriesResponse {
+  string error_code = 1;
+  string error = 2;
+  // How many conference records overlapped the window.
+  int32 conference_records = 3;
+  // Of their transcripts, how many are readable and how many are still being produced. A caller
+  // seeing pending > 0 should come back later; records > 0 with transcripts == 0 means Meet
+  // transcription was never turned on (or the record is still live).
+  int32 transcripts_ready = 4;
+  int32 transcripts_pending = 5;
+  // True when at least one overlapping record has not ended yet.
+  bool conference_live = 6;
+  repeated MeetTranscriptEntry entries = 7;
+}

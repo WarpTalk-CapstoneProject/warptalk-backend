@@ -3,7 +3,12 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.Shared;
+using WarpTalk.Shared.AdminAudit;
+using WarpTalk.Shared.Events;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -13,14 +18,22 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class SubscriptionsController : ControllerBase
 {
     private readonly ISubscriptionService _subscriptionService;
+    private readonly IStripeSubscriptionLifecycleService _lifecycle;
+    private readonly IStaffAccessResolver _staffAccess;
 
-    public SubscriptionsController(ISubscriptionService subscriptionService)
+    public SubscriptionsController(
+        ISubscriptionService subscriptionService,
+        IStripeSubscriptionLifecycleService lifecycle,
+        IStaffAccessResolver staffAccess)
     {
         _subscriptionService = subscriptionService;
+        _lifecycle = lifecycle;
+        _staffAccess = staffAccess;
     }
 
     [HttpPost("contract")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.ContractCreated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<ActionResult<SubscriptionDto>> CreateWorkspaceContractSubscription(
         [FromBody] CreateWorkspaceContractSubscriptionRequest request,
         CancellationToken cancellationToken)
@@ -60,7 +73,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("global")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [RequirePermission(AdminPermissions.BillingRead)]
     public async Task<ActionResult<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptions(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
@@ -74,13 +87,18 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpDelete("workspace/{workspaceId}")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionCancelled, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-878: Stripe refused, so nothing changed — the same 502 the auto-renew toggle answers.
+            var error = new ApiErrorResponse(result.Error, result.ErrorCode);
+            return result.ErrorCode == ErrorCodes.BillingExternalServiceError
+                ? StatusCode(StatusCodes.Status502BadGateway, error)
+                : BadRequest(error);
         }
 
         return NoContent();
@@ -94,6 +112,7 @@ public class SubscriptionsController : ControllerBase
     /// instead, because that is a Checkout flow.
     /// </summary>
     [HttpPost("workspace/{workspaceId}/reactivate")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionReactivated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ReactivateSubscription(
         Guid workspaceId,
@@ -102,30 +121,130 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(
+            var error = new ApiErrorResponse(
                 result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
-                result.ErrorCode));
+                result.ErrorCode);
+            return result.ErrorCode switch
+            {
+                StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutCode => Conflict(error),
+                ErrorCodes.BillingExternalServiceError => StatusCode(StatusCodes.Status502BadGateway, error),
+                _ => BadRequest(error),
+            };
         }
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Lift a ServiceState suspension. WT-878: a workspace Owner/Admin may lift only
+    /// <c>overage_cap</c> (and only with room under the cap); any other reason answers 403
+    /// BILLING_RESUME_NOT_ALLOWED. Platform staff with billing.subscriptions_manage — the same
+    /// check the SystemAdmin override on this endpoint uses — may still lift any reason.
+    /// </summary>
     [HttpPost("workspace/{workspaceId}/resume")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionResumed, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
         Guid workspaceId,
         [FromBody] ResumeSubscriptionRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, request, cancellationToken);
+        var isPlatformStaff = await _staffAccess.StaffOverrideAllowsAsync(
+            User,
+            AdminPermissions.BillingSubscriptionsManage,
+            cancellationToken);
+
+        var result = await _subscriptionService.ResumeSubscriptionAsync(
+            workspaceId,
+            request,
+            liftAnyReason: isPlatformStaff,
+            cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+            var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+            return result.ErrorCode == SubscriptionService.ResumeNotAllowedCode
+                ? StatusCode(StatusCodes.Status403Forbidden, error)
+                : BadRequest(error);
         }
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// #466: switch automatic renewal off or back on. For a card plan this is Stripe's
+    /// cancel_at_period_end — the paid period always runs to its end — and Stripe is asked first.
+    /// A plan that was paid once (no card on file) answers 409 BILLING_AUTO_RENEW_REQUIRES_CHECKOUT
+    /// when switched on: that needs a new checkout with auto-renew on.
+    /// </summary>
+    [HttpPut("workspace/{workspaceId}/auto-renew")]
+    [AdminAudited(AdminAuditBillingActions.SubscriptionAutoRenewSet, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> SetAutoRenew(
+        Guid workspaceId,
+        [FromBody] SetAutoRenewRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _lifecycle.SetAutoRenewAsync(workspaceId, request.AutoRenew, cancellationToken);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+        return result.ErrorCode switch
+        {
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(error),
+            StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutCode => Conflict(error),
+            ErrorCodes.BillingExternalServiceError => StatusCode(StatusCodes.Status502BadGateway, error),
+            _ => BadRequest(error),
+        };
+    }
+
+    /// <summary>
+    /// #466: renewal as the billing page shows it — who renews, the next charge date and amount,
+    /// the card on file (brand and last four digits only) and any failed renewal charge.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId}/recurring")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<RecurringBillingStatusDto>> GetRecurringStatus(Guid workspaceId, CancellationToken cancellationToken)
+    {
+        var result = await _lifecycle.GetRecurringBillingStatusAsync(workspaceId, cancellationToken);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+        return result.ErrorCode == ErrorCodes.BillingSubscriptionNotFound ? NotFound(error) : BadRequest(error);
+    }
+
+    /// <summary>
+    /// #466: a Stripe billing-portal link where the owner updates the card. Returns only the URL;
+    /// the portal session is Stripe's and expires on its own. Writes nothing here.
+    /// </summary>
+    [HttpPost("workspace/{workspaceId}/billing-portal")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<BillingPortalDto>> CreateBillingPortal(
+        Guid workspaceId,
+        [FromBody] BillingPortalRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _lifecycle.CreateBillingPortalAsync(workspaceId, request?.ReturnPath, cancellationToken);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+        return result.ErrorCode switch
+        {
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(error),
+            ErrorCodes.BillingExternalServiceError => StatusCode(StatusCodes.Status502BadGateway, error),
+            _ => BadRequest(error),
+        };
+    }
+
     [HttpPut("workspace/{workspaceId}/contract-terms")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    [AdminAudited(AdminAuditBillingActions.ContractTermsUpdated, AdminAuditEntityTypes.Subscription, typeof(Subscription))]
+    [RequirePermission(AdminPermissions.BillingSubscriptionsManage)]
     public async Task<ActionResult<SubscriptionDto>> UpdateContractTerms(
         Guid workspaceId,
         [FromBody] UpdateSubscriptionContractTermsRequest request,

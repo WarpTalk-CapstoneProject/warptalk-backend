@@ -33,6 +33,12 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<VoiceConsent> VoiceConsents { get; set; }
 
+    public virtual DbSet<VoiceEnrollmentChallenge> VoiceEnrollmentChallenges { get; set; }
+
+    public virtual DbSet<StaffMember> StaffMembers { get; set; }
+
+    public virtual DbSet<StaffInvitation> StaffInvitations { get; set; }
+
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -167,6 +173,13 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.Name)
                 .HasMaxLength(50)
                 .HasColumnName("name");
+            entity.Property(e => e.Scope)
+                .HasMaxLength(20)
+                .HasDefaultValue("legacy")
+                .HasColumnName("scope");
+            entity.Property(e => e.Slug)
+                .HasMaxLength(60)
+                .HasColumnName("slug");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
@@ -508,6 +521,45 @@ public partial class AuthDbContext : DbContext
                 .HasConstraintName("voice_consents_voice_profile_id_fkey");
         });
 
+        // WT-888 — the read-aloud phrase a live recording must say before it may become a voice.
+        // Every column is mapped by hand: this context has no naming convention, and a missing
+        // HasColumnName is a 500 on every SELECT over the table.
+        modelBuilder.Entity<VoiceEnrollmentChallenge>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_enrollment_challenges_pkey");
+
+            entity.ToTable("voice_enrollment_challenges", "voice");
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt },
+                "voice_enrollment_challenges_user_id_created_at_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Language)
+                .HasMaxLength(15)
+                .HasColumnName("language");
+            entity.Property(e => e.Phrase)
+                .HasMaxLength(500)
+                .HasColumnName("phrase");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.ConsumedAt).HasColumnName("consumed_at");
+            entity.Property(e => e.Outcome)
+                .HasMaxLength(32)
+                .HasColumnName("outcome");
+            entity.Property(e => e.Transcript)
+                .HasMaxLength(1000)
+                .HasColumnName("transcript");
+            entity.Property(e => e.MatchScore)
+                .HasPrecision(4, 3)
+                .HasColumnName("match_score");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+        });
+
         modelBuilder.Entity<VoiceProfile>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("voice_profiles_pkey");
@@ -613,6 +665,85 @@ public partial class AuthDbContext : DbContext
             entity.HasOne(d => d.VoiceProfile).WithMany(p => p.VoiceSamples)
                 .HasForeignKey(d => d.VoiceProfileId)
                 .HasConstraintName("voice_samples_voice_profile_id_fkey");
+        });
+
+        // G10 — platform staff. Every column is named explicitly, and each relationship names BOTH
+        // ends (HasOne(Role).WithMany(Role.StaffMembers)) so EF cannot invent a shadow foreign key
+        // (see AuthModelHasNoShadowForeignKeysTests). No navigation to User on purpose: the account
+        // fields the portal shows are joined in StaffMemberRepository.
+        modelBuilder.Entity<StaffMember>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("staff_members_pkey");
+
+            entity.ToTable("staff_members", "auth");
+
+            entity.HasIndex(e => e.UserId, "staff_members_user_id_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.RoleId).HasColumnName("role_id");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasColumnName("status");
+            entity.Property(e => e.StatusReason)
+                .HasMaxLength(500)
+                .HasColumnName("status_reason");
+            entity.Property(e => e.StatusChangedAt).HasColumnName("status_changed_at");
+            entity.Property(e => e.StatusChangedBy).HasColumnName("status_changed_by");
+            entity.Property(e => e.Source)
+                .HasMaxLength(30)
+                .HasColumnName("source");
+            entity.Property(e => e.InvitedBy).HasColumnName("invited_by");
+            entity.Property(e => e.LastActiveAt).HasColumnName("last_active_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.Role).WithMany(p => p.StaffMembers)
+                .HasForeignKey(d => d.RoleId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("staff_members_role_id_fkey");
+        });
+
+        modelBuilder.Entity<StaffInvitation>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("staff_invitations_pkey");
+
+            entity.ToTable("staff_invitations", "auth");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.Email)
+                .HasMaxLength(255)
+                .HasColumnName("email");
+            entity.Property(e => e.RoleId).HasColumnName("role_id");
+            entity.Property(e => e.InvitedBy).HasColumnName("invited_by");
+            entity.Property(e => e.Note)
+                .HasMaxLength(500)
+                .HasColumnName("note");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.AcceptedAt).HasColumnName("accepted_at");
+            entity.Property(e => e.AcceptedUserId).HasColumnName("accepted_user_id");
+            entity.Property(e => e.RevokedAt).HasColumnName("revoked_at");
+            entity.Property(e => e.RevokedBy).HasColumnName("revoked_by");
+            entity.Property(e => e.RevokeReason)
+                .HasMaxLength(500)
+                .HasColumnName("revoke_reason");
+
+            entity.HasOne(d => d.Role).WithMany(p => p.StaffInvitations)
+                .HasForeignKey(d => d.RoleId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("staff_invitations_role_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

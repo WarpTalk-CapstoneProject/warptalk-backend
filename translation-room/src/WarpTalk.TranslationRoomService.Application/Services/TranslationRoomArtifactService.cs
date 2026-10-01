@@ -54,13 +54,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         string templateKey,
         string? summaryLanguage,
         string? bearerToken,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null)
@@ -72,7 +73,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
                 return Result.Failure<string>("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<string>("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
 
             // THE HOST DECIDES WHAT THE MEETING'S SUMMARY IS (WT-703).
@@ -89,6 +90,15 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // effective host (IsHostedBy), so a handover moves this right with the meeting.
             if (!room.IsHostedBy(userId))
                 return Result.Failure<string>("Only the meeting's host can rewrite its summary.", ErrorCodes.Unauthorized);
+
+            // WT-870. With no saved transcript there is nothing to write a summary FROM — and
+            // before BOTH branches below, because the finalization redirect would produce one
+            // just as surely as the rewrite. Said with its own code, not left to the worker to
+            // discover by reading an empty transcript after a model call has been queued.
+            if (!TranscriptRetention.IsSaved(room))
+                return Result.Failure<string>(
+                    TranscriptRetention.ErrorTranscriptNotSaved,
+                    TranscriptRetention.ErrorCodeTranscriptNotSaved);
 
             // Before BOTH branches below: the finalization redirect writes a summary in this
             // language just as surely as the rewrite does, so neither may be reached with a
@@ -184,6 +194,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         Guid roomId,
         Guid userId,
         string requestId,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(requestId))
@@ -191,7 +202,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
         var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
             r => r.Id == roomId,
-            "TranslationRoomParticipants,TranslationRoomArtifacts",
+            "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
             ct);
 
         if (room == null)
@@ -200,7 +211,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         // The same gate as reading the artifacts, because the failure text quotes what the worker
         // found in this meeting's transcript — "This meeting has no saved transcript to summarise"
         // is itself a fact about the meeting.
-        if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+        if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
             return Result.Failure<SummaryRewriteStatusDto>("Unauthorized to read this room's artifacts.", ErrorCodes.Unauthorized);
 
         var outcome = await ReadRewriteOutcomeAsync(requestId);
@@ -243,13 +254,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         string templateKey,
         string? language,
         string? bearerToken,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null)
@@ -261,7 +273,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // The same gate the canonical summary is read behind. A rendering is the same
             // meeting's content in another language — it must not be reachable by anyone the
             // original is not.
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<SummaryVariantDto>("Unauthorized to read this room's summary.", ErrorCodes.Unauthorized);
 
             var wantedTemplate = NormalizeTemplateKey(templateKey);
@@ -430,6 +442,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // unreadable. Only from here on does this GET create something new, so this is the
             // one place the meeting's languages get a say, and it must come before the claim so a
             // refusal leaves no in-flight key behind.
+            //
+            // WT-870 applies at the same point for the same reason: whatever already exists stays
+            // readable, but a meeting that kept no transcript gets nothing NEW written about it.
+            if (!TranscriptRetention.IsSaved(room))
+                return Result.Failure<SummaryVariantDto>(
+                    TranscriptRetention.ErrorTranscriptNotSaved,
+                    TranscriptRetention.ErrorCodeTranscriptNotSaved);
+
             var languageAllowed = await _languagePolicy.EnsureCanGenerateAsync(room, wantedLanguage, ct);
             if (!languageAllowed.IsSuccess)
                 return Result.Failure<SummaryVariantDto>(languageAllowed.Error!, languageAllowed.ErrorCode);
@@ -517,19 +537,20 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     public async Task<Result<List<SummaryVariantSummaryDto>>> GetSummaryVariantsAsync(
         Guid roomId,
         Guid userId,
+        string? userEmail = null,
         CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null)
                 return Result.Failure<List<SummaryVariantSummaryDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<List<SummaryVariantSummaryDto>>("Unauthorized to read this room's summary.", ErrorCodes.Unauthorized);
 
             var listed = new List<SummaryVariantSummaryDto>();
@@ -713,13 +734,13 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         return stored.TemplateKey == templateKey && stored.Language == language;
     }
 
-    public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == roomId,
-                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                "TranslationRoomParticipants,TranslationRoomArtifacts,TranslationRoomInvitations",
                 ct);
 
             if (room == null) return Result.Failure<List<RoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
@@ -729,7 +750,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 return Result.Failure<List<RoomArtifactDto>>("Artifacts are only available for finished rooms.", ErrorCodes.InvalidState);
             }
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail))
                 return Result.Failure<List<RoomArtifactDto>>("Unauthorized to view artifacts for this room.", ErrorCodes.Unauthorized);
 
             var artifacts = await _unitOfWork.TranslationRoomArtifactRepository.GetArtifactsByRoomIdAsync(roomId, ct);
@@ -743,7 +764,12 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         }
     }
 
-    public async Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(Guid artifactId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(
+        Guid artifactId,
+        Guid userId,
+        string? userEmail = null,
+        bool asAttachment = false,
+        CancellationToken ct = default)
     {
         try
         {
@@ -751,15 +777,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure<ArtifactDownloadDto>("Artifact not found.", ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId, userEmail))
             {
                 // Named rather than flat — see ArtifactAccessHelper.DescribeArtifactDenial. The
-                // participant roster is already loaded on the room this query returned, so saying
-                // WHICH refusal this is costs nothing beyond the predicate.
-                var wasThere = artifact.TranslationRoom.TranslationRoomParticipants
-                    .Any(participant => participant.UserId == userId);
+                // participant roster and invitation list are already loaded on the room, so
+                // determining WHICH refusal this is costs nothing beyond the predicate.
                 return Result.Failure<ArtifactDownloadDto>(
-                    ArtifactAccessHelper.DescribeArtifactDenial(wasThere),
+                    ArtifactAccessHelper.DescribeArtifactDenial(
+                        ArtifactAccessHelper.IsParticipantOrInvited(artifact.TranslationRoom, userId, userEmail)),
                     ErrorCodes.Unauthorized);
             }
 
@@ -818,12 +843,26 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             // the database; those rows are never rewritten.
             if (ArtifactPlainText.IsTextExport(artifact.ArtifactType))
             {
+                var isSummary = string.Equals(
+                    artifact.ArtifactType,
+                    ArtifactType.SUMMARY_EXPORT.ToString(),
+                    StringComparison.OrdinalIgnoreCase);
+
                 return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
                     // A text export never has a file behind it — the content IS the artifact — so
                     // there is no signed URL to produce here.
                     null,
                     ArtifactPlainText.Render(artifact.ArtifactType, artifact.Content),
-                    $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.txt",
+                    RecordFileName.For(
+                        artifact.TranslationRoom.Title,
+                        isSummary ? RecordFileName.Summary : RecordFileName.Transcript,
+                        MeetingStart(artifact.TranslationRoom),
+                        // Only the summary has a language of its own to declare: the AI stamps the
+                        // rendering it wrote into the content, and a room can hold the same summary
+                        // in several. A transcript is in the languages that were spoken, which is
+                        // not one thing and does not belong in a file name.
+                        isSummary ? ReadStoredSummaryKey(artifact.Content).Language : null,
+                        "txt"),
                     "text/plain"));
             }
 
@@ -850,12 +889,34 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 "wav" => "audio/wav",
                 _ => artifact.ContainsRawAudio ? "application/octet-stream" : "text/plain"
             };
-            var fileName = $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.{extension}";
+            // A recording is named after its meeting like everything else a person keeps. The rest
+            // — DEBUG_LOG, AUDIO_SAMPLE — keep the row-id name: nobody files those away, they are
+            // fetched by an engineer who is holding the id already, and for them the id IS the
+            // useful name.
+            var isRecording = string.Equals(
+                artifact.ArtifactType,
+                ArtifactType.OPTIONAL_RECORDING.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            var fileName = isRecording
+                ? RecordFileName.For(
+                    artifact.TranslationRoom.Title,
+                    RecordFileName.Recording,
+                    MeetingStart(artifact.TranslationRoom),
+                    null,
+                    extension,
+                    await RecordingOrdinalAsync(artifact, ct))
+                : $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.{extension}";
+
             var downloadUrl = string.IsNullOrWhiteSpace(artifact.FileUrl)
                 ? null
                 : await _urlSigner.CreateDownloadUrlAsync(
                     artifact.FileUrl,
                     TimeSpan.FromMinutes(15),
+                    // Only a download asks for the name. The record page fetches this same link
+                    // for its <video> element, and an attachment disposition on that one is a
+                    // browser being told to save the file it was asked to play.
+                    asAttachment ? fileName : null,
                     ct);
             return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
                 downloadUrl,
@@ -868,6 +929,69 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             _logger.LogError(ex, "Error getting download URL for artifact {ArtifactId}", artifactId);
             return Result.Failure<ArtifactDownloadDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// The date a person would say the meeting was on, for the file name.
+    /// </summary>
+    /// <remarks>
+    /// UTC, and deliberately not converted. There is no timezone on the room and none on the
+    /// workspace, so the only honest alternatives are UTC or inventing a zone — and a zone guessed
+    /// from the server's locale would move a late-evening meeting onto the wrong day for readers in
+    /// Hanoi while looking perfectly right in the code. The web helper renders the reader's own
+    /// zone because the browser actually knows it; here the day is the UTC day. Both are defensible,
+    /// they differ only for meetings within a few hours of midnight, and a real zone on the room
+    /// (someone has to decide whose — host's, workspace's, or the invite's) would settle it for
+    /// both sides at once.
+    ///
+    /// <c>StartedAt</c> first because that is when it happened; <c>ScheduledAt</c> for a meeting
+    /// with artifacts but no recorded start; <c>CreatedAt</c> last, which for an instant meeting is
+    /// its start to within seconds. <c>default</c> is treated as absent throughout — an unset
+    /// column reads as 0001-01-01, and a file called "… - 0001-01-01.mp4" is a wrong answer that
+    /// looks like a right one.
+    /// </remarks>
+    private static DateTime? MeetingStart(TranslationRoom room)
+    {
+        if (room.StartedAt.HasValue && room.StartedAt.Value != default) return room.StartedAt;
+        if (room.ScheduledAt.HasValue && room.ScheduledAt.Value != default) return room.ScheduledAt;
+        return room.CreatedAt == default ? null : room.CreatedAt;
+    }
+
+    /// <summary>
+    /// Which recording of the meeting this is: 1 when it is the only one, 2 upwards otherwise.
+    /// </summary>
+    /// <remarks>
+    /// A host who stops and restarts recording gets a second row, and both rows share a title and a
+    /// date — so without this they would arrive as one name and the browser would silently rename
+    /// the second "… (1).mp4", numbering them in the order somebody happened to click rather than
+    /// the order they were recorded.
+    ///
+    /// The extra query is paid only by recordings, and only once per download of one. Ordered by
+    /// <c>RecordingStartedAt</c> rather than <c>CreatedAt</c> because CreatedAt is stamped when
+    /// EGRESS FINISHED — a long first pass and a short second one land out of order — with
+    /// CreatedAt as the fallback for rows written before that column existed.
+    /// </remarks>
+    private async Task<int> RecordingOrdinalAsync(TranslationRoomArtifact artifact, CancellationToken ct)
+    {
+        var siblings = await _unitOfWork.TranslationRoomArtifactRepository
+            .GetArtifactsByRoomIdAsync(artifact.TranslationRoomId, ct);
+        if (siblings == null) return 1;
+
+        var recordings = siblings
+            .Where(item => string.Equals(
+                item.ArtifactType,
+                ArtifactType.OPTIONAL_RECORDING.ToString(),
+                StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.RecordingStartedAt ?? item.CreatedAt)
+            .ThenBy(item => item.Id)
+            .ToList();
+
+        // One recording is just "the recording" — a "(1)" on a lone file would only make the reader
+        // look for a second one.
+        if (recordings.Count < 2) return 1;
+
+        var index = recordings.FindIndex(item => item.Id == artifact.Id);
+        return index < 0 ? 1 : index + 1;
     }
 
     /// <summary>

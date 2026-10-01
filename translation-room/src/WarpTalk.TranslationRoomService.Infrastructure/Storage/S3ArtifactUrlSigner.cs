@@ -2,6 +2,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Storage;
@@ -54,6 +55,7 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
     public Task<string> CreateDownloadUrlAsync(
         string storedUrl,
         TimeSpan lifetime,
+        string? downloadFileName = null,
         CancellationToken ct = default)
     {
         if (!Uri.TryCreate(storedUrl, UriKind.Absolute, out var uri))
@@ -92,14 +94,31 @@ public sealed class S3ArtifactUrlSigner : IArtifactUrlSigner, IDisposable
         if (_s3 is null)
             throw new InvalidOperationException("S3 signing credentials are not configured.");
 
-        var signed = _s3.GetPreSignedURL(new GetPreSignedUrlRequest
+        var request = new GetPreSignedUrlRequest
         {
             BucketName = bucket,
             Key = key,
             Expires = DateTime.UtcNow.Add(lifetime),
             Verb = HttpVerb.GET,
             Protocol = _protocol
-        });
+        };
+
+        // THE NAME TRAVELS INSIDE THE SIGNATURE, NOT BESIDE IT.
+        //
+        // The browser is sent straight to R2; nothing of ours is in the path that serves the
+        // bytes, so a Content-Disposition we set on our own response would never be seen. S3's
+        // response-header override puts it in the presigned request instead — the header becomes
+        // part of what is signed, which is also why it cannot be tampered with in the link.
+        //
+        // Only when a name was asked for. A null leaves the object served exactly as stored, which
+        // is what the record page's <video> element needs: see IArtifactUrlSigner.
+        if (!string.IsNullOrWhiteSpace(downloadFileName))
+        {
+            request.ResponseHeaderOverrides.ContentDisposition =
+                ContentDispositionHeader.Attachment(downloadFileName);
+        }
+
+        var signed = _s3.GetPreSignedURL(request);
         return Task.FromResult(signed);
     }
 

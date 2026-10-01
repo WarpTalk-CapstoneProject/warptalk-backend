@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranscriptService.Application.FarSpeakers;
 using WarpTalk.TranscriptService.Application.Services;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
@@ -28,6 +29,7 @@ public class TranscriptRedisConsumerService : BackgroundService
     private readonly string _consumerName = $"transcript-{Environment.MachineName}-{Guid.NewGuid():N}";
     private readonly Dictionary<string, RedisValue> _claimCursors = new();
     private readonly Dictionary<string, DateTime> _lastRecoveryAt = new();
+    private readonly Dictionary<string, DateTime> _lastHousekeepingAt = new();
 
     // Cache the resolved AllowExternalLlm flag per workspace so PublishEmbeddingIndexRequestAsync
     // (called once per persisted segment — i.e. potentially many times a second across a busy
@@ -48,6 +50,17 @@ public class TranscriptRedisConsumerService : BackgroundService
     /// </summary>
     private readonly Dictionary<Guid, (bool SaveTranscript, DateTime CachedAt)> _roomRetentionCache = new();
     private static readonly TimeSpan RoomRetentionCacheDuration = TimeSpan.FromHours(4);
+
+    /// <summary>
+    /// The live far-speaker name threshold (<see cref="FarSpeakerNameOptions"/>), read once from the
+    /// container. Resolved rather than injected so the constructor every test builds stays as is;
+    /// absent, it is <see cref="WarpTalk.Shared.FarSpeakerNames.DefaultMinConfidence"/>.
+    /// </summary>
+    private double FarSpeakerMinConfidence =>
+        _farSpeakerMinConfidence ??= (_serviceProvider.GetService<FarSpeakerNameOptions>()
+            ?? FarSpeakerNameOptions.Default).MinConfidence;
+
+    private double? _farSpeakerMinConfidence;
 
     public TranscriptRedisConsumerService(
         IConnectionMultiplexer redis,
@@ -87,6 +100,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                 foreach (var stream in streamKeys)
                 {
                     messagesRead += await RecoverStaleMessagesAsync(db, stream, stoppingToken);
+                    await HousekeepConsumersAsync(db, stream);
 
                     var messages = await db.StreamReadGroupAsync(stream, ConsumerGroup, _consumerName, count: 10);
 
@@ -128,6 +142,7 @@ public class TranscriptRedisConsumerService : BackgroundService
             TranscriptResultStreamKind.Stt => ProcessSttMessageAsync(stream, message, cancellationToken),
             TranscriptResultStreamKind.Translation => ProcessTranslateMessageAsync(stream, message, cancellationToken),
             TranscriptResultStreamKind.Tts => ProcessTtsMessageAsync(stream, message, cancellationToken),
+            TranscriptResultStreamKind.CleanSentence => ProcessCleanSentenceMessageAsync(stream, message, cancellationToken),
             _ => Task.FromResult(true)
         };
 
@@ -173,6 +188,85 @@ public class TranscriptRedisConsumerService : BackgroundService
         }
 
         return claimed.ClaimedEntries.Length;
+    }
+
+    /// <summary>
+    /// Removes the consumers dead processes left in <c>transcript-persistence</c> on
+    /// <paramref name="stream"/>, at most once per <see cref="TranscriptConsumerPollingPolicy.ConsumerHousekeepingInterval"/>.
+    /// Runs right after <see cref="RecoverStaleMessagesAsync"/>, which is what moves a dead
+    /// consumer's pending entries onto this one and persists them — only then is it removable.
+    /// </summary>
+    /// <remarks>
+    /// Every replica runs it, with no leader: a consumer idle for an hour with nothing pending is
+    /// dead on any replica's view, and DELCONSUMER on one already gone is a no-op. A failure only
+    /// logs; housekeeping must never stop persistence, and the next interval tries again.
+    /// </remarks>
+    private async Task HousekeepConsumersAsync(IDatabase db, string stream)
+    {
+        var now = DateTime.UtcNow;
+        if (_lastHousekeepingAt.TryGetValue(stream, out var lastAt) &&
+            now - lastAt < TranscriptConsumerPollingPolicy.ConsumerHousekeepingInterval)
+        {
+            return;
+        }
+        _lastHousekeepingAt[stream] = now;
+
+        try
+        {
+            var removed = await RemoveDeadConsumersAsync(
+                db, stream, _consumerName, TranscriptConsumerPollingPolicy.DeadConsumerIdle, _logger);
+            if (removed.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Removed {Count} dead consumer(s) idle longer than {Idle} from {Stream}/{Group}",
+                    removed.Count,
+                    TranscriptConsumerPollingPolicy.DeadConsumerIdle,
+                    stream,
+                    ConsumerGroup);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Consumer housekeeping failed on {Stream}/{Group}; retrying next interval",
+                stream,
+                ConsumerGroup);
+        }
+    }
+
+    internal static async Task<IReadOnlyList<string>> RemoveDeadConsumersAsync(
+        IDatabase db,
+        string stream,
+        string selfConsumerName,
+        TimeSpan minIdle,
+        ILogger logger)
+    {
+        var consumers = (await db.StreamConsumerInfoAsync(stream, ConsumerGroup))
+            .Select(c => new TranscriptConsumerPollingPolicy.ConsumerState(
+                c.Name.ToString(), c.PendingMessageCount, c.IdleTimeInMilliseconds));
+
+        var removed = new List<string>();
+        foreach (var name in TranscriptConsumerPollingPolicy.SelectDeadConsumers(consumers, selfConsumerName, minIdle))
+        {
+            // DELCONSUMER drops whatever the consumer has pending and returns the count. Selection
+            // required zero, so anything here was read in between — which only a live process
+            // does. Its XREADGROUP recreates the consumer, but those entries leave the pending
+            // list: say so loudly, they are transcript lines.
+            var dropped = await db.StreamDeleteConsumerAsync(stream, ConsumerGroup, name);
+            if (dropped > 0)
+            {
+                logger.LogError(
+                    "Deleting consumer {Consumer} from {Stream}/{Group} discarded {Dropped} pending entries it read after it was selected",
+                    name,
+                    stream,
+                    ConsumerGroup,
+                    dropped);
+            }
+            removed.Add(name);
+        }
+
+        return removed;
     }
 
     private async Task FinalizeDeliveryAsync(
@@ -288,6 +382,21 @@ public class TranscriptRedisConsumerService : BackgroundService
         var anchorMs = long.TryParse(values.GetValueOrDefault("anchor_ms"), out var aMs) ? aMs : 0L;
         // shared/schemas.py STTResultMessage.to_redis() serializes this as "1"/"0", default false.
         var isFinal = values.GetValueOrDefault("is_final_chunk") == "1";
+        // WT-716 tier 1. Both OPTIONAL on the wire. Absent clean_text stays null ("not cleaned",
+        // read the raw text); "" is kept as "" ("filler only"). Flags ride with the text and are
+        // null exactly when it is, so a reader never sees flags describing a cleaning that has no
+        // result — see TranscriptConsumerPollingPolicy.ResolveCleanText.
+        var cleanText = TranscriptConsumerPollingPolicy.ResolveCleanText(values);
+        var cleanFlags = cleanText is null
+            ? null
+            : TranscriptConsumerPollingPolicy.ParseFlags(values.GetValueOrDefault("clean_flags"));
+        // Bridge only: stt_worker's live guess at which Meet participant spoke a stand-in segment.
+        var farSpeaker = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, speakerId);
+        // A stand-in line is saved under the live name when stt_worker is sure enough of it — the
+        // same rule, threshold and parse the Gateway uses for the live line (FarSpeakerNames), so
+        // a reload does not rename the speaker. The hint itself is stored as sent, below.
+        speakerName = TranscriptConsumerPollingPolicy.ResolveSavedSpeakerName(
+            speakerId, speakerName, farSpeaker, FarSpeakerMinConfidence);
 
         // stt_worker publishes early per-sentence segments as they're ready, then ONE trailing
         // empty marker (text="", is_final_chunk=true) once the whole audio chunk finishes — it
@@ -297,6 +406,16 @@ public class TranscriptRedisConsumerService : BackgroundService
         // GetByIdAsync check below never matches), silently accumulating stray empty rows over a
         // long conversation. Mirrors the same guard ProcessTranslateMessageAsync already has.
         if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        // A control marker is not speech. The __MEETING_END__ sentinel that asks the assistant
+        // worker for the summary rides this same stream, and was being written into the meeting's
+        // transcript as a line of dialogue from "System" — once per End call, so a meeting ended
+        // by six racing clicks carried six of them (prod, 30 Sep: sequence_order 1-6 within 0.7 s),
+        // and every transcript export and preview showed them. Acknowledged, never stored.
+        if (WarpTalk.TranscriptService.Domain.ControlMarkers.IsControlMarker(text, language))
         {
             return true;
         }
@@ -382,7 +501,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // instead of being set on the tracked `transcript` object below.
                 var sequenceOrder = await unitOfWork.AdvanceTranscriptForNewSegmentAsync(transcript.Id, endMs, cancellationToken);
 
-                if (speakerId.HasValue)
+                // The bridge stand-in has no user row; its name was settled by TryResolveSpeaker.
+                if (speakerId.HasValue && !TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId))
                 {
                     try
                     {
@@ -406,7 +526,12 @@ public class TranscriptRedisConsumerService : BackgroundService
                     StartTimeMs = startMs,
                     EndTimeMs = endMs,
                     SequenceOrder = sequenceOrder,
-                    IsFinal = isFinal
+                    IsFinal = isFinal,
+                    CleanText = cleanText,
+                    CleanFlags = cleanFlags,
+                    FarSpeakerKey = farSpeaker.Key,
+                    FarSpeakerSource = farSpeaker.Source,
+                    FarSpeakerConfidence = farSpeaker.Confidence
                 };
 
                 await unitOfWork.TranscriptSegments.AddAsync(segment, cancellationToken);
@@ -422,14 +547,21 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // than erroring. Without this write the transcript's origin is gone once the
                 // meeting is over, and its offsets can no longer be aligned with a recording.
                 //
-                // Updating the tracked entity is safe here, unlike total_segments/total_duration_ms
-                // above: those are advanced by an atomic UPDATE ... RETURNING and would be reverted
-                // by a tracked write, while this column is touched nowhere else.
+                // NOT through the tracked entity. This used to be `transcript.TimelineAnchorAt = ...;
+                // unitOfWork.Transcripts.Update(transcript)`, on the reasoning that this column is
+                // touched nowhere else. But Update() marks EVERY column modified, so it also wrote
+                // back the stale last_sequence_order/total_segments/total_duration_ms read before
+                // AdvanceTranscriptForNewSegmentAsync ran — reverting the counter on the first
+                // segment of every meeting. The second segment then collided on sequence_order,
+                // was retried by the stale reclaim a minute later, and landed at the END of the
+                // transcript with its real start time: the out-of-order line. One targeted UPDATE
+                // with an IS NULL guard; see StampTranscriptTimelineAnchorAsync.
                 if (anchorMs > 0 && transcript.TimelineAnchorAt is null)
                 {
-                    transcript.TimelineAnchorAt =
-                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime;
-                    unitOfWork.Transcripts.Update(transcript);
+                    await unitOfWork.StampTranscriptTimelineAnchorAsync(
+                        transcript.Id,
+                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime,
+                        cancellationToken);
                 }
 
                 // total_segments/total_duration_ms were already advanced atomically inside
@@ -439,6 +571,30 @@ public class TranscriptRedisConsumerService : BackgroundService
                 await unitOfWork.SaveChangesAsync(cancellationToken);
 
                 _logger.LogInformation("Persisted segment {SegmentId} (final={IsFinal}) for room {RoomId}", segmentId, isFinal, roomId);
+
+                // A LATE LINE GOES WHERE IT WAS SPOKEN, NOT AT THE END. The counter above hands out
+                // sequence_order in processing order; this moves the segment back in front of any
+                // already-stored line that started after it. See PlaceSegmentByStartTimeAsync.
+                if (TranscriptConsumerPollingPolicy.StartTimeIsOnTranscriptClock(anchorMs, transcript.TimelineAnchorAt))
+                {
+                    try
+                    {
+                        var placedAt = await unitOfWork.PlaceSegmentByStartTimeAsync(transcript.Id, segmentId, cancellationToken);
+                        if (placedAt is not null)
+                        {
+                            _logger.LogInformation(
+                                "transcript_segment_placed_by_start_time segment {SegmentId} room {RoomId} start_ms {StartMs} from {SequenceOrder} to {PlacedAt}",
+                                segmentId, roomId, startMs, sequenceOrder, placedAt);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // The line is stored; only its position is wrong, which is what it was before
+                        // this existed. Retrying the message would not store it again (idempotent by
+                        // segment id) and so could never fix the position either.
+                        _logger.LogWarning(ex, "Could not place segment {SegmentId} by start time", segmentId);
+                    }
+                }
 
                 // Wire into the RAG pipeline incrementally, per segment, as it's transcribed —
                 // there is no real "transcript finalized" event in this codebase to wait for
@@ -750,6 +906,18 @@ public class TranscriptRedisConsumerService : BackgroundService
                     return true;
                 }
 
+                // WT-587: an ephemeral meeting (save_transcript=false) is dubbed like any other,
+                // but the STT and translate handlers above deliberately wrote no segment and no
+                // link for it, so this lookup can never succeed. Retrying it dead-lettered every
+                // dubbed line of such a meeting (prod, 28 Sep: 7 entries, room "Test no save
+                // transcript") and kept WarpTalkDeadLetterPresent firing. Checked only here, on
+                // the miss, so a normal dub costs no extra lookup.
+                if (TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var retentionRoomId)
+                    && !await ShouldPersistRoomAsync(retentionRoomId, cancellationToken))
+                {
+                    return true;
+                }
+
                 _logger.LogWarning("No current translation link for segment {SegmentId}/{TargetLang} — deferring audio_dubbings write", segmentId, targetLang);
                 return false; // Retry later
             }
@@ -800,6 +968,165 @@ public class TranscriptRedisConsumerService : BackgroundService
             _logger.LogError(ex, "Error persisting audio_dubbing for segment {SegmentId} to database", segmentId);
             return false;
         }
+    }
+
+    /// <summary>
+    /// WT-716 tier 2: upsert one clean sentence from <c>transcript:clean</c> by (sentence_id, revision).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Revision is the whole idempotency story. A higher revision replaces the row; an equal or lower
+    /// one is a redelivery or an out-of-order write and is ACKED without change — returning false for
+    /// it would retry a message that can never apply and dead-letter it as a broken consumer.
+    /// <see cref="TranscriptCleanSentence.Revision"/> is also EF's concurrency token, so two
+    /// consumers applying different revisions at once cannot let the lower one win by saving last:
+    /// the loser's UPDATE matches no row, throws, returns false, and its retry re-reads and
+    /// compares again. Two concurrent INSERTs of a new sentence resolve the same way through the
+    /// primary key.
+    /// </para>
+    /// <para>
+    /// Segments this sentence names may not be stored yet — tier 2 can outrun persistence of the
+    /// very segments it covers. The sentence is stored anyway (segment_ids carries no FK), because
+    /// retrying until they land would delay it and dead-letter it on a slow meeting.
+    /// </para>
+    /// <para>
+    /// The gates are the segment path's, not new ones. An ephemeral room (WT-587) writes nothing.
+    /// A paused room (WT-605) is the one place "unknown segments" is not a race: every segment spoken
+    /// while paused was deliberately never written, so a sentence made ONLY of unknown segments is
+    /// dropped when the room is paused right now, or when every one of those ids is in the pause-skip
+    /// set (the sentence arrived after Resume). A sentence with at least one stored segment is kept —
+    /// it straddles the pause boundary and its stored half is legitimately on the record. Kept simple
+    /// on purpose: it does not trim the paused ids out of such a straddling sentence's text, which
+    /// the producer cannot split for us.
+    /// </para>
+    /// <para>
+    /// No ended-room gate: tier 2 runs after segments are final, so its sentences routinely land
+    /// after the meeting has ENDED, and refusing them then would mean a finished meeting never gets
+    /// a clean transcript.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> ProcessCleanSentenceMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
+    {
+        var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
+
+        if (!TranscriptConsumerPollingPolicy.TryParseCleanSentence(streamKey, values, out var sentence))
+        {
+            _logger.LogWarning("Invalid clean sentence data in message {MessageId} on {Stream}", message.Id, streamKey);
+            return false; // Bounded retry, then dead-letter with the original payload
+        }
+
+        if (!await ShouldPersistRoomAsync(sentence.RoomId, cancellationToken))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            var segmentIds = sentence.SegmentIds.ToList();
+            var knownSegments = (await unitOfWork.TranscriptSegments.FindAsync(
+                    s => segmentIds.Contains(s.Id), cancellationToken))
+                .ToList();
+
+            if (knownSegments.Count == 0 && await AreSegmentsPauseSkippedAsync(sentence, cancellationToken))
+            {
+                return true;
+            }
+
+            // The transcript the covered segments actually belong to, when any are stored — a room
+            // can hold several transcript versions, and "current" may already be a newer one. Only
+            // when none are stored yet does the room's current transcript stand in.
+            var transcriptId = knownSegments.Count > 0
+                ? knownSegments.OrderBy(s => segmentIds.IndexOf(s.Id)).First().TranscriptId
+                : (await unitOfWork.Transcripts.FirstOrDefaultAsync(
+                    t => t.TranslationRoomId == sentence.RoomId && t.IsCurrent, cancellationToken))?.Id;
+
+            if (transcriptId is null)
+            {
+                // Nothing of this room is stored yet. The STT half creates the transcript; retry
+                // rather than invent one here with no workspace to put it in.
+                _logger.LogWarning(
+                    "No transcript yet for clean sentence {SentenceId} in room {RoomId}; retrying later",
+                    sentence.SentenceId, sentence.RoomId);
+                return false;
+            }
+
+            int? startTimeMs = knownSegments.Count > 0 ? knownSegments.Min(s => s.StartTimeMs) : null;
+
+            var existing = await unitOfWork.TranscriptCleanSentences.GetByIdAsync(sentence.SentenceId, cancellationToken);
+            if (existing is null)
+            {
+                await unitOfWork.TranscriptCleanSentences.AddAsync(new TranscriptCleanSentence
+                {
+                    Id = sentence.SentenceId,
+                    TranscriptId = transcriptId.Value,
+                    SpeakerParticipantId = sentence.SpeakerId,
+                    SegmentIds = sentence.SegmentIds.ToArray(),
+                    CleanText = sentence.CleanText,
+                    Language = sentence.Language,
+                    Flags = sentence.Flags,
+                    Source = sentence.Source,
+                    Revision = sentence.Revision,
+                    StartTimeMs = startTimeMs,
+                    ProducedAt = sentence.ProducedAt,
+                }, cancellationToken);
+            }
+            else if (sentence.Revision > existing.Revision)
+            {
+                existing.TranscriptId = transcriptId.Value;
+                existing.SpeakerParticipantId = sentence.SpeakerId;
+                existing.SegmentIds = sentence.SegmentIds.ToArray();
+                existing.CleanText = sentence.CleanText;
+                existing.Language = sentence.Language;
+                existing.Flags = sentence.Flags;
+                existing.Source = sentence.Source;
+                existing.Revision = sentence.Revision;
+                existing.StartTimeMs = startTimeMs;
+                existing.ProducedAt = sentence.ProducedAt;
+                existing.UpdatedAt = DateTime.UtcNow;
+                unitOfWork.TranscriptCleanSentences.Update(existing);
+            }
+            else
+            {
+                return true; // Stale or redelivered revision — nothing to apply, nothing to retry.
+            }
+
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "Stored clean sentence {SentenceId} rev {Revision} ({SegmentCount} segments, {KnownCount} stored) for room {RoomId}",
+                sentence.SentenceId, sentence.Revision, segmentIds.Count, knownSegments.Count, sentence.RoomId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error persisting clean sentence {SentenceId} to database", sentence.SentenceId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// WT-716: whether a sentence made only of unstored segments is the product of a transcript
+    /// pause rather than a persistence race. See <see cref="ProcessCleanSentenceMessageAsync"/>.
+    /// </summary>
+    private async Task<bool> AreSegmentsPauseSkippedAsync(CleanSentenceMessage sentence, CancellationToken ct)
+    {
+        if (await IsRoomTranscriptPausedAsync(sentence.RoomId, ct))
+        {
+            return true;
+        }
+
+        foreach (var segmentId in sentence.SegmentIds)
+        {
+            if (!await WasSegmentSkippedForPauseAsync(sentence.RoomId, segmentId, ct))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

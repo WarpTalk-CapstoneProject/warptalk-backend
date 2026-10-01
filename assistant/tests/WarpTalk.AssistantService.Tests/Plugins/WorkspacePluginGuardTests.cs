@@ -10,7 +10,8 @@ namespace WarpTalk.AssistantService.Tests.Plugins;
 
 /// <summary>
 /// The workspace plugin rule: usable iff the workspace added it, or it is the workspace's own private
-/// plugin - and the transition that keeps an uncurated workspace on AllowAnyPlugins.
+/// plugin - and the transition that carries over, for an uncurated workspace on AllowAnyPlugins,
+/// the plugins its members already use there.
 /// </summary>
 public class WorkspacePluginGuardTests
 {
@@ -23,6 +24,8 @@ public class WorkspacePluginGuardTests
     private readonly IWorkspacePluginRepository _workspacePlugins = Substitute.For<IWorkspacePluginRepository>();
     private readonly IWorkspacePluginPolicyClient _policyClient = Substitute.For<IWorkspacePluginPolicyClient>();
     private readonly IWorkspaceMembershipClient _membershipClient = Substitute.For<IWorkspaceMembershipClient>();
+    private readonly IPluginToolAuditRepository _audits = Substitute.For<IPluginToolAuditRepository>();
+    private readonly HashSet<Guid> _usedHere = [];
 
     private readonly Plugin _linear = Marketplace("linear");
     private readonly Plugin _notion = Marketplace("notion");
@@ -31,6 +34,9 @@ public class WorkspacePluginGuardTests
     {
         _unitOfWork.WorkspacePluginCurationRepository.Returns(_curations);
         _unitOfWork.WorkspacePluginRepository.Returns(_workspacePlugins);
+        _unitOfWork.PluginToolAuditRepository.Returns(_audits);
+        _audits.GetPluginIdsUsedInWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlySet<Guid>)(call.ArgAt<Guid>(0) == WorkspaceId ? _usedHere.ToHashSet() : []));
         _curations.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns((WorkspacePluginCuration?)null);
         Member(true);
     }
@@ -40,15 +46,41 @@ public class WorkspacePluginGuardTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task AnUncuratedWorkspace_IsStillJudgedByAllowAnyPlugins(bool allowAnyPlugins)
+    public async Task AnUncuratedWorkspace_KeepsThePluginsItsMembersUse_OnlyWhileAllowAnyPluginsIsOn(bool allowAnyPlugins)
     {
-        // The transition: nobody loses a plugin on deploy, and a workspace that had switched plugins
-        // off does not gain any either.
+        // The transition: nobody loses a plugin they were using, and a workspace that had switched
+        // plugins off does not gain any either.
         _policyClient.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>()).Returns(allowAnyPlugins);
+        _usedHere.Add(_linear.Id);
 
         var result = await Guard().CanUsePluginInWorkspaceAsync(WorkspaceId, UserId, _linear);
 
         Assert.Equal(allowAnyPlugins, result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task AnUncuratedWorkspace_DoesNotGetAMarketplacePluginNobodyUsedThere()
+    {
+        // It used to: AllowAnyPlugins=true meant EVERY marketplace plugin, so the Owner's page listed
+        // the whole marketplace as "in this workspace" and each new admin row joined every such
+        // workspace the moment it was created.
+        _policyClient.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>()).Returns(true);
+        _usedHere.Add(_linear.Id);
+
+        var notion = await Guard().CanUsePluginInWorkspaceAsync(WorkspaceId, UserId, _notion);
+
+        Assert.False(notion.IsSuccess);
+        Assert.Equal(WorkspacePluginConstants.Messages.NotAdded, notion.Error);
+    }
+
+    [Fact]
+    public async Task AnUncuratedWorkspaceWithAllowAnyPluginsOff_DoesNotEvenReadItsUsage()
+    {
+        _policyClient.AllowsPluginUsageAsync(WorkspaceId, Arg.Any<CancellationToken>()).Returns(false);
+
+        await Guard().CanUsePluginInWorkspaceAsync(WorkspaceId, UserId, _linear);
+
+        await _audits.DidNotReceive().GetPluginIdsUsedInWorkspaceAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

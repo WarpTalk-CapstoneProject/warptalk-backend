@@ -28,6 +28,8 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly IWorkspaceEventPublisher _eventPublisher;
     private readonly IConfiguration _configuration;
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+    private readonly IAdminAuditLogRepository? _adminAuditLog;
+    private const int AdminReasonMaxLength = 500;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
@@ -38,8 +40,11 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         // Optional so every existing construction site — and the whole test suite — keeps
         // working (same precedent as TranslationRoomService). A workspace service that cannot
         // reach the notification mesh still changes roles; it just cannot ring the bell.
-        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null)
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
+        // Optional for the same reason: only the platform admin's transfer writes to it.
+        IAdminAuditLogRepository? adminAuditLog = null)
     {
+        _adminAuditLog = adminAuditLog;
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
@@ -64,92 +69,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanTransferOwnership, ErrorCodes.Forbidden);
             }
 
-            var newOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == newOwnerId && m.RemovedAt == null, "", ct);
-            if (newOwnerMember == null)
+            var staged = await StageOwnershipTransferAsync(
+                workspace, newOwnerId, executingUserId, requireCurrentOwnerMembership: true, ct);
+            if (!staged.IsSuccess)
             {
-                return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustBeActiveMember, ErrorCodes.ValidationError);
+                return staged;
             }
-
-            var isExternal = await WorkspaceHelper.IsUserExternalMemberAsync(_unitOfWork, workspaceId, newOwnerId, ct);
-            if (isExternal)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.CannotTransferToExternal, ErrorCodes.Forbidden);
-            }
-
-            // The new owner's address must be on one of this workspace's verified domains.
-            //
-            // Stated as one rule with no branch on the workspace's policy: a workspace that
-            // verifies no domains has an empty set here, so the condition is vacuous and only the
-            // External check above applies. Branching on RequireVerifiedDomainForInternal instead
-            // would reintroduce a second source for a fact the domain list already answers.
-            //
-            // "Not External" is not enough on its own. That reads the stored MembershipType, and
-            // members keep the type they were given — a workspace that switched to domain-verified
-            // afterwards still has Internal members on other domains. Without this, a workspace
-            // holding acme.com, verified on the strength of its owner's own @acme.com address,
-            // could be handed to someone outside acme.com, and they would inherit the power to
-            // classify every @acme.com joiner as Internal.
-            //
-            // When nobody qualifies, the way out is to revoke the verified domains: that returns
-            // the workspace to manually-assigned membership and empties this rule.
-            var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
-            if (activeVerifiedDomains.Count > 0)
-            {
-                var newOwner = await _authIdentity.GetUserByIdAsync(newOwnerId, ct);
-                if (newOwner == null || !EmailAddress.TryParse(newOwner.Email, out var newOwnerEmail) || newOwnerEmail == null)
-                {
-                    return Result.Failure(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
-                }
-
-                if (!await WorkspaceHelper.IsEmailDomainVerifiedAsync(_unitOfWork, workspace, newOwnerEmail.Domain, ct))
-                {
-                    return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustShareVerifiedDomain, ErrorCodes.Forbidden);
-                }
-            }
-
-            var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
-            var adminRoleName = WorkspaceMemberRole.Admin.ToRoleName();
-
-            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
-            var adminRoleId = await _authIdentity.GetRoleIdByNameAsync(adminRoleName, ct);
-
-            if (ownerRoleId == null || adminRoleId == null)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.RequiredRolesNotFound, ErrorCodes.ValidationError);
-            }
-
-            var currentOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
-            if (currentOwnerMember == null)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
-            }
-
-            var targetOldRoleName = await _authIdentity.GetRoleNameByIdAsync(newOwnerMember.RoleId, ct);
-            if (targetOldRoleName.IsOwner())
-            {
-                return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.ValidationError);
-            }
-
-            workspace.OwnerId = newOwnerId;
-            _unitOfWork.WorkspaceRepository.Update(workspace);
-
-            currentOwnerMember.RoleId = adminRoleId.Value;
-            _unitOfWork.WorkspaceMemberRepository.Update(currentOwnerMember);
-
-            newOwnerMember.RoleId = ownerRoleId.Value;
-            _unitOfWork.WorkspaceMemberRepository.Update(newOwnerMember);
-
-            var demotionId = Guid.NewGuid();
-            var promotionId = Guid.NewGuid();
-            var transferEffectiveAt = DateTime.UtcNow;
-            await _eventPublisher.PublishMemberRoleChangedAsync(
-                workspaceId, executingUserId, ownerRoleName, adminRoleName, executingUserId,
-                demotionId, null, currentOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{demotionId:N}", ct);
-            await _eventPublisher.PublishMemberRoleChangedAsync(
-                workspaceId, newOwnerId, targetOldRoleName, ownerRoleName, executingUserId,
-                promotionId, null, newOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{promotionId:N}", ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
@@ -159,6 +84,213 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             _logger.LogError(ex, "Error occurred while transferring ownership. WorkspaceId: {WorkspaceId}, ExecutingUserId: {ExecutingUserId}, NewOwnerId: {NewOwnerId}", workspaceId, executingUserId, newOwnerId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    public async Task<Result> AdminTransferOwnershipAsync(
+        Guid workspaceId,
+        Guid newOwnerId,
+        Guid actorId,
+        string reason,
+        string? correlationId,
+        CancellationToken ct = default)
+    {
+        var trimmedReason = reason?.Trim() ?? string.Empty;
+        if (trimmedReason.Length == 0)
+        {
+            return Result.Failure(WorkspaceAdminErrors.ReasonRequired, ErrorCodes.ValidationError);
+        }
+
+        if (trimmedReason.Length > AdminReasonMaxLength)
+        {
+            return Result.Failure(WorkspaceAdminErrors.ReasonTooLong, ErrorCodes.ValidationError);
+        }
+
+        if (_adminAuditLog == null)
+        {
+            // Never transfer a tenant unaudited because the audit store was not wired in.
+            return Result.Failure("The admin audit log is not available, so the transfer was not made.", ErrorCodes.InternalServerError);
+        }
+
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (workspace.DeletedAt != null)
+            {
+                return Result.Failure(WorkspaceAdminErrors.DeletedWorkspaceIsImmutable, ErrorCodes.Conflict);
+            }
+
+            if (workspace.OwnerId == newOwnerId)
+            {
+                return Result.Failure("This member already owns the workspace.", ErrorCodes.Conflict);
+            }
+
+            var previousOwnerId = workspace.OwnerId;
+
+            // The SAME rules the owner's own transfer runs — active internal member, verified
+            // domain, not already the owner. A platform admin skips only the "you must be the
+            // owner" check, and may hand over a workspace whose owner is no longer a member (the
+            // usual reason an admin is asked to do this at all).
+            var staged = await StageOwnershipTransferAsync(
+                workspace, newOwnerId, actorId, requireCurrentOwnerMembership: false, ct);
+            if (!staged.IsSuccess)
+            {
+                return staged;
+            }
+
+            var now = DateTime.UtcNow;
+            workspace.UpdatedAt = now;
+            workspace.UpdatedBy = actorId;
+
+            // Same SaveChanges as the transfer, so the ownership change and its audit row commit
+            // together or not at all.
+            await _adminAuditLog.AppendAsync(
+                new WorkspaceAdminAction
+                {
+                    Id = Guid.NewGuid(),
+                    SourceService = WarpTalk.Shared.Events.AdminAuditSources.WorkspaceService,
+                    WorkspaceId = workspaceId,
+                    EntityType = WarpTalk.Shared.Events.AdminAuditEntityTypes.Workspace,
+                    EntityId = workspaceId,
+                    Action = WarpTalk.Shared.Events.AdminAuditWorkspaceActions.OwnershipTransferred,
+                    Reason = trimmedReason,
+                    Result = WarpTalk.Shared.Events.AdminAuditResults.Succeeded,
+                    PerformedBy = actorId,
+                    PerformedAt = now,
+                    CorrelationId = correlationId,
+                    BeforeSummary = System.Text.Json.JsonSerializer.Serialize(
+                        new Dictionary<string, string?> { ["owner_id"] = previousOwnerId.ToString() }),
+                    AfterSummary = System.Text.Json.JsonSerializer.Serialize(
+                        new Dictionary<string, string?> { ["owner_id"] = newOwnerId.ToString() }),
+                },
+                ct);
+
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "System admin {ActorId} transferred workspace {WorkspaceId} from {PreviousOwnerId} to {NewOwnerId}. CorrelationId: {CorrelationId}",
+                actorId, workspaceId, previousOwnerId, newOwnerId, correlationId);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin ownership transfer failed. WorkspaceId: {WorkspaceId}, NewOwnerId: {NewOwnerId}", workspaceId, newOwnerId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Every rule of an ownership transfer, staged on tracked entities and the outbox, not saved.
+    /// The owner's transfer and the platform admin's are two doors onto THIS — a second, thinner
+    /// copy of these checks is exactly the path that would end up missing one.
+    /// </summary>
+    private async Task<Result> StageOwnershipTransferAsync(
+        Workspace workspace,
+        Guid newOwnerId,
+        Guid actorId,
+        bool requireCurrentOwnerMembership,
+        CancellationToken ct)
+    {
+        var workspaceId = workspace.Id;
+        var previousOwnerId = workspace.OwnerId;
+
+        var newOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == workspaceId && m.UserId == newOwnerId && m.RemovedAt == null, "", ct);
+        if (newOwnerMember == null)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustBeActiveMember, ErrorCodes.ValidationError);
+        }
+
+        var isExternal = await WorkspaceHelper.IsUserExternalMemberAsync(_unitOfWork, workspaceId, newOwnerId, ct);
+        if (isExternal)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.CannotTransferToExternal, ErrorCodes.Forbidden);
+        }
+
+        // The new owner's address must be on one of this workspace's verified domains.
+        //
+        // Stated as one rule with no branch on the workspace's policy: a workspace that
+        // verifies no domains has an empty set here, so the condition is vacuous and only the
+        // External check above applies. Branching on RequireVerifiedDomainForInternal instead
+        // would reintroduce a second source for a fact the domain list already answers.
+        //
+        // "Not External" is not enough on its own. That reads the stored MembershipType, and
+        // members keep the type they were given — a workspace that switched to domain-verified
+        // afterwards still has Internal members on other domains. Without this, a workspace
+        // holding acme.com, verified on the strength of its owner's own @acme.com address,
+        // could be handed to someone outside acme.com, and they would inherit the power to
+        // classify every @acme.com joiner as Internal.
+        //
+        // When nobody qualifies, the way out is to revoke the verified domains: that returns
+        // the workspace to manually-assigned membership and empties this rule.
+        var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
+        if (activeVerifiedDomains.Count > 0)
+        {
+            var newOwner = await _authIdentity.GetUserByIdAsync(newOwnerId, ct);
+            if (newOwner == null || !EmailAddress.TryParse(newOwner.Email, out var newOwnerEmail) || newOwnerEmail == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
+            }
+
+            if (!await WorkspaceHelper.IsEmailDomainVerifiedAsync(_unitOfWork, workspace, newOwnerEmail.Domain, ct))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustShareVerifiedDomain, ErrorCodes.Forbidden);
+            }
+        }
+
+        var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
+        var adminRoleName = WorkspaceMemberRole.Admin.ToRoleName();
+
+        var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
+        var adminRoleId = await _authIdentity.GetRoleIdByNameAsync(adminRoleName, ct);
+
+        if (ownerRoleId == null || adminRoleId == null)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.RequiredRolesNotFound, ErrorCodes.ValidationError);
+        }
+
+        var currentOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == workspaceId && m.UserId == previousOwnerId && m.RemovedAt == null, "", ct);
+        if (currentOwnerMember == null && requireCurrentOwnerMembership)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+        }
+
+        var targetOldRoleName = await _authIdentity.GetRoleNameByIdAsync(newOwnerMember.RoleId, ct);
+        if (targetOldRoleName.IsOwner())
+        {
+            return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.ValidationError);
+        }
+
+        workspace.OwnerId = newOwnerId;
+        _unitOfWork.WorkspaceRepository.Update(workspace);
+
+        if (currentOwnerMember != null)
+        {
+            currentOwnerMember.RoleId = adminRoleId.Value;
+            _unitOfWork.WorkspaceMemberRepository.Update(currentOwnerMember);
+        }
+
+        newOwnerMember.RoleId = ownerRoleId.Value;
+        _unitOfWork.WorkspaceMemberRepository.Update(newOwnerMember);
+
+        var demotionId = Guid.NewGuid();
+        var promotionId = Guid.NewGuid();
+        var transferEffectiveAt = DateTime.UtcNow;
+        if (currentOwnerMember != null)
+        {
+            await _eventPublisher.PublishMemberRoleChangedAsync(
+                workspaceId, previousOwnerId, ownerRoleName, adminRoleName, actorId,
+                demotionId, null, currentOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{demotionId:N}", ct);
+        }
+        await _eventPublisher.PublishMemberRoleChangedAsync(
+            workspaceId, newOwnerId, targetOldRoleName, ownerRoleName, actorId,
+            promotionId, null, newOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{promotionId:N}", ct);
+        return Result.Success();
     }
 
     public async Task<Result<PagedResult<WorkspaceMemberDto>>> ListMembersAsync(Guid workspaceId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default)

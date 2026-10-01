@@ -49,6 +49,24 @@ public class TranscriptCorrectionPropagationTests
     }
 
     [Fact]
+    public async Task AnSttCorrection_DropsTheCleanTextThatWasCleanedFromTheOldWords()
+    {
+        // WT-716. Clean is the DEFAULT view: a stale clean_text would keep showing the machine's
+        // words over the human's fix. Null is "not cleaned", so readers fall back to the correction.
+        var context = Build([]);
+        context.Segment.CleanText = "what machine heard";
+        context.Segment.CleanFlags = ["fillers_removed"];
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("what was actually said", context.Segment.OriginalText);
+        Assert.Null(context.Segment.CleanText);
+        Assert.Null(context.Segment.CleanFlags);
+    }
+
+    [Fact]
     public async Task AnSttCorrection_OnALineNothingEverTranslatedQueuesNothing()
     {
         var context = Build([]);
@@ -301,6 +319,39 @@ public class TranscriptCorrectionPropagationTests
         // Refused means NOTHING WAS WRITTEN. A refusal that had already saved the correction would
         // leave the record edited and the caller told it was not.
         Assert.Null(context.SavedCorrection);
+    }
+
+    [Fact]
+    public async Task AnSttCorrection_StampsSegmentUpdatedAt_SoSummaryStalenessDetectsEdits()
+    {
+        // WT-850: summary-staleness relies on segment.UpdatedAt > artifact.CreatedAt/UpdatedAt.
+        // If UpdatedAt is not stamped on correction, the summary staleness notice and
+        // [Regenerate summary] button never appear for the host.
+        var context = Build([]);
+        var beforeCorrection = DateTime.UtcNow.AddSeconds(-1);
+        context.Segment.UpdatedAt = beforeCorrection.AddMinutes(-10);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("STT", "what was actually said"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(context.Segment.IsCorrected);
+        Assert.True(context.Segment.UpdatedAt >= beforeCorrection);
+    }
+
+    [Fact]
+    public async Task AnMtCorrection_StampsSegmentUpdatedAt()
+    {
+        var context = Build([Link("en")]);
+        var beforeCorrection = DateTime.UtcNow.AddSeconds(-1);
+        context.Segment.UpdatedAt = beforeCorrection.AddMinutes(-10);
+
+        var result = await context.Service.SubmitCorrectionAsync(
+            TranscriptId, SegmentId, UserId, Correction("MT", "the wording a person chose", "en-US"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(context.Segment.IsCorrected);
+        Assert.True(context.Segment.UpdatedAt >= beforeCorrection);
     }
 
     private static Context Build(

@@ -293,12 +293,87 @@ public class TranscriptRecordingServiceTests
         Assert.Null(Assert.Single(result.Value!).EndedAt);
     }
 
+    // ── PO 2026-10-01: in a bridge room the current capturer may pause/resume too ──────────
+
+    [Fact]
+    public async Task BridgeCapturer_NotHost_CanPause()
+    {
+        var host = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var (service, windows, _) = CreateService(host, activeWindow: null,
+            roomType: ExternalBridgeConstants.RoomType, capturer: capturer);
+
+        var result = await service.PauseAsync(RoomId, capturer);
+
+        Assert.True(result.IsSuccess, result.Error);
+        await windows.Received(1).AddAsync(
+            Arg.Is<TranscriptPauseWindow>(w => w.PausedBy == capturer), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task BridgeCapturer_NotHost_CanResume()
+    {
+        var host = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var active = new TranscriptPauseWindow
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = RoomId,
+            StartedAt = DateTime.UtcNow.AddMinutes(-1),
+            PausedBy = host,
+        };
+        var (service, _, _) = CreateService(host, activeWindow: active,
+            roomType: ExternalBridgeConstants.RoomType, capturer: capturer);
+
+        var result = await service.ResumeAsync(RoomId, capturer);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(capturer, active.ResumedBy);
+    }
+
+    [Fact]
+    public async Task BridgeHost_NotCapturer_CanStillPause()
+    {
+        var host = Guid.NewGuid();
+        var (service, _, _) = CreateService(host, activeWindow: null,
+            roomType: ExternalBridgeConstants.RoomType, capturer: Guid.NewGuid());
+
+        Assert.True((await service.PauseAsync(RoomId, host)).IsSuccess);
+    }
+
+    [Fact]
+    public async Task BridgePlainMember_CannotPause()
+    {
+        var (service, _, _) = CreateService(Guid.NewGuid(), activeWindow: null,
+            roomType: ExternalBridgeConstants.RoomType, capturer: Guid.NewGuid());
+
+        var result = await service.PauseAsync(RoomId, Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CapturerColumn_IsIgnored_OutsideABridgeRoom()
+    {
+        var capturer = Guid.NewGuid();
+        var (service, _, _) = CreateService(Guid.NewGuid(), activeWindow: null,
+            roomType: "INSTANT", capturer: capturer);
+
+        var result = await service.PauseAsync(RoomId, capturer);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
     private static (TranscriptRecordingService Service, ITranscriptPauseWindowRepository Windows, IDatabase Database) CreateService(
         Guid host,
         TranscriptPauseWindow? activeWindow,
         bool redis = true,
         IReadOnlyList<TranscriptPauseWindow>? allWindows = null,
-        DateTime? roomEndedAt = null)
+        DateTime? roomEndedAt = null,
+        string roomType = "",
+        Guid? capturer = null)
     {
         var windows = Substitute.For<ITranscriptPauseWindowRepository>();
         windows.GetActiveWindowByRoomIdAsync(RoomId, Arg.Any<CancellationToken>()).Returns(activeWindow);
@@ -308,9 +383,10 @@ public class TranscriptRecordingServiceTests
         var unitOfWork = Substitute.For<IUnitOfWork>();
         unitOfWork.TranscriptPauseWindows.Returns(windows);
 
-        var pauseAccess = new TranscriptPauseAccess(new FakeRoomClient(host));
+        var pauseAccess = new TranscriptPauseAccess(new FakeRoomClient(host, roomType, capturer));
         var readAccess = Substitute.For<ITranscriptReadAccess>();
         readAccess.CanReadRoomTranscriptAsync(RoomId, host, Arg.Any<CancellationToken>()).Returns(true);
+        readAccess.CanReadRoomTranscriptAsync(RoomId, host, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(true);
 
         var database = Substitute.For<IDatabase>();
         var multiplexer = Substitute.For<IConnectionMultiplexer>();
@@ -334,10 +410,14 @@ public class TranscriptRecordingServiceTests
     private sealed class FakeRoomClient : TranslationRoomService.TranslationRoomServiceClient
     {
         private readonly Guid _hostId;
+        private readonly string _roomType;
+        private readonly Guid? _capturer;
 
-        public FakeRoomClient(Guid hostId)
+        public FakeRoomClient(Guid hostId, string roomType = "", Guid? capturer = null)
         {
             _hostId = hostId;
+            _roomType = roomType;
+            _capturer = capturer;
         }
 
         public override AsyncUnaryCall<GetTranslationRoomResponse> GetTranslationRoomByIdAsync(
@@ -351,7 +431,9 @@ public class TranscriptRecordingServiceTests
                 Id = request.Id,
                 HostId = _hostId.ToString(),
                 Title = "Room",
-                Status = "IN_PROGRESS"
+                Status = "IN_PROGRESS",
+                TranslationRoomType = _roomType,
+                BridgeCapturerUserId = _capturer?.ToString() ?? string.Empty
             });
         }
 

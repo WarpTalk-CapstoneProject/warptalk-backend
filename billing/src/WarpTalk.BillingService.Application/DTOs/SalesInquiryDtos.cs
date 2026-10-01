@@ -74,6 +74,15 @@ public record CreateWorkspaceSalesInquiryRequest(
             Source);
 }
 
+/// <param name="RequestType">Exact match on request_type, case-insensitive. Null for every type.</param>
+/// <param name="Source">Exact match on source (e.g. landing_pricing), case-insensitive. Null for every source.</param>
+/// <param name="CreatedFrom">Inclusive lower bound on created_at (UTC; offset-less values are read as UTC).</param>
+/// <param name="CreatedTo">Exclusive upper bound on created_at (UTC). Must not be earlier than CreatedFrom.</param>
+/// <param name="Sort">
+/// created_desc | created_asc | company_asc | company_desc. Only the admin inbox sends it; when
+/// null the ordering is decided by <paramref name="NewestFirst"/> exactly as before, so the
+/// workspace view keeps its open-first grouping.
+/// </param>
 public record SalesInquiryQuery(
     int Page = 1,
     int PageSize = 20,
@@ -82,7 +91,12 @@ public record SalesInquiryQuery(
     Guid? WorkspaceId = null,
     // The workspace view groups open inquiries first; the platform lead inbox reads strictly
     // newest-first so a lead that arrived this morning is never below last month's "new" ones.
-    bool NewestFirst = false);
+    bool NewestFirst = false,
+    string? RequestType = null,
+    string? Source = null,
+    DateTime? CreatedFrom = null,
+    DateTime? CreatedTo = null,
+    string? Sort = null);
 
 public record UpdateSalesInquiryStatusRequest(
     [Required] string Status);

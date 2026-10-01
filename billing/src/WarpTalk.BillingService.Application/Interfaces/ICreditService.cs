@@ -22,6 +22,12 @@ public interface ICreditService
         CancellationToken cancellationToken = default);
 
     Task<Result<CreditBalanceDto>> GetWorkspaceCreditsAsync(Guid workspaceId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Credits the workspace kept from subscriptions that ended and that a renewal will restore.
+    /// Answers for a workspace with no live subscription at all — that is the case it exists for.
+    /// </summary>
+    Task<Result<FrozenCreditsDto>> GetFrozenCreditsAsync(Guid workspaceId, CancellationToken cancellationToken = default);
     Task<Result<CreditTransactionDto>> ConsumeCreditsDirectlyAsync(Guid workspaceId, ConsumeCreditsRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -37,7 +43,30 @@ public interface ICreditService
         CancellationToken cancellationToken = default);
 
 
+    /// <summary>
+    /// Validates and applies an admin adjustment to the workspace's active subscription and ledger,
+    /// without saving. The caller records the action in the platform audit log and only then calls
+    /// SaveChangesAsync, so an adjustment that cannot be audited is never committed.
+    /// </summary>
+    Task<Result<StagedCreditAdjustment>> StageWorkspaceAdjustmentAsync(
+        Guid workspaceId,
+        int amount,
+        string reason,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(Guid workspaceId, CreditHistoryQuery query, CancellationToken cancellationToken = default);
-    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(CreditHistoryQuery query, CancellationToken cancellationToken = default);
+    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(GlobalCreditHistoryQuery query, CancellationToken cancellationToken = default);
 
 }
+
+/// <summary>An adjustment applied to tracked entities and not yet saved.</summary>
+/// <param name="FrozenBefore">
+/// Set when the adjustment went to an ENDED subscription's frozen credits (the workspace had no
+/// live subscription); null for the usual adjustment of a live balance.
+/// </param>
+public sealed record StagedCreditAdjustment(
+    WarpTalk.BillingService.Domain.Entities.Subscription Subscription,
+    WarpTalk.BillingService.Domain.Entities.CreditTransaction Transaction,
+    int BalanceBefore,
+    int? FrozenBefore = null);

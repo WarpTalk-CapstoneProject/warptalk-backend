@@ -65,7 +65,15 @@ public record WorkspacePluginsOverviewDto(
     bool CanManage,
     IReadOnlyList<WorkspacePluginItemDto> InWorkspace,
     IReadOnlyList<WorkspacePluginItemDto> Marketplace,
-    IReadOnlyList<WorkspacePluginRequestDto> PendingRequests);
+    IReadOnlyList<WorkspacePluginRequestDto> PendingRequests)
+{
+    /// <summary>
+    /// Plugins this workspace had - on its list, or used by its members - that the PLATFORM has
+    /// since turned off here. Shown so the Owner knows where a plugin went and that members'
+    /// connections are kept; availability is always <c>platform_disabled</c>. Never addable.
+    /// </summary>
+    public IReadOnlyList<WorkspacePluginItemDto> DisabledByPlatform { get; init; } = [];
+}
 
 /// <param name="Reason">Optional, at most 500 characters.</param>
 public record CreatePluginRequestRequest(string PluginKey, string? Reason = null);
@@ -100,3 +108,27 @@ public record UpdatePrivatePluginRequest(
     string? Description = null,
     string? McpServerUrl = null,
     string? AuthMode = null);
+
+/// <summary>
+/// One member who has connected a plugin, as the Owner's and Admin's Manage dialog lists them.
+/// </summary>
+/// <remarks>
+/// CONNECTION METADATA ONLY. No token, no scope list, and not the provider account's email - that
+/// is the member's own account at a third party, which the Owner has no business reading (web#541
+/// took it off the member's own plugin page for the same reason). Name and avatar are resolved by
+/// the page from the workspace's member list, as for requests: this service has no user directory.
+/// </remarks>
+/// <param name="ConnectionStatus">
+/// <c>connected</c>, <c>expired</c> or <c>revoked</c> (<c>PluginConstants.ConnectionStatus</c>).
+/// </param>
+/// <param name="ConnectedAt">When this member connected the plugin.</param>
+/// <param name="LastUsedAt">
+/// Their last successful tool call through it in THIS workspace; null when they never made one here.
+/// </param>
+/// <param name="ToolCallCount">Successful tool calls through it in this workspace.</param>
+public record WorkspacePluginMemberDto(
+    Guid UserId,
+    string ConnectionStatus,
+    DateTime ConnectedAt,
+    DateTime? LastUsedAt,
+    int ToolCallCount);

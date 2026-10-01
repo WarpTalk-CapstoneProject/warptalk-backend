@@ -14,7 +14,33 @@ public record AdminSubscriptionDirectoryQuery : AdminPageRequest
     public string? PlanSlug { get; init; }
 
     /// <summary>
-    /// period_end_asc | period_end_desc | created_desc | created_asc | credits_asc.
+    /// healthy | low_balance | in_overage | suspended (the subscription's service_state), or
+    /// all / null for every state. Anything else is a 400.
+    /// </summary>
+    public string? ServiceState { get; init; }
+
+    /// <summary>
+    /// The PLAN's billing cycle: monthly | yearly, or all / null for both. Anything else is a 400.
+    /// </summary>
+    public string? BillingCycle { get; init; }
+
+    /// <summary>true or false to match subscriptions.auto_renew; null for both.</summary>
+    public bool? AutoRenew { get; init; }
+
+    /// <summary>Only the subscriptions of this workspace.</summary>
+    public Guid? WorkspaceId { get; init; }
+
+    /// <summary>
+    /// Inclusive lower bound on <c>current_period_end</c> (UTC; a value without an offset is read
+    /// as UTC). Must not be later than <see cref="PeriodEndTo"/>.
+    /// </summary>
+    public DateTime? PeriodEndFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>current_period_end</c> (UTC).</summary>
+    public DateTime? PeriodEndTo { get; init; }
+
+    /// <summary>
+    /// period_end_asc | period_end_desc | created_desc | created_asc | credits_asc | credits_desc.
     /// Defaults to period_end_asc — soonest renewal first, because that is what needs attention.
     /// </summary>
     public string? Sort { get; init; }

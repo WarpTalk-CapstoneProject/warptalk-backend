@@ -130,6 +130,21 @@ builder.Services.AddHttpClient<ILiveKitEgressService, LiveKitEgressService>();
 builder.Services.AddHttpClient<ILiveKitRoomAdminService, LiveKitRoomAdminService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+// Platform settings (/admin/settings): the recording kill switch is read on every start.
+WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(builder.Services);
+WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.AddWarpTalkIntegrationStatus(builder.Services, "meeting", sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var livekitUrl = string.IsNullOrWhiteSpace(config["LiveKit:Url"]) ? "LiveKit:Host" : "LiveKit:Url";
+    return WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.Snapshot(
+        (WarpTalk.Shared.PlatformSettings.IntegrationKeys.LiveKit,
+            WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, "rooms and egress", livekitUrl, "LiveKit:ApiKey", "LiveKit:ApiSecret")),
+        (WarpTalk.Shared.PlatformSettings.IntegrationKeys.OpenAi,
+            WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config,
+                $"chat translation model {config["OpenAI:ChatTranslationModel"] ?? "gpt-4o-mini"}", "OpenAI:ApiKey")),
+        (WarpTalk.Shared.PlatformSettings.IntegrationKeys.ObjectStorage,
+            WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, "recordings (egress)", "LiveKit:Egress:S3:Bucket", "LiveKit:Egress:S3:AccessKey", "LiveKit:Egress:S3:Secret")));
+});
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
 
 // Multi-replica: periodic workers take a Redis lease per tick (in-process only when Redis is not

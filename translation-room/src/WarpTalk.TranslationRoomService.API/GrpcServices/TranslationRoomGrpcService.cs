@@ -14,10 +14,40 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
     // depends only on the interface whose contract is "no user to check against". Nothing here can
     // reach a method that was supposed to authorize someone and silently didn't.
     private readonly ITranslationRoomDirectoryService _directoryService;
+    private readonly IMediaUsageService? _mediaUsage;
 
-    public TranslationRoomGrpcService(ITranslationRoomDirectoryService directoryService)
+    public TranslationRoomGrpcService(ITranslationRoomDirectoryService directoryService, IMediaUsageService? mediaUsage = null)
     {
         _directoryService = directoryService;
+        _mediaUsage = mediaUsage;
+    }
+
+    /// <summary>LiveKit usage per UTC hour and workspace for the admin Providers page (billing-service).</summary>
+    public override async Task<GetMediaUsageResponse> GetMediaUsage(GetMediaUsageRequest request, ServerCallContext context)
+    {
+        if (_mediaUsage is null) throw new RpcException(new Status(StatusCode.Unimplemented, "media usage is not available"));
+
+        var from = DateTimeOffset.FromUnixTimeSeconds(request.FromUnix).UtcDateTime;
+        var to = DateTimeOffset.FromUnixTimeSeconds(request.ToUnix).UtcDateTime;
+        var result = await _mediaUsage.GetHourlyAsync(from, to, context.CancellationToken);
+        if (!result.IsSuccess) throw new RpcException(new Status(StatusCode.InvalidArgument, result.Error ?? "invalid window"));
+
+        var response = new GetMediaUsageResponse();
+        foreach (var row in result.Value!)
+        {
+            response.Hours.Add(new MediaUsageHour
+            {
+                HourStartUnix = new DateTimeOffset(row.HourStart, TimeSpan.Zero).ToUnixTimeSeconds(),
+                WorkspaceId = row.WorkspaceId.ToString(),
+                RoomSeconds = row.RoomSeconds,
+                ParticipantSeconds = row.ParticipantSeconds,
+                RoomsStarted = row.RoomsStarted,
+                Recordings = row.Recordings,
+                RecordingBytes = row.RecordingBytes,
+            });
+        }
+
+        return response;
     }
 
     public override async Task<GetTranslationRoomResponse> GetTranslationRoomById(GetTranslationRoomRequest request, ServerCallContext context)
@@ -33,8 +63,12 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         //
         // WT-704: the generatable artifact languages are opt-in — they cost a workspace RPC plus a
         // catalog read, and most callers of this RPC are on hot paths that never need them.
+        //
+        // WT-849: requester_email is opt-in the same way — empty from a caller (like most of this
+        // RPC's callers) that never needs to know whether ITS caller holds a standing invitation.
+        var requesterEmail = string.IsNullOrWhiteSpace(request.RequesterEmail) ? null : request.RequesterEmail;
         var result = await _directoryService.GetRoomAsync(
-            parsedId, request.IncludeArtifactLanguages, context.CancellationToken);
+            parsedId, request.IncludeArtifactLanguages, requesterEmail, context.CancellationToken);
 
         if (!result.IsSuccess)
             throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.Id);
@@ -71,9 +105,16 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty,
             // WT-704: the meeting's declared languages (L2). Always sent, so a consumer whose
             // opt-in could not be answered still has the room's own set to fall back to.
-            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty
+            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty,
+            // Bridge claim: whose desktop owns the far side's audio. Empty = no capturer, and the
+            // consumer falls back to the host (ExternalBridgeConstants.IsBridgeAudioOwner).
+            BridgeCapturerUserId = result.Value!.BridgeCapturerUserId?.ToString() ?? string.Empty
         };
         response.TargetLanguages.AddRange(result.Value!.TargetLanguages ?? []);
+
+        // Bridge relabel: the Meet link, so TranscriptService can find the conference whose
+        // transcript names the far-side speakers. Empty for non-bridge rooms.
+        response.ExternalMeetingUrl = result.Value!.ExternalMeetingUrl ?? string.Empty;
 
         // WT-704: `resolved` is set only alongside a real answer. An empty list with resolved=true
         // means "nothing may be generated"; resolved=false means "no answer" and the consumer falls
@@ -83,6 +124,14 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         {
             response.GeneratableArtifactLanguages.AddRange(artifactLanguages.Generatable);
             response.ArtifactLanguagesResolved = true;
+        }
+
+        // WT-849: only set alongside a real answer — requester_email absent means the directory
+        // service never looked, and the field must then stay absent rather than default to false,
+        // the same field-presence rule save_transcript documents above.
+        if (requesterEmail is not null && result.Value!.IsRequesterInvited is { } isInvited)
+        {
+            response.IsRequesterInvited = isInvited;
         }
 
         return response;

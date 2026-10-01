@@ -121,7 +121,8 @@ public static class TranslationRoomParticipantMapper
             participant.Status,
             participant.IsTranslationAudioEnabled,
             participant.JoinedAt,
-            participant.IsExternal
+            participant.IsExternal,
+            participant.IsBridgeTextOnly
         );
     }
 }

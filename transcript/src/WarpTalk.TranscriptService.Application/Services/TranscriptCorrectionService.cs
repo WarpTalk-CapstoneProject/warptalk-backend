@@ -145,6 +145,14 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             {
                 segment.OriginalText = dto.CorrectedText;
 
+                // WT-716: the cleaned line was cleaned from the words just replaced, so it now
+                // describes a sentence nobody said — the same reason the translations below are
+                // redone. Cleared to NULL ("not cleaned"), which makes every reader fall back to the
+                // corrected OriginalText; keeping it would have the Clean view, which is the
+                // DEFAULT view, silently show the pre-correction text over the human's fix.
+                segment.CleanText = null;
+                segment.CleanFlags = null;
+
                 // Every translation of this line is now a translation of a sentence nobody said.
                 // Recorded truthfully rather than hardcoded: a line with no translations to redo
                 // triggers no retranslation, and claiming otherwise is what the column did before.
@@ -173,6 +181,10 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             }
 
             segment.IsCorrected = true;
+            // WT-850: stamp UpdatedAt on the segment so frontend summary staleness detection
+            // (isSummaryStale: lastCorrectionAt > summaryWrittenAt) knows the transcript was modified
+            // and surfaces the [Regenerate summary] notice.
+            segment.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.TranscriptSegments.Update(segment);
             await _unitOfWork.TranscriptCorrections.AddAsync(correction, cancellationToken);

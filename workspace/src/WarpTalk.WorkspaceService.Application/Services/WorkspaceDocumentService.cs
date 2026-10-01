@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -38,6 +39,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly IKnowledgeChunkWriter _chunkWriter;
     private readonly ILogger<WorkspaceDocumentService> _logger;
 
+    private readonly IPlatformSettings? _platformSettings;
+
     public WorkspaceDocumentService(
         IUnitOfWork unitOfWork,
         IDocumentAccessEvaluator accessEvaluator,
@@ -48,8 +51,10 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         IWorkspaceDocumentStorage storage,
         IDocumentTextExtractor textExtractor,
         IKnowledgeChunkWriter chunkWriter,
-        ILogger<WorkspaceDocumentService> logger)
+        ILogger<WorkspaceDocumentService> logger,
+        IPlatformSettings? platformSettings = null)
     {
+        _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _accessEvaluator = accessEvaluator;
         _eventPublisher = eventPublisher;
@@ -60,6 +65,39 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _textExtractor = textExtractor;
         _chunkWriter = chunkWriter;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// The upload limit for this workspace — platform setting limits.document_upload_mb, resolved
+    /// workspace override, then its plan's, then the platform value — read on every upload so a
+    /// change in /admin/settings applies to the next file. Null when the file fits.
+    /// </summary>
+    public async Task<string?> UploadTooLargeAsync(Guid workspaceId, long length, CancellationToken ct = default)
+    {
+        var limitMb = WorkspaceDocumentConstants.DefaultMaxUploadMb;
+        if (_platformSettings is not null)
+        {
+            string? planSlug = null;
+            try
+            {
+                planSlug = (await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetForWorkspaceAsync(workspaceId, ct))?.PlanSlug;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A plan override is a refinement: without the snapshot the platform value still applies.
+                _logger.LogDebug(ex, "Upload limit for {WorkspaceId} resolved without its plan.", workspaceId);
+            }
+
+            limitMb = await _platformSettings.GetInt32Async(
+                PlatformSettingsCatalog.DocumentUploadMb,
+                WorkspaceDocumentConstants.DefaultMaxUploadMb,
+                new SettingContext(workspaceId, planSlug),
+                ct);
+        }
+
+        return length > limitMb * 1024L * 1024L
+            ? $"The file is larger than this workspace's {limitMb} MB upload limit."
+            : null;
     }
 
     /// <summary>
@@ -270,6 +308,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (await UploadTooLargeAsync(workspaceId, request.File.Length, ct) is { } tooLarge)
+            {
+                return Result.Failure<UploadDocumentOutcomeDto>(tooLarge, ErrorCodes.ValidationError);
             }
 
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
@@ -1026,7 +1069,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             if (!roleName.IsOwnerOrAdmin())
             {
-                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite, ErrorCodes.Forbidden);
+                // Was WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite — a Member blocked from
+                // approving a document was told "Only Owner or Admin can invite members.", the
+                // wrong action entirely, copy-pasted from the invitation flow. The 403 itself was
+                // correct; only the message named the wrong operation.
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanApproveDocuments, ErrorCodes.Forbidden);
             }
 
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
@@ -1035,7 +1082,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
             }
 
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.pending_approval.ToString(), StringComparison.OrdinalIgnoreCase))
+            var isPendingApproval = string.Equals(document.Status, WorkspaceDocumentStatus.pending_approval.ToString(), StringComparison.OrdinalIgnoreCase);
+            var isRevisionReview = !isPendingApproval
+                && document.IsPublic()
+                && WorkspaceDocumentHelper.HasPendingRevision(document);
+            if (!isPendingApproval && !isRevisionReview)
             {
                 return Result.Failure("Document is not pending approval.", ErrorCodes.ValidationError);
             }
@@ -1055,6 +1106,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure(
                     $"The reason must be {WorkspaceDocumentConstants.MaxRejectionReasonLength} characters or fewer. This one is {reason.Length}.",
                     ErrorCodes.ValidationError);
+            }
+
+            if (isRevisionReview)
+            {
+                return request.Approve
+                    ? await PromotePendingRevisionAsync(document, reason, userId, ct)
+                    : await DiscardPendingRevisionAsync(document, reason, userId, ct);
             }
 
             if (request.Approve)
@@ -1141,6 +1199,157 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     }
 
     /// <summary>
+    /// WT-854 — approve a corrected version of a published document: it becomes the document.
+    ///
+    /// The pending values replace the live ones, and the document is re-ingested through the same
+    /// pipeline an approval always uses (the security scan reads StorageKey, so it now reads the
+    /// new file). The superseded blob is kept, as every revision's is, and named in the audit row.
+    /// Its chunks are purged synchronously after the commit — the DocumentDeleted invalidation has
+    /// no consumer (WT-871), so publishing it would leave the old text answering in WarpBot.
+    /// </summary>
+    private async Task<Result> PromotePendingRevisionAsync(
+        WorkspaceDocument document, string reason, Guid userId, CancellationToken ct)
+    {
+        var workspaceId = document.WorkspaceId;
+        var previousStorageKey = document.StorageKey;
+        var previousFileName = document.FileName;
+        var extension = document.PendingFileExtension ?? document.FileExtension;
+
+        document.StorageKey = document.PendingStorageKey!;
+        document.StorageProvider = document.PendingStorageProvider ?? document.StorageProvider;
+        document.Name = document.PendingName ?? document.Name;
+        document.FileName = document.PendingFileName ?? document.FileName;
+        document.FileExtension = extension;
+        document.MimeType = document.PendingMimeType ?? WorkspaceDocumentHelper.GetSafeContentType(extension);
+        document.DocumentType = extension.TrimStart('.').ToUpperInvariant();
+        document.SizeBytes = document.PendingSizeBytes ?? document.SizeBytes;
+        document.ContentHash = document.PendingContentHash;
+        WorkspaceDocumentHelper.ClearPendingRevision(document);
+
+        // The same rule upload applies: an image cannot be AI-readable however the switch was left.
+        document.IsAiAllowed = document.IsAiAllowed && WorkspaceDocumentHelper.IsAiReadableExtension(extension);
+        document.AiEligible = false;
+        document.LastIndexedAt = null;
+        document.IngestionFailureReason = null;
+        document.IngestionStatus = document.IsAiAllowed
+            ? WorkspaceDocumentIngestionStatus.pending.ToString()
+            : WorkspaceDocumentIngestionStatus.skipped.ToString();
+        document.UpdatedAt = DateTime.UtcNow;
+
+        _unitOfWork.WorkspaceDocumentRepository.Update(document);
+        if (document.IsAiAllowed)
+        {
+            await _eventPublisher.PublishDocumentUploadedAsync(
+                document.Id,
+                workspaceId,
+                document.StorageKey,
+                document.FileName,
+                document.FileExtension,
+                document.UploadedBy ?? userId,
+                document.ConfidentialityLevel,
+                ct);
+        }
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        // After the commit, so a failed save cannot strip the index of the approved file it still
+        // serves. Re-ingestion of the new file is queued in the same commit and runs through the
+        // outbox and the security scan, which is far slower than this call.
+        var vectorsPurged = await TryPurgeDocumentChunksAsync(workspaceId, document.Id, ct);
+
+        await _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            workspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.Approved,
+            document.UpdatedAt,
+            userId,
+            ct);
+
+        await _unitOfWork.AuditAsync(
+            document.Id,
+            workspaceId,
+            userId,
+            WorkspaceDocumentConstants.AuditActions.ApproveDocument,
+            new
+            {
+                revision = true,
+                previousStorageKey,
+                previousFileName,
+                fileName = document.FileName,
+                vectorsPurged,
+                reason = reason.Length > 0 ? reason : null
+            },
+            _logger,
+            ct);
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// WT-854 — reject a corrected version of a published document. The document never stopped
+    /// being the approved file, so there is nothing to restore: the pending slot is emptied and
+    /// its object deleted. The reason goes on the audit row, like any rejection.
+    /// </summary>
+    private async Task<Result> DiscardPendingRevisionAsync(
+        WorkspaceDocument document, string reason, Guid userId, CancellationToken ct)
+    {
+        var workspaceId = document.WorkspaceId;
+        var pendingFile = WorkspaceDocumentHelper.PendingRevisionFile(document);
+
+        WorkspaceDocumentHelper.ClearPendingRevision(document);
+        document.UpdatedAt = DateTime.UtcNow;
+        _unitOfWork.WorkspaceDocumentRepository.Update(document);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        // After the commit: deleting first would leave a row pointing at nothing if the save
+        // failed. A failed delete leaves an orphaned encrypted blob nothing references, which is
+        // the harmless direction — and it is logged and recorded.
+        var pendingFileDeleted = true;
+        try
+        {
+            await _storage.DeleteDocumentContentAsync(pendingFile, ct);
+        }
+        catch (Exception ex)
+        {
+            pendingFileDeleted = false;
+            _logger.LogError(
+                ex,
+                "Could not delete the rejected revision {StorageKey} of document {DocumentId}.",
+                pendingFile.StorageKey,
+                document.Id);
+        }
+
+        await _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            workspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.Rejected,
+            document.UpdatedAt,
+            userId,
+            ct);
+
+        await _unitOfWork.AuditAsync(
+            document.Id,
+            workspaceId,
+            userId,
+            WorkspaceDocumentConstants.AuditActions.RejectDocument,
+            new
+            {
+                reason,
+                revision = true,
+                rejectedFileName = pendingFile.FileName,
+                rejectedStorageKey = pendingFile.StorageKey,
+                pendingFileDeleted
+            },
+            _logger,
+            ct);
+
+        return Result.Success();
+    }
+
+    /// <summary>
     /// Audit actions the history route leaves out. A read is not a decision, and
     /// GetDocumentDetails is written on every single view of the detail page.
     /// </summary>
@@ -1171,6 +1380,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
             {
                 return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (await UploadTooLargeAsync(workspaceId, request.File.Length, ct) is { } tooLarge)
+            {
+                return Result.Failure<WorkspaceDocumentDto>(tooLarge, ErrorCodes.ValidationError);
             }
 
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
@@ -1212,6 +1426,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     ErrorCodes.ValidationError);
             }
 
+            // WT-854 — one revision under review at a time, for the same reason a document already
+            // pending approval is refused: the reviewer must decide about the file they read.
+            if (WorkspaceDocumentHelper.HasPendingRevision(document))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "A corrected version of this document is already awaiting review. It must be approved or rejected before another one is uploaded.",
+                    ErrorCodes.Conflict);
+            }
+
             var name = string.IsNullOrWhiteSpace(request.Name) ? document.Name : request.Name.Trim();
             if (name.Length == 0)
             {
@@ -1247,6 +1470,16 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             }
 
             var content = contentResult.Value;
+
+            // WT-854 — a PUBLISHED document keeps serving its approved file. The correction waits in
+            // the pending slot, and readers, downloads and the AI index are untouched until a
+            // reviewer approves it. Only a rejected document — which nobody is reading — is still
+            // replaced in place below.
+            if (isPublished)
+            {
+                return await StagePendingRevisionAsync(document, request, name, note, extension, content, userId, ct);
+            }
+
             var now = DateTime.UtcNow;
             var previousStorageKey = document.StorageKey;
             var previousFileName = document.FileName;
@@ -1348,6 +1581,142 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         {
             _logger.LogError(ex, "Error occurred while re-uploading document. DocumentId: {DocumentId}", documentId);
             return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-854 — store a corrected file for a PUBLISHED document beside the approved one.
+    ///
+    /// Before this, a re-upload overwrote StorageKey at once and sent the document back to
+    /// pending_approval: readers lost the approved document the moment somebody uploaded a fix, the
+    /// unreviewed file was what downloads served, and Reject had nothing to restore — the approved
+    /// file's key survived only in the audit row. Now nothing a reader can reach changes: status,
+    /// StorageKey, the file metadata, the extracted text and the AI index all keep describing the
+    /// approved file. ApproveDocumentAsync promotes this slot; a rejection deletes it.
+    /// </summary>
+    private async Task<Result<WorkspaceDocumentDto>> StagePendingRevisionAsync(
+        WorkspaceDocument document,
+        ReuploadDocumentApiRequest request,
+        string name,
+        string note,
+        string extension,
+        byte[] content,
+        Guid userId,
+        CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var workspaceId = document.WorkspaceId;
+
+        // A NEW KEY, as for any revision: the approved blob stays exactly where it is.
+        document.PendingStorageKey = WorkspaceDocumentHelper.GenerateRevisionStorageKey(workspaceId, document.Id, extension, now);
+        document.PendingStorageProvider = _storage.StorageProviderName;
+        document.PendingName = string.Equals(name, document.Name, StringComparison.Ordinal) ? null : name;
+        document.PendingFileName = request.File.FileName;
+        document.PendingFileExtension = extension;
+        document.PendingMimeType = WorkspaceDocumentHelper.GetSafeContentType(extension);
+        document.PendingSizeBytes = request.File.Length;
+        document.PendingContentHash = DocumentContentHelper.ComputeSha256(content);
+        document.PendingNote = note.Length > 0 ? note : null;
+        document.PendingUploadedBy = userId;
+        document.PendingUploadedAt = now;
+
+        var pendingFile = WorkspaceDocumentHelper.PendingRevisionFile(document);
+        await _storage.SaveDocumentContentAsync(pendingFile, new MemoryStream(content, writable: false), ct);
+
+        try
+        {
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // The row never learned about the pending object, so nothing references it.
+            await _storage.DeleteDocumentContentAsync(pendingFile, ct);
+            throw;
+        }
+
+        await _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            workspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.PendingApproval,
+            document.UpdatedAt,
+            userId,
+            ct);
+
+        await _unitOfWork.AuditAsync(
+            document.Id,
+            workspaceId,
+            userId,
+            WorkspaceDocumentConstants.AuditActions.ReuploadDocument,
+            new
+            {
+                pendingRevision = true,
+                pendingStorageKey = document.PendingStorageKey,
+                currentStorageKey = document.StorageKey,
+                previousFileName = document.FileName,
+                fileName = document.PendingFileName,
+                reason = document.PendingNote
+            },
+            _logger,
+            ct);
+
+        var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
+        return Result.Success(document.ToDto(downloadUrl));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<DocumentDownloadStreamDto>> DownloadPendingRevisionAsync(
+        Guid workspaceId,
+        Guid documentId,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null
+                || !WorkspaceDocumentHelper.HasPendingRevision(document))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>("No corrected version is awaiting review.", ErrorCodes.NotFound);
+            }
+
+            // The people who decide about it and the people who sent it — not every reader of the
+            // published document. An unreviewed file is not published content.
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            var isUploader = document.UploadedBy == userId || document.OwnerId == userId || document.PendingUploadedBy == userId;
+            if (!isUploader && !roleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(
+                    "Only a reviewer or the uploader can open a version that is awaiting review.",
+                    ErrorCodes.Forbidden);
+            }
+
+            var pendingFile = WorkspaceDocumentHelper.PendingRevisionFile(document);
+            var stream = await _storage.GetDecryptedStreamAsync(pendingFile, ct);
+
+            return Result.Success(new DocumentDownloadStreamDto(
+                stream,
+                WorkspaceDocumentHelper.GetSafeContentType(pendingFile.FileExtension),
+                pendingFile.FileName));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while downloading a pending revision. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -1476,6 +1845,21 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // THE VECTORS HAVE TO GO, NOT JUST BE ANNOUNCED (WT-871). The DocumentDeleted
+            // invalidation above has no consumer — the event catalog lists `consumers: []`,
+            // warptalk-ai never reads `workspace-document-events`, and the only .NET reader of
+            // that stream handles DocumentUploaded alone — so on its own it removed nothing. An
+            // Owner/Admin's WarpBot search is not narrowed by the ai-retrievable allowlist, so it
+            // went on answering from the deleted file, and the Knowledge page (which reads the
+            // same Qdrant points, facts included) went on listing it.
+            //
+            // Same helper and same order as UnpublishDocumentAsync: after the commit, because a
+            // purge that ran ahead of a failed save would strip the index of a document that is
+            // still live. A purge failure is logged and recorded on the audit row but does not
+            // undo the delete — the row is the authority, the allowlist already excludes it, and
+            // what lingers is chunks an Owner/Admin can still remove from the Knowledge page.
+            var vectorsPurged = await TryPurgeDocumentChunksAsync(workspaceId, documentId, ct);
+
             await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
@@ -1486,7 +1870,14 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 userId,
                 ct);
 
-            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DeleteDocument, logger: _logger, ct: ct);
+            await _unitOfWork.AuditAsync(
+                documentId,
+                workspaceId,
+                userId,
+                WorkspaceDocumentConstants.AuditActions.DeleteDocument,
+                new { vectorsPurged },
+                _logger,
+                ct);
 
             return Result.Success();
         }
@@ -1910,6 +2301,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (document == null || document.DeletedAt != null)
             {
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
+            }
+
+            // WT-872. This read exists for the assistant — WarpBot's get_document tool is its only
+            // caller — and `view` is not the question the assistant needs answered. The uploader
+            // holds `view` on their own document from the moment it is uploaded, so a document
+            // sitting in Pending Approval, or one an admin had Rejected, was quoted back to them
+            // verbatim by WarpBot while the index (correctly) had never seen it.
+            //
+            // The gate is IsIndexEligible, the one definition of "may the model read this" that
+            // the embedding pipeline already uses — not a second list of statuses kept here.
+            // Checked AFTER the ACL on purpose: someone who may not see the document at all gets
+            // the same answer as before, and only a caller who can see it learns why WarpBot
+            // cannot use it.
+            if (!document.IsIndexEligible())
+            {
+                return Result.Failure<ExtractedTextDto>(
+                    WorkspaceConstants.Errors.DocumentNotAiEligible,
+                    WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode);
             }
 
             string extractedText = string.Empty;

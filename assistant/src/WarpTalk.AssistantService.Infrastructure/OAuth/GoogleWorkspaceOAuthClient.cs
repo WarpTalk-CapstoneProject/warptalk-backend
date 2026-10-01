@@ -31,7 +31,10 @@ namespace WarpTalk.AssistantService.Infrastructure.OAuth;
 /// </remarks>
 public class GoogleWorkspaceOAuthClient : IPluginOAuthClient
 {
-    private static readonly string[] IdentityScopes = ["openid", "email", "profile"];
+    // Only the OIDC userinfo claims this client reads: `sub` (openid) and `email`. The `profile`
+    // scope adds name/picture, which nothing here consumes, so it is not asked for. Both remaining
+    // scopes are non-sensitive.
+    private static readonly string[] IdentityScopes = ["openid", "email"];
 
     private readonly HttpClient _httpClient;
     private readonly GoogleWorkspaceOAuthOptions _options;

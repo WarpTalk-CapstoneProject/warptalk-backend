@@ -29,6 +29,25 @@ public class TranslationRoomArtifactRepository : GenericRepository<TranslationRo
         return await _dbSet
             .Include(a => a.TranslationRoom)
             .ThenInclude(r => r.TranslationRoomParticipants)
+            .Include(a => a.TranslationRoom)
+            .ThenInclude(r => r.TranslationRoomInvitations)
             .FirstOrDefaultAsync(a => a.Id == artifactId && a.DeletedAt == null, ct);
+    }
+
+    public async Task<IReadOnlyList<MediaUsageRecording>> GetRecordingsCreatedAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        var recording = Domain.Enums.ArtifactType.OPTIONAL_RECORDING.ToString();
+        var rows = await (
+                from artifact in _dbSet.AsNoTracking()
+                join room in _context.TranslationRooms.AsNoTracking() on artifact.TranslationRoomId equals room.Id
+                where artifact.ArtifactType == recording
+                      && artifact.CreatedAt >= @from
+                      && artifact.CreatedAt < to
+                select new { room.WorkspaceId, artifact.CreatedAt, artifact.FileSizeBytes })
+            .ToListAsync(ct);
+        return rows.Select(r => new MediaUsageRecording(r.WorkspaceId, r.CreatedAt, r.FileSizeBytes)).ToList();
     }
 }

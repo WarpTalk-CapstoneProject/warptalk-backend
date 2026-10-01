@@ -40,8 +40,28 @@ public static class WorkspaceDocumentMapper
             doc.CreatedAt,
             doc.UpdatedAt,
             doc.IngestionFailureReason,
-            rejectionReason
+            rejectionReason,
+            doc.ToPendingRevisionDto()
         );
+    }
+
+    /// <summary>WT-854 — the pending revision slot as the API shows it, or null when empty.</summary>
+    public static WorkspaceDocumentPendingRevisionDto? ToPendingRevisionDto(this WorkspaceDocument doc)
+    {
+        if (string.IsNullOrWhiteSpace(doc.PendingStorageKey))
+        {
+            return null;
+        }
+
+        return new WorkspaceDocumentPendingRevisionDto(
+            doc.PendingName ?? doc.Name,
+            doc.PendingFileName ?? doc.FileName,
+            doc.PendingFileExtension ?? doc.FileExtension,
+            doc.PendingMimeType ?? doc.MimeType,
+            doc.PendingSizeBytes ?? 0,
+            doc.PendingUploadedBy,
+            doc.PendingUploadedAt ?? doc.UpdatedAt,
+            doc.PendingNote);
     }
 
     public static WorkspaceDocument ToEntity(

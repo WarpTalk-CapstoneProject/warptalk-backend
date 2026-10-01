@@ -88,7 +88,7 @@ public class TranslationRoomGrpcServiceRoomLanguagesTests
 
     private void GivenRoom(bool includeArtifactLanguages, TranslationRoomDto dto) =>
         _directory
-            .Setup(d => d.GetRoomAsync(RoomId, includeArtifactLanguages, It.IsAny<CancellationToken>()))
+            .Setup(d => d.GetRoomAsync(RoomId, includeArtifactLanguages, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(dto));
 
     private static TranslationRoomDto Dto(RoomArtifactLanguagesDto? artifactLanguages) =>

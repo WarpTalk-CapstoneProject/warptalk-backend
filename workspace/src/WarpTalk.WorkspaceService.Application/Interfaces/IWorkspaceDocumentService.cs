@@ -22,6 +22,12 @@ public interface IWorkspaceDocumentService
     Task<Result<WorkspaceDocumentDto>> ReuploadDocumentAsync(Guid workspaceId, Guid documentId, ReuploadDocumentApiRequest request, Guid userId, CancellationToken ct = default);
 
     /// <summary>
+    /// WT-854 — the bytes of a corrected version awaiting review, for a reviewer (Owner/Admin) or
+    /// the uploader. NotFound when nothing is pending.
+    /// </summary>
+    Task<Result<DocumentDownloadStreamDto>> DownloadPendingRevisionAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
     /// A document's approval and feedback history, newest first. WT-633.
     /// </summary>
     Task<Result<PagedResult<DocumentHistoryEntryDto>>> GetDocumentHistoryAsync(Guid workspaceId, Guid documentId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default);

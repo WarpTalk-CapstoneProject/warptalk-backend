@@ -9,6 +9,7 @@ using WarpTalk.Shared.Extensions;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.API.Controllers;
 
@@ -26,7 +27,9 @@ public class WorkspaceDocumentsController : ControllerBase
     [Authorize]
     [HttpPost]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(10 * 1024 * 1024)] // Enforce 10MB limit at request level
+    // Ceiling only: the live per-workspace limit (platform setting limits.document_upload_mb) is
+    // enforced by the service, which can name it in the error.
+    [RequestSizeLimit(WorkspaceDocumentConstants.MaxUploadRequestBytes)]
     public async Task<IActionResult> UploadDocument(
         Guid workspaceId,
         [FromForm] UploadDocumentApiRequest request,
@@ -79,7 +82,7 @@ public class WorkspaceDocumentsController : ControllerBase
     [Authorize]
     [HttpPost("{documentId:guid}/revision")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(10 * 1024 * 1024)]
+    [RequestSizeLimit(WorkspaceDocumentConstants.MaxUploadRequestBytes)]
     public async Task<IActionResult> ReuploadDocument(
         Guid workspaceId,
         Guid documentId,
@@ -192,6 +195,35 @@ public class WorkspaceDocumentsController : ControllerBase
 
         var dto = result.Value;
         Response.Headers["X-Content-Type-Options"] = "nosniff";
+        return File(dto.Stream, dto.ContentType, dto.FileName);
+    }
+
+    /// <summary>
+    /// WT-854 — the corrected file awaiting review for a published document, so a reviewer can
+    /// read what they are approving. `download` keeps serving the approved file to everyone else.
+    /// Owner/Admin or the uploader only; 404 when nothing is pending.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{documentId:guid}/revision/download")]
+    public async Task<IActionResult> DownloadPendingRevision(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.DownloadPendingRevisionAsync(workspaceId, documentId, userId.Value, ct);
+        if (!result.IsSuccess || result.Value == null)
+        {
+            return ToActionResult(result);
+        }
+
+        var dto = result.Value;
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        // Never cached by an intermediary: the same URL serves a different file after the next
+        // revision, and none at all once this one is decided.
+        Response.Headers["Cache-Control"] = "no-store";
         return File(dto.Stream, dto.ContentType, dto.FileName);
     }
 
@@ -382,6 +414,8 @@ public class WorkspaceDocumentsController : ControllerBase
         {
             ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            // WT-872: a refusal like FORBIDDEN, with its own code so WarpBot can say why.
+            WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))

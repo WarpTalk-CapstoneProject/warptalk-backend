@@ -56,6 +56,7 @@ public class UploadCloneHandoffTests
             Substitute.For<IVoiceCatalogDirectory>(),
             _queue,
             Substitute.For<IVoicePreviewQueue>(),
+            Substitute.For<IVoiceEnrollmentChallengeService>(),
             Substitute.For<ILogger<VoiceProfileService>>());
     }
 

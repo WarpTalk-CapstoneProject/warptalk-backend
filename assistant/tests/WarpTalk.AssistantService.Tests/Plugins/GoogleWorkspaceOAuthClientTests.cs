@@ -219,6 +219,22 @@ public class GoogleWorkspaceOAuthClientTests
     }
 
     [Fact]
+    public void BuildAuthorizationUrl_AsksOnlyForOpenIdEmailAndTheRowScopes()
+    {
+        var sut = CreateSut(new HttpClient(new StubHttpMessageHandler(_ =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))));
+
+        var url = sut.BuildAuthorizationUrl(
+            GooglePlugin("google_calendar"),
+            ["https://www.googleapis.com/auth/calendar.events"],
+            "state-token",
+            new PluginOAuthStateDto(Guid.NewGuid(), "google_calendar"));
+
+        var scope = System.Web.HttpUtility.ParseQueryString(new Uri(url).Query)["scope"];
+        Assert.Equal("openid email https://www.googleapis.com/auth/calendar.events", scope);
+    }
+
+    [Fact]
     public async Task ExchangeCodeAsync_RefusesAPluginFromAnotherProvider()
     {
         // The guard that matters: this client posts to Google's token endpoint with Google's

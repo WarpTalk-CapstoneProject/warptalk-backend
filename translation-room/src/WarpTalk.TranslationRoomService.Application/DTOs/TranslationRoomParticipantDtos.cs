@@ -33,5 +33,10 @@ public record TranslationRoomParticipantDto(
     /// fact to key on. Trails the record with a default so an older client deserialising this DTO
     /// is unaffected.
     /// </summary>
-    bool IsExternal = false
+    bool IsExternal = false,
+    /// <summary>
+    /// EXTERNAL_BRIDGE: this person is in Meet with their real mic/speakers (text-only bridge
+    /// mode), so no outbound dub is synthesized for them. Always false outside bridge rooms.
+    /// </summary>
+    bool IsBridgeTextOnly = false
 );

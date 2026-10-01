@@ -119,6 +119,19 @@
           "Npgsql": "8.0.3"
         }
       },
+      "AWSSDK.Core": {
+        "type": "Transitive",
+        "resolved": "3.7.402.8",
+        "contentHash": "ah2B+RMiIPLzGMRGq4Z8k4+uJKOhVw5MHaUF27bFrAm113qoF+PWWBdOBzIaUf6AF/luOLdnn/l1x6xIy6ZdeQ=="
+      },
+      "AWSSDK.S3": {
+        "type": "Transitive",
+        "resolved": "3.7.415.7",
+        "contentHash": "e9ngQuFoPWgJ9Hn1UJN78v3MclcLPggjYWzIFjEj19DhxxduJJ+0P6vtUA7dR8yFQsK5mC+BKlywO3LQ7mLLvQ==",
+        "dependencies": {
+          "AWSSDK.Core": "[3.7.402.8, 4.0.0)"
+        }
+      },
       "BouncyCastle.Cryptography": {
         "type": "Transitive",
         "resolved": "2.7.0",
@@ -1079,6 +1092,7 @@
       "warptalk.billingservice.infrastructure": {
         "type": "Project",
         "dependencies": {
+          "AWSSDK.S3": "[3.7.415.7, )",
           "Microsoft.EntityFrameworkCore.Relational": "[10.0.5, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.5, )",
           "Microsoft.Extensions.Hosting.Abstractions": "[10.0.5, )",

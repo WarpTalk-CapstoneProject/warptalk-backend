@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
@@ -40,12 +41,19 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditTopUpPaymentEventHandler> _logger;
 
+    private readonly ICreditFreezeService? _creditFreeze;
+    private readonly ISuspensionLiftService? _suspensionLift;
+
     public CreditTopUpPaymentEventHandler(
         IUnitOfWork unitOfWork,
-        ILogger<CreditTopUpPaymentEventHandler> logger)
+        ILogger<CreditTopUpPaymentEventHandler> logger,
+        ICreditFreezeService? creditFreeze = null,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _creditFreeze = creditFreeze;
+        _suspensionLift = suspensionLift;
     }
 
     public bool CanHandle(PaymentEventContext context)
@@ -86,12 +94,36 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         // Credits live on the subscription — it is what CreditsRemaining hangs off and what every
         // consumption path decrements. A workspace with no subscription has nowhere to put them.
         var subscription = context.Subscription
-            ?? await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            ?? await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                context.WorkspaceId, includePlan: false, cancellationToken: cancellationToken);
 
         if (subscription is null)
         {
+            // backend#467: paid credit is never lost. Book it frozen on the workspace's latest
+            // subscription (restored on renewal) rather than failing a payment already taken.
+            var holder = _creditFreeze is null
+                ? null
+                : await _creditFreeze.StageFrozenPurchaseAsync(
+                    new FrozenPurchase(
+                        context.WorkspaceId,
+                        context.UserId,
+                        credits,
+                        string.Format(BillingMessageConstants.SuccessMessages.CreditTopUpGrantedTemplate, credits)
+                            + " (kept frozen: no live subscription)",
+                        context.PaymentId,
+                        context.Request.Currency,
+                        DateTime.UtcNow),
+                    cancellationToken);
+            if (holder is not null)
+            {
+                // The payment row points at the subscription holding the credits. Not
+                // SubscriptionChanged: nothing about the (ended) plan changed.
+                context.Subscription = holder;
+                PaidCreditsMetrics.RecordFrozen(PaymentConstants.PaymentTypes.CreditTopUp);
+                return Result.Success();
+            }
+
+            PaidCreditsMetrics.RecordUnheld(PaymentConstants.PaymentTypes.CreditTopUp);
             _logger.LogError(
                 "credit_topup_no_subscription: StripeSessionId={SessionId} WorkspaceId={WorkspaceId}. "
                 + "The payment succeeded but there is no active subscription to credit.",
@@ -103,8 +135,14 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
                 ErrorCodes.InvalidState);
         }
 
+        var now = DateTime.UtcNow;
         subscription.CreditsRemaining += credits;
-        subscription.UpdatedAt = DateTime.UtcNow;
+        subscription.UpdatedAt = now;
+
+        // WT-878: paying must lift the suspension it paid for. Staged here so the lift commits
+        // with the credits; PaymentAppService pushes the new state to AI after the commit
+        // (SubscriptionChanged below), the same push a renewal uses.
+        var lift = _suspensionLift?.StageAfterCreditGrant(subscription, now) ?? SuspensionLiftOutcome.None;
         _unitOfWork.SubscriptionRepository.Update(subscription);
 
         await _unitOfWork.CreditTransactionRepository.AddAsync(new CreditTransaction
@@ -129,13 +167,20 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         // consumers see the new balance without waiting for the hourly reconcile.
         context.Subscription = subscription;
         context.SubscriptionChanged = true;
+        if (_suspensionLift is { } liftService)
+        {
+            // WT-878: billing.credits_updated had no publisher. After the commit, so the balance it
+            // announces is the one a refetch will read.
+            context.AfterCommit.Add(ct => liftService.PublishCreditsUpdatedAsync(subscription, lift.Lifted, ct));
+        }
 
         _logger.LogInformation(
-            "credit_topup_granted: Credits={Credits} WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} BalanceAfter={BalanceAfter}",
+            "credit_topup_granted: Credits={Credits} WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} BalanceAfter={BalanceAfter} Lifted={Lifted}",
             credits,
             context.WorkspaceId,
             subscription.Id,
-            subscription.CreditsRemaining);
+            subscription.CreditsRemaining,
+            lift.LiftedReason);
 
         return Result.Success();
     }

@@ -204,6 +204,36 @@ public partial class WorkspaceDbContext : DbContext
             entity.Property(e => e.StorageProvider)
                 .HasMaxLength(50)
                 .HasColumnName("storage_provider");
+            // WT-854 — the pending revision slot. Hand-mapped like every other column here: this
+            // context has no naming convention, and one missing HasColumnName 500s every SELECT
+            // over workspace_documents.
+            entity.Property(e => e.PendingStorageKey)
+                .HasMaxLength(500)
+                .HasColumnName("pending_storage_key");
+            entity.Property(e => e.PendingStorageProvider)
+                .HasMaxLength(50)
+                .HasColumnName("pending_storage_provider");
+            entity.Property(e => e.PendingName)
+                .HasMaxLength(255)
+                .HasColumnName("pending_name");
+            entity.Property(e => e.PendingFileName)
+                .HasMaxLength(255)
+                .HasColumnName("pending_file_name");
+            entity.Property(e => e.PendingFileExtension)
+                .HasMaxLength(20)
+                .HasColumnName("pending_file_extension");
+            entity.Property(e => e.PendingMimeType)
+                .HasMaxLength(100)
+                .HasColumnName("pending_mime_type");
+            entity.Property(e => e.PendingSizeBytes).HasColumnName("pending_size_bytes");
+            entity.Property(e => e.PendingContentHash)
+                .HasMaxLength(64)
+                .HasColumnName("pending_content_hash");
+            entity.Property(e => e.PendingNote)
+                .HasMaxLength(2000)
+                .HasColumnName("pending_note");
+            entity.Property(e => e.PendingUploadedBy).HasColumnName("pending_uploaded_by");
+            entity.Property(e => e.PendingUploadedAt).HasColumnName("pending_uploaded_at");
             entity.Property(e => e.Summary).HasColumnName("summary");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")

@@ -34,6 +34,7 @@ using WarpTalk.TranslationRoomService.Infrastructure.Storage;
 using WarpTalk.TranslationRoomService.Infrastructure.Documents;
 using StackExchange.Redis;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.PlatformSettings;
 using WarpTalk.Shared.Grpc;
 
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
@@ -94,6 +95,7 @@ builder.Services.AddScoped<IMeetingActionItemRepository, MeetingActionItemReposi
 builder.Services.AddScoped<IMeetingMinutesShareRepository, MeetingMinutesShareRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
+builder.Services.AddScoped<IMediaUsageService, MediaUsageService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
 // WT-691: language catalog writes, each recorded in the platform audit log before it is saved.
@@ -174,9 +176,17 @@ builder.Services.AddHostedService<SummaryResultConsumerWorker>();
 // WT-67 audio-routing session_ends event — this worker ends rooms via the proper
 // EndTranslationRoomAsync service method, which does both correctly.
 builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
+// Google Meet bridge: a bridge room ends when the Google Meet conference it bridges ends (the
+// popup has no End button). Reads Meet REST through AssistantService with the host's grant.
+builder.Services.AddHostedService<MeetConferenceEndWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
 // WT-14: reminds the host/participants at T-10min and T-1min before a SCHEDULED room's start.
 builder.Services.AddHostedService<ReminderNotificationWorker>();
+// WT-612 / WT-714: and the booking's own clock — at T-0 it opens itself (SCHEDULED to OPEN, so
+// nobody has to press Start for a meeting whose time has come), and two hours later, if nobody
+// ever came, the same sweep marks it EXPIRED instead of leaving it standing open for good. It
+// never starts the meeting; the first arrival does.
+builder.Services.AddHostedService<ScheduledRoomLifecycleWorker>();
 // WT-327: rolls each recurring booking's horizon forward. Polling, not a Redis subscriber —
 // "a day passed" is a clock fact, and an unguarded SubscribeAsync takes down the host process.
 builder.Services.AddHostedService<RecurringSeriesMaterializationWorker>();
@@ -249,10 +259,9 @@ builder.Services.AddWarpTalkJwtAuthentication(
         };
     });
 builder.Services.AddAuthorization();
-// The gate every ~/api/v1/admin/* endpoint shares. AdminMeetingsController is the first admin
-// surface in this service, and without this the policy name resolves to nothing — the attribute
-// then throws at request time instead of refusing the caller.
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+// Staff permissions for every admin endpoint here (meetings.read, settings.*). Without this the
+// permission handler is missing and every [RequirePermission] request is refused.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = builder.Configuration.GetRequiredServiceUri(
@@ -294,6 +303,8 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAud
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// The recorder reads the admin's e-mail, address and user agent from the request it serves.
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAdminAuditRecorder, WarpTalk.TranslationRoomService.Infrastructure.Clients.AdminAuditGrpcClient>();
 // WT-14: reused by ReminderNotificationWorker to push reminder notifications through the
 // same NotificationService gRPC path other services use (see NotificationGrpcServiceImpl.SendNotification).
@@ -305,10 +316,25 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         "http://localhost:50054");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// Google Meet conference records, read by AssistantService with the host's own Google grant
+// (meet_conference.proto). Used by MeetConferenceEndWorker.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.MeetConferenceService.MeetConferenceServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:AssistantServiceUrl",
+        "http://localhost:50058");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IMeetConferenceRecordsClient, WarpTalk.TranslationRoomService.Infrastructure.Clients.MeetConferenceRecordsGrpcClient>();
+// The meeting invitation email reads its admin-edited template through this client.
+WarpTalk.Shared.Email.EmailTemplateServiceCollectionExtensions.AddWarpTalkEmailTemplates(builder.Services);
 
 builder.Services.AddControllers();
 builder.Services.AddCustomApiBehavior();
 
+// Platform settings (/admin/settings): the meeting-creation limit is read live, per workspace.
+builder.Services.AddWarpTalkPlatformSettings();
 builder.Services.AddScoped<WarpTalk.TranslationRoomService.API.Filters.RateLimitingFilter>();
 
 builder.Services.AddOpenApi();

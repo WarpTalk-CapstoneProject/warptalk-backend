@@ -22,7 +22,10 @@ public record RoomSettingsRequest(
     // WT-587: false makes this an ephemeral meeting — captions and translation still run, nothing
     // is written to transcript_segments. Null (the default) leaves it alone, which for a new room
     // means TranslationRoomSettings' own TRUE.
-    bool? SaveTranscript = null
+    bool? SaveTranscript = null,
+    // WT-826: false keeps the record host-only when the meeting ends. Null (the default) leaves
+    // it alone, which for a new room means ON.
+    bool? AutoShareRecord = null
 );
 
 public record RoomSettingsResponse(
@@ -35,7 +38,10 @@ public record RoomSettingsResponse(
     // WT-587. Trailing with a default so every existing positional construction site — and every
     // client reading this record — is unaffected, and so an older caller cannot accidentally
     // report a room as ephemeral by omission.
-    bool SaveTranscript = true
+    bool SaveTranscript = true,
+    // WT-826: whether the record is published to participants when the meeting ends. Effective
+    // value — a room that never stated it reads TRUE, because that is what will happen to it.
+    bool AutoShareRecord = true
 );
 
 public record UpdateRoomSettingsRequest(
@@ -66,7 +72,18 @@ public record GetTranslationRoomsRequest(
     /// answer, not fourteen. The home day panel asks "what is on Thursday?", and there the
     /// occurrence IS the meeting — collapsing would empty every day but one.
     /// </summary>
-    bool GroupBySeries = false
+    bool GroupBySeries = false,
+    /// <summary>
+    /// History only: <c>"mine"</c> reads the caller's own meetings (hosted, joined or invited) even
+    /// when the caller is a workspace Owner/Admin, instead of the whole workspace.
+    ///
+    /// The Artifacts page is a personal library: it lists what the caller can READ, and the
+    /// Owner/Admin widening adds no readable document — <c>ArtifactAccessHelper</c> grants a body
+    /// to the host, or to a participant/invitee when the room shares with participants, and never
+    /// on the workspace role. Widening there only produced locked cards. Anything else, including
+    /// omitting it, keeps the archive's workspace reading.
+    /// </summary>
+    string? Scope = null
 );
 
 /// <summary>
@@ -134,7 +151,12 @@ public record CreateTranslationRoomRequest(
     string? ExternalProvider = null,
     string? ExternalMeetingUrl = null,
     string? ExternalCalendarEventId = null,
-    string? ExternalCalendarEventUrl = null
+    string? ExternalCalendarEventUrl = null,
+    // EXTERNAL_BRIDGE only: what the far side of the external call speaks, i.e. the language of
+    // the "External Meeting" stand-in. Omitted, the server takes the first target that is not the
+    // source (TranslationRoomMapper.ResolveExternalMeetingLanguage). Sent, it is added to the
+    // targets if missing, so the workspace policy vets it like every other room language.
+    string? ExternalMeetingLanguage = null
 );
 
 /// <summary>WT-327: what creating a recurring booking returns.</summary>
@@ -239,6 +261,30 @@ public record TranslationRoomDto(
     /// Trailing and defaulted so every existing positional construction site still compiles.
     /// </summary>
     RoomArtifactLanguagesDto? ArtifactLanguages = null,
+    /// <summary>
+    /// WT-849: whether the caller named by a <c>requesterEmail</c> passed into
+    /// <c>ITranslationRoomDirectoryService.GetRoomAsync</c> holds a live (PENDING or ACCEPTED)
+    /// invitation to this room — the same relation <c>ArtifactAccessHelper.IsParticipantOrInvited</c>
+    /// asks on the HTTP side, computed here for the mesh (<c>TranscriptReadAccess</c> is the first
+    /// consumer, over <c>GetTranslationRoomResponse.is_requester_invited</c>).
+    ///
+    /// <c>null</c> when no <c>requesterEmail</c> was supplied to the read — the caller did not ask,
+    /// so this is "not computed", not "not invited". Never widen a <c>null</c> here into <c>false</c>
+    /// or vice versa; that is exactly the field-presence distinction WT-587's <c>save_transcript</c>
+    /// documents for the same reason. Trailing and defaulted so every existing positional
+    /// construction site still compiles.
+    /// </summary>
+    bool? IsRequesterInvited = null,
+    /// <summary>
+    /// EXTERNAL_BRIDGE: the normalized Google Meet code the room is claimed for, or <c>null</c> for
+    /// a room that was not created through bridge claim. Trailing and defaulted.
+    /// </summary>
+    string? ExternalMeetingCode = null,
+    /// <summary>
+    /// EXTERNAL_BRIDGE: whose desktop publishes the far side right now. <c>null</c> on a legacy room,
+    /// where the host holds that authority. Trailing and defaulted.
+    /// </summary>
+    Guid? BridgeCapturerUserId = null,
     /// <summary>
     /// WT-708: what the workspace's CURRENT language whitelist did to this meeting's languages
     /// when it was started — see <see cref="RoomLanguagePolicyNoticeDto"/>. Set only by

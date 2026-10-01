@@ -32,6 +32,57 @@ public sealed class RecordingLifecycleEventProcessorTests
             NullLogger<RecordingLifecycleEventProcessor>.Instance);
     }
 
+    // ---- WT-826: auto-share counts as the release -------------------------------------------
+
+    /// <summary>
+    /// A recording LiveKit finishes uploading after the room ended — and after that room shared
+    /// its record automatically — must not sit behind a hold the host already released by leaving
+    /// auto-share on. The room's end released every recording row that existed then; this is the
+    /// one that did not exist yet.
+    /// </summary>
+    [Fact]
+    public async Task Completed_AfterTheRoomAutoSharedItsRecord_IsNotHeld()
+    {
+        GivenRoom("ENDED", "{\"artifact_access\":\"ALL_PARTICIPANTS\",\"auto_share_record\":true}");
+
+        await _sut.ProcessAsync(Completed());
+
+        Assert.False(Assert.Single(_store.Rows).ConsentRequired);
+    }
+
+    /// <summary>
+    /// A room that ended before WT-826 carries no toggle, and nothing published it. Its recordings
+    /// keep waiting for the host exactly as they always did — no retroactive release.
+    /// </summary>
+    [Fact]
+    public async Task Completed_ForARoomThatEndedBeforeAutoShare_IsStillHeld()
+    {
+        GivenRoom("ENDED", "{\"artifact_access\":\"HOST_ONLY\"}");
+
+        await _sut.ProcessAsync(Completed());
+
+        Assert.True(Assert.Single(_store.Rows).ConsentRequired);
+    }
+
+    /// <summary>A room still running has not been published yet, whatever its toggle says.</summary>
+    [Fact]
+    public async Task Started_WhileTheMeetingIsStillRunning_IsHeld()
+    {
+        GivenRoom("IN_PROGRESS", "{\"artifact_access\":\"ALL_PARTICIPANTS\",\"auto_share_record\":true}");
+
+        await _sut.ProcessAsync(Started());
+
+        Assert.True(Assert.Single(_store.Rows).ConsentRequired);
+    }
+
+    private void GivenRoom(string status, string settings)
+    {
+        var rooms = new Mock<ITranslationRoomRepository>();
+        rooms.Setup(repo => repo.GetByIdAsync(RoomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoom { Id = RoomId, Status = status, Settings = settings });
+        _store.UnitOfWork.SetupGet(work => work.TranslationRoomRepository).Returns(rooms.Object);
+    }
+
     // ---- started ---------------------------------------------------------------------------
 
     [Fact]

@@ -35,6 +35,28 @@ public interface IPaymentRepository : IGenericRepository<Payment>
     Task<IReadOnlyList<PaidAmountRow>> GetCountedPaidAmountsAsync(
         DateTime from, DateTime to, CancellationToken cancellationToken = default);
 
+    // ── Admin workspace page (ERP detail). The same counting rules, scoped to one workspace. ──
+
+    /// <summary>
+    /// <see cref="GetCountedPaidTotalsAsync"/> for one workspace: paid payments on any of its
+    /// subscriptions, the Stripe in_… twin of a checkout session left out exactly as Insights does.
+    /// </summary>
+    Task<IReadOnlyList<PaymentCurrencyTotal>> GetWorkspaceCountedPaidTotalsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
+    /// <summary><see cref="CountStripeInvoiceDuplicatesAsync"/> for one workspace.</summary>
+    Task<int> CountWorkspaceStripeInvoiceDuplicatesAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default);
+
     /// <summary>Newest payments that represent a charge attempt (not pending, not subscription_updated), newest first.</summary>
     Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default);
+
+    /// <summary>G12 inbox: payments in the disputed status updated since <paramref name="since"/>, newest first.</summary>
+    Task<IReadOnlyList<InboxPaymentRow>> GetDisputedSinceAsync(DateTime since, int take, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Paid (counted, Stripe invoice twins removed) and failed payments of <paramref name="provider"/>
+    /// whose paid_at / updated_at falls in [from, to). Admin Providers page.
+    /// </summary>
+    Task<IReadOnlyList<ProviderPaymentRow>> GetProviderPaymentsAsync(string provider, DateTime from, DateTime to, CancellationToken cancellationToken = default);
 }

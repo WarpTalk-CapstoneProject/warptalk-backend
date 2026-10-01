@@ -25,9 +25,10 @@ public enum AbandonedRoomAction
 ///     transfer, or a network blip between the two calls, "leaves the same orphan". Production
 ///     has rooms from 9 August still reporting LIVE NOW.
 ///
-///     ExpireTranslationRoomAsync exists and looks like the cure, but it only moves SCHEDULED or
-///     WAITING rooms to EXPIRED — it cannot touch an IN_PROGRESS one — and it has no production
-///     callers at all.
+///     ExpireTranslationRoomAsync exists and looks like the cure, but it only moves a room nobody
+///     ever got into — SCHEDULED, WAITING or OPEN — to EXPIRED, and it cannot touch an IN_PROGRESS
+///     one. Its one caller (WT-714's booking sweep) is about meetings that never happened; a room
+///     stuck LIVE is a meeting that did, and only this policy reaches it.
 ///
 /// WHY IT IS NOT "END IT WHEN THE LAST PARTICIPANT LEAVES"
 ///     That is the obvious rule and it is wrong twice over. It ends a meeting during the seconds

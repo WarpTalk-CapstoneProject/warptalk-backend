@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -1127,12 +1128,13 @@ public class PluginConnectionServiceTests
     [Fact]
     public async Task ConnectAsync_ConnectsOnTheSpot_WhenTheProvidersGrantAlreadyCoversThePlugin()
     {
-        // Calendar is connected and its grant carries calendar.events, which is all Meet needs.
-        // Connecting Meet is a decision the user makes, but not one that needs Google again.
+        // The provider's grant already carries everything Meet needs (meetings.space.created and
+        // meetings.space.readonly). Connecting Meet is a decision the user makes, but not one that
+        // needs Google again.
         var meet = GoogleMeetPlugin();
         var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
         var connection = ConnectedConnection();
-        connection.ScopesJson = """["https://www.googleapis.com/auth/calendar.events"]""";
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { MeetingsSpaceCreatedScope, MeetingsSpaceReadonlyScope });
         ConfigureConnect(meet, installation, connection);
 
         var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
@@ -1180,6 +1182,56 @@ public class PluginConnectionServiceTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.Connected);
         Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_AsksGoogleForMeetsOwnScopes_WhenTheGrantOnlyCoversCalendarEvents()
+    {
+        // A grant obtained through Calendar (or Meet under an older catalog row) carries
+        // calendar.events only. Meet now calls the Meet REST API with its own scopes, so that grant
+        // does not cover it: connecting it must reach Google and ask for Meet's whole set -
+        // include_granted_scopes makes it incremental.
+        var meet = GoogleMeetPlugin();
+        var installation = new PluginInstallation { Id = Guid.NewGuid(), UserId = UserId, PluginId = MeetPluginId, Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow };
+        var connection = ConnectedConnection();
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { CalendarEventsScope });
+        ConfigureConnect(meet, installation, connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleMeetKey, UserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.Connected);
+        Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+        Assert.Null(installation.ConnectedAt);
+        _oauthClient.Received(1).BuildAuthorizationUrl(
+            meet,
+            Arg.Is<IReadOnlyList<string>>(scopes =>
+                scopes.Contains(MeetingsSpaceCreatedScope)
+                && scopes.Contains(MeetingsSpaceReadonlyScope)
+                && !scopes.Contains(CalendarEventsScope)),
+            "state-token",
+            Arg.Any<PluginOAuthStateDto>());
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ReportsPartial_WhenMeetConsentLeavesOutMeetingsSpaceReadonly()
+    {
+        // The user reconnects Meet but clears the "see Meet conferences" box on Google's consent
+        // screen. The grant still creates meeting spaces, but Meet cannot read participants, so the
+        // outcome is partial rather than a Connected the first participant lookup would contradict.
+        var meet = GoogleMeetPlugin();
+        ConfigureInstalledPlugin(meet, GoogleMeetKey);
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns((PluginConnection?)null);
+        ConfigureExchange(meet, [MeetingsSpaceCreatedScope]);
+
+        var result = await CreateSut()
+            .CompleteOAuthCallbackAsync(GoogleMeetKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Partial, result.Status);
     }
 
     [Fact]
@@ -1265,6 +1317,311 @@ public class PluginConnectionServiceTests
         Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
     }
 
+    // ---- GMCAL1001: "connect your other Google plugins too" -----------------------------------
+
+    private const string DriveReadonlyScope = "https://www.googleapis.com/auth/drive.readonly";
+
+    private static PluginInstallation InstallationOf(Guid pluginId, DateTime? connectedAt = null) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            UserId = UserId,
+            PluginId = pluginId,
+            Status = PluginConstants.InstallationStatus.Installed,
+            InstalledAt = DateTime.UtcNow,
+            ConnectedAt = connectedAt,
+        };
+
+    /// <summary>
+    /// Several catalog rows and installations at once, each repository answering by actually
+    /// evaluating the predicate it was given - the sibling path looks up more than one row per call,
+    /// and a blanket Arg.Any answer would hand every lookup the same plugin.
+    /// </summary>
+    private void ArrangeCatalog(
+        IReadOnlyList<Plugin> plugins,
+        IReadOnlyList<PluginInstallation> installations,
+        PluginConnection? connection)
+    {
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromResult(plugins.FirstOrDefault(call.Arg<Expression<Func<Plugin, bool>>>().Compile())));
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromResult<IReadOnlyList<Plugin>>(
+                plugins.Where(call.Arg<Expression<Func<Plugin, bool>>>().Compile()).ToList()));
+        _installationRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromResult(installations.FirstOrDefault(call.Arg<Expression<Func<PluginInstallation, bool>>>().Compile())));
+        _installationRepository.AnyAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromResult(installations.Any(call.Arg<Expression<Func<PluginInstallation, bool>>>().Compile())));
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromResult<IReadOnlyList<PluginInstallation>>(
+                installations.Where(call.Arg<Expression<Func<PluginInstallation, bool>>>().Compile()).ToList()));
+        _connectionRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<PluginConnection, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(connection);
+        _stateProtector.Protect(Arg.Any<PluginOAuthStateDto>()).Returns("state-token");
+        _oauthClient.BuildAuthorizationUrl(
+                Arg.Any<Plugin>(),
+                Arg.Any<IReadOnlyList<string>>(),
+                "state-token",
+                Arg.Any<PluginOAuthStateDto>())
+            .Returns("https://accounts.google.test/oauth");
+    }
+
+    private static bool SameScopes(IReadOnlyList<string> actual, params string[] expected) =>
+        actual.ToHashSet(StringComparer.Ordinal).SetEquals(expected);
+
+    [Fact]
+    public async Task ConnectAsync_WithoutAlsoConnect_AsksForTheClickedPluginsScopesOnly()
+    {
+        // The default must not move: Meet and Drive are installed and unconnected, and connecting
+        // Calendar asks Google for Calendar's scope and nothing of theirs.
+        var calendar = GoogleCalendarPlugin();
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var meetInstall = InstallationOf(MeetPluginId);
+        var driveInstall = InstallationOf(PluginId);
+        ArrangeCatalog(
+            [GoogleDrivePlugin(), calendar, GoogleMeetPlugin()],
+            [driveInstall, calendarInstall, meetInstall],
+            ConnectedConnection());
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(result.Value!.Connected);
+        Assert.Null(result.Value.ConnectedPluginKeys);
+        _oauthClient.Received(1).BuildAuthorizationUrl(
+            calendar,
+            Arg.Is<IReadOnlyList<string>>(scopes => SameScopes(scopes, CalendarEventsScope)),
+            "state-token",
+            Arg.Is<PluginOAuthStateDto>(state => state.AlsoConnect == null));
+        Assert.Null(meetInstall.ConnectedAt);
+        Assert.Null(driveInstall.ConnectedAt);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_WithAlsoConnect_AsksForTheUnionOfThePluginsStillNeedingConsent_InOneUrl()
+    {
+        var calendar = GoogleCalendarPlugin();
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var meetInstall = InstallationOf(MeetPluginId);
+        ArrangeCatalog(
+            [GoogleDrivePlugin(), calendar, GoogleMeetPlugin()],
+            [InstallationOf(PluginId), calendarInstall, meetInstall],
+            ConnectedConnection());
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId, alsoConnect: [GoogleMeetKey, GoogleMeetKey]);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(result.Value!.Connected);
+        Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+        Assert.Null(result.Value.ConnectedPluginKeys);
+        // Drive was not named, so its scope is not asked for - only Calendar's and Meet's.
+        _oauthClient.Received(1).BuildAuthorizationUrl(
+            calendar,
+            Arg.Is<IReadOnlyList<string>>(scopes => SameScopes(scopes, CalendarEventsScope, MeetingsSpaceCreatedScope, MeetingsSpaceReadonlyScope)),
+            "state-token",
+            Arg.Any<PluginOAuthStateDto>());
+        _stateProtector.Received(1).Protect(Arg.Is<PluginOAuthStateDto>(state =>
+            state.PluginKey == GoogleCalendarKey
+            && state.AlsoConnect != null
+            && state.AlsoConnect.SequenceEqual(new[] { GoogleMeetKey })));
+        Assert.Null(calendarInstall.ConnectedAt);
+        Assert.Null(meetInstall.ConnectedAt);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_WithAlsoConnect_ConnectsCoveredPluginsOnTheSpot_AndSendsOnlyTheRestToConsent()
+    {
+        // The grant already covers Calendar, not Meet's meetings.space scopes. Calendar connects
+        // now; the URL asks for Meet's scopes alone.
+        var calendar = GoogleCalendarPlugin();
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var meetInstall = InstallationOf(MeetPluginId);
+        var connection = ConnectedConnection();
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { DriveReadonlyScope, CalendarEventsScope });
+        ArrangeCatalog([GoogleDrivePlugin(), calendar, GoogleMeetPlugin()], [calendarInstall, meetInstall], connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId, alsoConnect: [GoogleMeetKey]);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.True(result.Value!.Connected);
+        Assert.Equal("https://accounts.google.test/oauth", result.Value.Url);
+        Assert.Equal([GoogleCalendarKey], result.Value.ConnectedPluginKeys);
+        Assert.NotNull(calendarInstall.ConnectedAt);
+        Assert.Null(meetInstall.ConnectedAt);
+        _oauthClient.Received(1).BuildAuthorizationUrl(
+            calendar,
+            Arg.Is<IReadOnlyList<string>>(scopes => SameScopes(scopes, MeetingsSpaceCreatedScope, MeetingsSpaceReadonlyScope)),
+            "state-token",
+            Arg.Is<PluginOAuthStateDto>(state => state.AlsoConnect!.SequenceEqual(new[] { GoogleMeetKey })));
+    }
+
+    [Fact]
+    public async Task ConnectAsync_WithAlsoConnect_ConnectsEveryPluginOnTheSpot_WhenTheGrantCoversThemAll()
+    {
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var meetInstall = InstallationOf(MeetPluginId);
+        var driveInstall = InstallationOf(PluginId);
+        var connection = ConnectedConnection();
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { DriveReadonlyScope, CalendarEventsScope, MeetingsSpaceCreatedScope, MeetingsSpaceReadonlyScope });
+        ArrangeCatalog(
+            [GoogleDrivePlugin(), GoogleCalendarPlugin(), GoogleMeetPlugin()],
+            [driveInstall, calendarInstall, meetInstall],
+            connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId, alsoConnect: [GoogleMeetKey, GoogleDriveKey]);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.True(result.Value!.Connected);
+        Assert.Null(result.Value.Url);
+        Assert.Equal(
+            new[] { GoogleCalendarKey, GoogleDriveKey, GoogleMeetKey },
+            result.Value.ConnectedPluginKeys!.OrderBy(k => k, StringComparer.Ordinal));
+        Assert.NotNull(calendarInstall.ConnectedAt);
+        Assert.NotNull(meetInstall.ConnectedAt);
+        Assert.NotNull(driveInstall.ConnectedAt);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+        _oauthClient.DidNotReceive().BuildAuthorizationUrl(
+            Arg.Any<Plugin>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>());
+    }
+
+    [Fact]
+    public async Task ConnectAsync_RefusesAnAlsoConnectKeyFromAnotherProvider_AndConnectsNothing()
+    {
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var connection = ConnectedConnection();
+        connection.ScopesJson = JsonSerializer.Serialize(new[] { CalendarEventsScope });
+        ArrangeCatalog(
+            [GoogleCalendarPlugin(), RemoteMcpPlugin()],
+            [calendarInstall, InstallationOf(RemotePluginId)],
+            connection);
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId, alsoConnect: [RemoteAppKey]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidAlsoConnect, result.ErrorCode);
+        Assert.Null(calendarInstall.ConnectedAt);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        _oauthClient.DidNotReceive().BuildAuthorizationUrl(
+            Arg.Any<Plugin>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>());
+    }
+
+    [Fact]
+    public async Task ConnectAsync_RefusesAnAlsoConnectKeyTheUserHasNotInstalled()
+    {
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        ArrangeCatalog([GoogleCalendarPlugin(), GoogleMeetPlugin()], [calendarInstall], ConnectedConnection());
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId, alsoConnect: [GoogleMeetKey]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.PluginNotInstalled, result.ErrorCode);
+        Assert.Null(calendarInstall.ConnectedAt);
+        _oauthClient.DidNotReceive().BuildAuthorizationUrl(
+            Arg.Any<Plugin>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string>(), Arg.Any<PluginOAuthStateDto>());
+    }
+
+    [Fact]
+    public async Task ConnectAsync_RefusesAnAlsoConnectListNamingTheClickedPlugin()
+    {
+        ArrangeCatalog([GoogleCalendarPlugin()], [InstallationOf(CalendarPluginId)], ConnectedConnection());
+
+        var result = await CreateSut().ConnectAsync(GoogleCalendarKey, UserId, alsoConnect: [GoogleCalendarKey]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.InvalidAlsoConnect, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetConnectUrlAsync_WithAlsoConnect_AsksForTheClickedAndTheNamedPluginsScopes()
+    {
+        var calendar = GoogleCalendarPlugin();
+        ArrangeCatalog(
+            [GoogleDrivePlugin(), calendar, GoogleMeetPlugin()],
+            [InstallationOf(PluginId), InstallationOf(CalendarPluginId), InstallationOf(MeetPluginId)],
+            ConnectedConnection());
+
+        var result = await CreateSut().GetConnectUrlAsync(GoogleCalendarKey, UserId, alsoConnect: [GoogleDriveKey]);
+
+        Assert.True(result.IsSuccess, result.Error);
+        _oauthClient.Received(1).BuildAuthorizationUrl(
+            calendar,
+            Arg.Is<IReadOnlyList<string>>(scopes => SameScopes(scopes, CalendarEventsScope, DriveReadonlyScope)),
+            "state-token",
+            Arg.Is<PluginOAuthStateDto>(state => state.AlsoConnect!.SequenceEqual(new[] { GoogleDriveKey })));
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_ConnectsOptedInSiblingsWhoseScopesWereGranted_AndSkipsADeclinedOne()
+    {
+        // The user opted Drive and Meet in through Calendar's consent, then cleared Meet's
+        // meetings.space boxes at Google. Calendar and Drive connect; Meet stays as it was,
+        // and the clicked plugin is not failed for it.
+        var calendar = GoogleCalendarPlugin();
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var meetInstall = InstallationOf(MeetPluginId);
+        var driveInstall = InstallationOf(PluginId);
+        ArrangeCatalog(
+            [GoogleDrivePlugin(), calendar, GoogleMeetPlugin()],
+            [driveInstall, calendarInstall, meetInstall],
+            null);
+        _stateProtector.Unprotect("state-token")
+            .Returns(new PluginOAuthStateDto(UserId, GoogleCalendarKey, AlsoConnect: [GoogleMeetKey, GoogleDriveKey]));
+        ConfigureExchange(calendar, [CalendarEventsScope, DriveReadonlyScope]);
+
+        var result = await CreateSut().CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.NotNull(calendarInstall.ConnectedAt);
+        Assert.NotNull(driveInstall.ConnectedAt);
+        Assert.Null(meetInstall.ConnectedAt);
+    }
+
+    [Fact]
+    public async Task CompleteOAuthCallbackAsync_WithoutAlsoConnect_StillConnectsOnlyTheClickedPlugin()
+    {
+        // A state minted before GMCAL1001 - or a connect that did not opt in - names no siblings.
+        // A grant that happens to cover Drive must not switch Drive on.
+        var calendar = GoogleCalendarPlugin();
+        var calendarInstall = InstallationOf(CalendarPluginId);
+        var driveInstall = InstallationOf(PluginId);
+        ArrangeCatalog([GoogleDrivePlugin(), calendar], [driveInstall, calendarInstall], null);
+        _stateProtector.Unprotect("state-token").Returns(new PluginOAuthStateDto(UserId, GoogleCalendarKey));
+        ConfigureExchange(calendar, [CalendarEventsScope, DriveReadonlyScope]);
+
+        var result = await CreateSut().CompleteOAuthCallbackAsync(GoogleCalendarKey, "oauth-code", "state-token");
+
+        Assert.Equal(PluginConstants.CallbackStatus.Connected, result.Status);
+        Assert.NotNull(calendarInstall.ConnectedAt);
+        Assert.Null(driveInstall.ConnectedAt);
+    }
+
+    [Fact]
+    public void PluginOAuthStateDto_DeserializesAStateMintedBeforeAlsoConnectExisted()
+    {
+        var legacy = """{"UserId":"11111111-1111-1111-1111-111111111111","PluginKey":"google_calendar","CodeVerifier":null,"Issuer":null,"Client":"web","RequestedScopes":["x"]}""";
+
+        var state = JsonSerializer.Deserialize<PluginOAuthStateDto>(legacy)!;
+
+        Assert.Equal(GoogleCalendarKey, state.PluginKey);
+        Assert.Null(state.AlsoConnect);
+    }
+
     private void ConfigureConnect(Plugin plugin, PluginInstallation installation, PluginConnection connection)
     {
         _pluginRepository.FirstOrDefaultAsync(
@@ -1306,10 +1663,19 @@ public class PluginConnectionServiceTests
     private static Plugin GoogleCalendarPlugin() =>
         GooglePlugin(CalendarPluginId, GoogleCalendarKey, "Google Calendar", "https://www.googleapis.com/auth/calendar.events");
 
-    private static Plugin GoogleMeetPlugin() =>
-        GooglePlugin(MeetPluginId, GoogleMeetKey, "Google Meet", "https://www.googleapis.com/auth/calendar.events");
+    private const string CalendarEventsScope = "https://www.googleapis.com/auth/calendar.events";
+    private const string MeetingsSpaceCreatedScope = "https://www.googleapis.com/auth/meetings.space.created";
+    private const string MeetingsSpaceReadonlyScope = "https://www.googleapis.com/auth/meetings.space.readonly";
 
-    private static Plugin GooglePlugin(Guid id, string key, string label, string scope)
+    /// <summary>
+    /// The google_meet row as GMCAL1001 leaves it: Meet calls only the Meet REST API -
+    /// meetings.space.created for creating meeting spaces, meetings.space.readonly for reading
+    /// participants. No calendar.events: Calendar is its own plugin.
+    /// </summary>
+    private static Plugin GoogleMeetPlugin() =>
+        GooglePlugin(MeetPluginId, GoogleMeetKey, "Google Meet", MeetingsSpaceCreatedScope, MeetingsSpaceReadonlyScope);
+
+    private static Plugin GooglePlugin(Guid id, string key, string label, params string[] scopes)
     {
         return new Plugin
         {
@@ -1319,7 +1685,7 @@ public class PluginConnectionServiceTests
             Description = label,
             Provider = PluginConstants.Providers.Google,
             IsActive = true,
-            RequiredScopesJson = $"[\"{scope}\"]",
+            RequiredScopesJson = JsonSerializer.Serialize(scopes),
             ToolsJson = "[]",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,

@@ -192,6 +192,40 @@ public class WorkspaceMeetingPolicyGrpcClientTests
         Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
     }
 
+    /// <summary>
+    /// Start Translation's subscription question. Only a snapshot that KNOWS may say no: an older
+    /// WorkspaceService (the field is absent, so SubscriptionKnown is false) and an unreachable one
+    /// both answer "unknown", which the caller allows — billing refuses the charges regardless.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    [InlineData(false, false, null)]
+    public async Task ActiveSubscription_IsOnlyDeniedByASnapshotThatKnows(bool known, bool active, bool? expected)
+    {
+        var sut = CreateWithSettings(new GetWorkspaceSettingsResponse
+        {
+            SubscriptionKnown = known,
+            HasActiveSubscription = active,
+        });
+
+        Assert.Equal(expected, await sut.HasActiveSubscriptionAsync(WorkspaceId));
+    }
+
+    [Fact]
+    public async Task ActiveSubscription_IsUnknown_WhenWorkspaceServiceIsUnreachable()
+    {
+        var client = new Mock<WorkspaceService.WorkspaceServiceClient>();
+        client.Setup(c => c.GetWorkspaceSettingsAsync(
+                It.IsAny<GetWorkspaceSettingsRequest>(), null, null, It.IsAny<CancellationToken>()))
+            .Throws(new RpcException(new Status(StatusCode.Unavailable, "down")));
+
+        var sut = new WorkspaceMeetingPolicyGrpcClient(
+            client.Object, NullLogger<WorkspaceMeetingPolicyGrpcClient>.Instance);
+
+        Assert.Null(await sut.HasActiveSubscriptionAsync(WorkspaceId));
+    }
+
     private static GetWorkspaceSettingsResponse Settings(string[]? allowed = null, int maxLanguages = 0)
     {
         var settings = new GetWorkspaceSettingsResponse { MaxLanguages = maxLanguages };

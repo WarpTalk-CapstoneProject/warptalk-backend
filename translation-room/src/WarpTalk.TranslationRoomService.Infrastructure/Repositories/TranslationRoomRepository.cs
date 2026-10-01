@@ -82,11 +82,13 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
     public async Task<IReadOnlyList<AdminMeetingSpan>> GetAdminMeetingSpansAsync(
         DateTime from,
         DateTime to,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? workspaceId = null)
     {
         // Anonymous projection, mapped to the record in memory, never ordered in SQL as a record.
         var rows = await _dbSet
             .AsNoTracking()
+            .Where(r => workspaceId == null || r.WorkspaceId == workspaceId)
             .Where(r => r.DeletedAt == null
                 && r.StartedAt != null
                 && r.StartedAt < to
@@ -97,6 +99,28 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
 
         return rows
             .Select(r => new AdminMeetingSpan(r.StartedAt, r.EndedAt, r.DurationSeconds, r.Status))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<MediaUsageRoomSpan>> GetMediaUsageRoomsAsync(
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        // Same window rule as GetAdminMeetingSpansAsync, so the two reports cannot disagree on
+        // which meetings ran; scalars only, mapped to the record in memory.
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(r => r.DeletedAt == null
+                && r.StartedAt != null
+                && r.StartedAt < to
+                && (r.EndedAt > from
+                    || (r.EndedAt == null && (LiveStatuses.Contains(r.Status) || r.StartedAt >= from))))
+            .Select(r => new { r.Id, r.WorkspaceId, StartedAt = r.StartedAt!.Value, r.EndedAt, r.DurationSeconds, r.Status })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new MediaUsageRoomSpan(r.Id, r.WorkspaceId, r.StartedAt, r.EndedAt, r.DurationSeconds, r.Status))
             .ToList();
     }
 
@@ -224,7 +248,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         var now = DateTime.UtcNow;
 
         var live = candidates
-            .Where(r => r.Status == "IN_PROGRESS" || r.Status == "PAUSED" || r.Status == "WAITING")
+            // OPEN belongs with these (WT-612): the clock has unlocked today's occurrence, so a
+            // click on the series link means that room. Without it the code skipped an occurrence
+            // whose slot had arrived and handed the person next week's booking instead.
+            .Where(r => r.Status == "IN_PROGRESS" || r.Status == "PAUSED" || r.Status == "WAITING" || r.Status == "OPEN")
             .OrderBy(r => r.ScheduledAt ?? r.StartedAt ?? r.CreatedAt)
             .FirstOrDefault();
         if (live is not null) return live;
@@ -267,4 +294,72 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
                     || room.Status == "IN_PROGRESS"
                     || room.Status == "PAUSED"),
             ct);
+
+    public async Task<bool> TryTransitionStatusAsync(
+        Guid roomId,
+        IReadOnlyCollection<string> fromStatuses,
+        string toStatus,
+        CancellationToken ct = default)
+    {
+        var from = fromStatuses.ToArray();
+        var now = DateTime.UtcNow;
+        var changed = await _dbSet
+            .Where(room => room.Id == roomId && from.Contains(room.Status))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(room => room.Status, toStatus)
+                    .SetProperty(room => room.UpdatedAt, now),
+                ct);
+        return changed > 0;
+    }
+    public async Task<TranslationRoom?> GetOpenBridgeRoomByMeetCodeAsync(
+        Guid workspaceId,
+        string meetCode,
+        CancellationToken ct = default)
+    {
+        var closed = BridgeRoomConstants.ClosedStatuses;
+        return await _dbSet
+            .Where(room => room.WorkspaceId == workspaceId
+                && room.ExternalMeetingCode == meetCode
+                && room.TranslationRoomType == TranslationRoomTypes.ExternalBridge
+                && !closed.Contains(room.Status)
+                && room.DeletedAt == null)
+            .OrderByDescending(room => room.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public async Task<bool> TryAcquireBridgeCapturerAsync(
+        Guid roomId,
+        Guid userId,
+        DateTime now,
+        DateTime staleBefore,
+        CancellationToken ct = default)
+    {
+        var changed = await _dbSet
+            .Where(room => room.Id == roomId
+                && (room.BridgeCapturerUserId == null
+                    || room.BridgeCapturerUserId == userId
+                    || room.BridgeCapturerHeartbeatAt == null
+                    || room.BridgeCapturerHeartbeatAt < staleBefore))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(room => room.BridgeCapturerUserId, (Guid?)userId)
+                    .SetProperty(room => room.BridgeCapturerHeartbeatAt, (DateTime?)now),
+                ct);
+        return changed > 0;
+    }
+
+    public async Task<bool> TryRenewBridgeCapturerAsync(
+        Guid roomId,
+        Guid userId,
+        DateTime now,
+        CancellationToken ct = default)
+    {
+        var changed = await _dbSet
+            .Where(room => room.Id == roomId && room.BridgeCapturerUserId == userId)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(room => room.BridgeCapturerHeartbeatAt, (DateTime?)now),
+                ct);
+        return changed > 0;
+    }
 }

@@ -72,13 +72,10 @@ public class TranslationRoomFeedbackRepository : GenericRepository<TranslationRo
         int page,
         int pageSize,
         CancellationToken ct = default,
-        bool lowestRatedFirst = false)
+        bool lowestRatedFirst = false,
+        AdminFeedbackCommentCriteria? criteria = null)
     {
-        // A comment of whitespace is not a comment, and `!= ""` does not catch one — the write
-        // path trims before storing, but rows predating that are already in the table. Trim()
-        // translates to btrim() on Npgsql, so the test runs in the database.
-        var query = Scoped(filter)
-            .Where(f => f.Comments != null && f.Comments.Trim() != "");
+        var query = AdminCommentsQuery(filter, criteria);
 
         var total = await query.CountAsync(ct);
 
@@ -115,6 +112,39 @@ public class TranslationRoomFeedbackRepository : GenericRepository<TranslationRo
             .ToList();
 
         return (items, total);
+    }
+
+    /// <summary>
+    /// The comment list's WHERE clause, before ordering and paging. Public so a test can check
+    /// PostgreSQL can be asked it (ToQueryString) without a database.
+    /// </summary>
+    public IQueryable<TranslationRoomFeedback> AdminCommentsQuery(
+        AdminFeedbackFilter filter,
+        AdminFeedbackCommentCriteria? criteria = null)
+    {
+        // A comment of whitespace is not a comment, and `!= ""` does not catch one — the write
+        // path trims before storing, but rows predating that are already in the table. Trim()
+        // translates to btrim() on Npgsql, so the test runs in the database.
+        var query = Scoped(filter)
+            .Where(f => f.Comments != null && f.Comments.Trim() != "");
+
+        if (criteria is null) return query;
+
+        if (!string.IsNullOrWhiteSpace(criteria.Search))
+        {
+            var pattern = $"%{criteria.Search.Trim()}%";
+            query = query.Where(f =>
+                EF.Functions.ILike(f.Comments!, pattern)
+                || EF.Functions.ILike(f.TranslationRoom.Title, pattern));
+        }
+
+        if (criteria.MinRating is { } minRating)
+            query = query.Where(f => f.OverallRating >= minRating);
+
+        if (criteria.MaxRating is { } maxRating)
+            query = query.Where(f => f.OverallRating <= maxRating);
+
+        return query;
     }
 
     private IQueryable<TranslationRoomFeedback> Scoped(AdminFeedbackFilter filter) =>

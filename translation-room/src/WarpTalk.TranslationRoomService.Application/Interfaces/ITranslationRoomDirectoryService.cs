@@ -53,6 +53,23 @@ public interface ITranslationRoomDirectoryService
         bool includeArtifactLanguages,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-849: the same mesh read, optionally resolving
+    /// <see cref="TranslationRoomDto.IsRequesterInvited"/> — whether <paramref name="requesterEmail"/>
+    /// holds a live (PENDING or ACCEPTED) invitation to this room.
+    ///
+    /// TranscriptService needs this because <c>TranscriptReadAccess</c> reaches rooms only through
+    /// this RPC and has no other way to learn about an invitation an invitee-who-never-joined holds
+    /// — the invitation lives in TranslationRoomService's own tables, not on the wire anywhere else.
+    /// <paramref name="requesterEmail"/> null or empty skips the lookup entirely and leaves
+    /// <c>IsRequesterInvited</c> null, the same "not resolved" shape <c>ArtifactLanguages</c> uses.
+    /// </summary>
+    Task<Result<TranslationRoomDto>> GetRoomAsync(
+        Guid translationRoomId,
+        bool includeArtifactLanguages,
+        string? requesterEmail,
+        CancellationToken ct = default);
+
     Task<Result<IReadOnlyList<TranslationRoomParticipantSummaryDto>>> GetParticipantsAsync(
         Guid translationRoomId,
         CancellationToken ct = default);

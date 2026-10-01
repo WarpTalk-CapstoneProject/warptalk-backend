@@ -36,6 +36,23 @@ public static class TranscriptMapper
             entity.EndTimeMs,
             entity.SequenceOrder,
             entity.IsCorrected,
+            entity.UpdatedAt,
+            entity.CleanText,
+            entity.CleanFlags ?? Array.Empty<string>()
+        );
+    }
+
+    public static TranscriptCleanSentenceDto ToDto(this TranscriptCleanSentence entity)
+    {
+        return new TranscriptCleanSentenceDto(
+            entity.Id,
+            entity.SpeakerParticipantId,
+            entity.SegmentIds,
+            entity.CleanText,
+            entity.Language,
+            entity.Flags,
+            entity.Source,
+            entity.Revision,
             entity.UpdatedAt
         );
     }

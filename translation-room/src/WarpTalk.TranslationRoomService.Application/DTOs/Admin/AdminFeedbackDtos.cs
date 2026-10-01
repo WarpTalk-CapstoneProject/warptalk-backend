@@ -18,6 +18,21 @@ public record AdminFeedbackQuery : AdminPageRequest
 
     /// <summary>Comments only: <c>recent</c> (default, newest first) or <c>lowest</c> (lowest overall rating first).</summary>
     public string? Sort { get; init; }
+
+    /// <summary>
+    /// Comments only: case-insensitive substring match over the comment text and the room title.
+    /// The summary endpoint ignores it.
+    /// </summary>
+    public string? Search { get; init; }
+
+    /// <summary>Comments only: inclusive lower bound on the overall rating, 1..5. Ignored by the summary.</summary>
+    public int? MinRating { get; init; }
+
+    /// <summary>
+    /// Comments only: inclusive upper bound on the overall rating, 1..5, and not below
+    /// <see cref="MinRating"/>. Ignored by the summary.
+    /// </summary>
+    public int? MaxRating { get; init; }
 }
 
 /// <summary>

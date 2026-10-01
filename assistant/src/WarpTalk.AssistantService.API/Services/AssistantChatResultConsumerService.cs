@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Coordination;
+using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Application.Mappers;
 using WarpTalk.AssistantService.Domain.Interfaces;
@@ -234,6 +235,9 @@ public class AssistantChatResultConsumerService : BackgroundService
             return;
 
         var type = fields.GetValueOrDefault("type", "");
+        // Which store the answer belongs in. The worker echoes the request's scope; "" is a worker
+        // that predates the field, and FinalizeMessageAsync then looks in both.
+        var resultScope = fields.GetValueOrDefault("scope", "");
         var content = fields.GetValueOrDefault("content", "");
 
         using var scope = _scopeFactory.CreateScope();
@@ -284,11 +288,11 @@ public class AssistantChatResultConsumerService : BackgroundService
                 break;
 
             case "completed":
-                await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), fields.GetValueOrDefault("sources_json", ""), failed: false, ct);
+                await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), fields.GetValueOrDefault("sources_json", ""), failed: false, resultScope, ct);
                 break;
 
             case "failed":
-                await FinalizeMessageAsync(scope, conversationId, requestId, content, "", "", failed: true, ct);
+                await FinalizeMessageAsync(scope, conversationId, requestId, content, "", "", failed: true, resultScope, ct);
                 break;
 
             default:
@@ -297,13 +301,28 @@ public class AssistantChatResultConsumerService : BackgroundService
         }
     }
 
-    private async Task FinalizeMessageAsync(
-        IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, string sourcesJson, bool failed, CancellationToken ct)
+    // Internal for the tests: the recording rules (workspace messages only, never failing the
+    // finalisation) are this method's, not the recorder's.
+    internal async Task FinalizeMessageAsync(
+        IServiceScope scope, Guid conversationId, Guid messageId, string content, string toolCallsJson, string sourcesJson, bool failed, string resultScope, CancellationToken ct)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var notifier = scope.ServiceProvider.GetRequiredService<IAssistantNotifier>();
 
-        var message = await unitOfWork.AssistantMessageRepository.GetByIdAsync(messageId, ct);
+        var isPlatform = string.Equals(resultScope, AssistantConversationScopes.Platform, StringComparison.Ordinal);
+        var message = isPlatform ? null : await unitOfWork.AssistantMessageRepository.GetByIdAsync(messageId, ct);
+        if (message == null && (isPlatform || string.IsNullOrEmpty(resultScope)))
+        {
+            // Platform-scope answer: it lives in platform_messages and nowhere else.
+            var platformMessage = await unitOfWork.PlatformMessageRepository.GetByIdAsync(messageId, ct);
+            if (platformMessage != null)
+            {
+                await FinalizePlatformMessageAsync(
+                    unitOfWork, notifier, conversationId, platformMessage, content, toolCallsJson, sourcesJson, failed, ct);
+                return;
+            }
+        }
+
         if (message == null)
         {
             _logger.LogWarning("AssistantChatResultConsumerService: message {MessageId} not found for '{Type}' result.", messageId, failed ? "failed" : "completed");
@@ -324,10 +343,62 @@ public class AssistantChatResultConsumerService : BackgroundService
         unitOfWork.AssistantMessageRepository.Update(message);
         await unitOfWork.SaveChangesAsync(ct);
 
+        // Wave 4: one assistant_tool_calls row per tool call, for Insights. Workspace answers only
+        // (a platform answer returned above). After the message is saved and in its own try/catch:
+        // the answer is what the user is waiting for, and a count that could not be written must
+        // never fail it or send it back to the stream for a retry.
+        if (!string.IsNullOrEmpty(toolCallsJson))
+        {
+            try
+            {
+                var recorder = scope.ServiceProvider.GetRequiredService<IAssistantToolCallRecorder>();
+                await recorder.RecordAsync(message, toolCallsJson, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "AssistantChatResultConsumerService: could not record tool calls for message {MessageId}.", messageId);
+            }
+        }
+
         if (failed)
         {
             await notifier.BroadcastMessageFailedAsync(
                 conversationId, messageId, string.IsNullOrEmpty(content) ? "The assistant could not generate a reply." : content, ct);
+        }
+        else
+        {
+            await notifier.BroadcastMessageCompletedAsync(conversationId, message.ToDto(), ct);
+        }
+    }
+
+    private static async Task FinalizePlatformMessageAsync(
+        IUnitOfWork unitOfWork,
+        IAssistantNotifier notifier,
+        Guid conversationId,
+        Domain.Entities.PlatformMessage message,
+        string content,
+        string toolCallsJson,
+        string sourcesJson,
+        bool failed,
+        CancellationToken ct)
+    {
+        message.Status = failed ? "failed" : "completed";
+        message.CompletedAt = DateTime.UtcNow;
+        if (!failed)
+        {
+            message.Content = content;
+            message.SourcesJson = string.IsNullOrWhiteSpace(sourcesJson) ? null : sourcesJson;
+        }
+        if (!string.IsNullOrEmpty(toolCallsJson))
+            message.ToolResultsJson = toolCallsJson;
+
+        unitOfWork.PlatformMessageRepository.Update(message);
+        await unitOfWork.SaveChangesAsync(ct);
+
+        if (failed)
+        {
+            await notifier.BroadcastMessageFailedAsync(
+                conversationId, message.Id, string.IsNullOrEmpty(content) ? "The assistant could not generate a reply." : content, ct);
         }
         else
         {

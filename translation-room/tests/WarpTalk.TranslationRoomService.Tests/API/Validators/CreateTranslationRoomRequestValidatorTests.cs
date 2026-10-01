@@ -104,6 +104,32 @@ public class CreateTranslationRoomRequestValidatorTests
     }
 
     [Fact]
+    public void Should_Have_Error_When_The_External_Meeting_Language_Is_Sent_For_A_Non_Bridge_Room()
+    {
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(), "Standup", null, TranslationRoomTypes.Event, 10,
+            "vi", new List<string> { "en" }, null, null, null,
+            ExternalMeetingLanguage: "en");
+
+        _validator.TestValidate(model)
+            .ShouldHaveValidationErrorFor(x => x.ExternalMeetingLanguage)
+            .WithErrorMessage(TranslationRoomConstants.ValidationExternalMeetingLanguageRequiresBridgeType);
+    }
+
+    [Fact]
+    public void Should_Accept_The_External_Meeting_Language_On_A_Bridge_Room_Without_A_Provider()
+    {
+        // The create dialog makes bridge rooms with no Meet link; it must still be able to say
+        // what the other side speaks.
+        var model = new CreateTranslationRoomRequest(
+            Guid.NewGuid(), "Partner call", null, TranslationRoomTypes.ExternalBridge, null,
+            "vi", new List<string> { "vi", "en" }, null, null, null,
+            ExternalMeetingLanguage: "en");
+
+        _validator.TestValidate(model).ShouldNotHaveValidationErrorFor(x => x.ExternalMeetingLanguage);
+    }
+
+    [Fact]
     public void Should_Have_Error_When_An_External_Meeting_Url_Arrives_Without_A_Provider()
     {
         // The host allow-list used to hang off the provider, so omitting the provider skipped it

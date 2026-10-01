@@ -6,6 +6,8 @@ namespace WarpTalk.WorkspaceService.Domain.ReadModels;
 /// Server-side filter for the system-admin workspace directory. Every field is applied in
 /// SQL — the caller's active workspace never narrows the result set.
 /// </summary>
+/// <param name="CreatedFrom">Inclusive lower bound on <c>created_at</c>, already UTC.</param>
+/// <param name="CreatedTo">Exclusive upper bound on <c>created_at</c>, already UTC.</param>
 public sealed record WorkspaceDirectoryFilter(
     int Page,
     int PageSize,
@@ -13,7 +15,9 @@ public sealed record WorkspaceDirectoryFilter(
     string Status,
     int? MinMembers,
     int? MaxMembers,
-    string Sort);
+    string Sort,
+    DateTime? CreatedFrom = null,
+    DateTime? CreatedTo = null);
 
 /// <summary>
 /// Projection behind both the directory list and the workspace detail. Counts are computed in

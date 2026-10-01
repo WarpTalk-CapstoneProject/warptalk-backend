@@ -53,6 +53,7 @@ public class VoiceSamplePlaybackTests
             Substitute.For<IVoiceCatalogDirectory>(),
             Substitute.For<IVoiceCloneRequestQueue>(),
             Substitute.For<IVoicePreviewQueue>(),
+            Substitute.For<IVoiceEnrollmentChallengeService>(),
             Substitute.For<ILogger<VoiceProfileService>>());
     }
 

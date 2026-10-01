@@ -38,14 +38,21 @@ public class AdminSalesLeadsTests
         _service = new SalesInquiryService(_unitOfWork.Object, new Mock<ISubscriptionService>().Object);
     }
 
-    private static SalesInquiry Lead(string status, DateTime createdAt, Guid? workspaceId = null) => new()
+    private static SalesInquiry Lead(
+        string status,
+        DateTime createdAt,
+        Guid? workspaceId = null,
+        string company = "Analytical",
+        string requestType = "enterprise",
+        string source = SalesInquiryConstants.Sources.LandingPricing) => new()
     {
         Id = Guid.NewGuid(),
         FirstName = "Ada",
         LastName = "Lovelace",
         WorkEmail = "ada@example.com",
-        Company = "Analytical",
-        RequestType = "enterprise",
+        Company = company,
+        RequestType = requestType,
+        Source = source,
         CurrentMonthlyMeetingVolume = "50",
         Status = status,
         WorkspaceId = workspaceId,
@@ -53,18 +60,39 @@ public class AdminSalesLeadsTests
         UpdatedAt = createdAt,
     };
 
+    /// <summary>Serves <paramref name="rows"/> through the real predicate and ordering the service builds.</summary>
+    private void Serve(List<SalesInquiry> rows)
+    {
+        _repository
+            .Setup(r => r.CountAsync(It.IsAny<Expression<Func<SalesInquiry, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<SalesInquiry, bool>> predicate, CancellationToken _) =>
+                rows.AsQueryable().Count(predicate));
+        _repository
+            .Setup(r => r.GetPagedAsync(
+                It.IsAny<Expression<Func<SalesInquiry, bool>>>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<Func<IQueryable<SalesInquiry>, IQueryable<SalesInquiry>>?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<SalesInquiry, bool>> predicate, int skip, int take,
+                Func<IQueryable<SalesInquiry>, IQueryable<SalesInquiry>>? orderBy, CancellationToken _) =>
+            {
+                var query = rows.AsQueryable().Where(predicate);
+                if (orderBy is not null) query = orderBy(query);
+                return query.Skip(skip).Take(take).ToList();
+            });
+    }
+
     // ── Authorization ────────────────────────────────────────
 
     [Fact]
-    public void Controller_is_gated_on_the_shared_system_admin_policy()
+    public void Reads_need_billing_read_and_the_status_change_needs_leads_manage()
     {
-        var authorize = typeof(AdminSalesLeadsController)
-            .GetCustomAttributes<AuthorizeAttribute>(inherit: true)
-            .SingleOrDefault();
-
-        authorize.Should().NotBeNull();
-        authorize!.Policy.Should().Be(SystemAdminAuthorization.PolicyName);
-        authorize.Roles.Should().BeNull();
+        typeof(AdminSalesLeadsController).GetCustomAttributes<AuthorizeAttribute>(inherit: true).Should().BeEmpty();
+        typeof(AdminSalesLeadsController).GetMethod(nameof(AdminSalesLeadsController.GetLeads))!
+            .GetCustomAttribute<RequirePermissionAttribute>()!.Permission.Should().Be(AdminPermissions.BillingRead);
+        typeof(AdminSalesLeadsController).GetMethod(nameof(AdminSalesLeadsController.UpdateStatus))!
+            .GetCustomAttribute<RequirePermissionAttribute>()!.Permission.Should().Be(AdminPermissions.BillingLeadsManage);
 
         typeof(AdminSalesLeadsController)
             .GetMethods()
@@ -145,6 +173,124 @@ public class AdminSalesLeadsTests
         captured.Should().NotBeNull();
         rows.AsQueryable().Where(captured!).Select(r => r.Status)
             .Should().Equal(SalesInquiryConstants.Statuses.Quoted);
+    }
+
+    [Fact]
+    public async Task Admin_list_filters_by_request_type_and_source_case_insensitively()
+    {
+        var now = DateTime.UtcNow;
+        var enterprise = Lead(SalesInquiryConstants.Statuses.New, now, requestType: "enterprise");
+        var demo = Lead(SalesInquiryConstants.Statuses.New, now.AddMinutes(-1), requestType: "demo", source: "in_app_upgrade");
+        Serve([enterprise, demo]);
+
+        var byType = await _service.GetSalesInquiriesAsync(new SalesInquiryQuery(NewestFirst: true, RequestType: "DEMO"));
+        var bySource = await _service.GetSalesInquiriesAsync(new SalesInquiryQuery(NewestFirst: true, Source: "Landing_Pricing"));
+
+        byType.Value!.Items.Select(i => i.Id).Should().Equal(demo.Id);
+        byType.Value.TotalCount.Should().Be(1);
+        bySource.Value!.Items.Select(i => i.Id).Should().Equal(enterprise.Id);
+    }
+
+    [Fact]
+    public async Task Admin_list_created_window_is_inclusive_from_and_exclusive_to()
+    {
+        var anchor = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        var atFrom = Lead(SalesInquiryConstants.Statuses.New, anchor);
+        var inside = Lead(SalesInquiryConstants.Statuses.New, anchor.AddDays(3));
+        var atTo = Lead(SalesInquiryConstants.Statuses.New, anchor.AddDays(7));
+        Serve([atFrom, inside, atTo]);
+
+        var result = await _service.GetSalesInquiriesAsync(
+            new SalesInquiryQuery(NewestFirst: true, CreatedFrom: anchor, CreatedTo: anchor.AddDays(7)));
+
+        result.Value!.Items.Select(i => i.Id).Should().Equal(inside.Id, atFrom.Id);
+    }
+
+    [Fact]
+    public async Task Admin_list_rejects_an_inverted_created_window()
+    {
+        var anchor = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var result = await _service.GetSalesInquiriesAsync(
+            new SalesInquiryQuery(NewestFirst: true, CreatedFrom: anchor.AddDays(1), CreatedTo: anchor));
+
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        _repository.Verify(
+            r => r.CountAsync(It.IsAny<Expression<Func<SalesInquiry, bool>>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData("created_asc")]
+    [InlineData("company_asc")]
+    [InlineData("company_desc")]
+    [InlineData("created_desc")]
+    public async Task Admin_list_honours_each_sort(string sort)
+    {
+        var now = DateTime.UtcNow;
+        var zeta = Lead(SalesInquiryConstants.Statuses.New, now.AddDays(-2), company: "Zeta");
+        var alpha = Lead(SalesInquiryConstants.Statuses.Closed, now, company: "Alpha");
+        var mid = Lead(SalesInquiryConstants.Statuses.Quoted, now.AddDays(-1), company: "Mid");
+        Serve([zeta, alpha, mid]);
+
+        var result = await _service.GetSalesInquiriesAsync(new SalesInquiryQuery(NewestFirst: true, Sort: sort));
+
+        var expected = sort switch
+        {
+            "created_asc" => new[] { zeta.Id, mid.Id, alpha.Id },
+            "company_asc" => new[] { alpha.Id, mid.Id, zeta.Id },
+            "company_desc" => new[] { zeta.Id, mid.Id, alpha.Id },
+            _ => new[] { alpha.Id, mid.Id, zeta.Id },
+        };
+        result.Value!.Items.Select(i => i.Id).Should().Equal(expected);
+    }
+
+    [Fact]
+    public async Task Admin_list_rejects_an_unknown_sort()
+    {
+        var result = await _service.GetSalesInquiriesAsync(new SalesInquiryQuery(NewestFirst: true, Sort: "value_desc"));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+    }
+
+    [Fact]
+    public async Task Workspace_view_keeps_its_open_first_grouping_when_no_sort_is_sent()
+    {
+        var now = DateTime.UtcNow;
+        var freshClosed = Lead(SalesInquiryConstants.Statuses.Closed, now);
+        var oldNew = Lead(SalesInquiryConstants.Statuses.New, now.AddDays(-30));
+        Serve([freshClosed, oldNew]);
+
+        var result = await _service.GetSalesInquiriesAsync(new SalesInquiryQuery());
+
+        result.Value!.Items.Select(i => i.Id).Should().Equal(oldNew.Id, freshClosed.Id);
+    }
+
+    [Fact]
+    public async Task Controller_passes_every_inbox_parameter_through()
+    {
+        var service = new Mock<ISalesInquiryService>();
+        SalesInquiryQuery? seen = null;
+        service
+            .Setup(s => s.GetSalesInquiriesAsync(It.IsAny<SalesInquiryQuery>(), It.IsAny<CancellationToken>()))
+            .Callback<SalesInquiryQuery, CancellationToken>((q, _) => seen = q)
+            .ReturnsAsync(Result.Failure<PaginatedResponse<SalesInquiryDto>>("bad sort", ErrorCodes.ValidationError));
+        var controller = new AdminSalesLeadsController(
+            service.Object,
+            Mock.Of<Microsoft.Extensions.Logging.ILogger<AdminSalesLeadsController>>());
+        var from = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        var workspaceId = Guid.NewGuid();
+
+        var response = await controller.GetLeads(
+            page: 2, pageSize: 10, status: "new", search: "acme", workspaceId: workspaceId,
+            requestType: "enterprise", source: "landing_pricing", createdFrom: from, createdTo: from.AddDays(1),
+            sort: "company_asc");
+
+        response.Should().BeOfType<BadRequestObjectResult>();
+        seen.Should().Be(new SalesInquiryQuery(
+            2, 10, "new", "acme", workspaceId, NewestFirst: true, RequestType: "enterprise",
+            Source: "landing_pricing", CreatedFrom: from, CreatedTo: from.AddDays(1), Sort: "company_asc"));
     }
 
     // ── Status changes ───────────────────────────────────────

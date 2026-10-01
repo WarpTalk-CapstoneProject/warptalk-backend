@@ -102,6 +102,13 @@ public class CreateVoiceProfileRequest
     public string DisplayName { get; set; } = null!;
     public string Language { get; set; } = null!;
     public IFormFile? Sample { get; set; }
+
+    /// <summary>
+    /// WT-888 — the read-aloud challenge this recording answers (POST voice-profiles/challenges).
+    /// Required: a sample without one is an arbitrary file and is refused.
+    /// </summary>
+    public Guid? ChallengeId { get; set; }
+
     public bool OwnVoiceConfirmed { get; set; }
     public bool AiUseConfirmed { get; set; }
     public bool SyntheticVoiceAcknowledged { get; set; }
@@ -117,3 +124,19 @@ public class CreateVoiceProfileRequest
 /// simplicity is worth more than the streaming.
 /// </summary>
 public sealed record VoiceSampleContent(byte[] Content, string ContentType, string FileName);
+
+/// <summary>WT-888 — ask for a phrase to read aloud for a new voice profile in this language.</summary>
+public sealed record IssueVoiceChallengeRequest(string Language);
+
+/// <summary>
+/// WT-888 — the phrase to read, and the id the recording must be uploaded with. Single use:
+/// a recording checked against it consumes it whichever way the check goes.
+/// </summary>
+public sealed record VoiceEnrollmentChallengeDto(
+    Guid ChallengeId,
+    string Language,
+    string Phrase,
+    DateTime ExpiresAt);
+
+/// <summary>WT-888 — what a passing recording was heard to say, and how closely it matched.</summary>
+public sealed record VoiceEnrollmentVerification(string Transcript, double Similarity);
