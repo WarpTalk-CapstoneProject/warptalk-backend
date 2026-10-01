@@ -17,6 +17,15 @@ public static class MeetConferenceErrorCodes
     /// <summary>No live Google connection for the user — never connected, revoked or expired.</summary>
     public const string ConnectionRequired = "connection_required";
 
+    /// <summary>
+    /// The user has not connected the <c>google_meet</c> plugin in the room's workspace: it is not
+    /// installed, installed but never connected (a Google grant obtained through Calendar or Drive
+    /// does not count — "connected" is per plugin), or not available in that workspace. Checked
+    /// before the grant itself, because connecting the plugin is also what fixes a missing grant.
+    /// Not a fault: like <see cref="MeetScopeMissing"/>, the host may still connect it later.
+    /// </summary>
+    public const string PluginNotConnected = "plugin_not_connected";
+
     /// <summary>The meeting reference is not a Meet code or a meet.google.com link.</summary>
     public const string InvalidMeeting = "invalid_meeting";
 

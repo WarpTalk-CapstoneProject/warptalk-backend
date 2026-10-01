@@ -49,7 +49,8 @@ public sealed class BridgeRoomDirectoryGrpcClient : IBridgeRoomDirectory
                 string.IsNullOrWhiteSpace(room.ExternalMeetingUrl) ? null : room.ExternalMeetingUrl,
                 effective,
                 booker,
-                members));
+                members,
+                Guid.TryParse(room.WorkspaceId, out var workspaceId) ? workspaceId : null));
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {

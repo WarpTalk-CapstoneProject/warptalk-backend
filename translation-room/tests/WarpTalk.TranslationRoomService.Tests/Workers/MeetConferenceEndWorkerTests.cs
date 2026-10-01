@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
@@ -103,8 +104,9 @@ public sealed class MeetConferenceEndWorkerTests
     private readonly Mock<ITranslationRoomRepository> _rooms = new();
     private readonly Mock<ITranslationRoomService> _roomService = new();
     private readonly Mock<IMeetConferenceRecordsClient> _meet = new();
+    private static readonly Guid WorkspaceId = Guid.NewGuid();
 
-    private MeetConferenceEndWorker Worker()
+    private MeetConferenceEndWorker Worker(ILogger<MeetConferenceEndWorker>? logger = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(_rooms.Object);
@@ -113,7 +115,7 @@ public sealed class MeetConferenceEndWorkerTests
         return new MeetConferenceEndWorker(
             services.BuildServiceProvider(),
             new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System),
-            NullLogger<MeetConferenceEndWorker>.Instance);
+            logger ?? NullLogger<MeetConferenceEndWorker>.Instance);
     }
 
     private TranslationRoom Room(Guid? activeHost = null)
@@ -121,6 +123,7 @@ public sealed class MeetConferenceEndWorkerTests
         var room = new TranslationRoom
         {
             Id = Guid.NewGuid(),
+            WorkspaceId = WorkspaceId,
             HostId = Guid.NewGuid(),
             ActiveHostId = activeHost,
             Status = "IN_PROGRESS",
@@ -137,7 +140,7 @@ public sealed class MeetConferenceEndWorkerTests
     }
 
     private void MeetAnswers(Guid userId, MeetConferenceRecordsLookup lookup) =>
-        _meet.Setup(m => m.GetRecordsAsync(userId, MeetUrl, It.IsAny<CancellationToken>())).ReturnsAsync(lookup);
+        _meet.Setup(m => m.GetRecordsAsync(userId, WorkspaceId, MeetUrl, It.IsAny<CancellationToken>())).ReturnsAsync(lookup);
 
     [Fact]
     public async Task EndedConference_EndsTheRoomThroughTheOrdinaryEndPath_AskingWithTheEffectiveHost()
@@ -165,6 +168,7 @@ public sealed class MeetConferenceEndWorkerTests
     }
 
     [Theory]
+    [InlineData(MeetConferenceErrorCodes.PluginNotConnected)]
     [InlineData(MeetConferenceErrorCodes.MeetScopeMissing)]
     [InlineData(MeetConferenceErrorCodes.ConnectionRequired)]
     [InlineData(MeetConferenceErrorCodes.ProviderUnavailable)]
@@ -178,5 +182,54 @@ public sealed class MeetConferenceEndWorkerTests
         await worker.CheckAsync(CancellationToken.None);
 
         _roomService.Verify(s => s.EndTranslationRoomAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(MeetConferenceErrorCodes.PluginNotConnected)]
+    [InlineData(MeetConferenceErrorCodes.MeetScopeMissing)]
+    public async Task HostWithoutThePluginOrScope_IsLoggedOncePerRoom_AndAskedAgainEveryTick(string errorCode)
+    {
+        var room = Room();
+        MeetAnswers(room.HostId, new MeetConferenceRecordsLookup(errorCode, []));
+        var logger = new ListLogger();
+
+        var worker = Worker(logger);
+        await worker.CheckAsync(CancellationToken.None);
+        await worker.CheckAsync(CancellationToken.None);
+        await worker.CheckAsync(CancellationToken.None);
+
+        Assert.Single(logger.Lines, line => line.Contains(errorCode));
+        // Not given up on: the host may connect the google_meet plugin mid-meeting.
+        _meet.Verify(m => m.GetRecordsAsync(room.HostId, WorkspaceId, MeetUrl, It.IsAny<CancellationToken>()), Times.Exactly(3));
+        _roomService.Verify(s => s.EndTranslationRoomAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HostConnectsThePluginMidMeeting_TheRoomIsEndedWhenItsMeetEnds()
+    {
+        var room = Room();
+        MeetAnswers(room.HostId, new MeetConferenceRecordsLookup(MeetConferenceErrorCodes.PluginNotConnected, []));
+        var worker = Worker();
+        await worker.CheckAsync(CancellationToken.None);
+
+        MeetAnswers(room.HostId, new MeetConferenceRecordsLookup(null,
+            [new MeetConferenceRecordInfo("r1", DateTime.UtcNow.AddMinutes(-50), DateTime.UtcNow.AddMinutes(-1))]));
+        await worker.CheckAsync(CancellationToken.None);
+
+        _roomService.Verify(s => s.EndTranslationRoomAsync(room.Id, room.HostId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private sealed class ListLogger : ILogger<MeetConferenceEndWorker>
+    {
+        public List<string> Lines { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel)) Lines.Add(formatter(state, exception));
+        }
     }
 }

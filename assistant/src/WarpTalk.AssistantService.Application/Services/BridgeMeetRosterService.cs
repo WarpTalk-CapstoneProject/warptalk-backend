@@ -50,7 +50,9 @@ public sealed class BridgeMeetRosterService : IBridgeMeetRosterService
         if (!room.IsBridge || string.IsNullOrWhiteSpace(room.ExternalMeetingUrl) || host is null)
             return Result.Failure<IReadOnlyList<MeetParticipantDto>>("This room does not bridge a Google Meet.", ErrorCodes.NotABridgeRoom);
 
-        var roster = await _meet.GetRosterAsync(host.Value, room.ExternalMeetingUrl, ct);
+        // plugin_not_connected / connection_required / meet_scope_missing pass through as the
+        // host's own answer: the roster is read with the HOST's grant, whoever asks.
+        var roster = await _meet.GetRosterAsync(host.Value, room.WorkspaceId, room.ExternalMeetingUrl, ct);
         return roster.IsSuccess
             ? Result.Success(roster.Value!.Participants)
             : Result.Failure<IReadOnlyList<MeetParticipantDto>>(roster.Error!, roster.ErrorCode);

@@ -28,6 +28,7 @@ public sealed class MeetTranscriptSource : IMeetTranscriptSource
 
     public async Task<MeetTranscriptFetch> GetEntriesAsync(
         Guid hostUserId,
+        Guid? workspaceId,
         string meeting,
         DateTime windowStartUtc,
         DateTime windowEndUtc,
@@ -40,6 +41,7 @@ public sealed class MeetTranscriptSource : IMeetTranscriptSource
                 {
                     UserId = hostUserId.ToString(),
                     Meeting = meeting,
+                    WorkspaceId = workspaceId?.ToString() ?? string.Empty,
                     WindowStart = windowStartUtc.ToString("O", CultureInfo.InvariantCulture),
                     WindowEnd = windowEndUtc.ToString("O", CultureInfo.InvariantCulture),
                 },

@@ -11,6 +11,7 @@ public class BridgeMeetRosterServiceTests
     private static readonly Guid RoomId = Guid.NewGuid();
     private static readonly Guid HostId = Guid.NewGuid();
     private static readonly Guid MemberId = Guid.NewGuid();
+    private static readonly Guid WorkspaceId = Guid.NewGuid();
     private const string MeetUrl = "https://meet.google.com/abc-mnop-xyz";
 
     private readonly IBridgeRoomDirectory _rooms = Substitute.For<IBridgeRoomDirectory>();
@@ -20,13 +21,13 @@ public class BridgeMeetRosterServiceTests
 
     private void Room(bool bridge = true, string? url = MeetUrl) =>
         _rooms.GetAsync(RoomId, Arg.Any<CancellationToken>())
-            .Returns((BridgeRoomLookupStatus.Found, new BridgeRoomInfo(RoomId, bridge, url, HostId, HostId, new[] { HostId, MemberId })));
+            .Returns((BridgeRoomLookupStatus.Found, new BridgeRoomInfo(RoomId, bridge, url, HostId, HostId, new[] { HostId, MemberId }, WorkspaceId)));
 
     [Fact]
     public async Task Participant_GetsTheRoster_ReadWithTheHostsGrant()
     {
         Room();
-        _meet.GetRosterAsync(HostId, MeetUrl, Arg.Any<CancellationToken>()).Returns(Result.Success(new MeetRosterDto(
+        _meet.GetRosterAsync(HostId, WorkspaceId, MeetUrl, Arg.Any<CancellationToken>()).Returns(Result.Success(new MeetRosterDto(
             "conferenceRecords/r1",
             [new MeetParticipantDto("conferenceRecords/r1/participants/1", "Alice", MeetParticipantKinds.SignedIn, null, null)])));
 
@@ -44,7 +45,7 @@ public class BridgeMeetRosterServiceTests
         var result = await Sut().GetAsync(RoomId, Guid.NewGuid());
 
         Assert.Equal(BridgeMeetRosterService.ErrorCodes.Forbidden, result.ErrorCode);
-        await _meet.DidNotReceiveWithAnyArgs().GetRosterAsync(default, default!, default);
+        await _meet.DidNotReceiveWithAnyArgs().GetRosterAsync(default, default, default!, default);
     }
 
     [Fact]
@@ -67,11 +68,25 @@ public class BridgeMeetRosterServiceTests
         Assert.Equal(BridgeMeetRosterService.ErrorCodes.NotABridgeRoom, result.ErrorCode);
     }
 
+    [Theory]
+    [InlineData(MeetConferenceErrorCodes.PluginNotConnected)]
+    [InlineData(MeetConferenceErrorCodes.ConnectionRequired)]
+    public async Task HostWithoutTheGoogleMeetPlugin_PassesTheCodeThrough(string code)
+    {
+        Room();
+        _meet.GetRosterAsync(HostId, WorkspaceId, MeetUrl, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure<MeetRosterDto>("no plugin", code));
+
+        var result = await Sut().GetAsync(RoomId, MemberId);
+
+        Assert.Equal(code, result.ErrorCode);
+    }
+
     [Fact]
     public async Task HostWithoutTheScope_PassesMeetScopeMissingThrough()
     {
         Room();
-        _meet.GetRosterAsync(HostId, MeetUrl, Arg.Any<CancellationToken>())
+        _meet.GetRosterAsync(HostId, WorkspaceId, MeetUrl, Arg.Any<CancellationToken>())
             .Returns(Result.Failure<MeetRosterDto>("no scope", MeetConferenceErrorCodes.MeetScopeMissing));
 
         var result = await Sut().GetAsync(RoomId, HostId);

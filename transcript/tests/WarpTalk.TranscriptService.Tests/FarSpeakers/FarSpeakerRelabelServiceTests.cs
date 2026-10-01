@@ -13,6 +13,7 @@ public class FarSpeakerRelabelServiceTests
     private static readonly DateTime Anchor = new(2026, 10, 1, 9, 0, 0, DateTimeKind.Utc);
     private static readonly Guid RoomId = Guid.NewGuid();
     private static readonly Guid HostId = Guid.NewGuid();
+    private static readonly Guid WorkspaceId = Guid.NewGuid();
     private static readonly Guid StandIn = ExternalBridgeConstants.ParticipantUserId;
     private const string MeetUrl = "https://meet.google.com/abc-mnop-xyz";
 
@@ -48,14 +49,14 @@ public class FarSpeakerRelabelServiceTests
 
     private void RoomIs(DateTime? endedAt, bool bridge = true, string? url = MeetUrl) =>
         _rooms.GetAsync(RoomId, Arg.Any<CancellationToken>()).Returns((BridgeRoomLookupOutcome.Found,
-            new BridgeRoomInfo(RoomId, bridge, url, HostId, HostId, endedAt is null ? "IN_PROGRESS" : "ENDED", Anchor, endedAt)));
+            new BridgeRoomInfo(RoomId, bridge, url, HostId, HostId, endedAt is null ? "IN_PROGRESS" : "ENDED", Anchor, endedAt, WorkspaceId)));
 
     private void TranscriptHas(params TranscriptSegment[] segments) =>
         _store.GetStandInTranscriptAsync(RoomId, StandIn, Arg.Any<CancellationToken>())
             .Returns(new StandInTranscript(Guid.NewGuid(), Anchor, segments));
 
     private void MeetReturns(MeetTranscriptFetch fetch) =>
-        _meet.GetEntriesAsync(HostId, MeetUrl, Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+        _meet.GetEntriesAsync(HostId, WorkspaceId, MeetUrl, Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
             .Returns(fetch);
 
     private static MeetTranscriptFetch Entries(params MeetTranscriptLine[] lines) =>
@@ -142,7 +143,7 @@ public class FarSpeakerRelabelServiceTests
         Assert.Equal(FarSpeakerRelabelJobStatuses.Pending, job.Status);
         Assert.Equal(0, job.Attempts);
         Assert.Equal(Now + FarSpeakerRelabelSchedule.RoomStillOpenRecheck, job.NextAttemptAt);
-        await _meet.DidNotReceiveWithAnyArgs().GetEntriesAsync(default, default!, default, default, default);
+        await _meet.DidNotReceiveWithAnyArgs().GetEntriesAsync(default, default, default!, default, default, default);
     }
 
     [Fact]
@@ -173,6 +174,7 @@ public class FarSpeakerRelabelServiceTests
         // The window handed to Meet covers the segments with slack on both sides.
         await _meet.Received(1).GetEntriesAsync(
             HostId,
+            WorkspaceId,
             MeetUrl,
             Anchor.AddSeconds(60) - FarSpeakerRelabelService.WindowSlack,
             Anchor.AddSeconds(64) + FarSpeakerRelabelService.WindowSlack,
@@ -232,7 +234,7 @@ public class FarSpeakerRelabelServiceTests
         await Sut().ProcessAsync(job, CancellationToken.None);
 
         Assert.Equal(FarSpeakerRelabelJobStatuses.Abandoned, job.Status);
-        await _meet.DidNotReceiveWithAnyArgs().GetEntriesAsync(default, default!, default, default, default);
+        await _meet.DidNotReceiveWithAnyArgs().GetEntriesAsync(default, default, default!, default, default, default);
     }
 
     [Fact]
@@ -263,6 +265,167 @@ public class FarSpeakerRelabelServiceTests
                 && jobs.All(j => j.Status == FarSpeakerRelabelJobStatuses.Pending && j.NextAttemptAt == Now)),
             Arg.Any<CancellationToken>());
         await _store.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    // ── Live far-speaker names vs the relabel ────────────────
+
+    private static TranscriptSegment LiveNamed(int startS, int endS, string text, string liveName, float confidence, string? savedAs = null)
+    {
+        var segment = Segment(StandIn, startS, endS, text, savedAs ?? liveName);
+        segment.FarSpeakerKey = liveName;
+        segment.FarSpeakerSource = "meet_caption";
+        segment.FarSpeakerConfidence = confidence;
+        return segment;
+    }
+
+    [Fact]
+    public void Apply_GoogleAttribution_OverridesALiveName()
+    {
+        var segment = LiveNamed(0, 4, "happy to be here as always", "Alice", 0.9f);
+
+        var changed = FarSpeakerRelabelService.Apply(
+            [segment], [new("p/bob", "Bob", Ms(0), Ms(4), "happy to be here as always")], Ms(0), Now);
+
+        Assert.Equal(1, changed);
+        Assert.Equal("Bob", segment.SpeakerName);
+        Assert.Equal("p/bob", segment.FarSpeakerKey);
+        Assert.Equal(FarSpeakerSources.GoogleTranscript, segment.FarSpeakerSource);
+    }
+
+    [Fact]
+    public void Apply_LowOverlap_KeepsAConfidentLiveName()
+    {
+        var segment = LiveNamed(0, 10, "zzz", "Alice", 0.8f);
+
+        var changed = FarSpeakerRelabelService.Apply([segment], [new("p/bob", "Bob", Ms(11), Ms(30), "aaa")], Ms(0), Now);
+
+        Assert.Equal(0, changed);
+        Assert.Equal("Alice", segment.SpeakerName);
+        Assert.Equal("Alice", segment.FarSpeakerKey);
+        Assert.Equal("meet_caption", segment.FarSpeakerSource);
+    }
+
+    [Fact]
+    public void Apply_LowOverlap_DoesNotLockInALiveNameTheThresholdNoLongerBacks()
+    {
+        // Saved as "Alice" under a lower threshold; at today's 0.6 a 0.5 guess is not shown.
+        var segment = LiveNamed(0, 10, "zzz", "Alice", 0.5f, savedAs: "Alice");
+
+        var changed = FarSpeakerRelabelService.Apply([segment], [new("p/bob", "Bob", Ms(11), Ms(30), "aaa")], Ms(0), Now);
+
+        Assert.Equal(1, changed);
+        Assert.Equal("Google Meet participants", segment.SpeakerName);
+        // The hint itself is evidence and stays stored as sent.
+        Assert.Equal("Alice", segment.FarSpeakerKey);
+        Assert.Equal(0.5f, segment.FarSpeakerConfidence);
+        Assert.Equal(Now, segment.UpdatedAt);
+    }
+
+    [Fact]
+    public void Apply_LowOverlap_NoLiveHint_FallsBackToGoogleMeetParticipants()
+    {
+        var segment = Segment(StandIn, 0, 10, "zzz", "Somebody Stale");
+
+        FarSpeakerRelabelService.Apply([segment], [new("p/bob", "Bob", Ms(11), Ms(30), "aaa")], Ms(0), Now);
+
+        Assert.Equal("Google Meet participants", segment.SpeakerName);
+    }
+
+    [Fact]
+    public void Apply_LowOverlap_UsesTheConfiguredThreshold()
+    {
+        var segment = LiveNamed(0, 10, "zzz", "Alice", 0.5f, savedAs: "Google Meet participants");
+
+        FarSpeakerRelabelService.Apply([segment], [new("p/bob", "Bob", Ms(11), Ms(30), "aaa")], Ms(0), Now, minConfidence: 0.4);
+
+        Assert.Equal("Alice", segment.SpeakerName);
+    }
+
+    [Fact]
+    public void Apply_GoogleAttributesAParticipantWithNoName_DoesNotKeepTheLiveName()
+    {
+        // Google says a specific participant spoke, and its key replaces the live hint — but it has
+        // no name for them. Keeping "Alice" would pair her name with somebody else's key.
+        var segment = LiveNamed(0, 4, "happy to be here as always", "Alice", 0.9f);
+
+        FarSpeakerRelabelService.Apply([segment], [new("p/phone", "", Ms(0), Ms(4), "happy to be here as always")], Ms(0), Now);
+
+        Assert.Equal("Google Meet participants", segment.SpeakerName);
+        Assert.Equal("p/phone", segment.FarSpeakerKey);
+    }
+
+    [Fact]
+    public void Apply_LowOverlap_NeverTouchesHostLabelsOrRealParticipants()
+    {
+        var host = LiveNamed(0, 10, "zzz", "Alice", 0.1f, savedAs: "Chosen By Host");
+        host.FarSpeakerSource = FarSpeakerSources.Host;
+        var real = Segment(Guid.NewGuid(), 0, 10, "zzz", "Nhi");
+
+        var changed = FarSpeakerRelabelService.Apply([host, real], [new("p/bob", "Bob", Ms(11), Ms(30), "aaa")], Ms(0), Now);
+
+        Assert.Equal(0, changed);
+        Assert.Equal("Chosen By Host", host.SpeakerName);
+        Assert.Equal("Nhi", real.SpeakerName);
+    }
+
+    [Fact]
+    public async Task Process_PluginNotConnected_RetriesWithBackoff_AndAsksWithTheRoomsWorkspace()
+    {
+        RoomIs(endedAt: Now.AddMinutes(-30));
+        TranscriptHas(Segment(StandIn, 0, 4, "hello"));
+        MeetReturns(new MeetTranscriptFetch(MeetConferenceErrorCodes.PluginNotConnected, null, 0, 0, 0, false, []));
+        var job = Job();
+        job.Attempts = 1;
+
+        await Sut().ProcessAsync(job, CancellationToken.None);
+
+        Assert.Equal(FarSpeakerRelabelJobStatuses.Pending, job.Status);
+        Assert.Equal(2, job.Attempts);
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, job.LastError);
+        Assert.Equal(Now + FarSpeakerRelabelSchedule.Backoff(2), job.NextAttemptAt);
+        await _meet.Received(1).GetEntriesAsync(
+            HostId, WorkspaceId, MeetUrl, Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Process_PluginStillNotConnectedAtTheThirtyDayHorizon_GivesUp()
+    {
+        // Ended just inside the horizon, so Google is asked; the retry that follows crosses it.
+        RoomIs(endedAt: Now - FarSpeakerRelabelSchedule.GiveUpAfter + TimeSpan.FromMinutes(1));
+        TranscriptHas(Segment(StandIn, 0, 4, "hello"));
+        MeetReturns(new MeetTranscriptFetch(MeetConferenceErrorCodes.PluginNotConnected, null, 0, 0, 0, false, []));
+        var job = Job();
+
+        await Sut().ProcessAsync(job, CancellationToken.None);
+
+        Assert.Equal(FarSpeakerRelabelJobStatuses.Pending, job.Status);
+
+        // The next attempt, after the horizon: abandoned without asking Google again.
+        var later = new FarSpeakerRelabelService(
+            _store, _rooms, _meet, NullLogger<FarSpeakerRelabelService>.Instance,
+            new FixedTime(Now + TimeSpan.FromMinutes(2)));
+        await later.ProcessAsync(job, CancellationToken.None);
+
+        Assert.Equal(FarSpeakerRelabelJobStatuses.Abandoned, job.Status);
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, job.LastError);
+    }
+
+    [Fact]
+    public async Task Process_AppliesTheConfiguredLiveNameThreshold()
+    {
+        RoomIs(endedAt: Now.AddMinutes(-30));
+        var segment = LiveNamed(0, 10, "zzz", "Alice", 0.7f);
+        TranscriptHas(segment);
+        MeetReturns(Entries(new MeetTranscriptLine("p/bob", "Bob", Ms(11), Ms(30), "aaa")));
+        var job = Job();
+
+        var strict = new FarSpeakerRelabelService(
+            _store, _rooms, _meet, NullLogger<FarSpeakerRelabelService>.Instance, new FixedTime(Now),
+            new FarSpeakerNameOptions(0.75));
+        await strict.ProcessAsync(job, CancellationToken.None);
+
+        Assert.Equal(FarSpeakerRelabelJobStatuses.Done, job.Status);
+        Assert.Equal("Google Meet participants", segment.SpeakerName);
     }
 
     [Theory]

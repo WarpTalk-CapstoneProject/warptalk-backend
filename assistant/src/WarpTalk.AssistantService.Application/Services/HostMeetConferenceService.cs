@@ -20,6 +20,7 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
     private readonly IPluginTokenRefresher _tokenRefresher;
     private readonly IPluginCredentialProtector _credentialProtector;
     private readonly IGoogleMeetRestClient _meet;
+    private readonly IWorkspacePluginGuard _workspacePlugins;
     private readonly ILogger<HostMeetConferenceService> _logger;
 
     public HostMeetConferenceService(
@@ -27,30 +28,33 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
         IPluginTokenRefresher tokenRefresher,
         IPluginCredentialProtector credentialProtector,
         IGoogleMeetRestClient meet,
+        IWorkspacePluginGuard workspacePlugins,
         ILogger<HostMeetConferenceService> logger)
     {
         _unitOfWork = unitOfWork;
         _tokenRefresher = tokenRefresher;
         _credentialProtector = credentialProtector;
         _meet = meet;
+        _workspacePlugins = workspacePlugins;
         _logger = logger;
     }
 
     public async Task<Result<IReadOnlyList<MeetConferenceRecordDto>>> GetConferenceRecordsAsync(
-        Guid userId, string meeting, CancellationToken ct = default)
+        Guid userId, Guid? workspaceId, string meeting, CancellationToken ct = default)
     {
         if (!GoogleMeetCodeParser.TryParse(meeting, out var code))
             return InvalidMeeting<IReadOnlyList<MeetConferenceRecordDto>>();
 
-        return await WithUserTokenAsync(userId, token => _meet.FindConferenceRecordsAsync(token, code, ct), ct);
+        return await WithUserTokenAsync(userId, workspaceId, token => _meet.FindConferenceRecordsAsync(token, code, ct), ct);
     }
 
-    public async Task<Result<MeetRosterDto>> GetRosterAsync(Guid userId, string meeting, CancellationToken ct = default)
+    public async Task<Result<MeetRosterDto>> GetRosterAsync(
+        Guid userId, Guid? workspaceId, string meeting, CancellationToken ct = default)
     {
         if (!GoogleMeetCodeParser.TryParse(meeting, out var code))
             return InvalidMeeting<MeetRosterDto>();
 
-        return await WithUserTokenAsync(userId, async token =>
+        return await WithUserTokenAsync(userId, workspaceId, async token =>
         {
             var records = await _meet.FindConferenceRecordsAsync(token, code, ct);
             if (!records.IsSuccess) return records.As<MeetRosterDto>();
@@ -69,12 +73,12 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
     }
 
     public async Task<Result<MeetTranscriptEntriesDto>> GetTranscriptEntriesAsync(
-        Guid userId, string meeting, DateTimeOffset windowStart, DateTimeOffset windowEnd, CancellationToken ct = default)
+        Guid userId, Guid? workspaceId, string meeting, DateTimeOffset windowStart, DateTimeOffset windowEnd, CancellationToken ct = default)
     {
         if (!GoogleMeetCodeParser.TryParse(meeting, out var code))
             return InvalidMeeting<MeetTranscriptEntriesDto>();
 
-        return await WithUserTokenAsync(userId, async token =>
+        return await WithUserTokenAsync(userId, workspaceId, async token =>
         {
             var records = await _meet.FindConferenceRecordsAsync(token, code, ct);
             if (!records.IsSuccess) return records.As<MeetTranscriptEntriesDto>();
@@ -144,15 +148,35 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
     }
 
     /// <summary>
-    /// Resolves the user's Google access token, runs <paramref name="call"/> with it, and on a 401
-    /// refreshes once and runs it again — the same proactive + reactive refresh WarpBot's tool
-    /// calls use, through the same <see cref="IPluginTokenRefresher"/>.
+    /// Checks the user may be read for at all, resolves their Google access token, runs
+    /// <paramref name="call"/> with it, and on a 401 refreshes once and runs it again — the same
+    /// proactive + reactive refresh WarpBot's tool calls use, through the same
+    /// <see cref="IPluginTokenRefresher"/>.
     /// </summary>
+    /// <remarks>
+    /// The checks, in order, each with its own code so the caller can say what to do about it:
+    /// <list type="number">
+    /// <item><c>plugin_not_connected</c> — the google_meet plugin is not installed and connected by
+    /// the user, or not usable in <paramref name="workspaceId"/>. First, because connecting the
+    /// plugin is the one action that also produces the grant and its scope: telling a user with no
+    /// grant at all to "reconnect Google" would send them to the wrong place.</item>
+    /// <item><c>connection_required</c> — the plugin was connected but the provider grant is gone
+    /// (revoked, expired, never stored).</item>
+    /// <item><c>meet_scope_missing</c> — the grant does not carry meetings.space.readonly.</item>
+    /// </list>
+    /// A Google grant obtained through Calendar or Drive does not count: "connected" is per plugin
+    /// installation (<see cref="PluginInstallation.ConnectedAt"/>), the grant is per provider.
+    /// </remarks>
     private async Task<Result<T>> WithUserTokenAsync<T>(
         Guid userId,
+        Guid? workspaceId,
         Func<string, Task<MeetRestResult<T>>> call,
         CancellationToken ct)
     {
+        var plugin = await GooglePluginAsync(ct);
+        var notConnected = await CheckPluginConnectedAsync<T>(plugin, userId, workspaceId, ct);
+        if (notConnected is not null) return notConnected;
+
         var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
             c => c.UserId == userId && c.Provider == PluginConstants.Providers.Google,
             ct: ct);
@@ -163,15 +187,10 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
         if (!scopes.Contains(MeetConferenceErrorCodes.MeetSpaceReadonlyScope, StringComparer.Ordinal))
             return Result.Failure<T>("The host's Google grant does not include Meet conference records.", MeetConferenceErrorCodes.MeetScopeMissing);
 
-        Plugin? plugin = null;
         var refreshed = false;
         if (McpToolAccessTokenPolicy.IsExpiredOrExpiring(connection) || string.IsNullOrWhiteSpace(connection.EncryptedAccessToken))
         {
-            plugin = await GooglePluginAsync(ct);
-            if (plugin is null)
-                return Result.Failure<T>("No Google plugin is in the catalog.", MeetConferenceErrorCodes.ConnectionRequired);
-
-            var refresh = await _tokenRefresher.RefreshAccessTokenAsync(plugin, connection, ct);
+            var refresh = await _tokenRefresher.RefreshAccessTokenAsync(plugin!, connection, ct);
             if (!refresh.IsSuccess) return RefreshFailure<T>(refresh);
             refreshed = true;
         }
@@ -181,11 +200,7 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
         {
             // The stored expiry can lag reality (clock skew, a grant revoked at Google); the
             // provider's own 401 is the second and last trigger.
-            plugin ??= await GooglePluginAsync(ct);
-            if (plugin is null)
-                return Result.Failure<T>("No Google plugin is in the catalog.", MeetConferenceErrorCodes.ConnectionRequired);
-
-            var refresh = await _tokenRefresher.RefreshAccessTokenAsync(plugin, connection, ct);
+            var refresh = await _tokenRefresher.RefreshAccessTokenAsync(plugin!, connection, ct);
             if (!refresh.IsSuccess) return RefreshFailure<T>(refresh);
             result = await call(Unprotect(connection));
         }
@@ -212,8 +227,44 @@ public sealed class HostMeetConferenceService : IHostMeetConferenceService
 
     private Task<Plugin?> GooglePluginAsync(CancellationToken ct) =>
         _unitOfWork.PluginRepository.FirstOrDefaultAsync(
-            p => p.Provider == PluginConstants.Providers.Google && p.PluginKey == GoogleMeetPluginKey,
+            p => p.Provider == PluginConstants.Providers.Google && p.PluginKey == GoogleMeetPluginKey && p.IsActive,
             ct: ct);
+
+    /// <summary>
+    /// <c>null</c> when the user has the google_meet plugin installed AND connected, and it is usable
+    /// in <paramref name="workspaceId"/> (the same <see cref="IWorkspacePluginGuard.CanUsePluginInWorkspaceAsync"/>
+    /// WarpBot's tool calls pass); a <c>plugin_not_connected</c> failure otherwise. A missing
+    /// workspace is refused like any other: there is nothing to judge the plugin by.
+    /// </summary>
+    private async Task<Result<T>?> CheckPluginConnectedAsync<T>(
+        Plugin? plugin, Guid userId, Guid? workspaceId, CancellationToken ct)
+    {
+        if (plugin is null)
+            return PluginNotConnected<T>("The Google Meet plugin is not available.");
+
+        var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
+            i => i.UserId == userId
+                && i.PluginId == plugin.Id
+                && i.Status == PluginConstants.InstallationStatus.Installed,
+            ct: ct);
+        if (installation?.ConnectedAt is null)
+            return PluginNotConnected<T>("The host has not connected the Google Meet plugin.");
+
+        // Last, because it asks the workspace service: membership and the workspace's plugin list.
+        var usable = await _workspacePlugins.CanUsePluginInWorkspaceAsync(workspaceId, userId, plugin, ct);
+        if (!usable.IsSuccess)
+        {
+            _logger.LogDebug(
+                "Google Meet plugin not usable for user {UserId} in workspace {WorkspaceId}: {Error}",
+                userId, workspaceId, usable.Error);
+            return PluginNotConnected<T>("The Google Meet plugin is not available to the host in this workspace.");
+        }
+
+        return null;
+    }
+
+    private static Result<T> PluginNotConnected<T>(string message) =>
+        Result.Failure<T>(message, MeetConferenceErrorCodes.PluginNotConnected);
 
     private static Result<T> RefreshFailure<T>(Result refresh) =>
         refresh.ErrorCode switch

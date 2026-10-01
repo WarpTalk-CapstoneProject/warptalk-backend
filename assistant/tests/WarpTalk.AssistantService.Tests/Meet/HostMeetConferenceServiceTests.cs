@@ -14,6 +14,7 @@ namespace WarpTalk.AssistantService.Tests.Meet;
 public class HostMeetConferenceServiceTests
 {
     private static readonly Guid HostId = Guid.NewGuid();
+    private static readonly Guid WorkspaceId = Guid.NewGuid();
     private const string Meeting = "https://meet.google.com/abc-mnop-xyz?authuser=0";
     private const string Code = "abc-mnop-xyz";
     private static readonly DateTimeOffset T9 = new(2026, 10, 1, 9, 0, 0, TimeSpan.Zero);
@@ -21,6 +22,8 @@ public class HostMeetConferenceServiceTests
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IPluginConnectionRepository _connections = Substitute.For<IPluginConnectionRepository>();
     private readonly IPluginRepository _plugins = Substitute.For<IPluginRepository>();
+    private readonly IPluginInstallationRepository _installations = Substitute.For<IPluginInstallationRepository>();
+    private readonly IWorkspacePluginGuard _guard = Substitute.For<IWorkspacePluginGuard>();
     private readonly IPluginTokenRefresher _refresher = Substitute.For<IPluginTokenRefresher>();
     private readonly IPluginCredentialProtector _protector = Substitute.For<IPluginCredentialProtector>();
     private readonly IGoogleMeetRestClient _meet = Substitute.For<IGoogleMeetRestClient>();
@@ -33,7 +36,14 @@ public class HostMeetConferenceServiceTests
         EncryptedAccessToken = "enc-1",
         AccessTokenExpiresAt = DateTime.UtcNow.AddHours(1),
     };
-    private readonly Plugin _meetPlugin = new() { PluginKey = "google_meet", Provider = PluginConstants.Providers.Google };
+    private readonly Plugin _meetPlugin = new()
+    {
+        Id = Guid.NewGuid(),
+        PluginKey = "google_meet",
+        Provider = PluginConstants.Providers.Google,
+        IsActive = true,
+    };
+    private PluginInstallation? _installation;
 
     public HostMeetConferenceServiceTests()
     {
@@ -43,21 +53,119 @@ public class HostMeetConferenceServiceTests
             .Returns(call => call.Arg<Expression<Func<PluginConnection, bool>>>().Compile()(_connection) ? _connection : null);
         _plugins.FirstOrDefaultAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(_meetPlugin);
+        _unitOfWork.PluginInstallationRepository.Returns(_installations);
+        _installations.FirstOrDefaultAsync(Arg.Any<Expression<Func<PluginInstallation, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => _installation is not null && call.Arg<Expression<Func<PluginInstallation, bool>>>().Compile()(_installation)
+                ? _installation
+                : null);
+        // The host has installed AND connected google_meet, and it is usable in the room's workspace.
+        _installation = new PluginInstallation
+        {
+            UserId = HostId,
+            PluginId = _meetPlugin.Id,
+            Status = PluginConstants.InstallationStatus.Installed,
+            ConnectedAt = DateTime.UtcNow.AddDays(-1),
+        };
+        _guard.CanUsePluginInWorkspaceAsync(WorkspaceId, HostId, _meetPlugin, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        _guard.CanUsePluginInWorkspaceAsync(Arg.Is<Guid?>(id => id != WorkspaceId), Arg.Any<Guid>(), Arg.Any<Plugin>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("Workspace required.", PluginConstants.ErrorCodes.PermissionDenied));
         _protector.Unprotect("enc-1").Returns("token-1");
         _protector.Unprotect("enc-2").Returns("token-2");
     }
 
     private HostMeetConferenceService Sut() =>
-        new(_unitOfWork, _refresher, _protector, _meet, NullLogger<HostMeetConferenceService>.Instance);
+        new(_unitOfWork, _refresher, _protector, _meet, _guard, NullLogger<HostMeetConferenceService>.Instance);
 
     private static MeetRestResult<IReadOnlyList<T>> Ok<T>(params T[] items) => MeetRestResult<IReadOnlyList<T>>.Success(items);
+
+    /// <summary>Each of the three reads, so every Meet REST path is held to the plugin rule.</summary>
+    public static TheoryData<string> Reads => new() { "records", "roster", "entries" };
+
+    private Task<string?> ReadAsync(string read, Guid? workspaceId = null)
+    {
+        var sut = Sut();
+        var ws = workspaceId ?? WorkspaceId;
+        return read switch
+        {
+            "records" => sut.GetConferenceRecordsAsync(HostId, ws, Meeting).ContinueWith(t => t.Result.ErrorCode),
+            "roster" => sut.GetRosterAsync(HostId, ws, Meeting).ContinueWith(t => t.Result.ErrorCode),
+            _ => sut.GetTranscriptEntriesAsync(HostId, ws, Meeting, T9, T9.AddHours(1)).ContinueWith(t => t.Result.ErrorCode),
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(Reads))]
+    public async Task PluginNotInstalled_IsPluginNotConnected_WithoutCallingGoogle(string read)
+    {
+        _installation = null;
+
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, await ReadAsync(read));
+        await _meet.DidNotReceiveWithAnyArgs().FindConferenceRecordsAsync(default!, default!, default);
+    }
+
+    [Theory]
+    [MemberData(nameof(Reads))]
+    public async Task InstalledButNeverConnected_IsPluginNotConnected_EvenWithAGrantThatHasTheScope(string read)
+    {
+        // The user connected Calendar: the provider grant is live and even carries the Meet scope.
+        // That does not connect google_meet.
+        _installation!.ConnectedAt = null;
+
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, await ReadAsync(read));
+        await _meet.DidNotReceiveWithAnyArgs().FindConferenceRecordsAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task DisabledInstallation_IsPluginNotConnected()
+    {
+        _installation!.Status = PluginConstants.InstallationStatus.Disabled;
+
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, await ReadAsync("records"));
+    }
+
+    [Theory]
+    [MemberData(nameof(Reads))]
+    public async Task PluginNotUsableInTheRoomsWorkspace_IsPluginNotConnected(string read)
+    {
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, await ReadAsync(read, Guid.NewGuid()));
+        await _meet.DidNotReceiveWithAnyArgs().FindConferenceRecordsAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task NoGoogleMeetPluginInTheCatalog_IsPluginNotConnected()
+    {
+        _plugins.FirstOrDefaultAsync(Arg.Any<Expression<Func<Plugin, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((Plugin?)null);
+
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, await ReadAsync("records"));
+    }
+
+    [Fact]
+    public async Task PluginNotConnected_IsReportedBeforeAMissingGrantOrScope()
+    {
+        // Connecting the plugin is the one action that fixes all three, so it is the answer given.
+        _installation = null;
+        _connection.Status = PluginConstants.ConnectionStatus.Expired;
+        _connection.ScopesJson = "[]";
+
+        Assert.Equal(MeetConferenceErrorCodes.PluginNotConnected, await ReadAsync("records"));
+    }
+
+    [Fact]
+    public async Task PluginConnected_ButGrantWithoutTheScope_IsStillMeetScopeMissing()
+    {
+        _connection.ScopesJson = "[\"https://www.googleapis.com/auth/calendar.events\"]";
+
+        Assert.Equal(MeetConferenceErrorCodes.MeetScopeMissing, await ReadAsync("roster"));
+    }
 
     [Fact]
     public async Task NoGoogleConnection_IsConnectionRequired()
     {
         _connection.Status = PluginConstants.ConnectionStatus.Expired;
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.Equal(MeetConferenceErrorCodes.ConnectionRequired, result.ErrorCode);
         await _meet.DidNotReceiveWithAnyArgs().FindConferenceRecordsAsync(default!, default!, default);
@@ -68,7 +176,7 @@ public class HostMeetConferenceServiceTests
     {
         _connection.ScopesJson = "[\"https://www.googleapis.com/auth/calendar.events\"]";
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.Equal(MeetConferenceErrorCodes.MeetScopeMissing, result.ErrorCode);
         await _meet.DidNotReceiveWithAnyArgs().FindConferenceRecordsAsync(default!, default!, default);
@@ -77,7 +185,7 @@ public class HostMeetConferenceServiceTests
     [Fact]
     public async Task NotAMeetLink_IsInvalidMeeting()
     {
-        var result = await Sut().GetConferenceRecordsAsync(HostId, "https://zoom.us/j/123");
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, "https://zoom.us/j/123");
 
         Assert.Equal(MeetConferenceErrorCodes.InvalidMeeting, result.ErrorCode);
     }
@@ -88,7 +196,7 @@ public class HostMeetConferenceServiceTests
         _meet.FindConferenceRecordsAsync("token-1", Code, Arg.Any<CancellationToken>())
             .Returns(Ok(new MeetConferenceRecordDto("conferenceRecords/r1", T9, null)));
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.True(result.IsSuccess);
         Assert.Single(result.Value!);
@@ -102,7 +210,7 @@ public class HostMeetConferenceServiceTests
             .Returns(_ => { _connection.EncryptedAccessToken = "enc-2"; return Result.Success(); });
         _meet.FindConferenceRecordsAsync("token-2", Code, Arg.Any<CancellationToken>()).Returns(Ok<MeetConferenceRecordDto>());
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.True(result.IsSuccess);
         await _meet.DidNotReceive().FindConferenceRecordsAsync("token-1", Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -118,7 +226,7 @@ public class HostMeetConferenceServiceTests
         _meet.FindConferenceRecordsAsync("token-2", Code, Arg.Any<CancellationToken>())
             .Returns(Ok(new MeetConferenceRecordDto("conferenceRecords/r1", T9, T9.AddHours(1))));
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.True(result.IsSuccess);
         await _refresher.Received(1).RefreshAccessTokenAsync(_meetPlugin, _connection, Arg.Any<CancellationToken>());
@@ -132,7 +240,7 @@ public class HostMeetConferenceServiceTests
         _refresher.RefreshAccessTokenAsync(_meetPlugin, _connection, Arg.Any<CancellationToken>())
             .Returns(Result.Failure("gone", PluginConstants.ErrorCodes.ConnectionRequired));
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.Equal(MeetConferenceErrorCodes.ConnectionRequired, result.ErrorCode);
     }
@@ -143,7 +251,7 @@ public class HostMeetConferenceServiceTests
         _meet.FindConferenceRecordsAsync("token-1", Code, Arg.Any<CancellationToken>())
             .Returns(MeetRestResult<IReadOnlyList<MeetConferenceRecordDto>>.Failure(MeetRestErrorKind.ScopeMissing));
 
-        var result = await Sut().GetConferenceRecordsAsync(HostId, Meeting);
+        var result = await Sut().GetConferenceRecordsAsync(HostId, WorkspaceId, Meeting);
 
         Assert.Equal(MeetConferenceErrorCodes.MeetScopeMissing, result.ErrorCode);
     }
@@ -158,7 +266,7 @@ public class HostMeetConferenceServiceTests
             new MeetParticipantDto("conferenceRecords/live/participants/2", "Bob", MeetParticipantKinds.Anonymous, T9.AddMinutes(5), null),
             new MeetParticipantDto("conferenceRecords/live/participants/1", "Alice", MeetParticipantKinds.SignedIn, T9, null)));
 
-        var result = await Sut().GetRosterAsync(HostId, Meeting);
+        var result = await Sut().GetRosterAsync(HostId, WorkspaceId, Meeting);
 
         Assert.True(result.IsSuccess);
         Assert.Equal("conferenceRecords/live", result.Value!.ConferenceRecord);
@@ -170,7 +278,7 @@ public class HostMeetConferenceServiceTests
     {
         _meet.FindConferenceRecordsAsync("token-1", Code, Arg.Any<CancellationToken>()).Returns(Ok<MeetConferenceRecordDto>());
 
-        var result = await Sut().GetRosterAsync(HostId, Meeting);
+        var result = await Sut().GetRosterAsync(HostId, WorkspaceId, Meeting);
 
         Assert.True(result.IsSuccess);
         Assert.Empty(result.Value!.Participants);
@@ -204,7 +312,7 @@ public class HostMeetConferenceServiceTests
             new MeetTranscriptEntryDto("e1", "conferenceRecords/r1/participants/1", "first", "en", T9.AddSeconds(1), T9.AddSeconds(3)),
             new MeetTranscriptEntryDto("e3", "conferenceRecords/r1/participants/9", "who", "en", T9.AddSeconds(20), T9.AddSeconds(21))));
 
-        var result = await Sut().GetTranscriptEntriesAsync(HostId, Meeting, T9.AddMinutes(-10), T9.AddHours(2));
+        var result = await Sut().GetTranscriptEntriesAsync(HostId, WorkspaceId, Meeting, T9.AddMinutes(-10), T9.AddHours(2));
 
         Assert.True(result.IsSuccess);
         var value = result.Value!;

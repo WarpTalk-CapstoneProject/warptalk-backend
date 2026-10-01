@@ -17,7 +17,10 @@ public sealed record BridgeRoomInfo(
     Guid? BookerUserId,
     string Status,
     DateTime? StartedAt,
-    DateTime? EndedAt);
+    DateTime? EndedAt,
+    // The room's workspace — where the host's google_meet plugin is judged. Null when the response
+    // carries none, which AssistantService refuses as plugin_not_connected.
+    Guid? WorkspaceId = null);
 
 public enum BridgeRoomLookupOutcome
 {
@@ -45,6 +48,7 @@ public interface IMeetTranscriptSource
 {
     Task<MeetTranscriptFetch> GetEntriesAsync(
         Guid hostUserId,
+        Guid? workspaceId,
         string meeting,
         DateTime windowStartUtc,
         DateTime windowEndUtc,

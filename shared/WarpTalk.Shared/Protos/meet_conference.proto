@@ -14,7 +14,9 @@ package meet_conference;
 // WarpTalk.Shared.MeetConferenceErrorCodes) rather than as an RpcException, because the callers
 // are background workers that branch on the kind of failure: `meet_scope_missing` means "the host
 // never granted meetings.space.readonly, leave this room to the other reapers", which is not a
-// fault to retry. RpcException is kept for transport failures and malformed requests.
+// fault to retry; `plugin_not_connected` (the user has not connected the google_meet plugin in the
+// room's workspace) is the same kind of answer. RpcException is kept for transport failures and
+// malformed requests.
 service MeetConferenceService {
   // conferenceRecords?filter=space.meeting_code="..." — every conference held under the code.
   rpc GetConferenceRecords (MeetConferenceLookupRequest) returns (GetConferenceRecordsResponse);
@@ -31,6 +33,10 @@ message MeetConferenceLookupRequest {
   string user_id = 1;
   // A Meet code (abc-mnop-xyz) or a meet.google.com link carrying one.
   string meeting = 2;
+  // The bridge room's workspace. The user must have the google_meet plugin installed AND
+  // connected, and usable in this workspace, or the call answers `plugin_not_connected`. Empty
+  // (an older caller) is refused the same way: there is no workspace to judge the plugin by.
+  string workspace_id = 3;
 }
 
 message MeetConferenceRecord {
@@ -71,6 +77,8 @@ message GetMeetTranscriptEntriesRequest {
   // RFC 3339. Only conference records overlapping [window_start, window_end] are read.
   string window_start = 3;
   string window_end = 4;
+  // See MeetConferenceLookupRequest.workspace_id.
+  string workspace_id = 5;
 }
 
 message MeetTranscriptEntry {

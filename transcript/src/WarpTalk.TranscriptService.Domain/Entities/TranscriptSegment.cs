@@ -62,6 +62,9 @@ public partial class TranscriptSegment
     /// Google's transcript attributed it, or a host-chosen key. Null means "the Meet side, nobody
     /// in particular" and <see cref="SpeakerName"/> then reads "Google Meet participants".
     /// <see cref="SpeakerName"/> always carries the display name; this is the identity behind it.
+    /// For a live source the key IS stt_worker's guessed name, and <see cref="SpeakerName"/> shows it
+    /// only at or above the configured confidence (WarpTalk.Shared.FarSpeakerNames) — the hint is
+    /// stored either way.
     /// </summary>
     public string? FarSpeakerKey { get; set; }
 
