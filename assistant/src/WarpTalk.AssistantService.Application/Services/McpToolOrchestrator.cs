@@ -49,6 +49,23 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (!availability.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
+        // One list, two readers: the worker gets it flattened with the policy WarpBot will actually
+        // apply; the tools page gets it grouped, with the member's choice and the Owner's rule kept
+        // apart. Both come from ListOfferedPluginToolsAsync so what the page shows is what is offered.
+        var tools = (await ListOfferedPluginToolsAsync(userId, availability.Value!, excludedPluginKeys, ct))
+            .SelectMany(group => group.Tools)
+            .Select(WorkspaceToolRules.Effective)
+            .ToList();
+
+        return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(tools);
+    }
+
+    public async Task<IReadOnlyList<OfferedPluginToolsDto>> ListOfferedPluginToolsAsync(
+        Guid userId,
+        WorkspacePluginAvailability availability,
+        IReadOnlyCollection<string>? excludedPluginKeys = null,
+        CancellationToken ct = default)
+    {
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
             i => i.UserId == userId && i.Status == PluginConstants.InstallationStatus.Installed, ct: ct);
         var installationsByPlugin = installations
@@ -69,29 +86,34 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         var excluded = excludedPluginKeys?.ToHashSet(StringComparer.Ordinal) ?? [];
 
         // A plugin the user installed is still only offered where the workspace has it.
-        var usable = plugins.Where(availability.Value!.IsUsable).ToList();
+        var usable = plugins.Where(availability.IsUsable).ToList();
 
         // The workspace Owner's per-tool rules narrow it once more: WarpBot is offered the stricter
         // of the member's choice and the rule, so a tool either of them blocked never reaches the
         // model. ExecuteAsync applies the same rule, because the list is advice and that is the gate.
         var workspaceRules = await WorkspaceToolRules.LoadAsync(
             _unitOfWork,
-            availability.Value.WorkspaceId,
+            availability.WorkspaceId,
             usable.Select(plugin => plugin.Id).ToList(),
             ct);
 
-        var tools = ClaimToolNames(usable)
+        return ClaimToolNames(usable)
             .Where(claim => !excluded.Contains(claim.Plugin.PluginKey))
-            .SelectMany(claim => WorkspaceToolRules.Apply(
-                PluginToolPolicyStore.WithPolicies(
-                    claim.Tools,
-                    installationsByPlugin[claim.Plugin.Id].ConfigJson),
-                WorkspaceToolRules.ForPlugin(workspaceRules, claim.Plugin.Id),
-                effective: true))
-            .Where(tool => tool.Policy != PluginConstants.ToolPolicy.Blocked)
+            .Select(claim => new OfferedPluginToolsDto(
+                claim.Plugin.PluginKey,
+                claim.Plugin.Label,
+                // Policy stays the member's own choice here and WorkspacePolicy carries the rule;
+                // the filter judges the stricter of the two.
+                WorkspaceToolRules.Apply(
+                        PluginToolPolicyStore.WithPolicies(
+                            claim.Tools,
+                            installationsByPlugin[claim.Plugin.Id].ConfigJson),
+                        WorkspaceToolRules.ForPlugin(workspaceRules, claim.Plugin.Id),
+                        effective: false)
+                    .Where(tool => WorkspaceToolRules.Effective(tool).Policy != PluginConstants.ToolPolicy.Blocked)
+                    .ToList()))
+            .Where(group => group.Tools.Count > 0)
             .ToList();
-
-        return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(tools);
     }
 
     /// <summary>

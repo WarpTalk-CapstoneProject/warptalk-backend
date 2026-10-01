@@ -483,6 +483,19 @@ public partial class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>(reason, policy.ErrorCode);
             }
 
+            // GMCAL1001: a Google Meet room filed through the ordinary create (WarpBot books a Meet,
+            // then the AI worker files its WarpTalk room) carries the Meet code too, so the
+            // desktop's later bridge claim FINDS this room instead of opening a second one. Only
+            // the code: the capturer is whoever first claims from the desktop, not the booker.
+            var meetCode = bridgeMeetCode ?? MeetCodeOfOrdinaryCreate(request, occurrence);
+            if (bridgeMeetCode is null && meetCode is not null)
+            {
+                // Cheap pre-check; the unique index below still decides a race.
+                var existing = await _translationRoomRepository.GetOpenBridgeRoomByMeetCodeAsync(workspaceId, meetCode, ct);
+                if (existing is not null)
+                    return await ExistingMeetRoomForCreatorAsync(existing, hostId, ct);
+            }
+
             // 1. Determine initial status
             var status = request.ScheduledAt.HasValue ? "SCHEDULED" : "WAITING";
 
@@ -530,6 +543,10 @@ public partial class TranslationRoomService : ITranslationRoomService
                 room.BridgeCapturerUserId = hostId;
                 room.BridgeCapturerHeartbeatAt = _utcNow();
             }
+            else if (meetCode is not null)
+            {
+                room.ExternalMeetingCode = meetCode;
+            }
 
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
@@ -562,7 +579,7 @@ public partial class TranslationRoomService : ITranslationRoomService
             {
                 await _unitOfWork.SaveChangesAsync(ct);
             }
-            catch (Exception ex) when (bridgeMeetCode is not null && PersistenceConflict.IsUniqueViolation(ex))
+            catch (Exception ex) when (meetCode is not null && PersistenceConflict.IsUniqueViolation(ex))
             {
                 // Another desktop claimed this Meet code first. Untrack the losing rows — Remove on
                 // an Added entity detaches it — so the caller's follow-up join does not try to
@@ -571,11 +588,19 @@ public partial class TranslationRoomService : ITranslationRoomService
                 _participantRepository.Remove(hostParticipant);
                 _translationRoomRepository.Remove(room);
 
+                // GMCAL1001: an ordinary create that lost the race answers like the pre-check did.
+                if (bridgeMeetCode is null)
+                {
+                    var winner = await _translationRoomRepository.GetOpenBridgeRoomByMeetCodeAsync(room.WorkspaceId, meetCode, ct);
+                    return winner is null
+                        ? Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict)
+                        : await ExistingMeetRoomForCreatorAsync(winner, hostId, ct);
+                }
+
                 _logger.LogInformation(
                     "Bridge claim for Meet code {MeetCode} in workspace {WorkspaceId} lost the create race; joining the existing room.",
                     bridgeMeetCode, room.WorkspaceId);
-                return Result.Failure<TranslationRoomDto>(
-                    "An open room for this Google Meet call already exists.", ErrorCodes.Conflict);
+                return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
             }
             await PublishRoomTargetLanguagesAsync(room, ct);
 
@@ -669,6 +694,46 @@ public partial class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while creating translation room for HostId: {HostId}", hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while creating the room.", ErrorCodes.InternalServerError);
         }
+    }
+
+    private const string MeetRoomAlreadyExists = "An open room for this Google Meet call already exists.";
+
+    /// <summary>
+    /// The normalized Meet code an ordinary create stamps: a one-off (never a series occurrence)
+    /// EXTERNAL_BRIDGE room on GOOGLE_MEET whose join link parses. Null for every other room.
+    /// </summary>
+    private static string? MeetCodeOfOrdinaryCreate(CreateTranslationRoomRequest request, SeriesOccurrenceContext? occurrence)
+    {
+        if (occurrence is not null
+            || !TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType))
+            || !string.Equals(request.ExternalProvider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal))
+            return null;
+
+        return GoogleMeetCode.TryNormalize(request.ExternalMeetingUrl, out var code) ? code : null;
+    }
+
+    /// <summary>
+    /// GMCAL1001: creating a room for a Meet code that already has an open one in the workspace
+    /// is idempotent — the caller gets that room back (same DTO as a fresh create), so a retried
+    /// WarpBot booking or a second filing never 500s on the unique index. Only when the caller
+    /// could already read it: host (effective or booker) or participant — the RoomReadAccess
+    /// clauses answerable without an email. Anyone else gets 409 rather than a stranger's room.
+    /// </summary>
+    private async Task<Result<TranslationRoomDto>> ExistingMeetRoomForCreatorAsync(
+        TranslationRoom existing, Guid callerId, CancellationToken ct)
+    {
+        var readable = existing.HostId == callerId
+            || existing.IsHostedBy(callerId)
+            || await _participantRepository.GetByRoomAndUserAsync(existing.Id, callerId, ct) is not null;
+        if (!readable)
+            return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
+
+        _logger.LogInformation(
+            "Create for Meet code {MeetCode} in workspace {WorkspaceId} returned the existing open room {RoomId}.",
+            existing.ExternalMeetingCode, existing.WorkspaceId, existing.Id);
+        return Result.Success(existing.ToResponseDto(
+            await _participantRepository.CountSeatHoldingParticipantsAsync(existing.Id, ct),
+            await _participantRepository.CountEverJoinedAsync(existing.Id, ct)));
     }
 
     public async Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default)
