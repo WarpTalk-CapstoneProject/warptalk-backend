@@ -99,6 +99,10 @@ try
     // so the null-versus-empty allowlist rule exists once.
     builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
     builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
+    // Wave 4: every WarpBot tool call (built-in, web search, plugin) recorded as metadata, and the
+    // workspace and platform Insights that read it.
+    builder.Services.AddScoped<IAssistantToolCallRecorder, AssistantToolCallRecorder>();
+    builder.Services.AddScoped<IAssistantToolInsightsService, AssistantToolInsightsService>();
     // The workspace plugin marketplace: which plugins a workspace has, private MCP plugins, and
     // members asking the Owner for more. Notifies through the notification service's gRPC.
     builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();

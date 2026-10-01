@@ -139,6 +139,13 @@ public partial class AssistantDbContext : DbContext
             entity.Property(e => e.ResultJson).HasColumnName("result_json");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Source).HasMaxLength(20).HasDefaultValue("builtin").HasColumnName("source");
+            entity.Property(e => e.PluginKey).HasMaxLength(100).HasColumnName("plugin_key");
+            entity.Property(e => e.Outcome).HasMaxLength(30).HasDefaultValue("ok").HasColumnName("outcome");
+            entity.Property(e => e.OutcomeCode).HasMaxLength(60).HasColumnName("outcome_code");
+            entity.Property(e => e.DurationMs).HasColumnName("duration_ms");
 
             entity.HasOne(d => d.Message).WithMany(p => p.ToolCalls)
                 .HasForeignKey(d => d.MessageId)
