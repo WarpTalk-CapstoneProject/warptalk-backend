@@ -1,6 +1,7 @@
 using System.Web;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.WebUtilities;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
@@ -197,6 +198,10 @@ public class AssistantPluginsController : ControllerBase
     /// <c>client=desktop</c> says the caller is the Electron shell rather than a browser tab. It is
     /// sealed into the OAuth state here and read back at the callback, because by then the consent
     /// has happened in the system browser and nothing else on that request says where it started.
+    /// <para>
+    /// GMCAL1001: <c>alsoConnect</c> (repeatable, <c>?alsoConnect=google_drive&amp;alsoConnect=google_meet</c>)
+    /// adds same-provider siblings to the one consent, as on <c>POST connect</c>.
+    /// </para>
     /// </remarks>
     [HttpGet("{pluginKey}/connect-url")]
     [ProducesResponseType(typeof(PluginConnectUrlDto), StatusCodes.Status200OK)]
@@ -207,9 +212,11 @@ public class AssistantPluginsController : ControllerBase
         string pluginKey,
         [FromQuery] string? client,
         [FromQuery] Guid? workspaceId,
+        [FromQuery] string[]? alsoConnect,
         CancellationToken ct)
     {
-        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, client, workspaceId, ct);
+        var result = await _connectionService.GetConnectUrlAsync(
+            pluginKey, CurrentUserId, client, workspaceId, ct, alsoConnect);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
@@ -225,6 +232,14 @@ public class AssistantPluginsController : ControllerBase
     /// when the provider's existing grant already covers the plugin, and a consent URL otherwise.
     /// A POST because the first answer changes state. <c>connect-url</c> above stays for clients
     /// that predate this route; it always sends the user to the provider.
+    /// <para>
+    /// GMCAL1001: the optional body <c>{"alsoConnect": ["google_drive", ...]}</c> connects the
+    /// named same-provider siblings with the same single consent (or on the spot, when the grant
+    /// already covers them); <c>connectedPluginKeys</c> lists what was connected on the spot. A
+    /// bodiless POST is the connect as it always was. An invalid key refuses the whole request:
+    /// 404 unknown_plugin, 409 plugin_not_installed, 403 permission_denied, or 400
+    /// invalid_also_connect (other provider, the clicked key itself, API-key row, blank, over 10).
+    /// </para>
     /// </remarks>
     [HttpPost("{pluginKey}/connect")]
     [ProducesResponseType(typeof(PluginConnectResultDto), StatusCodes.Status200OK)]
@@ -235,9 +250,12 @@ public class AssistantPluginsController : ControllerBase
         string pluginKey,
         [FromQuery] string? client,
         [FromQuery] Guid? workspaceId,
+        // Allow, not the default: every existing client POSTs this route with no body at all.
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ConnectPluginRequest? request,
         CancellationToken ct)
     {
-        var result = await _connectionService.ConnectAsync(pluginKey, CurrentUserId, client, workspaceId, ct);
+        var result = await _connectionService.ConnectAsync(
+            pluginKey, CurrentUserId, client, workspaceId, ct, request?.AlsoConnect);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
