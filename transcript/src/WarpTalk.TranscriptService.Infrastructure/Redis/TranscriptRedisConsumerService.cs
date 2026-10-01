@@ -491,6 +491,30 @@ public class TranscriptRedisConsumerService : BackgroundService
 
                 _logger.LogInformation("Persisted segment {SegmentId} (final={IsFinal}) for room {RoomId}", segmentId, isFinal, roomId);
 
+                // A LATE LINE GOES WHERE IT WAS SPOKEN, NOT AT THE END. The counter above hands out
+                // sequence_order in processing order; this moves the segment back in front of any
+                // already-stored line that started after it. See PlaceSegmentByStartTimeAsync.
+                if (TranscriptConsumerPollingPolicy.StartTimeIsOnTranscriptClock(anchorMs, transcript.TimelineAnchorAt))
+                {
+                    try
+                    {
+                        var placedAt = await unitOfWork.PlaceSegmentByStartTimeAsync(transcript.Id, segmentId, cancellationToken);
+                        if (placedAt is not null)
+                        {
+                            _logger.LogInformation(
+                                "transcript_segment_placed_by_start_time segment {SegmentId} room {RoomId} start_ms {StartMs} from {SequenceOrder} to {PlacedAt}",
+                                segmentId, roomId, startMs, sequenceOrder, placedAt);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // The line is stored; only its position is wrong, which is what it was before
+                        // this existed. Retrying the message would not store it again (idempotent by
+                        // segment id) and so could never fix the position either.
+                        _logger.LogWarning(ex, "Could not place segment {SegmentId} by start time", segmentId);
+                    }
+                }
+
                 // Wire into the RAG pipeline incrementally, per segment, as it's transcribed —
                 // there is no real "transcript finalized" event in this codebase to wait for
                 // instead (transcriptService.finalize() has no backing endpoint). A publish
