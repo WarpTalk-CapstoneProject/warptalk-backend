@@ -52,6 +52,19 @@ public partial class TranslationRoomParticipant
     /// </summary>
     public bool IsExternal { get; set; }
 
+    /// <summary>
+    /// EXTERNAL_BRIDGE only: this person joined the Google Meet call with their REAL microphone and
+    /// speakers ("text-only" bridge mode, PO 2026-10-01) — no virtual cable carries a dub into Meet,
+    /// because Meet already hears their own voice. Their outbound routes to the far-side stand-in
+    /// are therefore published with <c>TextOnly = true</c> and tts_worker synthesizes nothing for
+    /// them; transcript, translation text and the inbound side are untouched.
+    ///
+    /// Set through bridge claim or PUT .../bridge/audio-mode. Voice → text is allowed at any time;
+    /// text → voice only while the room has no active translation session (see
+    /// TranslationRoomService.SetBridgeAudioModeAsync). Migration 20261001150000.
+    /// </summary>
+    public bool IsBridgeTextOnly { get; set; }
+
     public DateTime? JoinedAt { get; set; }
 
     public DateTime? LeftAt { get; set; }

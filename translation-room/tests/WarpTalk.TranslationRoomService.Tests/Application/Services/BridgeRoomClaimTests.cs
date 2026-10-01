@@ -12,6 +12,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
+using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -463,6 +464,154 @@ public class BridgeRoomClaimTests
         _store.Rooms.Should().HaveCount(2).And.OnlyContain(r => r.ExternalMeetingCode == null);
     }
 
+    // ---- Text-only bridge mode (PO 2026-10-01) -------------------------------------------------
+
+    private TranslationRoomParticipant Row(Guid userId) => _store.Participants.Single(p => p.UserId == userId);
+
+    [Fact]
+    public async Task Claim_WithoutAnAudioMode_IsVoice()
+    {
+        var alice = Member(WorkspaceA);
+
+        var result = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), alice);
+
+        result.Value!.AudioMode.Should().Be(BridgeRoomConstants.AudioModeVoice);
+        Row(alice).IsBridgeTextOnly.Should().BeFalse();
+        _store.RouteService.Verify(r => r.RefreshDubVoiceAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Claim_AsText_MarksOnlyTheClaimer_AndRepublishesRoutes()
+    {
+        var alice = Member(WorkspaceA);
+        var bob = Member(WorkspaceA);
+        var created = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA) with { AudioMode = "TEXT" }, alice);
+
+        var joined = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), bob);
+
+        created.Value!.AudioMode.Should().Be(BridgeRoomConstants.AudioModeText);
+        created.Value.Participant!.IsBridgeTextOnly.Should().BeTrue();
+        joined.Value!.AudioMode.Should().Be(BridgeRoomConstants.AudioModeVoice);
+        Row(alice).IsBridgeTextOnly.Should().BeTrue();
+        Row(bob).IsBridgeTextOnly.Should().BeFalse("the mode describes one person's desk, not the room");
+        Row(TranslationRoomConstants.ExternalBridgeParticipantUserId).IsBridgeTextOnly.Should().BeFalse();
+        _store.RouteService.Verify(r => r.RefreshDubVoiceAsync(created.Value.Room.Id, alice, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Claim_WithAnUnknownAudioMode_IsAValidationError_AndCreatesNothing()
+    {
+        var alice = Member(WorkspaceA);
+
+        var result = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA) with { AudioMode = "cable" }, alice);
+
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        _store.Rooms.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReClaim_AsVoice_WhileTranslating_KeepsText_ButDoesNotFailTheClaim()
+    {
+        var alice = Member(WorkspaceA);
+        var room = (await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA) with { AudioMode = "text" }, alice)).Value!.Room;
+        _store.TranslationActive.Add(room.Id);
+
+        var again = await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA) with { AudioMode = "voice" }, alice);
+
+        again.IsSuccess.Should().BeTrue(again.Error);
+        again.Value!.AudioMode.Should().Be(BridgeRoomConstants.AudioModeText);
+        Row(alice).IsBridgeTextOnly.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SetAudioMode_VoiceToText_IsAllowedMidMeeting()
+    {
+        var alice = Member(WorkspaceA);
+        var room = (await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), alice)).Value!.Room;
+        _store.TranslationActive.Add(room.Id);
+
+        var result = await Service().SetBridgeAudioModeAsync(room.Id, alice, "text");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Mode.Should().Be(BridgeRoomConstants.AudioModeText);
+        result.Value.TranslationActive.Should().BeTrue();
+        Row(alice).IsBridgeTextOnly.Should().BeTrue();
+        _store.RouteService.Verify(r => r.RefreshDubVoiceAsync(room.Id, alice, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SetAudioMode_TextToVoice_IsLockedWhileTranslating_AndFreeOtherwise()
+    {
+        var alice = Member(WorkspaceA);
+        var room = (await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA) with { AudioMode = "text" }, alice)).Value!.Room;
+        _store.TranslationActive.Add(room.Id);
+
+        var locked = await Service().SetBridgeAudioModeAsync(room.Id, alice, "voice");
+
+        locked.IsSuccess.Should().BeFalse();
+        locked.ErrorCode.Should().Be(BridgeRoomConstants.ErrorCodeAudioModeLocked);
+        Row(alice).IsBridgeTextOnly.Should().BeTrue();
+
+        // Stop translation: the choice is free again, as it was before Start.
+        _store.TranslationActive.Remove(room.Id);
+        var unlocked = await Service().SetBridgeAudioModeAsync(room.Id, alice, "voice");
+
+        unlocked.IsSuccess.Should().BeTrue(unlocked.Error);
+        unlocked.Value!.Mode.Should().Be(BridgeRoomConstants.AudioModeVoice);
+        Row(alice).IsBridgeTextOnly.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SetAudioMode_ToTheCurrentMode_WritesAndRepublishesNothing()
+    {
+        var alice = Member(WorkspaceA);
+        var room = (await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), alice)).Value!.Room;
+
+        var result = await Service().SetBridgeAudioModeAsync(room.Id, alice, "voice");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Mode.Should().Be(BridgeRoomConstants.AudioModeVoice);
+        _store.RouteService.Verify(r => r.RefreshDubVoiceAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SetAudioMode_Refusals()
+    {
+        var alice = Member(WorkspaceA);
+        var room = (await Service().ClaimBridgeRoomAsync(Claim(WorkspaceA), alice)).Value!.Room;
+
+        (await Service().SetBridgeAudioModeAsync(room.Id, alice, "loud")).ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        (await Service().SetBridgeAudioModeAsync(room.Id, Member(WorkspaceA), "text")).ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        (await Service().SetBridgeAudioModeAsync(room.Id, TranslationRoomConstants.ExternalBridgeParticipantUserId, "text"))
+            .ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        (await Service().SetBridgeAudioModeAsync(Guid.NewGuid(), alice, "text")).ErrorCode.Should().Be(ErrorCodes.NotFound);
+
+        _store.Rooms.Single().Status = "ENDED";
+        (await Service().SetBridgeAudioModeAsync(room.Id, alice, "text")).ErrorCode.Should().Be(ErrorCodes.InvalidState);
+    }
+
+    [Fact]
+    public void RouteMapper_MarksOnlyATextOnlySpeakersRouteToTheStandIn()
+    {
+        var roomId = Guid.NewGuid();
+        var host = new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, UserId = Guid.NewGuid(), IsBridgeTextOnly = true };
+        var member = new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, UserId = Guid.NewGuid() };
+        var standIn = new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, UserId = TranslationRoomConstants.ExternalBridgeParticipantUserId };
+
+        TranslationRoomAudioRoute Route(TranslationRoomParticipant source, TranslationRoomParticipant target) => new()
+        {
+            Id = Guid.NewGuid(), TranslationRoomId = roomId,
+            SourceParticipantId = source.Id, TargetParticipantId = target.Id,
+            SourceParticipant = source, TargetParticipant = target,
+            SourceLanguage = "vi", TargetLanguage = "en", Status = "BROADCASTING",
+        };
+
+        TranslationRoomAudioRouteMapper.ToDto(Route(host, standIn)).TextOnly.Should().BeTrue("host → Meet: the dub nobody can play");
+        TranslationRoomAudioRouteMapper.ToDto(Route(host, member)).TextOnly.Should().BeFalse("another WarpTalk listener still hears the host's dub");
+        TranslationRoomAudioRouteMapper.ToDto(Route(standIn, host)).TextOnly.Should().BeFalse("inbound is never text-only");
+        TranslationRoomAudioRouteMapper.ToDto(Route(member, standIn)).TextOnly.Should().BeFalse("the member has a cable");
+    }
+
     [Theory]
     [InlineData("abc-defg-hij", "abc-defg-hij")]
     [InlineData(" ABC-DEFG-HIJ ", "abc-defg-hij")]
@@ -497,6 +646,9 @@ public class BridgeRoomClaimTests
         public List<object> Pending { get; } = new();
         public HashSet<(Guid WorkspaceId, Guid UserId)> Members { get; } = new();
         public HashSet<Guid> DenyCreationFor { get; } = new();
+        /// <summary>Rooms with an ACTIVE translation session (Start pressed, not stopped).</summary>
+        public HashSet<Guid> TranslationActive { get; } = new();
+        public Mock<ITranslationRoomAudioRouteService> RouteService { get; } = new();
         public int StaleLookupsRemaining { get; set; }
         public int UniqueViolationsRaised { get; private set; }
 
@@ -516,7 +668,11 @@ public class BridgeRoomClaimTests
             uow.Setup(u => u.TranslationRoomRepository).Returns(rooms.Object);
             uow.Setup(u => u.TranslationRoomParticipantRepository).Returns(participants.Object);
             uow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(new Mock<ITranslationRoomAudioRouteRepository>().Object);
-            uow.Setup(u => u.TranslationRoomSessionRepository).Returns(new Mock<ITranslationRoomSessionRepository>().Object);
+            var sessions = new Mock<ITranslationRoomSessionRepository>();
+            sessions.Setup(s => s.GetActiveSessionByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((Guid roomId, CancellationToken _) =>
+                    Locked(() => TranslationActive.Contains(roomId) ? new TranslationRoomSession { TranslationRoomId = roomId } : null));
+            uow.Setup(u => u.TranslationRoomSessionRepository).Returns(sessions.Object);
             uow.Setup(u => u.TranslationRoomInvitationRepository).Returns(new Mock<ITranslationRoomInvitationRepository>().Object);
             uow.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).Returns(() => Task.FromResult(Commit()));
 
@@ -609,11 +765,14 @@ public class BridgeRoomClaimTests
             userSettings.Setup(d => d.GetDisplayNameAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((Guid user, CancellationToken _) => $"User {user.ToString()[..4]}");
 
+            RouteService.Setup(r => r.RefreshDubVoiceAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result.Success(new List<TranslationRoomAudioRouteDto>()));
+
             return new RoomService(
                 uow.Object,
                 languagePolicy.Object,
                 new Mock<IAudioRouteEventProcessor>().Object,
-                new Mock<ITranslationRoomAudioRouteService>().Object,
+                RouteService.Object,
                 userSettings.Object,
                 meetingPolicy.Object,
                 memberDirectory.Object,

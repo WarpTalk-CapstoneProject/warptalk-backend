@@ -9,6 +9,7 @@ using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Models;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
@@ -78,13 +79,33 @@ public class BridgeRoomsController : ControllerBase
     }
 
     /// <summary>
+    /// Sets the caller's OWN bridge audio mode: <c>{ "mode": "text" }</c> when they are in Meet with
+    /// their real mic and speakers (no dub of their speech is synthesized for the far side),
+    /// <c>"voice"</c> when a virtual cable carries their dub. Voice → text is always allowed;
+    /// text → voice answers 409 <c>BRIDGE_AUDIO_MODE_LOCKED</c> while translation is running.
+    /// 400 bad mode, 403 not a participant, 404 no room, 409 INVALID_STATE not a bridge / ended.
+    /// </summary>
+    [HttpPut("{id:guid}/bridge/audio-mode")]
+    public async Task<IActionResult> SetAudioMode(Guid id, [FromBody] SetBridgeAudioModeRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.SetBridgeAudioModeAsync(id, userId.Value, request?.Mode, ct);
+        return result.IsSuccess ? Ok(result.Value) : Error(result.Error, result.ErrorCode);
+    }
+
+    /// <summary>
     /// ApiErrorStatus, except INVALID_STATE (not a bridge / room already ended), which these
     /// endpoints report as 409: the request is well-formed, the room is just past the point where it
     /// can be captured.
     /// </summary>
     private ObjectResult Error(string? error, string? errorCode)
     {
-        var status = errorCode == ErrorCodes.InvalidState ? 409 : ApiErrorStatus.For(errorCode);
+        var status = errorCode is ErrorCodes.InvalidState or BridgeRoomConstants.ErrorCodeAudioModeLocked
+            ? 409
+            : ApiErrorStatus.For(errorCode);
         return StatusCode(status, new ApiErrorResponse(error, errorCode));
     }
 }

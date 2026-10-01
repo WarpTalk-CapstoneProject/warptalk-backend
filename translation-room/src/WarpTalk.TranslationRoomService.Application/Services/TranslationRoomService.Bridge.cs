@@ -54,6 +54,10 @@ public partial class TranslationRoomService
                 return Result.Failure<ClaimBridgeRoomResponse>(
                     BridgeRoomConstants.ErrorInvalidMeetCode, ErrorCodes.ValidationError);
 
+            if (request.AudioMode is not null && BridgeRoomConstants.NormalizeAudioMode(request.AudioMode) is null)
+                return Result.Failure<ClaimBridgeRoomResponse>(
+                    BridgeRoomConstants.ErrorInvalidAudioMode, ErrorCodes.ValidationError);
+
             // Membership first, so a stranger cannot even learn whether a room exists for a code.
             // Members may JOIN without the create permission; creating still asks the workspace
             // (ValidateMeetingCreationAsync inside the create path), exactly as POST /translation-rooms.
@@ -76,13 +80,15 @@ public partial class TranslationRoomService
                     // The creator is the host, seated CONNECTED at creation (bridge rule in
                     // BuildHostParticipant), and was stamped capturer in the same INSERT.
                     var hostRow = await _participantRepository.GetByRoomAndUserAsync(created.Value!.Id, userId, ct);
+                    var hostMode = await ApplyClaimedAudioModeAsync(created.Value!.Id, hostRow, request.AudioMode, userId, ct);
                     return Result.Success(new ClaimBridgeRoomResponse(
                         created.Value!,
                         hostRow is null ? null : TranslationRoomParticipantMapper.ToDto(hostRow),
                         BridgeRoomConstants.RoleCapturer,
                         Created: true,
                         HeartbeatSeconds,
-                        LeaseSeconds));
+                        LeaseSeconds,
+                        hostMode));
                 }
 
                 if (created.ErrorCode != ErrorCodes.Conflict)
@@ -148,13 +154,138 @@ public partial class TranslationRoomService
             }
         }
 
+        var participantDto = joined.Value.Participant;
+        var row = await _participantRepository.GetByRoomAndUserAsync(room.Id, userId, ct);
+        var audioMode = await ApplyClaimedAudioModeAsync(room.Id, row, request.AudioMode, userId, ct);
+        if (row is not null)
+            participantDto = participantDto with { IsBridgeTextOnly = row.IsBridgeTextOnly };
+
         return Result.Success(new ClaimBridgeRoomResponse(
             roomDto,
-            joined.Value.Participant,
+            participantDto,
             role,
             Created: false,
             HeartbeatSeconds,
-            LeaseSeconds));
+            LeaseSeconds,
+            audioMode));
+    }
+
+    /// <summary>
+    /// The audio mode a claim asked for, applied to the caller's own row. Never fails the claim: a
+    /// claim is also how a desktop REJOINS after a socket blip, and refusing it over the mode would
+    /// strand the person outside the room. So a request the rules forbid (text → voice while
+    /// translation runs) simply keeps the current mode, and the response says which one is in force.
+    /// </summary>
+    private async Task<string> ApplyClaimedAudioModeAsync(
+        Guid roomId, TranslationRoomParticipant? row, string? requested, Guid userId, CancellationToken ct)
+    {
+        if (row is null)
+            return BridgeRoomConstants.AudioModeVoice;
+
+        var wanted = BridgeRoomConstants.NormalizeAudioMode(requested);
+        if (wanted is null)
+            return BridgeRoomConstants.AudioModeOf(row.IsBridgeTextOnly);
+
+        var change = await DecideAudioModeChangeAsync(roomId, row, wanted, ct);
+        if (change.Locked)
+        {
+            _logger.LogInformation(
+                "Claim by {UserId} asked for voice in bridge room {RoomId}, but they are text-only and translation is running; keeping text.",
+                userId, roomId);
+        }
+        else if (change.Changed)
+        {
+            await PersistAudioModeAsync(roomId, row, wanted == BridgeRoomConstants.AudioModeText, userId, ct);
+        }
+
+        return BridgeRoomConstants.AudioModeOf(row.IsBridgeTextOnly);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<BridgeAudioModeDto>> SetBridgeAudioModeAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? mode,
+        CancellationToken ct = default)
+    {
+        var wanted = BridgeRoomConstants.NormalizeAudioMode(mode);
+        if (wanted is null)
+            return Result.Failure<BridgeAudioModeDto>(BridgeRoomConstants.ErrorInvalidAudioMode, ErrorCodes.ValidationError);
+
+        var refusal = await LoadOpenBridgeRoomAsync(translationRoomId, ct);
+        if (refusal is not null)
+            return Result.Failure<BridgeAudioModeDto>(refusal.Value.Error, refusal.Value.Code);
+
+        // Only the person themselves: the mode describes the hardware on THEIR desk. Same seat rule
+        // as takeover — in the room, or just was on a socket blip.
+        var row = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, userId, ct);
+        if (row?.Status is not (TranslationRoomParticipantStatuses.Connected or TranslationRoomParticipantStatuses.Disconnected)
+            || row.UserId == TranslationRoomConstants.ExternalBridgeParticipantUserId)
+            return Result.Failure<BridgeAudioModeDto>(BridgeRoomConstants.ErrorNotParticipantForAudioMode, ErrorCodes.Forbidden);
+
+        var change = await DecideAudioModeChangeAsync(translationRoomId, row, wanted, ct);
+        if (change.Locked)
+            return Result.Failure<BridgeAudioModeDto>(
+                BridgeRoomConstants.ErrorAudioModeLocked, BridgeRoomConstants.ErrorCodeAudioModeLocked);
+
+        if (change.Changed)
+            await PersistAudioModeAsync(translationRoomId, row, wanted == BridgeRoomConstants.AudioModeText, userId, ct);
+
+        return Result.Success(new BridgeAudioModeDto(
+            translationRoomId, userId, BridgeRoomConstants.AudioModeOf(row.IsBridgeTextOnly), change.TranslationActive));
+    }
+
+    /// <summary>
+    /// Whether moving <paramref name="row"/> to <paramref name="wanted"/> changes anything, and
+    /// whether the rules forbid it. Text → voice is locked only while a translation session is
+    /// active: before Start the choice is still free, and Stop reopens it.
+    /// </summary>
+    private async Task<(bool Changed, bool Locked, bool TranslationActive)> DecideAudioModeChangeAsync(
+        Guid roomId, TranslationRoomParticipant row, string wanted, CancellationToken ct)
+    {
+        var wantText = wanted == BridgeRoomConstants.AudioModeText;
+        var translationActive =
+            await _translationRoomSessionRepository.GetActiveSessionByRoomIdAsync(roomId, ct) is not null;
+
+        if (wantText == row.IsBridgeTextOnly)
+            return (false, false, translationActive);
+
+        var locked = !wantText && translationActive;
+        return (!locked, locked, translationActive);
+    }
+
+    /// <summary>
+    /// Writes the mode and republishes the room's routes, so tts_worker stops (or resumes)
+    /// synthesizing this person's outbound dub on the next sentence instead of the next route event.
+    /// A failed republish is logged, not returned: the column is the source of truth and the next
+    /// publish of any kind carries it.
+    /// </summary>
+    private async Task PersistAudioModeAsync(
+        Guid roomId, TranslationRoomParticipant row, bool textOnly, Guid userId, CancellationToken ct)
+    {
+        row.IsBridgeTextOnly = textOnly;
+        row.UpdatedAt = _utcNow();
+        _participantRepository.Update(row);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "User {UserId} set bridge audio mode {Mode} in room {RoomId}",
+            userId, BridgeRoomConstants.AudioModeOf(textOnly), roomId);
+
+        try
+        {
+            // RefreshDubVoiceAsync is the existing "republish this room's routes" entry point (it
+            // writes nothing; PublishRoutesUpdateAsync re-derives every route's TextOnly flag).
+            var republished = await _audioRouteService.RefreshDubVoiceAsync(roomId, userId, ct);
+            if (!republished.IsSuccess)
+                _logger.LogWarning(
+                    "Republishing routes after a bridge audio mode change failed for room {RoomId}: {Error}",
+                    roomId, republished.Error);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Republishing routes after a bridge audio mode change threw for room {RoomId}", roomId);
+        }
     }
 
     /// <inheritdoc />

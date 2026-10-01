@@ -48,7 +48,19 @@ public static class TranslationRoomAudioRouteMapper
             // these, not against SourceParticipantId/TargetParticipantId (translation_room_
             // participants.id) — the two id spaces are different.
             entity.SourceParticipant?.UserId,
-            entity.TargetParticipant?.UserId
+            entity.TargetParticipant?.UserId,
+            TextOnly: IsTextOnlyBridgeOutbound(entity)
         );
     }
+
+    /// <summary>
+    /// The speaker chose text-only bridge mode and this route goes to the far-side stand-in — i.e.
+    /// it is the dub that would have been played into Meet through a cable that does not exist.
+    /// Routes to other WarpTalk participants, and the stand-in's own (inbound) routes, are never
+    /// text-only. False when the participants were not eager-loaded, which keeps the dub: failing
+    /// open costs credits, failing closed would silence a speaker who does have a cable.
+    /// </summary>
+    public static bool IsTextOnlyBridgeOutbound(TranslationRoomAudioRoute entity) =>
+        entity.SourceParticipant?.IsBridgeTextOnly == true
+        && entity.TargetParticipant?.UserId == TranslationRoomConstants.ExternalBridgeParticipantUserId;
 }
