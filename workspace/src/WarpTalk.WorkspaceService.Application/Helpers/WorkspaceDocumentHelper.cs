@@ -1,5 +1,6 @@
 using System;
 using WarpTalk.WorkspaceService.Domain.Constants;
+using WarpTalk.WorkspaceService.Domain.Entities;
 
 namespace WarpTalk.WorkspaceService.Application.Helpers;
 
@@ -122,6 +123,42 @@ public static class WorkspaceDocumentHelper
         var normalizedExtension = NormalizeExtension(fileExtension);
         return $"documents/{workspaceId}/{documentId}-r{utcNow:yyyyMMddHHmmssfff}{normalizedExtension}";
     }
+
+    /// <summary>
+    /// WT-854 — the pending revision's object, addressed the way storage addresses any document
+    /// file (storage reads only the workspace id and the key), so it can be written, read and
+    /// deleted without touching the approved file the row's own StorageKey points at.
+    /// </summary>
+    public static WorkspaceDocument PendingRevisionFile(WorkspaceDocument document) => new()
+    {
+        Id = document.Id,
+        WorkspaceId = document.WorkspaceId,
+        StorageKey = document.PendingStorageKey ?? string.Empty,
+        StorageProvider = document.PendingStorageProvider ?? document.StorageProvider,
+        Name = document.PendingName ?? document.Name,
+        FileName = document.PendingFileName ?? document.FileName,
+        FileExtension = document.PendingFileExtension ?? document.FileExtension,
+        MimeType = document.PendingMimeType ?? document.MimeType,
+    };
+
+    /// <summary>WT-854 — empty the pending revision slot. The object itself is the caller's to delete.</summary>
+    public static void ClearPendingRevision(WorkspaceDocument document)
+    {
+        document.PendingStorageKey = null;
+        document.PendingStorageProvider = null;
+        document.PendingName = null;
+        document.PendingFileName = null;
+        document.PendingFileExtension = null;
+        document.PendingMimeType = null;
+        document.PendingSizeBytes = null;
+        document.PendingContentHash = null;
+        document.PendingNote = null;
+        document.PendingUploadedBy = null;
+        document.PendingUploadedAt = null;
+    }
+
+    public static bool HasPendingRevision(WorkspaceDocument document) =>
+        !string.IsNullOrWhiteSpace(document.PendingStorageKey);
 
     public static string NormalizeExtension(string? fileExtension)
     {
