@@ -126,6 +126,93 @@ public class TranscriptConsumerPollingPolicyTests
     }
 
     [Fact]
+    public void TryResolveSpeaker_NamesTheBridgeStandInAsTheMeetSideRatherThanItsGuid()
+    {
+        var standIn = WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId;
+        var values = new Dictionary<string, string> { ["speaker_id"] = standIn.ToString() };
+
+        Assert.True(TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName));
+        // The id is kept: it is how the relabel job and the web recognise a far-side segment.
+        Assert.Equal(standIn, speakerId);
+        Assert.Equal("Google Meet participants", speakerName);
+        Assert.True(TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId));
+        Assert.False(TranscriptConsumerPollingPolicy.IsBridgeStandIn(Guid.NewGuid()));
+        Assert.False(TranscriptConsumerPollingPolicy.IsBridgeStandIn(null));
+    }
+
+    [Fact]
+    public void ResolveFarSpeaker_MapsTheLiveFieldsOnAStandInSegment()
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["far_speaker_name"] = "Alice Nguyen",
+            ["far_speaker_source"] = "meet_captions",
+            ["far_speaker_confidence"] = "0.85",
+        };
+
+        var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId);
+
+        Assert.Equal("Alice Nguyen", hint.Key);
+        Assert.Equal("meet_captions", hint.Source);
+        Assert.Equal(0.85f, hint.Confidence);
+    }
+
+    [Fact]
+    public void ResolveFarSpeaker_ParsesConfidenceInvariantly_WhateverTheThreadCulture()
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("vi-VN"); // decimal comma
+            var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(
+                new Dictionary<string, string> { ["far_speaker_confidence"] = "0.5" },
+                WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId);
+
+            Assert.Equal(0.5f, hint.Confidence);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("high")]
+    [InlineData("1.5")]
+    [InlineData("-0.1")]
+    [InlineData("NaN")]
+    public void ResolveFarSpeaker_MissingOrUnusableConfidence_IsNull(string? raw)
+    {
+        var values = new Dictionary<string, string> { ["far_speaker_name"] = "Bob" };
+        if (raw is not null) values["far_speaker_confidence"] = raw;
+
+        var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId);
+
+        Assert.Equal("Bob", hint.Key);
+        Assert.Null(hint.Source);
+        Assert.Null(hint.Confidence);
+    }
+
+    [Fact]
+    public void ResolveFarSpeaker_IgnoresTheFieldsOnARealParticipant()
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["far_speaker_name"] = "Alice",
+            ["far_speaker_source"] = "meet_captions",
+            ["far_speaker_confidence"] = "0.9",
+        };
+
+        var hint = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, Guid.NewGuid());
+
+        Assert.Null(hint.Key);
+        Assert.Null(hint.Source);
+        Assert.Null(hint.Confidence);
+    }
+
+    [Fact]
     public void ResolveConfidence_StoresNullWhenTheMessageCarriesNoConfidenceAtAll()
     {
         // WT-277: this used to fall back to 1.0f, so a segment whose confidence was never reported

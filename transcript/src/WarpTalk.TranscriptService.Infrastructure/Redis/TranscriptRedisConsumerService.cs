@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranscriptService.Application.FarSpeakers;
 using WarpTalk.TranscriptService.Application.Services;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
@@ -48,6 +49,17 @@ public class TranscriptRedisConsumerService : BackgroundService
     /// </summary>
     private readonly Dictionary<Guid, (bool SaveTranscript, DateTime CachedAt)> _roomRetentionCache = new();
     private static readonly TimeSpan RoomRetentionCacheDuration = TimeSpan.FromHours(4);
+
+    /// <summary>
+    /// The live far-speaker name threshold (<see cref="FarSpeakerNameOptions"/>), read once from the
+    /// container. Resolved rather than injected so the constructor every test builds stays as is;
+    /// absent, it is <see cref="WarpTalk.Shared.FarSpeakerNames.DefaultMinConfidence"/>.
+    /// </summary>
+    private double FarSpeakerMinConfidence =>
+        _farSpeakerMinConfidence ??= (_serviceProvider.GetService<FarSpeakerNameOptions>()
+            ?? FarSpeakerNameOptions.Default).MinConfidence;
+
+    private double? _farSpeakerMinConfidence;
 
     public TranscriptRedisConsumerService(
         IConnectionMultiplexer redis,
@@ -297,6 +309,13 @@ public class TranscriptRedisConsumerService : BackgroundService
         var cleanFlags = cleanText is null
             ? null
             : TranscriptConsumerPollingPolicy.ParseFlags(values.GetValueOrDefault("clean_flags"));
+        // Bridge only: stt_worker's live guess at which Meet participant spoke a stand-in segment.
+        var farSpeaker = TranscriptConsumerPollingPolicy.ResolveFarSpeaker(values, speakerId);
+        // A stand-in line is saved under the live name when stt_worker is sure enough of it — the
+        // same rule, threshold and parse the Gateway uses for the live line (FarSpeakerNames), so
+        // a reload does not rename the speaker. The hint itself is stored as sent, below.
+        speakerName = TranscriptConsumerPollingPolicy.ResolveSavedSpeakerName(
+            speakerId, speakerName, farSpeaker, FarSpeakerMinConfidence);
 
         // stt_worker publishes early per-sentence segments as they're ready, then ONE trailing
         // empty marker (text="", is_final_chunk=true) once the whole audio chunk finishes — it
@@ -401,7 +420,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // instead of being set on the tracked `transcript` object below.
                 var sequenceOrder = await unitOfWork.AdvanceTranscriptForNewSegmentAsync(transcript.Id, endMs, cancellationToken);
 
-                if (speakerId.HasValue)
+                // The bridge stand-in has no user row; its name was settled by TryResolveSpeaker.
+                if (speakerId.HasValue && !TranscriptConsumerPollingPolicy.IsBridgeStandIn(speakerId))
                 {
                     try
                     {
@@ -427,7 +447,10 @@ public class TranscriptRedisConsumerService : BackgroundService
                     SequenceOrder = sequenceOrder,
                     IsFinal = isFinal,
                     CleanText = cleanText,
-                    CleanFlags = cleanFlags
+                    CleanFlags = cleanFlags,
+                    FarSpeakerKey = farSpeaker.Key,
+                    FarSpeakerSource = farSpeaker.Source,
+                    FarSpeakerConfidence = farSpeaker.Confidence
                 };
 
                 await unitOfWork.TranscriptSegments.AddAsync(segment, cancellationToken);

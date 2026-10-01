@@ -411,9 +411,11 @@ public class MeetingRoomService : IMeetingRoomService
     /// participant_identity. Breaking it here is deliberate and is exactly why it is fenced.
     ///
     /// BOTH gates are load-bearing, neither is belt-and-braces:
-    ///   host-only    otherwise anyone who can reach a room could add a ghost participant to
-    ///                someone else's meeting, and everything it "said" would be attributed to
-    ///                the far side of a call they are not on.
+    ///   capturer     otherwise anyone who can reach a room could add a ghost participant to
+    ///   only         someone else's meeting, and everything it "said" would be attributed to
+    ///                the far side of a call they are not on. The capturer is the one participant
+    ///                of the shared bridge room whose desktop publishes the far side; a legacy
+    ///                room without one falls back to its host (IsBridgeAudioOwner).
     ///   bridge-only  otherwise the host of an ordinary meeting could mint a second identity
     ///                into their own room, which no product surface would explain.
     ///
@@ -440,10 +442,13 @@ public class MeetingRoomService : IMeetingRoomService
                 "This meeting does not bridge an external call.", ErrorCodes.Forbidden);
         }
 
-        if (!string.Equals(room.HostId, callerUserId.ToString(), StringComparison.OrdinalIgnoreCase))
+        // The CAPTURER, not every participant: a bridge room is shared by every WarpTalk user in the
+        // Meet call, and only one desktop may publish as the stand-in or the far side is doubled.
+        // A room with no capturer (created before bridge claim) keeps the old rule: its host.
+        if (!ExternalBridgeConstants.IsBridgeAudioOwner(room.BridgeCapturerUserId, room.HostId, callerUserId.ToString()))
         {
             return Result.Failure<BridgeTokenResponse>(
-                "Only the host may connect this meeting to an external call.", ErrorCodes.Forbidden);
+                "Only the participant capturing the external call may connect it to this meeting.", ErrorCodes.Forbidden);
         }
 
         if (room.Status is "ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED")
@@ -486,7 +491,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         _logger.LogInformation(
-            "Issued a bridge token for room {RoomId} to host {UserId}", translationRoomId, callerUserId);
+            "Issued a bridge token for room {RoomId} to capturer {UserId}", translationRoomId, callerUserId);
 
         return Result.Success(new BridgeTokenResponse
         {

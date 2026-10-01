@@ -10,7 +10,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using StackExchange.Redis;
+using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranscriptService.Application.FarSpeakers;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Redis;
@@ -202,6 +204,74 @@ public class TranscriptTimelineAnchorWriteTests
             Arg.Any<Guid>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>());
     }
 
+    // ── Bridge stand-in: the live far-side name on the saved row ─────────────
+
+    private static readonly string StandIn = ExternalBridgeConstants.ParticipantUserId.ToString();
+
+    [Fact]
+    public async Task StandInSegment_WithAConfidentLiveName_IsSavedUnderIt_AndTheHintIsKept()
+    {
+        var fixture = new AnchorFixture();
+
+        Assert.True(await fixture.ProcessSttAsync(null, speakerId: StandIn, extra:
+        [
+            ("far_speaker_name", "Alice Nguyen"),
+            ("far_speaker_source", "meet_caption"),
+            ("far_speaker_confidence", "0.82"),
+        ]));
+
+        var segment = Assert.Single(fixture.AddedSegments);
+        Assert.Equal("Alice Nguyen", segment.SpeakerName);
+        Assert.Equal(ExternalBridgeConstants.ParticipantUserId, segment.SpeakerParticipantId);
+        Assert.Equal("Alice Nguyen", segment.FarSpeakerKey);
+        Assert.Equal("meet_caption", segment.FarSpeakerSource);
+        Assert.Equal(0.82f, segment.FarSpeakerConfidence);
+    }
+
+    [Fact]
+    public async Task StandInSegment_BelowTheThreshold_IsSavedAsGoogleMeetParticipants_AndTheHintIsKept()
+    {
+        var fixture = new AnchorFixture();
+
+        Assert.True(await fixture.ProcessSttAsync(null, speakerId: StandIn, extra:
+        [
+            ("far_speaker_name", "Alice Nguyen"),
+            ("far_speaker_source", "meet_caption"),
+            ("far_speaker_confidence", "0.4"),
+        ]));
+
+        var segment = Assert.Single(fixture.AddedSegments);
+        Assert.Equal("Google Meet participants", segment.SpeakerName);
+        Assert.Equal("Alice Nguyen", segment.FarSpeakerKey);
+        Assert.Equal(0.4f, segment.FarSpeakerConfidence);
+    }
+
+    [Fact]
+    public async Task StandInSegment_WithoutAHint_IsSavedAsGoogleMeetParticipants()
+    {
+        var fixture = new AnchorFixture();
+
+        Assert.True(await fixture.ProcessSttAsync(null, speakerId: StandIn));
+
+        var segment = Assert.Single(fixture.AddedSegments);
+        Assert.Equal("Google Meet participants", segment.SpeakerName);
+        Assert.Null(segment.FarSpeakerKey);
+    }
+
+    [Fact]
+    public async Task StandInSegment_UsesTheConfiguredThreshold()
+    {
+        var fixture = new AnchorFixture(new FarSpeakerNameOptions(0.3));
+
+        Assert.True(await fixture.ProcessSttAsync(null, speakerId: StandIn, extra:
+        [
+            ("far_speaker_name", "Alice Nguyen"),
+            ("far_speaker_confidence", "0.4"),
+        ]));
+
+        Assert.Equal("Alice Nguyen", Assert.Single(fixture.AddedSegments).SpeakerName);
+    }
+
     /// <summary>
     /// One room with one already-current transcript, wired so the consumer's real code path runs:
     /// the head-pointer lookup, the per-segment idempotency check and the atomic counter advance
@@ -211,7 +281,7 @@ public class TranscriptTimelineAnchorWriteTests
     {
         private readonly TranscriptRedisConsumerServiceHarness _harness;
 
-        public AnchorFixture()
+        public AnchorFixture(FarSpeakerNameOptions? names = null)
         {
             Transcript = new Transcript
             {
@@ -298,6 +368,7 @@ public class TranscriptTimelineAnchorWriteTests
                 _ => new FakeRoomClient(Transcript.WorkspaceId));
             services.AddScoped<UserService.UserServiceClient>(_ => new FakeUserClient());
             services.AddScoped<WorkspaceService.WorkspaceServiceClient>(_ => new FakeWorkspaceClient());
+            if (names is not null) services.AddSingleton(names);
 
             var redis = Substitute.For<IConnectionMultiplexer>();
             redis.GetDatabase(Arg.Any<int>(), Arg.Any<object?>()).Returns(Substitute.For<IDatabase>());
@@ -321,7 +392,11 @@ public class TranscriptTimelineAnchorWriteTests
 
         /// <param name="anchorMs">Null omits the field entirely — an older producer, or any
         /// message written before it existed.</param>
-        public Task<bool> ProcessSttAsync(string? anchorMs, Guid? segmentId = null)
+        public Task<bool> ProcessSttAsync(
+            string? anchorMs,
+            Guid? segmentId = null,
+            string speakerId = "system",
+            params (string Name, string Value)[] extra)
         {
             var fields = new List<(string Name, string Value)>
             {
@@ -329,7 +404,7 @@ public class TranscriptTimelineAnchorWriteTests
                 ("segment_id", (segmentId ?? Guid.NewGuid()).ToString()),
                 // "system" rather than a participant guid: TryResolveSpeaker short-circuits on it,
                 // so nothing here depends on a UserService round trip it does not care about.
-                ("speaker_id", "system"),
+                ("speaker_id", speakerId),
                 ("text", "một câu đã được nghe ra"),
                 ("language", "vi"),
                 ("start_ms", "0"),
@@ -341,6 +416,8 @@ public class TranscriptTimelineAnchorWriteTests
             {
                 fields.Add(("anchor_ms", anchorMs));
             }
+
+            fields.AddRange(extra);
 
             return _harness.ProcessSttMessageAsync(SttStream, Entry(fields));
         }
