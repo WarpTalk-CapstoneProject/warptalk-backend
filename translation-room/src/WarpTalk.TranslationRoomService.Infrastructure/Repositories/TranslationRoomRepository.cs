@@ -312,4 +312,54 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
                 ct);
         return changed > 0;
     }
+    public async Task<TranslationRoom?> GetOpenBridgeRoomByMeetCodeAsync(
+        Guid workspaceId,
+        string meetCode,
+        CancellationToken ct = default)
+    {
+        var closed = BridgeRoomConstants.ClosedStatuses;
+        return await _dbSet
+            .Where(room => room.WorkspaceId == workspaceId
+                && room.ExternalMeetingCode == meetCode
+                && room.TranslationRoomType == TranslationRoomTypes.ExternalBridge
+                && !closed.Contains(room.Status)
+                && room.DeletedAt == null)
+            .OrderByDescending(room => room.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public async Task<bool> TryAcquireBridgeCapturerAsync(
+        Guid roomId,
+        Guid userId,
+        DateTime now,
+        DateTime staleBefore,
+        CancellationToken ct = default)
+    {
+        var changed = await _dbSet
+            .Where(room => room.Id == roomId
+                && (room.BridgeCapturerUserId == null
+                    || room.BridgeCapturerUserId == userId
+                    || room.BridgeCapturerHeartbeatAt == null
+                    || room.BridgeCapturerHeartbeatAt < staleBefore))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(room => room.BridgeCapturerUserId, (Guid?)userId)
+                    .SetProperty(room => room.BridgeCapturerHeartbeatAt, (DateTime?)now),
+                ct);
+        return changed > 0;
+    }
+
+    public async Task<bool> TryRenewBridgeCapturerAsync(
+        Guid roomId,
+        Guid userId,
+        DateTime now,
+        CancellationToken ct = default)
+    {
+        var changed = await _dbSet
+            .Where(room => room.Id == roomId && room.BridgeCapturerUserId == userId)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(room => room.BridgeCapturerHeartbeatAt, (DateTime?)now),
+                ct);
+        return changed > 0;
+    }
 }

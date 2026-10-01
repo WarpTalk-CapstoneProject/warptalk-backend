@@ -672,8 +672,8 @@ public class TranslationRoomHub : Hub
     ///      persisted value (ParticipantLanguageProcessor), so the routes follow the pick rather
     ///      than a Redis-only change the mesh never reads.
     ///
-    /// Refused unless the caller is the host of a live EXTERNAL_BRIDGE room
-    /// (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>), and the language must
+    /// Refused unless the caller is the capturer of a live EXTERNAL_BRIDGE room — the host, for a
+    /// legacy room with no capturer — (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>), and the language must
     /// pass the workspace policy like any other pick. Both are checked before anything is written.
     /// </summary>
     public async Task SetExternalMeetingLanguage(Guid translationRoomId, string language)
@@ -686,9 +686,9 @@ public class TranslationRoomHub : Hub
         {
             _logger.LogWarning(
                 "TranslationRoomHub: refused SetExternalMeetingLanguage on room {RoomId} for user {UserId} — "
-                + "not the host of a live external-bridge room.",
+                + "not the capturer (or legacy host) of a live external-bridge room.",
                 translationRoomId, userId);
-            throw new HubException("Only the host of an external meeting can change what the other side speaks.");
+            throw new HubException("Only the participant capturing the external meeting can change what the other side speaks.");
         }
 
         await EnsureLanguageAllowedAsync(translationRoomId, language);
@@ -713,7 +713,7 @@ public class TranslationRoomHub : Hub
             translationRoomId, standInId, speakLanguage: normalized, listenLanguage: normalized);
 
         _logger.LogInformation(
-            "TranslationRoomHub: host {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
+            "TranslationRoomHub: capturer {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
             userId, normalized, translationRoomId);
     }
 
