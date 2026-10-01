@@ -162,6 +162,10 @@ builder.Services.AddGrpcClient<MeetConferenceService.MeetConferenceServiceClient
         "http://localhost:50058");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// Live far-side speaker names on stand-in segments (persistence consumer) and the relabel's
+// fallback for segments Google's transcript cannot attribute. Same key the Gateway reads.
+builder.Services.AddSingleton(WarpTalk.TranscriptService.Application.FarSpeakers.FarSpeakerNameOptions.From(
+    builder.Configuration.GetValue<double?>(WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey)));
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IBridgeRoomLookup,
     WarpTalk.TranscriptService.Application.FarSpeakers.BridgeRoomLookup>();
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IMeetTranscriptSource,

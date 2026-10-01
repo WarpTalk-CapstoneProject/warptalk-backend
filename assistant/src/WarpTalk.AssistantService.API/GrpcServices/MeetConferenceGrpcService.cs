@@ -24,7 +24,8 @@ public sealed class MeetConferenceGrpcService : MeetConferenceService.MeetConfer
     public override async Task<GetConferenceRecordsResponse> GetConferenceRecords(
         MeetConferenceLookupRequest request, ServerCallContext context)
     {
-        var result = await _meet.GetConferenceRecordsAsync(ParseUser(request.UserId), request.Meeting, context.CancellationToken);
+        var result = await _meet.GetConferenceRecordsAsync(
+            ParseUser(request.UserId), ParseWorkspace(request.WorkspaceId), request.Meeting, context.CancellationToken);
         var response = new GetConferenceRecordsResponse();
         if (!result.IsSuccess)
         {
@@ -45,7 +46,8 @@ public sealed class MeetConferenceGrpcService : MeetConferenceService.MeetConfer
     public override async Task<ListMeetParticipantsResponse> ListMeetParticipants(
         MeetConferenceLookupRequest request, ServerCallContext context)
     {
-        var result = await _meet.GetRosterAsync(ParseUser(request.UserId), request.Meeting, context.CancellationToken);
+        var result = await _meet.GetRosterAsync(
+            ParseUser(request.UserId), ParseWorkspace(request.WorkspaceId), request.Meeting, context.CancellationToken);
         var response = new ListMeetParticipantsResponse();
         if (!result.IsSuccess)
         {
@@ -72,7 +74,7 @@ public sealed class MeetConferenceGrpcService : MeetConferenceService.MeetConfer
         var windowStart = ParseTime(request.WindowStart, nameof(request.WindowStart));
         var windowEnd = ParseTime(request.WindowEnd, nameof(request.WindowEnd));
         var result = await _meet.GetTranscriptEntriesAsync(
-            ParseUser(request.UserId), request.Meeting, windowStart, windowEnd, context.CancellationToken);
+            ParseUser(request.UserId), ParseWorkspace(request.WorkspaceId), request.Meeting, windowStart, windowEnd, context.CancellationToken);
 
         var response = new GetMeetTranscriptEntriesResponse();
         if (!result.IsSuccess)
@@ -103,6 +105,18 @@ public sealed class MeetConferenceGrpcService : MeetConferenceService.MeetConfer
         Guid.TryParse(value, out var id) && id != Guid.Empty
             ? id
             : throw new RpcException(new Status(StatusCode.InvalidArgument, "user_id must be a GUID."));
+
+    /// <summary>
+    /// Empty is an older caller: passed on as null, which the plugin check refuses as
+    /// plugin_not_connected (in band). Present but not a GUID is a malformed request.
+    /// </summary>
+    public static Guid? ParseWorkspace(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return Guid.TryParse(value, out var id) && id != Guid.Empty
+            ? id
+            : throw new RpcException(new Status(StatusCode.InvalidArgument, "workspace_id must be a GUID."));
+    }
 
     private static DateTimeOffset ParseTime(string value, string field) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)

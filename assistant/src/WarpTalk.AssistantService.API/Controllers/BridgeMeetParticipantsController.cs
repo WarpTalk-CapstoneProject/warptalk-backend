@@ -29,8 +29,12 @@ public class BridgeMeetParticipantsController : ControllerBase
     /// host's far-side labelling. Host and the room's participants only.
     /// </summary>
     /// <response code="409">
-    /// <c>meet_scope_missing</c> — the host has not granted Google Meet conference access
-    /// (<c>connection_required</c> when the host has no Google connection at all).
+    /// <c>errorCode</c>, checked in this order:
+    /// <c>plugin_not_connected</c> — the host has not installed and connected the Google Meet
+    /// plugin, or it is not available to them in the room's workspace;
+    /// <c>connection_required</c> — the plugin is connected but the host's Google grant is gone;
+    /// <c>meet_scope_missing</c> — the grant lacks Google Meet conference access.
+    /// Also <c>not_a_bridge_room</c>, <c>meet_permission_denied</c>, <c>invalid_meeting</c>.
     /// </response>
     [HttpGet("meet-participants")]
     [ProducesResponseType(typeof(IReadOnlyList<MeetParticipantResponse>), StatusCodes.Status200OK)]
@@ -53,6 +57,7 @@ public class BridgeMeetParticipantsController : ControllerBase
             BridgeMeetRosterService.ErrorCodes.RoomNotFound => NotFound(body),
             BridgeMeetRosterService.ErrorCodes.Forbidden => StatusCode(StatusCodes.Status403Forbidden, body),
             BridgeMeetRosterService.ErrorCodes.NotABridgeRoom => Conflict(body),
+            MeetConferenceErrorCodes.PluginNotConnected => Conflict(body),
             MeetConferenceErrorCodes.MeetScopeMissing => Conflict(body),
             MeetConferenceErrorCodes.ConnectionRequired => Conflict(body),
             MeetConferenceErrorCodes.PermissionDenied => Conflict(body),

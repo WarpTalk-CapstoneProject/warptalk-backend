@@ -39,7 +39,8 @@ public sealed class BridgeRoomLookup : IBridgeRoomLookup
                 ParseGuid(room.HostId),
                 room.Status ?? string.Empty,
                 ParseTime(room.StartedAt),
-                ParseTime(room.EndedAt)));
+                ParseTime(room.EndedAt),
+                ParseGuid(room.WorkspaceId)));
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {

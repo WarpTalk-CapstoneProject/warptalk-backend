@@ -14,5 +14,7 @@ public sealed record MeetConferenceRecordsLookup(string? ErrorCode, IReadOnlyLis
 /// </summary>
 public interface IMeetConferenceRecordsClient
 {
-    Task<MeetConferenceRecordsLookup> GetRecordsAsync(Guid userId, string meetingUrl, CancellationToken ct = default);
+    /// <param name="workspaceId">The room's workspace: the user must have the google_meet plugin
+    /// connected and usable there, or the answer is <c>plugin_not_connected</c>.</param>
+    Task<MeetConferenceRecordsLookup> GetRecordsAsync(Guid userId, Guid workspaceId, string meetingUrl, CancellationToken ct = default);
 }

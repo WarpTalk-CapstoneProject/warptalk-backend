@@ -16,13 +16,21 @@ namespace WarpTalk.TranscriptService.Application.FarSpeakers;
 ///
 /// Only segments whose speaker is the bridge stand-in are ever touched — a real WarpTalk
 /// participant's segment is attributed by identity already — and of those, never one a host has
-/// labelled (<see cref="FarSpeakerSources.Host"/>). A segment the alignment cannot attribute with
-/// enough overlap keeps the name it has.
+/// labelled (<see cref="FarSpeakerSources.Host"/>).
+///
+/// <para>
+/// Google's attribution wins over the live one. A segment the alignment cannot attribute with
+/// enough overlap is NOT left with whatever name it happens to carry: its name is re-derived from
+/// its own stored live hint by the rule the live line used (<see cref="FarSpeakerNames.ResolveLive"/>
+/// under the current threshold) — the live name when one exists and was confident enough,
+/// "Google Meet participants" otherwise. The name a segment ends with is always backed by stored
+/// evidence (Google's transcript, the host, or the live hint), never by a leftover.
+/// </para>
 /// </summary>
 public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
 {
     /// <summary>Matches transcript_segments.speaker_name's varchar(100).</summary>
-    internal const int SpeakerNameMaxLength = 100;
+    internal const int SpeakerNameMaxLength = FarSpeakerNames.MaxLength;
 
     /// <summary>Slack around the segments' own span when choosing which conference records to read.</summary>
     internal static readonly TimeSpan WindowSlack = TimeSpan.FromMinutes(10);
@@ -34,6 +42,7 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
     private readonly IBridgeRoomLookup _rooms;
     private readonly IMeetTranscriptSource _meet;
     private readonly TimeProvider _time;
+    private readonly FarSpeakerNameOptions _names;
     private readonly ILogger<FarSpeakerRelabelService> _logger;
 
     public FarSpeakerRelabelService(
@@ -41,13 +50,15 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
         IBridgeRoomLookup rooms,
         IMeetTranscriptSource meet,
         ILogger<FarSpeakerRelabelService> logger,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        FarSpeakerNameOptions? names = null)
     {
         _store = store;
         _rooms = rooms;
         _meet = meet;
         _logger = logger;
         _time = time ?? TimeProvider.System;
+        _names = names ?? FarSpeakerNameOptions.Default;
     }
 
     public async Task<int> DiscoverAsync(CancellationToken ct = default)
@@ -158,7 +169,7 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
         var windowStart = anchor.AddMilliseconds(transcript.Segments.Min(s => s.StartTimeMs)) - WindowSlack;
         var windowEnd = anchor.AddMilliseconds(transcript.Segments.Max(s => s.EndTimeMs)) + WindowSlack;
 
-        var fetch = await _meet.GetEntriesAsync(host.Value, room.ExternalMeetingUrl!, windowStart, windowEnd, ct);
+        var fetch = await _meet.GetEntriesAsync(host.Value, room.WorkspaceId, room.ExternalMeetingUrl!, windowStart, windowEnd, ct);
         if (!string.IsNullOrEmpty(fetch.ErrorCode))
         {
             if (fetch.ErrorCode == MeetConferenceErrorCodes.InvalidMeeting)
@@ -167,8 +178,9 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
                 return;
             }
 
-            // meet_scope_missing / connection_required: the host may still grant it — the entries
-            // stay readable for 30 days. Anything else is transient.
+            // plugin_not_connected / meet_scope_missing / connection_required: the host may still
+            // connect the google_meet plugin or grant the scope, and the entries stay readable for
+            // 30 days — Retry backs off and gives up at that horizon. Anything else is transient.
             Retry(job, now, fetch.ErrorCode);
             return;
         }
@@ -199,7 +211,7 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
             return;
         }
 
-        var relabeled = Apply(transcript.Segments, fetch.Entries, anchorMs, now);
+        var relabeled = Apply(transcript.Segments, fetch.Entries, anchorMs, now, _names.MinConfidence);
         _logger.LogInformation(
             "Far-speaker relabel for room {RoomId}: {Relabeled} of {Total} stand-in segments named from {Entries} Meet transcript entries",
             job.TranslationRoomId, relabeled, transcript.Segments.Count, fetch.Entries.Count);
@@ -209,11 +221,13 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
     /// <summary>
     /// Aligns and writes. Returns how many segments changed. Internal for the tests.
     /// </summary>
+    /// <param name="minConfidence">The live-name threshold, for the segments the alignment leaves alone.</param>
     internal static int Apply(
         IReadOnlyList<TranscriptSegment> segments,
         IReadOnlyList<MeetTranscriptLine> entries,
         long anchorMs,
-        DateTime now)
+        DateTime now,
+        double minConfidence = FarSpeakerNames.DefaultMinConfidence)
     {
         var eligible = segments
             .Where(s => s.SpeakerParticipantId == ExternalBridgeConstants.ParticipantUserId)
@@ -226,13 +240,19 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
             entries);
 
         var byId = eligible.ToDictionary(s => s.Id);
+        var assigned = new HashSet<Guid>();
         var changed = 0;
         foreach (var assignment in alignment.Assignments)
         {
             if (!byId.TryGetValue(assignment.SegmentId, out var segment)) continue;
+            assigned.Add(segment.Id);
 
+            // A participant Google could not name (gone before the roster was read, a phone line)
+            // is still one specific participant — and not necessarily the one the live hint named.
+            // Its key replaces the hint below, so keeping the live name would pair one person's
+            // name with another's key. The fallback is the honest name for "someone over there".
             var name = string.IsNullOrWhiteSpace(assignment.DisplayName)
-                ? segment.SpeakerName
+                ? FarSpeakerNames.Fallback
                 : Truncate(assignment.DisplayName.Trim(), SpeakerNameMaxLength);
 
             if (segment.SpeakerName == name
@@ -247,6 +267,23 @@ public sealed class FarSpeakerRelabelService : IFarSpeakerRelabelService
             segment.FarSpeakerKey = assignment.ParticipantKey;
             segment.FarSpeakerSource = FarSpeakerSources.GoogleTranscript;
             segment.FarSpeakerConfidence = assignment.Confidence;
+            segment.UpdatedAt = now;
+            changed++;
+        }
+
+        // Under the overlap floor: Google's transcript says nothing usable about these. Their name
+        // is re-derived from their own stored live hint rather than kept as found, so the job
+        // finishing never locks in a name the hint (under the current threshold) does not back.
+        // An earlier relabel's attribution is relabel output, and stays.
+        foreach (var segment in eligible)
+        {
+            if (assigned.Contains(segment.Id)) continue;
+            if (segment.FarSpeakerSource == FarSpeakerSources.GoogleTranscript) continue;
+
+            var name = FarSpeakerNames.ResolveLive(segment.FarSpeakerKey, segment.FarSpeakerConfidence, minConfidence);
+            if (segment.SpeakerName == name) continue;
+
+            segment.SpeakerName = name;
             segment.UpdatedAt = now;
             changed++;
         }

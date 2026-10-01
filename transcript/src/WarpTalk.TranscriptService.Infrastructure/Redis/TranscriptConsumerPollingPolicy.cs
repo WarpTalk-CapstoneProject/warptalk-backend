@@ -122,8 +122,9 @@ public static class TranscriptConsumerPollingPolicy
             speakerId = participantId;
             // The EXTERNAL_BRIDGE stand-in is one mixed stream of everybody on the Google Meet
             // side, not a person: it has no user row to look a name up in, and its GUID is not a
-            // name anybody should read. The post-meeting relabel may replace this per segment with
-            // the Meet participant Google's own transcript attributes the words to.
+            // name anybody should read. ResolveSavedSpeakerName may replace this with a confident
+            // live far-side name, and the post-meeting relabel per segment with the Meet
+            // participant Google's own transcript attributes the words to.
             speakerName = IsBridgeStandIn(participantId)
                 ? MeetConferenceErrorCodes.MeetSideFallbackSpeakerName
                 : participantId.ToString();
@@ -164,20 +165,27 @@ public static class TranscriptConsumerPollingPolicy
             return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
         }
 
-        float? confidence = null;
-        if (Field(values, "far_speaker_confidence") is { } rawConfidence
-            && float.TryParse(rawConfidence, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
-            && float.IsFinite(parsed)
-            && parsed is >= 0f and <= 1f)
-        {
-            confidence = parsed;
-        }
-
         return new FarSpeakerHint(
             Field(values, "far_speaker_name"),
             Field(values, "far_speaker_source"),
-            confidence);
+            FarSpeakerNames.ParseConfidence(values.GetValueOrDefault("far_speaker_confidence")));
     }
+
+    /// <summary>
+    /// The speaker name a segment is saved with, once its live far-side hint is known. A real
+    /// participant (or "System") keeps <paramref name="resolvedName"/> untouched. A stand-in segment
+    /// is named by <see cref="FarSpeakerNames.ResolveLive"/> — the live name when the producer is at
+    /// least <paramref name="minConfidence"/> sure of it, "Google Meet participants" otherwise — the
+    /// same rule the Gateway applies to the live line, so the two copies agree.
+    /// </summary>
+    public static string ResolveSavedSpeakerName(
+        Guid? speakerId,
+        string resolvedName,
+        FarSpeakerHint hint,
+        double minConfidence) =>
+        IsBridgeStandIn(speakerId)
+            ? FarSpeakerNames.ResolveLive(hint.Key, hint.Confidence, minConfidence)
+            : resolvedName;
 
     /// <summary>
     /// The Redis field carrying the STT model's own confidence for a transcribed segment.

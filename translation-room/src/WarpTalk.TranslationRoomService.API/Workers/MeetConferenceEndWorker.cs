@@ -17,9 +17,12 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 /// <c>EndTranslationRoomAsync(room.Id, room.HostId)</c>, the same path IdleRoomMonitoringWorker uses,
 /// under the same <see cref="RoomEndingSweepLock"/>.
 ///
-/// A host who has not granted meetings.space.readonly (or has no Google connection) is not an
-/// error: the room is skipped — logged once per room per reason — and the existing reapers
-/// (idle, abandoned) stay in charge of it. Any failure to read Google is "unknown", never "ended".
+/// A host who has not connected the google_meet plugin in the room's workspace
+/// (<c>plugin_not_connected</c>), has not granted meetings.space.readonly, or has no Google
+/// connection is not an error: the room is skipped — logged once per room per reason — and the
+/// existing reapers (idle, abandoned) stay in charge of it. It is asked again every tick, so a host
+/// who connects the plugin mid-meeting is picked up. Any failure to read Google is "unknown",
+/// never "ended".
 /// </summary>
 public class MeetConferenceEndWorker : BackgroundService
 {
@@ -100,7 +103,7 @@ public class MeetConferenceEndWorker : BackgroundService
             ct.ThrowIfCancellationRequested();
             seen.Add(room.Id);
 
-            var lookup = await meet.GetRecordsAsync(room.EffectiveHostId, room.ExternalMeetingUrl!, ct);
+            var lookup = await meet.GetRecordsAsync(room.EffectiveHostId, room.WorkspaceId, room.ExternalMeetingUrl!, ct);
             if (!lookup.IsSuccess)
             {
                 if (lookup.ErrorCode is MeetConferenceErrorCodes.ProviderUnavailable or MeetConferenceErrorCodes.ProviderRateLimited)

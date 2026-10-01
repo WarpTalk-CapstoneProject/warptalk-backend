@@ -21,12 +21,17 @@ public sealed class MeetConferenceRecordsGrpcClient : IMeetConferenceRecordsClie
         _logger = logger;
     }
 
-    public async Task<MeetConferenceRecordsLookup> GetRecordsAsync(Guid userId, string meetingUrl, CancellationToken ct = default)
+    public async Task<MeetConferenceRecordsLookup> GetRecordsAsync(Guid userId, Guid workspaceId, string meetingUrl, CancellationToken ct = default)
     {
         try
         {
             var response = await _client.GetConferenceRecordsAsync(
-                new MeetConferenceLookupRequest { UserId = userId.ToString(), Meeting = meetingUrl },
+                new MeetConferenceLookupRequest
+                {
+                    UserId = userId.ToString(),
+                    Meeting = meetingUrl,
+                    WorkspaceId = workspaceId.ToString(),
+                },
                 cancellationToken: ct);
             if (!string.IsNullOrEmpty(response.ErrorCode))
                 return new MeetConferenceRecordsLookup(response.ErrorCode, Array.Empty<MeetConferenceRecordInfo>());
