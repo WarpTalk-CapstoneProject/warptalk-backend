@@ -78,6 +78,8 @@ public class WorkspaceOverageToggleTests
 
         _subs.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(sub);
+        _subs.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(sub);
         _plans.Setup(r => r.GetByIdAsync(PlanId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Plan { Id = PlanId, OverageCapCredits = planCap });
         return sub;
@@ -211,6 +213,8 @@ public class WorkspaceOverageToggleTests
     public async Task BothPaths_FailCleanly_WhenTheWorkspaceHasNoSubscription()
     {
         _subs.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
+        _subs.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Subscription?)null);
 
         (await _sut.GetOverageSettingAsync(WorkspaceId)).IsSuccess.Should().BeFalse();

@@ -52,8 +52,8 @@ public sealed class CustomerCatalogService : ICustomerCatalogService
     private async Task<WorkspaceState> LoadWorkspaceAsync(Guid workspaceId, CancellationToken ct)
     {
         // The same lookup the top-up grant uses: credits land on this row.
-        var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null, ct);
+        var subscription = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: false, cancellationToken: ct);
         var plan = subscription is null ? null : await _unitOfWork.Plans.GetByIdAsync(subscription.PlanId, ct);
         var currency = PackageCatalogConstants.Currencies.Normalize(plan?.Currency) ?? PackageCatalogConstants.Currencies.Vnd;
         return new WorkspaceState(workspaceId, subscription, plan, subscription?.GrantsPlanEntitlements(Now) == true, currency);

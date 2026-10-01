@@ -69,6 +69,12 @@ public sealed partial class SubscriptionPaymentEventHandler : IPaymentEventHandl
             return Result.Success();
         }
 
+        var refusal = await RefuseActivationAsync(context, plan, cancellationToken);
+        if (refusal is not null)
+        {
+            return refusal;
+        }
+
         var subscription = await ActivateSubscriptionAsync(context, plan, cancellationToken);
         LinkCheckoutToStripe(context, subscription);
         var topupTx = CreditMapper.CreateStripeSubscriptionTransaction(
@@ -94,6 +100,94 @@ public sealed partial class SubscriptionPaymentEventHandler : IPaymentEventHandl
         context.SubscriptionChanged = true;
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// WT-878 — DEFENCE IN DEPTH behind the checkout allowlist. A paid checkout event activates a
+    /// plan only if the plan is still on sale and the money matches what the server charges for
+    /// it. The checkout now prices every plan itself, but a session minted before that fix (or by
+    /// any future path that forgets to) carried the client's Amount next to a server-trusted
+    /// PlanSlug — and this handler granted the plan, its period and its CreditsPerCycle on the
+    /// slug alone. Refused like a missing plan: logged, nothing granted, the failure surfaced.
+    ///
+    /// Returns null when activation may proceed.
+    /// </summary>
+    private const string ActivationAmountMismatch =
+        "The amount paid does not match the plan's price, so the plan was not activated.";
+
+    private async Task<Result?> RefuseActivationAsync(
+        PaymentEventContext context,
+        Plan plan,
+        CancellationToken cancellationToken)
+    {
+        var request = context.Request;
+
+        if (!plan.IsActive)
+        {
+            _logger.LogError(
+                "subscription_activation_refused_plan_inactive: WorkspaceId={WorkspaceId} Plan={PlanSlug} PaymentType={PaymentType} Session={SessionId}",
+                context.WorkspaceId, plan.Slug, request.PaymentType, request.StripeSessionId);
+            return Result.Failure(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanInactive);
+        }
+
+        var price = PlanPricing.PeriodTotal(plan, request.BillingCycle);
+        var planCurrency = PlanPricing.StripeCurrency(plan);
+
+        // WT-878: the checkout stamped the price it quoted on the session (server-written metadata,
+        // read back off Stripe, so not a client input). That quote is the contract: an admin who
+        // reprices the plan while the buyer is on the Stripe page must not leave them charged with
+        // no plan. Sessions created before the stamp fall back to the plan's current price.
+        var quotedCurrency = (request.ExpectedCurrency ?? string.Empty).Trim().ToLowerInvariant();
+        if (request.ExpectedAmount > 0 && quotedCurrency.Length > 0)
+        {
+            if (request.ExpectedAmount != price || !string.Equals(quotedCurrency, planCurrency, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "subscription_activation_quoted_price_differs: WorkspaceId={WorkspaceId} Plan={PlanSlug} Cycle={BillingCycle} "
+                    + "Quoted={Quoted} {QuotedCurrency} Current={Current} {PlanCurrency} Session={SessionId}",
+                    context.WorkspaceId, plan.Slug, request.BillingCycle,
+                    request.ExpectedAmount, quotedCurrency, price, planCurrency, request.StripeSessionId);
+            }
+
+            price = request.ExpectedAmount;
+            planCurrency = quotedCurrency;
+        }
+        var paidCurrency = (request.Currency ?? string.Empty).Trim().ToLowerInvariant();
+
+        // A coupon the checkout applied legitimately lowers what was paid: the expected amount is
+        // the plan's price less that coupon's discount, computed the way the checkout did.
+        var expected = price;
+        if (!string.IsNullOrWhiteSpace(request.CouponId))
+        {
+            var coupon = Guid.TryParse(request.CouponId, out var couponId)
+                ? await _unitOfWork.Coupons.GetByIdAsync(couponId, cancellationToken)
+                : null;
+            if (coupon is null)
+            {
+                _logger.LogError(
+                    "subscription_activation_refused_unknown_coupon: WorkspaceId={WorkspaceId} Plan={PlanSlug} CouponId={CouponId} Session={SessionId}",
+                    context.WorkspaceId, plan.Slug, request.CouponId, request.StripeSessionId);
+                return Result.Failure(ActivationAmountMismatch, ErrorCodes.BillingInvalidAmount);
+            }
+
+            expected = price - PackageCatalogRules.Discount(coupon, price, planCurrency);
+        }
+
+        // Stripe charges whole units in a zero-decimal currency and cents otherwise, so a yearly
+        // total such as price × 12 × 0.79 arrives rounded.
+        var tolerance = PackageCatalogConstants.Currencies.IsZeroDecimal(planCurrency) ? 1m : 0.01m;
+        if (!string.Equals(paidCurrency, planCurrency, StringComparison.Ordinal)
+            || request.Amount + tolerance < expected)
+        {
+            _logger.LogError(
+                "subscription_activation_refused_underpaid: WorkspaceId={WorkspaceId} Plan={PlanSlug} Cycle={BillingCycle} "
+                + "Paid={Paid} {PaidCurrency} Expected={Expected} {PlanCurrency} PaymentType={PaymentType} Session={SessionId}",
+                context.WorkspaceId, plan.Slug, request.BillingCycle,
+                request.Amount, paidCurrency, expected, planCurrency, request.PaymentType, request.StripeSessionId);
+            return Result.Failure(ActivationAmountMismatch, ErrorCodes.BillingInvalidAmount);
+        }
+
+        return null;
     }
 
     private async Task<Subscription> ActivateSubscriptionAsync(

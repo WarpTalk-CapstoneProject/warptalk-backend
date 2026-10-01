@@ -10,10 +10,20 @@ public interface ISubscriptionService
 {
     Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken = default);
     Task<Result<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptionsAsync(PaginationQuery query, CancellationToken cancellationToken = default);
-    Task<Result<SubscriptionDto>> CreateWorkspaceContractSubscriptionAsync(CreateWorkspaceContractSubscriptionRequest request, CancellationToken cancellationToken = default);
+    /// <param name="replaceLiveReason">
+    /// WT-878: null (the default) refuses when the workspace already has a live subscription. Set,
+    /// the live row is retired in the same commit as the contract row is created (its Stripe
+    /// renewal stopped first), with this as its cancellation reason. Used by the sales-lead conversion.
+    /// </param>
+    Task<Result<SubscriptionDto>> CreateWorkspaceContractSubscriptionAsync(CreateWorkspaceContractSubscriptionRequest request, CancellationToken cancellationToken = default, string? replaceLiveReason = null);
     Task<Result<SubscriptionDto>> CreateTrialSubscriptionAsync(TrialSubscriptionRequest request, CancellationToken cancellationToken = default);
     Task<Result<bool>> CancelSubscriptionAsync(Guid workspaceId, string? reason, CancellationToken cancellationToken = default);
-    Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(Guid workspaceId, ResumeSubscriptionRequest request, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Lift a ServiceState suspension. WT-878: reason-scoped — a workspace Owner/Admin may lift only
+    /// <c>overage_cap</c>, and only when there is room under the cap again. <paramref name="liftAnyReason"/>
+    /// is set only for platform staff with billing.subscriptions_manage, who may lift any reason.
+    /// </summary>
+    Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(Guid workspaceId, ResumeSubscriptionRequest request, bool liftAnyReason = false, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// WT-471: switch renewal back on for a cancelled-but-unexpired subscription. Distinct from

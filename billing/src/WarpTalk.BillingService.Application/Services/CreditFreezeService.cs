@@ -135,11 +135,16 @@ public sealed class CreditFreezeService : ICreditFreezeService
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditFreezeService> _logger;
+    private readonly ISuspensionLiftService? _suspensionLift;
 
-    public CreditFreezeService(IUnitOfWork unitOfWork, ILogger<CreditFreezeService> logger)
+    public CreditFreezeService(
+        IUnitOfWork unitOfWork,
+        ILogger<CreditFreezeService> logger,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _suspensionLift = suspensionLift;
     }
 
     /// <summary>The policy in the class summary, as a pure function.</summary>
@@ -266,15 +271,21 @@ public sealed class CreditFreezeService : ICreditFreezeService
     /// Credits bought or granted through this subscription, net of what already expired: credit
     /// packs (minus their expiries), credit top-ups, frozen credits released into it, and manual
     /// admin adjustments. Clamped at zero by <see cref="Split"/>.
+    ///
+    /// WT-878: shared with the cycle renewal (CycleRenewalCredits), so a renewal and an expiry agree
+    /// on which part of a balance was bought.
     /// </summary>
-    private async Task<long> PurchasedCreditsAsync(Guid subscriptionId, CancellationToken ct)
+    public static async Task<long> PurchasedCreditsAsync(IUnitOfWork unitOfWork, Guid subscriptionId, CancellationToken ct)
     {
-        var rows = await _unitOfWork.CreditTransactionRepository.FindAsync(
+        var rows = await unitOfWork.CreditTransactionRepository.FindAsync(
             t => t.SubscriptionId == subscriptionId && t.Type != TransactionConstants.TransactionTypes.Consume,
             ct);
 
-        return rows.Where(IsPurchasedOrGranted).Sum(t => (long)t.Amount);
+        return rows is null ? 0L : rows.Where(IsPurchasedOrGranted).Sum(t => (long)t.Amount);
     }
+
+    private Task<long> PurchasedCreditsAsync(Guid subscriptionId, CancellationToken ct) =>
+        PurchasedCreditsAsync(_unitOfWork, subscriptionId, ct);
 
     private static bool IsPurchasedOrGranted(CreditTransaction t) =>
         t.ReferenceType == PackageCatalogConstants.ReferenceTypes.CreditPackPurchase
@@ -298,18 +309,28 @@ public sealed class CreditFreezeService : ICreditFreezeService
         foreach (var workspaceId in frozen.Select(s => s.WorkspaceId).Distinct().Take(BatchSize))
         {
             ct.ThrowIfCancellationRequested();
-            var target = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                ct);
+            var target = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: ct);
             if (target is null)
             {
                 continue;
             }
 
+            var wasSuspended = target.ServiceState == SubscriptionConstants.ServiceStates.Suspended;
             if (await StageReleaseIntoAsync(target, nowUtc, ct) > 0)
             {
                 await _unitOfWork.SaveChangesAsync(ct);
                 released++;
+
+                // WT-878: a release that lifted an overage_cap suspension must reach the AI key the
+                // billing_worker reads, or the workspace's rooms stay stopped until the next charge.
+                // After the commit, exactly as CompPeriodAsync / InvoiceService push a lift.
+                var lifted = wasSuspended && target.ServiceState != SubscriptionConstants.ServiceStates.Suspended;
+                if (lifted && _suspensionLift is not null)
+                {
+                    await _suspensionLift.PushServiceStateAsync(target, ct);
+                    await _suspensionLift.PublishCreditsUpdatedAsync(target, resumed: true, ct);
+                }
             }
         }
 
@@ -363,15 +384,11 @@ public sealed class CreditFreezeService : ICreditFreezeService
 
         if (total > 0)
         {
-            // The same rule CompPeriodAsync applies: credits that bring the balance back above zero
-            // lift an overage suspension, and nothing else.
-            if (target.CreditsRemaining > 0
-                && target.ServiceState == SubscriptionConstants.ServiceStates.Suspended
-                && target.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap)
-            {
-                target.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
-                target.SuspendedReason = null;
-            }
+            // WT-878: the shared credit-grant rule (SuspensionLiftService.ApplyCreditGrant): released
+            // credits pay off this cycle's overage first, and a balance back above zero lifts an
+            // overage_cap suspension, and nothing else. Static and pure, so it runs on an ADDED
+            // (unsaved) target too; it only stages fields.
+            SuspensionLiftService.ApplyCreditGrant(target, nowUtc);
 
             // No Update(target): the caller's target is already tracked — loaded by this unit of
             // work, or a subscription the payment path has just ADDED and not saved. Marking an added

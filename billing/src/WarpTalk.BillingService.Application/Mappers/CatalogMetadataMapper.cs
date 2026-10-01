@@ -29,6 +29,10 @@ public static class CatalogMetadataMapper
             ListPrice = decimal.TryParse(metadata.GetValueOrDefault(PackageCatalogConstants.StripeMetadata.ListPrice), NumberStyles.Number, CultureInfo.InvariantCulture, out var listPrice)
                 ? listPrice
                 : request.ListPrice,
+            ExpectedAmount = decimal.TryParse(metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.ExpectedAmount), NumberStyles.Number, CultureInfo.InvariantCulture, out var expectedAmount)
+                ? expectedAmount
+                : request.ExpectedAmount,
+            ExpectedCurrency = metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.ExpectedCurrency, request.ExpectedCurrency),
         };
     }
 

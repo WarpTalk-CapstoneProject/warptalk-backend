@@ -231,11 +231,13 @@ public class SalesInquiryService : ISalesInquiryService
             }
             else
             {
-                // Deactivate the trial (or old) subscription immediately and start a new contract subscription
-                await _subscriptionService.CancelSubscriptionAsync(request.WorkspaceId, SalesInquiryConstants.Messages.ConvertedToNewContract, cancellationToken);
+                // WT-878: retire the trial (or old) subscription and start the contract in ONE commit.
+                // This used to cancel first and create second, but a cancel keeps a paid row live
+                // until its period ends, so the create always failed with "already active".
                 subscriptionResult = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(
                     request.ToContractSubscriptionRequest(plan.Id, terms),
-                    cancellationToken);
+                    cancellationToken,
+                    replaceLiveReason: SalesInquiryConstants.Messages.ConvertedToNewContract);
             }
         }
         else
