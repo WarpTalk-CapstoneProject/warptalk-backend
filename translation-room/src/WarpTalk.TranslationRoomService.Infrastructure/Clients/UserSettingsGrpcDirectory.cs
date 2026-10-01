@@ -70,4 +70,30 @@ public sealed class UserSettingsGrpcDirectory : IUserSettingsDirectory
             return null;
         }
     }
+
+    public async Task<string?> GetDisplayNameByEmailAsync(
+        string email,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+            return null;
+
+        try
+        {
+            var response = await _client.GetUserByEmailAsync(
+                // Invitations store the address as typed; Auth matches case-insensitively, and
+                // trimming removes the one difference a pasted address reliably introduces.
+                new GetUserByEmailRequest { Email = email.Trim() },
+                cancellationToken: ct);
+
+            return string.IsNullOrWhiteSpace(response.FullName) ? null : response.FullName;
+        }
+        catch (RpcException)
+        {
+            // GetUserByEmail THROWS NotFound for an address with no account (see
+            // TranslationRoomService.NotifyInvitedUserAsync). An invitee without an account simply
+            // has no name to offer.
+            return null;
+        }
+    }
 }
