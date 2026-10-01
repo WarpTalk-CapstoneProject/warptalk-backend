@@ -675,9 +675,10 @@ public class TranslationRoomHub : Hub
     ///      persisted value (ParticipantLanguageProcessor), so the routes follow the pick rather
     ///      than a Redis-only change the mesh never reads.
     ///
-    /// Refused unless the caller is the capturer of a live EXTERNAL_BRIDGE room — the host, for a
-    /// legacy room with no capturer — (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>), and the language must
-    /// pass the workspace policy like any other pick. Both are checked before anything is written.
+    /// Refused unless the caller is the host or the current capturer of a live EXTERNAL_BRIDGE
+    /// room (PO 2026-10-01, <see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>),
+    /// and the language must pass the workspace policy like any other pick. Both are checked
+    /// before anything is written.
     /// </summary>
     public async Task SetExternalMeetingLanguage(Guid translationRoomId, string language)
     {
@@ -689,9 +690,9 @@ public class TranslationRoomHub : Hub
         {
             _logger.LogWarning(
                 "TranslationRoomHub: refused SetExternalMeetingLanguage on room {RoomId} for user {UserId} — "
-                + "not the capturer (or legacy host) of a live external-bridge room.",
+                + "not the host or capturer of a live external-bridge room.",
                 translationRoomId, userId);
-            throw new HubException("Only the participant capturing the external meeting can change what the other side speaks.");
+            throw new HubException("Only the host or the participant capturing the external meeting can change what the other side speaks.");
         }
 
         await EnsureLanguageAllowedAsync(translationRoomId, language);
@@ -731,8 +732,9 @@ public class TranslationRoomHub : Hub
     /// A hub method rather than REST because the main window is already connected and a caption
     /// is only useful for a few seconds.
     ///
-    /// Same gate as <see cref="SetExternalMeetingLanguage"/>: only the bridge audio owner of a live
-    /// EXTERNAL_BRIDGE room (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>),
+    /// Narrower than <see cref="SetExternalMeetingLanguage"/>: only the bridge audio owner of a live
+    /// EXTERNAL_BRIDGE room (<see cref="IRoomHostAuthority.CanReportFarSpeakerHintsAsync"/>) — the
+    /// captions come from the capturer's desktop, so a host who is not capturing has none to send —
     /// cached for a few seconds because this is called several times a second. A refusal is a
     /// HubException the client may ignore; calls over the room's budget (10/s) are dropped and
     /// answered with 0.
@@ -749,7 +751,7 @@ public class TranslationRoomHub : Hub
             userId,
             hints,
             clientNowMs,
-            ct => _hostAuthority.CanSetExternalMeetingLanguageAsync(translationRoomId, userId, ct),
+            ct => _hostAuthority.CanReportFarSpeakerHintsAsync(translationRoomId, userId, ct),
             Context.ConnectionAborted);
 
         if (outcome == FarSpeakerHintOutcome.Refused)

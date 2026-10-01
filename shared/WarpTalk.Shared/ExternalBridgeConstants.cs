@@ -45,7 +45,8 @@ public static class ExternalBridgeConstants
 
     /// <summary>
     /// Whether <paramref name="callerUserId"/> owns a bridge room's far-side audio — may mint the
-    /// stand-in's token and say what language the far side speaks.
+    /// stand-in's token and report the far side's speakers. (Saying what language the far side
+    /// speaks moved to the wider <see cref="CanControlBridgeSession"/> on 2026-10-01.)
     ///
     /// One shared bridge room per Google Meet code means many WarpTalk users in one room, and only
     /// ONE of their desktops (the capturer) may publish as the stand-in; two would double the far
@@ -53,8 +54,8 @@ public static class ExternalBridgeConstants
     /// before bridge claim, or a response from an older server — falls back to the HOST, which is
     /// exactly the rule this replaced, never to "anyone".
     ///
-    /// Spelled once here because Meeting (bridge token) and the Gateway (external meeting
-    /// language) must give the same answer.
+    /// Spelled once here because Meeting (bridge token) and the Gateway (far-speaker hints) must
+    /// give the same answer.
     /// </summary>
     public static bool IsBridgeAudioOwner(string? capturerUserId, string? hostId, string? callerUserId)
     {
@@ -67,4 +68,57 @@ public static class ExternalBridgeConstants
         return !string.IsNullOrWhiteSpace(owner)
             && string.Equals(owner, callerUserId, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// True when <paramref name="callerUserId"/> is the CURRENT capturer of an EXTERNAL_BRIDGE
+    /// room. Always false for any other room type, and for a bridge room with no capturer — the
+    /// capturer clause never applies outside a bridge, whatever a stale column might say.
+    /// </summary>
+    public static bool IsCurrentBridgeCapturer(string? translationRoomType, string? capturerUserId, string? callerUserId)
+        => IsBridgeRoomType(translationRoomType)
+            && !string.IsNullOrWhiteSpace(capturerUserId)
+            && !string.IsNullOrWhiteSpace(callerUserId)
+            && string.Equals(capturerUserId, callerUserId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// PO rule 2026-10-01: who may drive a bridge room's SESSION controls — Start translation
+    /// (/resume), Stop translation (/stop-translation), transcript Pause/Resume and "They speak"
+    /// (SetExternalMeetingLanguage). The room host OR, in an EXTERNAL_BRIDGE room only, the current
+    /// capturer. The web gates the same buttons with <c>canControlBridge</c> (warptalk-web#656).
+    ///
+    /// Why the capturer: after a takeover the person whose desktop is in the Meet call — and so
+    /// the one watching the bridge popup — may not be the host; refusing them every control left
+    /// a bridge nobody in the call could steer. Why still the host: the host who handed capture to
+    /// someone else keeps the authority they always had (and, for "They speak", is also in the call).
+    ///
+    /// "Host" here is the identity half only: <paramref name="hostId"/> (the booker) and, when the
+    /// caller's existing gate honoured a transfer, <paramref name="effectiveHostId"/>. Endpoints
+    /// that additionally widen host authority (workspace Owner/Admin, participants-may-start) keep
+    /// doing that on their own and OR it with this — this rule only ever ADDS the capturer.
+    ///
+    /// NOT the rule for the stand-in's LiveKit token: publishing the far side stays with
+    /// <see cref="IsBridgeAudioOwner"/> (one capturer), because two publishers would double it.
+    /// </summary>
+    public static bool CanControlBridgeSession(
+        string? translationRoomType,
+        string? hostId,
+        string? effectiveHostId,
+        string? bridgeCapturerUserId,
+        string? callerUserId)
+    {
+        if (string.IsNullOrWhiteSpace(callerUserId))
+        {
+            return false;
+        }
+
+        if (SameUser(hostId, callerUserId) || SameUser(effectiveHostId, callerUserId))
+        {
+            return true;
+        }
+
+        return IsCurrentBridgeCapturer(translationRoomType, bridgeCapturerUserId, callerUserId);
+    }
+
+    private static bool SameUser(string? a, string b)
+        => !string.IsNullOrWhiteSpace(a) && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 }

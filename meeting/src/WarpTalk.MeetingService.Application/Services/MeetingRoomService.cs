@@ -445,6 +445,12 @@ public class MeetingRoomService : IMeetingRoomService
         // The CAPTURER, not every participant: a bridge room is shared by every WarpTalk user in the
         // Meet call, and only one desktop may publish as the stand-in or the far side is doubled.
         // A room with no capturer (created before bridge claim) keeps the old rule: its host.
+        //
+        // Deliberately NOT ExternalBridgeConstants.CanControlBridgeSession (host OR capturer, PO
+        // 2026-10-01). That rule covers the bridge's session CONTROLS — Start/Stop translation,
+        // transcript Pause/Resume, "They speak" — which change state, not audio. This token
+        // PUBLISHES the far side: letting the host mint it while someone else captures would put
+        // two stand-in publishers in the room and double every far-side line. One capturer only.
         if (!ExternalBridgeConstants.IsBridgeAudioOwner(room.BridgeCapturerUserId, room.HostId, callerUserId.ToString()))
         {
             return Result.Failure<BridgeTokenResponse>(
