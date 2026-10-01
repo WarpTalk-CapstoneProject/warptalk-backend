@@ -34,6 +34,31 @@ service TranslationRoomService {
   // and (before the call had started) not recorded anywhere at all. Identified by USER id, like
   // the kick, because that is what MeetingService's REST surface speaks.
   rpc RejectRoomParticipant (RejectRoomParticipantRequest) returns (RejectRoomParticipantResponse);
+
+  // Admin Providers page: LiveKit usage per UTC hour and workspace — room minutes, estimated
+  // participant minutes and egress recordings — read by billing-service, which owns the page's API.
+  // Read-only; rules on MediaUsageCalculator. INVALID_ARGUMENT for a window over 120 days.
+  rpc GetMediaUsage (GetMediaUsageRequest) returns (GetMediaUsageResponse);
+}
+
+message GetMediaUsageRequest {
+  // [from, to) as Unix seconds, UTC.
+  int64 from_unix = 1;
+  int64 to_unix = 2;
+}
+
+message MediaUsageHour {
+  int64 hour_start_unix = 1;
+  string workspace_id = 2;
+  double room_seconds = 3;
+  double participant_seconds = 4;
+  int32 rooms_started = 5;
+  int32 recordings = 6;
+  int64 recording_bytes = 7;
+}
+
+message GetMediaUsageResponse {
+  repeated MediaUsageHour hours = 1;
 }
 
 message GetTranslationRoomRequest {
@@ -44,6 +69,10 @@ message GetTranslationRoomRequest {
   // transcript read access — none of which need it. Only callers that gate GENERATION of new
   // language content (transcript backfill, MT correction) set it.
   bool include_artifact_languages = 2;
+  // WT-849: the caller's email claim, so the response can say whether THIS person holds a
+  // standing invitation to the room. Empty when the caller has no email claim, or does not need
+  // the answer — in either case the server computes nothing and is_requester_invited is absent.
+  string requester_email = 3;
 }
 
 message GetTranslationRoomByCodeRequest {
@@ -128,6 +157,31 @@ message GetTranslationRoomResponse {
   // must then fall back to the room's own set (source_language + target_languages), never to
   // "anything". An EMPTY list with resolved=true is an answer: nothing may be generated.
   bool artifact_languages_resolved = 19;
+  // WT-849: whether the caller named in GetTranslationRoomRequest.requester_email holds a live
+  // (PENDING or ACCEPTED) invitation to this room — the same relation
+  // ArtifactAccessHelper.IsParticipantOrInvited asks on the translation-room side, so a consumer
+  // that treats an invitee as a participant for sharing purposes agrees with that helper instead
+  // of restating a looser copy of it.
+  //
+  // `optional` — real field presence, for the same reason as `save_transcript` above: the request
+  // must have carried an email for this to mean anything, and a bare bool defaults to FALSE on
+  // proto3, which would read as "not invited" for a caller this server never got to check. Absent
+  // means "no requester_email was sent, or this server predates the field" — the reader must NOT
+  // treat absent as an answer either way, only as "ask the room-read predicate instead".
+  optional bool is_requester_invited = 20;
+  // EXTERNAL_BRIDGE: the participant whose desktop publishes the far side's audio as the stand-in
+  // (one shared bridge room per Google Meet code, one capturer). Meeting Service mints the bridge
+  // token for this user and the Gateway lets only this user set the external meeting's language.
+  //
+  // Empty means either a room with no capturer (created before bridge claim existed) or an older
+  // server. In both cases the reader MUST fall back to `hostId` - the pre-claim rule - and never to
+  // "anyone": the failure this guards is minting a second identity into someone else's meeting.
+  // See ExternalBridgeConstants.IsBridgeAudioOwner.
+  string bridge_capturer_user_id = 21;
+  // EXTERNAL_BRIDGE: the Google Meet link the room bridges, as stored. TranscriptService's
+  // post-meeting relabel needs it to find the Meet conference whose transcript names the far-side
+  // speakers. Empty for every other room type, and from an older server.
+  string external_meeting_url = 22;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

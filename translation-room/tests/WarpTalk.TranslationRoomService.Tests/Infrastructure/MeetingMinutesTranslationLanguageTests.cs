@@ -100,7 +100,7 @@ public sealed class MeetingMinutesTranslationLanguageTests
         _summaryVariants
             .Setup(item => item.GetOrQueueSummaryVariantAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), RefusedLanguage,
-                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure<SummaryVariantDto>(
                 "Language 'fr' is not allowed for this meeting's artifacts. Allowed languages: vi, en.",
                 ErrorCodes.ValidationError));
@@ -149,7 +149,7 @@ public sealed class MeetingMinutesTranslationLanguageTests
         _summaryVariants.Verify(
             item => item.GetOrQueueSummaryVariantAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -165,7 +165,7 @@ public sealed class MeetingMinutesTranslationLanguageTests
         var room = await SeedRoomWithApprovedMinutesAsync();
         _summaryVariants
             .Setup(item => item.GetOrQueueSummaryVariantAsync(
-                room.Id, HostId, It.IsAny<string>(), "en", It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                room.Id, HostId, It.IsAny<string>(), "en", It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<SummaryVariantDto>.Success(new SummaryVariantDto(
                 "general", "en", null, false, SummaryVariantStatus.Failed, null, "Could not read the transcript.")));
 
@@ -187,7 +187,7 @@ public sealed class MeetingMinutesTranslationLanguageTests
         var room = await SeedRoomWithApprovedMinutesAsync();
         _summaryVariants
             .Setup(item => item.GetOrQueueSummaryVariantAsync(
-                room.Id, HostId, "general", "en", It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                room.Id, HostId, "general", "en", It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<SummaryVariantDto>.Success(new SummaryVariantDto(
                 "general",
                 "en",

@@ -19,5 +19,5 @@ public interface ITranscriptRecordingService
 {
     Task<Result> PauseAsync(Guid translationRoomId, Guid callerId, CancellationToken cancellationToken = default);
     Task<Result> ResumeAsync(Guid translationRoomId, Guid callerId, CancellationToken cancellationToken = default);
-    Task<Result<IReadOnlyList<TranscriptPauseWindowDto>>> GetPauseWindowsAsync(Guid translationRoomId, Guid callerId, CancellationToken cancellationToken = default);
+    Task<Result<IReadOnlyList<TranscriptPauseWindowDto>>> GetPauseWindowsAsync(Guid translationRoomId, Guid callerId, string? callerEmail = null, CancellationToken cancellationToken = default);
 }

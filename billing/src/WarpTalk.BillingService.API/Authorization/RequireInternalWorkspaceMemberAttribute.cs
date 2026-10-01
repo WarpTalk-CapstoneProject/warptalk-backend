@@ -5,15 +5,16 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.BillingService.API.Authorization;
 
 /// <summary>
 /// Lets any active INTERNAL member of the workspace through, whatever their workspace role.
-/// EXTERNAL members are guests from another organisation and are refused. Platform system
-/// admins pass, as they do on <see cref="RequireWorkspaceRoleAttribute"/> when it allows
-/// SystemAdmin. WT-700.
+/// EXTERNAL members are guests from another organisation and are refused. Platform staff with
+/// billing.read pass (G10), as they do on <see cref="RequireWorkspaceRoleAttribute"/> when it
+/// allows SystemAdmin. WT-700.
 /// </summary>
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
 public sealed class RequireInternalWorkspaceMemberAttribute : TypeFilterAttribute
@@ -31,16 +32,20 @@ internal sealed class RequireInternalWorkspaceMemberFilter : IAsyncActionFilter
     internal const string InternalMembershipType = "INTERNAL";
 
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IStaffAccessResolver _staffAccess;
 
-    public RequireInternalWorkspaceMemberFilter(IWorkspaceClient workspaceClient)
+    public RequireInternalWorkspaceMemberFilter(IWorkspaceClient workspaceClient, IStaffAccessResolver staffAccess)
     {
         _workspaceClient = workspaceClient;
+        _staffAccess = staffAccess;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
-        if (context.HttpContext.User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
-            context.HttpContext.User.IsInRole(WorkspaceRoleConstants.Admin))
+        if (await _staffAccess.StaffOverrideAllowsAsync(
+                context.HttpContext.User,
+                RequireWorkspaceRoleFilter.StaffOverridePermission(context.HttpContext.Request.Method),
+                context.HttpContext.RequestAborted))
         {
             await next();
             return;

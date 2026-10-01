@@ -70,6 +70,7 @@ public class VoiceProfileService : IVoiceProfileService
     private readonly IVoiceCatalogDirectory _voiceCatalog;
     private readonly IVoiceCloneRequestQueue _cloneQueue;
     private readonly IVoicePreviewQueue _previewQueue;
+    private readonly IVoiceEnrollmentChallengeService _challenges;
     private readonly ILogger<VoiceProfileService> _logger;
 
     public VoiceProfileService(
@@ -78,6 +79,7 @@ public class VoiceProfileService : IVoiceProfileService
         IVoiceCatalogDirectory voiceCatalog,
         IVoiceCloneRequestQueue cloneQueue,
         IVoicePreviewQueue previewQueue,
+        IVoiceEnrollmentChallengeService challenges,
         ILogger<VoiceProfileService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -85,6 +87,7 @@ public class VoiceProfileService : IVoiceProfileService
         _voiceCatalog = voiceCatalog;
         _cloneQueue = cloneQueue;
         _previewQueue = previewQueue;
+        _challenges = challenges;
         _logger = logger;
     }
 
@@ -851,6 +854,16 @@ public class VoiceProfileService : IVoiceProfileService
                 ErrorCodes.ValidationError);
         }
 
+        // WT-888 — refused before anything is read or stored: a sample that answers no
+        // read-aloud challenge is an arbitrary file, and an arbitrary file is how somebody else's
+        // voice got cloned from a recording of them. The API is the boundary, not the dialog.
+        if (request.ChallengeId is not { } challengeId || challengeId == Guid.Empty)
+        {
+            return Result.Failure<VoiceProfileDto>(
+                "Record your voice in the app, reading the phrase shown. Uploaded audio files are not accepted.",
+                VoiceEnrollmentErrorCodes.ChallengeRequired);
+        }
+
         if (request.Sample != null)
         {
             if (request.Sample.Length <= 0)
@@ -889,11 +902,28 @@ public class VoiceProfileService : IVoiceProfileService
                 ErrorCodes.ValidationError);
         }
 
+        // WT-888 — the recording must say the phrase issued for it. Last of the checks because it
+        // is the only one that costs a provider call, and it consumes the challenge either way.
+        var profileId = Guid.NewGuid();
+        var verification = await _challenges.VerifyAsync(
+            userId,
+            request.ChallengeId,
+            request.Language,
+            audioBytes,
+            request.Sample!.FileName,
+            request.Sample.ContentType,
+            profileId,
+            ct);
+        if (!verification.IsSuccess)
+        {
+            return Result.Failure<VoiceProfileDto>(verification.Error ?? "The recording could not be verified.", verification.ErrorCode);
+        }
+
         try
         {
             var profile = new VoiceProfile
             {
-                Id = Guid.NewGuid(),
+                Id = profileId,
                 UserId = userId,
                 DisplayName = request.DisplayName.Trim(),
                 Language = request.Language,

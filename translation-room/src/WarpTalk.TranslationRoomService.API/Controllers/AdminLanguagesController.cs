@@ -24,7 +24,6 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/languages")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminLanguagesController : ControllerBase
 {
     private readonly IAdminLanguageService _languages;
@@ -36,10 +35,12 @@ public class AdminLanguagesController : ControllerBase
 
     /// <summary>Every row, inactive included, with live and scheduled meeting counts.</summary>
     [HttpGet]
+    [RequirePermission(AdminPermissions.SettingsRead)]
     public async Task<IActionResult> Get(CancellationToken ct)
         => ToActionResult(await _languages.GetCatalogAsync(ct));
 
     [HttpPost]
+    [RequirePermission(AdminPermissions.SettingsManage)]
     public async Task<IActionResult> Create([FromBody] AdminCreateLanguageRequest request, CancellationToken ct)
     {
         if (!TryResolveActor(out var actor)) return UnauthorizedActor();
@@ -50,6 +51,7 @@ public class AdminLanguagesController : ControllerBase
     }
 
     [HttpPut("{code}")]
+    [RequirePermission(AdminPermissions.SettingsManage)]
     public async Task<IActionResult> Update(string code, [FromBody] AdminUpdateLanguageRequest request, CancellationToken ct)
     {
         if (!TryResolveActor(out var actor)) return UnauthorizedActor();
@@ -57,6 +59,7 @@ public class AdminLanguagesController : ControllerBase
     }
 
     [HttpPost("{code}/enable")]
+    [RequirePermission(AdminPermissions.SettingsManage)]
     public async Task<IActionResult> Enable(string code, CancellationToken ct)
     {
         if (!TryResolveActor(out var actor)) return UnauthorizedActor();
@@ -68,6 +71,7 @@ public class AdminLanguagesController : ControllerBase
     /// body confirms them.
     /// </summary>
     [HttpPost("{code}/disable")]
+    [RequirePermission(AdminPermissions.SettingsManage)]
     public async Task<IActionResult> Disable(
         string code, [FromBody] AdminDisableLanguageRequest? request, CancellationToken ct)
     {

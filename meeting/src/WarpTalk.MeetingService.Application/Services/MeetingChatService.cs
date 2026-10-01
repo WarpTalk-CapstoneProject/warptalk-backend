@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.MeetingService.Application.DTOs;
+using WarpTalk.MeetingService.Application.Helpers;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Mappers;
 using WarpTalk.Shared;
@@ -259,8 +260,15 @@ public class MeetingChatService : IMeetingChatService
             });
         }
 
+        // WarpBot's own answers carry a machine-readable note of the meeting it created, which the
+        // browser turns into a card. It is not prose: sent through the translator it comes back
+        // reworded or dropped, so the reader of a translated answer loses the card or is shown its
+        // JSON. The note is stripped here and the card keeps coming from the original message.
         var translationResult = await _chatTranslator.TranslateAsync(
-            message.OriginalText, message.OriginalLanguage, request.TargetLanguage, ct);
+            MeetingChatMarkers.WithoutMeetingMarkers(message.OriginalText),
+            message.OriginalLanguage,
+            request.TargetLanguage,
+            ct);
 
         if (!translationResult.IsSuccess)
             return Result.Failure<MeetingChatTranslationDto>(

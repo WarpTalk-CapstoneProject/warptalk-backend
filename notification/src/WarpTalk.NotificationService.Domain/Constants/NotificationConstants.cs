@@ -33,6 +33,17 @@ public static class NotificationConstants
     // nothing anywhere reported it; the only trace was a warning line in the notification
     // service's own log.
     public const string TypeMeetingStarted = "MEETING_STARTED";
+
+    /// <summary>
+    /// WT-612: the booked time arrived and the room opened itself — sent by the translation-room
+    /// service's ScheduledRoomLifecycleWorker, not by anyone pressing a button.
+    ///
+    /// Distinct from <see cref="TypeMeetingStarted"/> because the two mean different things and
+    /// lead different places: "open" invites you to set your microphone and languages first,
+    /// "started" means people are already talking. Registered here in the same change as its
+    /// producer, which is the rule this file keeps having to relearn.
+    /// </summary>
+    public const string TypeMeetingOpened = "MEETING_OPENED";
     public const string TypeMeetingSummaryReady = "MEETING_SUMMARY_READY";
 
     /// <summary>
@@ -65,6 +76,14 @@ public static class NotificationConstants
     /// </summary>
     public const string TypeWorkspaceSuspended = "WORKSPACE_SUSPENDED";
     public const string TypeWorkspaceReactivated = "WORKSPACE_REACTIVATED";
+
+    /// <summary>
+    /// A notice a platform administrator sends a workspace owner from the admin workspace page —
+    /// "your invoice is overdue", "we credited you for yesterday's outage". Produced by the
+    /// workspace service's AdminWorkspaceActionService; registered in the same change, because an
+    /// unregistered type carrying metadata is rejected outright and the producer cannot tell.
+    /// </summary>
+    public const string TypeWorkspaceAdminNotice = "WORKSPACE_ADMIN_NOTICE";
 
     /// <summary>
     /// The Leave Workspace round trip. WT-521.

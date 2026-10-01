@@ -21,4 +21,11 @@ public interface IAdminBillingInsightsService
     /// <see cref="ErrorCodes.ValidationError"/>.
     /// </summary>
     Task<Result<AdminBillingSnapshotDto>> GetSnapshotAsync(string? timeZoneId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Profit and loss over the period (2026-09-24): revenue, AI provider cost, gross margin, margin %,
+    /// ARPA, per day, per month, per provider and per plan, and the top workspaces' credit trend. Defined
+    /// in <see cref="Services.ProfitAndLossCalculator"/>. Same query and validation as <see cref="GetInsightsAsync"/>.
+    /// </summary>
+    Task<Result<AdminProfitAndLossDto>> GetProfitAndLossAsync(AdminInsightsQuery query, CancellationToken ct = default);
 }

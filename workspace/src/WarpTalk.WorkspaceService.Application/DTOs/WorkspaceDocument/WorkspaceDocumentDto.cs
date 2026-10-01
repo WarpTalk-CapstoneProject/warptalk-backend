@@ -47,5 +47,27 @@ public record WorkspaceDocumentDto(
     /// should still be readable while the answer is under review. Approval writes its own row, and
     /// the web hides the banner once the status is published.
     /// </remarks>
-    string? RejectionReason = null
+    string? RejectionReason = null,
+    /// <summary>
+    /// WT-854 — a corrected file waiting for review, or null. Everything above still describes
+    /// the APPROVED file, which is what readers, downloads and the AI index use.
+    /// </summary>
+    WorkspaceDocumentPendingRevisionDto? PendingRevision = null
+);
+
+/// <summary>
+/// WT-854 — a corrected file uploaded for a published document, awaiting a reviewer. The
+/// document's own fields (and its download, preview and AI index) still describe the approved
+/// file; this is what an approval would replace them with. Its bytes are at
+/// GET documents/{id}/revision/download, for reviewers and the uploader only.
+/// </summary>
+public record WorkspaceDocumentPendingRevisionDto(
+    string Name,
+    string FileName,
+    string FileExtension,
+    string MimeType,
+    long SizeBytes,
+    Guid? UploadedBy,
+    DateTime UploadedAt,
+    string? Note
 );

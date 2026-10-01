@@ -10,6 +10,7 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -19,17 +20,20 @@ public class InvoiceService : IInvoiceService
     private readonly ILogger<InvoiceService> _logger;
     private readonly IStripePaymentService _stripePaymentService;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly ISuspensionLiftService? _suspensionLift;
 
     public InvoiceService(
         IUnitOfWork unitOfWork,
         ILogger<InvoiceService> logger,
         IStripePaymentService stripePaymentService,
-        IWorkspaceClient workspaceClient)
+        IWorkspaceClient workspaceClient,
+        ISuspensionLiftService? suspensionLift = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _stripePaymentService = stripePaymentService;
         _workspaceClient = workspaceClient;
+        _suspensionLift = suspensionLift;
     }
 
     public async Task<Result<PaginatedResponse<InvoiceDto>>> GetInvoicesAsync(
@@ -53,13 +57,54 @@ public class InvoiceService : IInvoiceService
     }
 
     public async Task<Result<PaginatedResponse<InvoiceDto>>> GetGlobalInvoicesAsync(
-        PaginationQuery query, CancellationToken cancellationToken = default)
+        GlobalInvoiceQuery query, CancellationToken cancellationToken = default)
     {
+        var status = string.IsNullOrWhiteSpace(query.Status) ? null : query.Status.Trim().ToLowerInvariant();
+        if (status == "all") status = null;
+        if (status != null && !InvoiceConstants.InvoiceStatuses.Filterable.Contains(status))
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.UnknownStatusFilter, ErrorCodes.ValidationError);
+        }
+
+        if (!AdminSort.TryResolve(query.Sort, GlobalInvoiceSorts.All, GlobalInvoiceSorts.IssuedDesc, out var sort))
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.UnknownSort, ErrorCodes.ValidationError);
+        }
+
+        var currency = string.IsNullOrWhiteSpace(query.Currency) ? null : query.Currency.Trim().ToUpperInvariant();
+        if (currency != null && (currency.Length != 3 || !currency.All(char.IsAsciiLetterUpper)))
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.InvalidCurrency, ErrorCodes.ValidationError);
+        }
+
+        if (AdminDateFilter.ValidateRange(query.FromDate, query.ToDate, "fromDate", "toDate") is { } rangeError)
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(rangeError, ErrorCodes.ValidationError);
+        }
+
+        if (query.MinTotal is { } min && query.MaxTotal is { } max && min > max)
+        {
+            return Result.Failure<PaginatedResponse<InvoiceDto>>(
+                InvoiceConstants.Errors.InvalidTotalRange, ErrorCodes.ValidationError);
+        }
+
         try
         {
-            var page = await _unitOfWork.InvoiceRepository.GetPageAsync(
-                BillingQueryHelper.ToPageRequest(query),
-                null,
+            var page = await _unitOfWork.InvoiceRepository.GetGlobalPageAsync(
+                new GlobalInvoiceFilter(
+                    BillingQueryHelper.ToPageRequest(query),
+                    string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+                    status,
+                    query.WorkspaceId,
+                    currency,
+                    AdminDateFilter.ToUtc(query.FromDate),
+                    AdminDateFilter.ToUtc(query.ToDate),
+                    query.MinTotal,
+                    query.MaxTotal,
+                    sort),
                 cancellationToken);
 
             var dtos = page.Items.Select(i => i.ToDto(i.Payment.Subscription.WorkspaceId)).ToList();
@@ -218,18 +263,21 @@ public class InvoiceService : IInvoiceService
                     ErrorCodes.NotFound);
             }
 
-            if (invoice.Status == InvoiceConstants.InvoiceStatuses.Paid)
+            // WT-878: settling used to only flip the invoice, so a workspace the overdue sweeper had
+            // suspended stayed suspended after it paid, until an admin also pressed Resume. The
+            // lift runs on a replay too (already paid): an invoice settled before this fix left
+            // its workspace stuck, and marking it paid again is how support frees it.
+            var settlement = await StageSettlementAsync(invoice, DateTime.UtcNow, cancellationToken);
+            if (settlement.NewlyPaid || settlement.Lift.Lifted)
             {
-                return Result.Success(invoice.ToDto(invoice.Payment.Subscription.WorkspaceId));
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
 
-            var paidAt = DateTime.UtcNow;
-            invoice.Status = InvoiceConstants.InvoiceStatuses.Paid;
-            invoice.PaidAt = paidAt;
-            invoice.Payment.Status = PaymentConstants.PaymentStatuses.Paid;
-            invoice.Payment.PaidAt = paidAt;
-            invoice.Payment.UpdatedAt = DateTime.UtcNow;
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            if (settlement.Lift.Lifted && _suspensionLift is not null)
+            {
+                await _suspensionLift.PushServiceStateAsync(settlement.Subscription, cancellationToken);
+                await _suspensionLift.PublishCreditsUpdatedAsync(settlement.Subscription, resumed: true, cancellationToken);
+            }
 
             return Result.Success(invoice.ToDto(invoice.Payment.Subscription.WorkspaceId));
         }
@@ -240,6 +288,39 @@ public class InvoiceService : IInvoiceService
                 ApiMessageConstants.ErrorMessages.BillingInternalError,
                 ErrorCodes.InternalServerError);
         }
+    }
+
+    public async Task<InvoiceSettlement?> StageInvoicePaidForPaymentAsync(
+        Guid paymentId, DateTime paidAtUtc, CancellationToken cancellationToken = default)
+    {
+        var invoice = await _unitOfWork.InvoiceRepository.FirstOrDefaultAsync(
+            i => i.PaymentId == paymentId,
+            "Payment.Subscription",
+            cancellationToken);
+
+        return invoice is null ? null : await StageSettlementAsync(invoice, paidAtUtc, cancellationToken);
+    }
+
+    /// <summary>
+    /// The one definition of "an invoice got paid" (WT-878): <see cref="Domain.Entities.Invoice.MarkPaid"/>
+    /// unless it already is, then the suspension-lift rule for the subscription it was raised on.
+    /// Stages only; the caller saves.
+    /// </summary>
+    private async Task<InvoiceSettlement> StageSettlementAsync(
+        Domain.Entities.Invoice invoice, DateTime paidAtUtc, CancellationToken cancellationToken)
+    {
+        var newlyPaid = invoice.Status != InvoiceConstants.InvoiceStatuses.Paid;
+        if (newlyPaid)
+        {
+            invoice.MarkPaid(paidAtUtc);
+        }
+
+        var subscription = invoice.Payment.Subscription;
+        var lift = _suspensionLift is null
+            ? SuspensionLiftOutcome.None
+            : await _suspensionLift.StageAfterInvoicePaidAsync(subscription, invoice.Id, paidAtUtc, cancellationToken);
+
+        return new InvoiceSettlement(invoice, newlyPaid, subscription, lift);
     }
 
     private static string ExtractCheckoutSessionId(string checkoutUrl)

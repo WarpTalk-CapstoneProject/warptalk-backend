@@ -137,18 +137,26 @@ public static class AdminMeetingInsightsCalculator
     }
 
     private static (DateTime? End, bool Capped) ResolveEnd(AdminMeetingSpan span, DateTime now)
-    {
-        if (span.EndedAt is { } ended) return (ended, false);
+        => ResolveEnd(span.StartedAt, span.EndedAt, span.DurationSeconds, span.Status, now);
 
-        if (LiveStatuses.Contains(span.Status))
+    /// <summary>
+    /// Where a meeting ended for the purpose of counting its time — the rule documented on this
+    /// class, shared with the LiveKit usage of the admin Providers page (MediaUsageCalculator).
+    /// </summary>
+    public static (DateTime? End, bool Capped) ResolveEnd(
+        DateTime startedAt, DateTime? endedAt, int? durationSeconds, string status, DateTime now)
+    {
+        if (endedAt is { } ended) return (ended, false);
+
+        if (LiveStatuses.Contains(status))
         {
-            var cap = span.StartedAt + MaxOpenMeetingDuration;
+            var cap = startedAt + MaxOpenMeetingDuration;
             return now > cap ? (cap, true) : (now, false);
         }
 
-        if (span.DurationSeconds is { } duration)
+        if (durationSeconds is { } duration)
         {
-            return (span.StartedAt.AddSeconds(duration), false);
+            return (startedAt.AddSeconds(duration), false);
         }
 
         return (null, false);

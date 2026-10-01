@@ -67,7 +67,18 @@ public sealed class AdminAuditGrpcService : AdminAuditService.AdminAuditServiceB
                 ParsePerformedAt(request.PerformedAt),
                 string.IsNullOrWhiteSpace(request.CorrelationId) ? null : request.CorrelationId,
                 ToSummary(request.BeforeSummary),
-                ToSummary(request.AfterSummary)),
+                ToSummary(request.AfterSummary))
+            {
+                // Sent by the service the admin called, from the admin's own request. This call's
+                // own HttpContext is that service's, which is why nothing is read from it here.
+                ActorEmail = Optional(request.ActorEmail),
+                ActorName = Optional(request.ActorName),
+                EntityKey = Optional(request.EntityKey),
+                EntityLabel = Optional(request.EntityLabel),
+                ErrorMessage = Optional(request.ErrorMessage),
+                IpAddress = Optional(request.IpAddress),
+                UserAgent = Optional(request.UserAgent),
+            },
             context.CancellationToken);
 
         return new RecordAdminActionResponse
@@ -76,6 +87,8 @@ public sealed class AdminAuditGrpcService : AdminAuditService.AdminAuditServiceB
             ErrorMessage = result.IsSuccess ? string.Empty : result.Error ?? "The action could not be recorded.",
         };
     }
+
+    private static string? Optional(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     /// <summary>proto3 has no null, so an absent id arrives as "". Anything unparseable is absent too.</summary>
     private static Guid? ParseOptionalGuid(string value) =>

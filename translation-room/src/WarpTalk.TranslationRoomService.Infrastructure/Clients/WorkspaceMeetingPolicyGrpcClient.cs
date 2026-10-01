@@ -182,6 +182,19 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
             : Result.Failure(SuspendedMessage, ErrorCodes.Forbidden);
     }
 
+    /// <inheritdoc />
+    public async Task<bool?> HasActiveSubscriptionAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        // FetchSettingsAsync already logs a failure; unknown is the answer then (see the interface).
+        var fetched = await FetchSettingsAsync(workspaceId, ct);
+        if (!fetched.IsSuccess || !fetched.Value!.SubscriptionKnown)
+        {
+            return null;
+        }
+
+        return fetched.Value.HasActiveSubscription;
+    }
+
     private async Task<Result<GetWorkspaceSettingsResponse>> FetchSettingsAsync(
         Guid workspaceId,
         CancellationToken ct)

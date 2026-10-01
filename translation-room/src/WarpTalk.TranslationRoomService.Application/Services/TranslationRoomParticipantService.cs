@@ -559,7 +559,11 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
 
             if (room.MaxParticipants > 0 && !room.IsHostedBy(requestedByUserId))
             {
-                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoomId, ct);
+                // An EXTERNAL_BRIDGE room's far-side stand-in holds a seat that is not a person;
+                // its humans are capped without it, exactly as the REST join counts them.
+                var seatsTaken = TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType)
+                    ? (await _participantRepository.CountPeopleInRoomsAsync([translationRoomId], ct))?.GetValueOrDefault(translationRoomId) ?? 0
+                    : await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoomId, ct);
                 if (seatsTaken >= room.MaxParticipants)
                 {
                     _logger.LogInformation(

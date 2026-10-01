@@ -55,7 +55,23 @@ public record WorkspaceSettingsDto(
     /// </summary>
     int? MaxLanguagesCeiling = null,
     /// <summary>Provenance of the language ceiling. Null with the ceiling.</summary>
-    string? MaxLanguagesCeilingSource = null
+    string? MaxLanguagesCeilingSource = null,
+    /// <summary>
+    /// The "Allow all languages" switch, inverted: false allows every language the platform
+    /// supports, true confines meetings to <see cref="AllowedTargetLanguages"/>. WT-706.
+    ///
+    /// ALWAYS SET ON A READ. Nullable only because it is OPTIONAL ON A WRITE: a client that has
+    /// never heard of this field — anything written before WT-706, including the Postman
+    /// collection — sends a settings document without it, and null is then read exactly as every
+    /// reader used to read the list on its own (non-empty ⇒ restricted). Sending it makes it
+    /// authoritative.
+    ///
+    /// FALSE CLEARS THE LIST rather than refusing one. PATCH merges over the document GET
+    /// returned, so "turn the restriction off" necessarily arrives as
+    /// <c>{"restrictLanguages": false}</c> on top of a non-empty list; refusing that combination
+    /// would make the one operation the switch exists for impossible to express.
+    /// </summary>
+    bool? RestrictLanguages = null
 );
 
 public record WorkspaceSettingsPatchRequest(
@@ -70,7 +86,8 @@ public record WorkspaceSettingsPatchRequest(
     bool? RequireVerifiedDomainForInternal = null,
     AiUsagePolicyPatchDto? AiUsagePolicy = null,
     bool? IsProfanityFilterEnabled = null,
-    bool? AllowAnyPlugins = null
+    bool? AllowAnyPlugins = null,
+    bool? RestrictLanguages = null
 );
 
 public record AiUsagePolicyPatchDto(

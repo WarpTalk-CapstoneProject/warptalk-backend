@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using FluentValidation;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Domain.Constants;
@@ -8,7 +9,17 @@ namespace WarpTalk.AuthService.API.Validators;
 public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
 {
     public RegisterRequestValidator()
+        : this(null)
     {
+    }
+
+    /// <param name="settings">
+    /// Live minimum length (security.password.min_length). Validators are created per request, so
+    /// the value read here is the one in force for this request.
+    /// </param>
+    public RegisterRequestValidator(IPlatformSettings? settings)
+    {
+        var minLength = PasswordPolicy.MinLength(settings);
         RuleFor(x => x.Email)
             .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.EmailRequired)
             .MaximumLength(UserConstants.EmailMaxLength).WithMessage(ApiMessageConstants.ValidationMessages.EmailMaxLength)
@@ -16,7 +27,7 @@ public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
 
         RuleFor(x => x.Password)
             .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.PasswordRequired)
-            .MinimumLength(UserConstants.PasswordMinLength).WithMessage(ApiMessageConstants.ValidationMessages.PasswordMinLength)
+            .MinimumLength(minLength).WithMessage(PasswordPolicy.PasswordMessage(minLength))
             .MaximumLength(UserConstants.PasswordMaxLength).WithMessage(ApiMessageConstants.ValidationMessages.PasswordMaxLength);
 
         // The ceiling matters more than the floor here. full_name is varchar(150), and without this

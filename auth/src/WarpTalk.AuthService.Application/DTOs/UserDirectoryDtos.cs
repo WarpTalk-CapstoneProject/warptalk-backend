@@ -7,7 +7,8 @@ public record UserIdentityDto(
     string Email,
     string FullName,
     string? AvatarUrl,
-    string? PreferredLanguage
+    string? PreferredLanguage,
+    DateTime? CreatedAt = null
 );
 
 public record UserLanguageDefaultsDto(

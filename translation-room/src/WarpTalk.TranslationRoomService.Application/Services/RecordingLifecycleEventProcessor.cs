@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Events;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -253,6 +254,14 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
         if (existing == null)
         {
             var artifact = create();
+
+            // WT-826: a recording that first appears after the room ended and auto-shared its
+            // record is already released — that publish counted as the host's release. A row that
+            // existed at the end was released there (TranslationRoomService.EndTranslationRoomAsync);
+            // this is the one that arrived too late for that, e.g. a Completed with no Started.
+            if (artifact.ConsentRequired && await IsReleasedByAutoShareAsync(artifact.TranslationRoomId, ct))
+                artifact.ConsentRequired = false;
+
             await repository.AddAsync(artifact, ct);
 
             try
@@ -292,6 +301,28 @@ public sealed class RecordingLifecycleEventProcessor : IRecordingLifecycleEventP
         repository.Update(existing);
         await _unitOfWork.SaveChangesAsync(ct);
         return Result.Success(true);
+    }
+
+    /// <summary>
+    /// Whether the room this recording belongs to has already been published by its own
+    /// auto-share setting. Fails toward HOLDING: an unreadable room keeps the recording behind the
+    /// host's release, which is the state every recording was in before WT-826.
+    /// </summary>
+    private async Task<bool> IsReleasedByAutoShareAsync(Guid translationRoomId, CancellationToken ct)
+    {
+        try
+        {
+            var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            return room != null && RecordAutoShare.ReleasesRecordingHold(room, RecordAutoShare.Read(room.Settings));
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not read room {RoomId} to decide the recording consent hold; keeping it held",
+                translationRoomId);
+            return false;
+        }
     }
 
     private Task<TranslationRoomArtifact?> FindAsync(string egressId, CancellationToken ct) =>

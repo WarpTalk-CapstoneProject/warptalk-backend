@@ -25,6 +25,10 @@ public class AdminFeedbackService : IAdminFeedbackService
     /// <summary>Default window when the caller states none. Stated in the response either way.</summary>
     private const int DefaultRangeDays = 30;
 
+    /// <summary>The overall rating's scale, as the feedback write path validates it.</summary>
+    private const int MinOverallRating = 1;
+    private const int MaxOverallRating = 5;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AdminFeedbackService> _logger;
@@ -133,12 +137,32 @@ public class AdminFeedbackService : IAdminFeedbackService
                 "Unknown sort. Expected one of: recent, lowest.", ErrorCodes.ValidationError);
         }
 
+        if (query.MinRating is < MinOverallRating or > MaxOverallRating
+            || query.MaxRating is < MinOverallRating or > MaxOverallRating)
+        {
+            return Result.Failure<AdminPagedResult<AdminFeedbackCommentDto>>(
+                $"minRating and maxRating must be between {MinOverallRating} and {MaxOverallRating}.",
+                ErrorCodes.ValidationError);
+        }
+
+        if (query.MinRating is { } min && query.MaxRating is { } max && min > max)
+        {
+            return Result.Failure<AdminPagedResult<AdminFeedbackCommentDto>>(
+                "minRating must be less than or equal to maxRating.", ErrorCodes.ValidationError);
+        }
+
+        var criteria = new AdminFeedbackCommentCriteria(
+            string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+            query.MinRating,
+            query.MaxRating);
+
         var (page, pageSize) = query.Normalize();
 
         try
         {
             var (rows, total) = await _unitOfWork.TranslationRoomFeedbackRepository
-                .GetAdminCommentsAsync(filter, page, pageSize, ct, lowestRatedFirst: sort == "lowest");
+                .GetAdminCommentsAsync(
+                    filter, page, pageSize, ct, lowestRatedFirst: sort == "lowest", criteria: criteria);
 
             return Result.Success(new AdminPagedResult<AdminFeedbackCommentDto>(
                 rows

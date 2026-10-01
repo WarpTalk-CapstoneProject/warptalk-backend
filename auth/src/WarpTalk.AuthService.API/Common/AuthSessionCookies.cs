@@ -12,6 +12,10 @@ internal static class AuthSessionCookies
     internal static void Write(HttpRequest request, HttpResponse response, AuthResponse auth)
     {
         var (domain, secure) = ResolveCookieScope(request);
+        // The session cookies live exactly as long as the refresh token they carry — the same live
+        // setting (security.session.refresh_token_days) the token was just issued with. They were
+        // a hardcoded seven days, which drifted from the token the moment the lifetime changed.
+        var sessionExpires = DateTimeOffset.UtcNow.AddDays(SessionDays(request));
 
         response.Cookies.Append(AccessCookieName, auth.AccessToken, new CookieOptions
         {
@@ -29,7 +33,7 @@ internal static class AuthSessionCookies
             Secure = secure,
             SameSite = SameSiteMode.Lax,
             Path = "/api/v1/auth",
-            Expires = DateTimeOffset.UtcNow.AddDays(7)
+            Expires = sessionExpires
         });
         response.Cookies.Append(SessionCookieName, "active", new CookieOptions
         {
@@ -38,9 +42,15 @@ internal static class AuthSessionCookies
             Secure = secure,
             SameSite = SameSiteMode.Lax,
             Path = "/",
-            Expires = DateTimeOffset.UtcNow.AddDays(7)
+            Expires = sessionExpires
         });
     }
+
+    internal static int SessionDays(HttpRequest request)
+        => request.HttpContext.RequestServices?.GetService(typeof(WarpTalk.AuthService.Application.Interfaces.Security.IJwtTokenGenerator))
+            is WarpTalk.AuthService.Application.Interfaces.Security.IJwtTokenGenerator jwt
+            ? jwt.RefreshTokenExpiryDays
+            : 7;
 
     internal static void Clear(HttpRequest request, HttpResponse response)
     {

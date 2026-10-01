@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Application.Entitlements;
 using System.Linq.Expressions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -202,6 +203,67 @@ public class PaymentAppServiceTests
             Times.Never);
     }
 
+    // ── Renewal after expiry re-enables the workspace, immediately ────────────────────────────
+
+    /// <summary>A handler standing in for SubscriptionPaymentEventHandler's renewal outcome.</summary>
+    private sealed class RenewingHandler(Subscription renewed) : IPaymentEventHandler
+    {
+        public bool CanHandle(PaymentEventContext context) => true;
+
+        public Task<Result> HandleAsync(PaymentEventContext context, CancellationToken cancellationToken = default)
+        {
+            context.Subscription = renewed;
+            context.SubscriptionChanged = true;
+            return Task.FromResult(Result.Success());
+        }
+    }
+
+    /// <summary>
+    /// A plan bought through checkout set only SubscriptionChanged, and entitlements were published
+    /// for add-ons alone — so a workspace renewing after expiry kept a snapshot saying "no active
+    /// subscription" and the WT-515 paywall refused the customer who had just paid, until the hourly
+    /// reconcile. And the Redis 'subscription_expired' mark the expiry sweep wrote kept Start
+    /// Translation refused for up to its 24h TTL. Both are cleared by the payment itself now.
+    /// </summary>
+    [Fact]
+    public async Task ProcessPaymentEventAsync_Renewal_RepublishesEntitlementsAndLiftsTheAiSuspension()
+    {
+        var workspaceId = Guid.NewGuid();
+        var renewed = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            IsActive = true,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            ServiceState = SubscriptionConstants.ServiceStates.Healthy,
+        };
+        var entitlements = new Mock<IEntitlementChangePublisher>();
+        var aiState = new Mock<IAiServiceStateStore>();
+        aiState
+            .Setup(s => s.SetAiServiceStateAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        var service = new PaymentAppService(
+            _stripePaymentService.Object,
+            _unitOfWork.Object,
+            Mock.Of<ILogger<PaymentAppService>>(),
+            _messagePublisher.Object,
+            new IPaymentEventHandler[] { new RenewingHandler(renewed) },
+            new Mock<IWorkspaceClient>().Object,
+            Mock.Of<IUsageRateCardRepository>(),
+            entitlements: entitlements.Object,
+            aiServiceStateStore: aiState.Object);
+
+        var request = CreateEvent(PaymentConstants.PaymentTypes.Subscription) with { WorkspaceIdStr = workspaceId.ToString() };
+        var result = await service.ProcessPaymentEventAsync(request);
+
+        Assert.True(result.IsSuccess, result.Error);
+        entitlements.Verify(p => p.EnqueueAsync(
+            workspaceId, EntitlementConstants.Reasons.SubscriptionChanged, It.IsAny<CancellationToken>()), Times.Once);
+        aiState.Verify(s => s.SetAiServiceStateAsync(
+            workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private PaymentAppService CreateService(params IPaymentEventHandler[] handlers)
         => new(
             _stripePaymentService.Object,
@@ -222,4 +284,70 @@ public class PaymentAppServiceTests
             WorkspaceIdStr: Guid.NewGuid().ToString(),
             PaymentType: paymentType,
             Status: PaymentConstants.PaymentStatuses.Paid);
+
+    // ── backend#467: extra credits are sold only on top of a plan ─────────────────────────────
+
+    [Theory]
+    [InlineData(PaymentConstants.PaymentTypes.CreditTopUp)]
+    [InlineData(PaymentConstants.PaymentTypes.CreditPack)]
+    public async Task CreateCheckoutSessionAsync_RefusesExtraCredits_WithoutALiveSubscription_BeforeStripeIsCalled(string paymentType)
+    {
+        _subscriptionRepository
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await CreateService().CreateCheckoutSessionAsync(
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), Guid.NewGuid(), 0m, PaymentType: paymentType, Credits: 50_000,
+                PackageId: Guid.NewGuid()));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.BillingPurchaseRequiresSubscription, result.ErrorCode);
+        _stripePaymentService.VerifyNoOtherCalls();
+    }
+
+    /// <summary>The gate asks about a LIVE plan: active, status active, not deleted, its period not over.</summary>
+    [Fact]
+    public async Task CreateCheckoutSessionAsync_TheLiveSubscriptionTest_ExcludesAnEndedPeriod()
+    {
+        Expression<Func<Subscription, bool>>? asked = null;
+        _subscriptionRepository
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .Callback<Expression<Func<Subscription, bool>>, CancellationToken>((predicate, _) => asked = predicate)
+            .ReturnsAsync(false);
+        var workspaceId = Guid.NewGuid();
+
+        await CreateService().CreateCheckoutSessionAsync(
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), workspaceId, 0m, PaymentType: PaymentConstants.PaymentTypes.CreditTopUp, Credits: 50_000));
+
+        var test = asked!.Compile();
+        Assert.True(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddMinutes(-1) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = false, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        // The snapshot's liveness (GrantsPlanEntitlements): an admin-suspended or cancelled row is not live.
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, Status = SubscriptionConstants.SubscriptionStatuses.Suspended, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3) }));
+        Assert.False(test(new Subscription { WorkspaceId = workspaceId, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(3), DeletedAt = DateTime.UtcNow }));
+    }
+
+    [Fact]
+    public async Task CreateCheckoutSessionAsync_APlanCheckoutIsNotGatedOnHavingAPlan()
+    {
+        // WT-878: "Renewal" used to stand in for "not an extra-credits type" here; the checkout now
+        // refuses any type outside its allowlist, so the plan checkout itself is the case.
+        var plans = new Mock<IPlanRepository>();
+        plans
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Plan { Id = Guid.NewGuid(), Slug = "pro", Name = "Pro", Price = 100m, IsActive = true });
+        _unitOfWork.Setup(u => u.Plans).Returns(plans.Object);
+        _stripePaymentService
+            .Setup(s => s.CreateCatalogCheckoutSessionAsync(It.IsAny<CreateCheckoutSessionRequest>(), It.IsAny<CheckoutExtras>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success("https://checkout.stripe.test/s"));
+
+        var result = await CreateService().CreateCheckoutSessionAsync(
+            new CreateCheckoutSessionRequest(Guid.NewGuid(), Guid.NewGuid(), 100m, PaymentType: PaymentConstants.PaymentTypes.Subscription, PlanSlug: "pro"));
+
+        Assert.True(result.IsSuccess, result.Error);
+        _subscriptionRepository.Verify(
+            r => r.AnyAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }
+

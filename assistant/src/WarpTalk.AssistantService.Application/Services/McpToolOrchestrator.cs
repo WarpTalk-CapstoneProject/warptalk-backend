@@ -49,6 +49,23 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (!availability.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
+        // One list, two readers: the worker gets it flattened with the policy WarpBot will actually
+        // apply; the tools page gets it grouped, with the member's choice and the Owner's rule kept
+        // apart. Both come from ListOfferedPluginToolsAsync so what the page shows is what is offered.
+        var tools = (await ListOfferedPluginToolsAsync(userId, availability.Value!, excludedPluginKeys, ct))
+            .SelectMany(group => group.Tools)
+            .Select(WorkspaceToolRules.Effective)
+            .ToList();
+
+        return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(tools);
+    }
+
+    public async Task<IReadOnlyList<OfferedPluginToolsDto>> ListOfferedPluginToolsAsync(
+        Guid userId,
+        WorkspacePluginAvailability availability,
+        IReadOnlyCollection<string>? excludedPluginKeys = null,
+        CancellationToken ct = default)
+    {
         var installations = await _unitOfWork.PluginInstallationRepository.FindAsync(
             i => i.UserId == userId && i.Status == PluginConstants.InstallationStatus.Installed, ct: ct);
         var installationsByPlugin = installations
@@ -69,17 +86,34 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         var excluded = excludedPluginKeys?.ToHashSet(StringComparer.Ordinal) ?? [];
 
         // A plugin the user installed is still only offered where the workspace has it.
-        var usable = plugins.Where(availability.Value!.IsUsable);
+        var usable = plugins.Where(availability.IsUsable).ToList();
 
-        var tools = ClaimToolNames(usable)
+        // The workspace Owner's per-tool rules narrow it once more: WarpBot is offered the stricter
+        // of the member's choice and the rule, so a tool either of them blocked never reaches the
+        // model. ExecuteAsync applies the same rule, because the list is advice and that is the gate.
+        var workspaceRules = await WorkspaceToolRules.LoadAsync(
+            _unitOfWork,
+            availability.WorkspaceId,
+            usable.Select(plugin => plugin.Id).ToList(),
+            ct);
+
+        return ClaimToolNames(usable)
             .Where(claim => !excluded.Contains(claim.Plugin.PluginKey))
-            .SelectMany(claim => PluginToolPolicyStore.WithPolicies(
-                claim.Tools,
-                installationsByPlugin[claim.Plugin.Id].ConfigJson))
-            .Where(tool => tool.Policy != PluginConstants.ToolPolicy.Blocked)
+            .Select(claim => new OfferedPluginToolsDto(
+                claim.Plugin.PluginKey,
+                claim.Plugin.Label,
+                // Policy stays the member's own choice here and WorkspacePolicy carries the rule;
+                // the filter judges the stricter of the two.
+                WorkspaceToolRules.Apply(
+                        PluginToolPolicyStore.WithPolicies(
+                            claim.Tools,
+                            installationsByPlugin[claim.Plugin.Id].ConfigJson),
+                        WorkspaceToolRules.ForPlugin(workspaceRules, claim.Plugin.Id),
+                        effective: false)
+                    .Where(tool => WorkspaceToolRules.Effective(tool).Policy != PluginConstants.ToolPolicy.Blocked)
+                    .ToList()))
+            .Where(group => group.Tools.Count > 0)
             .ToList();
-
-        return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(tools);
     }
 
     /// <summary>
@@ -173,6 +207,27 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                 policyCheck.Error!,
                 ct);
 
+        // The workspace Owner's rule for this tool. Checked before anything the member owns, so a
+        // tool the Owner blocked is reported as the Owner's block - the one thing only they can
+        // lift - even when the member has not installed or connected the plugin yet. The guard
+        // above refuses a request without a workspace, so there always is one here.
+        var workspaceRule = request.WorkspaceId is Guid ruleWorkspaceId
+            ? WorkspaceToolRules.For(
+                WorkspaceToolRules.ForPlugin(
+                    await WorkspaceToolRules.LoadAsync(_unitOfWork, ruleWorkspaceId, [plugin.Id], ct),
+                    plugin.Id),
+                tool.Name)
+            : null;
+        if (workspaceRule == PluginConstants.ToolPolicy.Blocked)
+            return await McpToolAuditRecorder.RecordFailureAsync(
+                _unitOfWork,
+                userId,
+                plugin.Id,
+                request,
+                PluginConstants.ErrorCodes.WorkspaceToolBlocked,
+                $"{tool.Label} is blocked for WarpBot in this workspace. Only the workspace Owner can allow it again.",
+                ct);
+
         var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
             i => i.UserId == userId
                 && i.PluginId == plugin.Id
@@ -197,8 +252,8 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         // WT-687. The user's own choice for this tool. Blocked is refused here even though the list
         // never offers it: a model working from an earlier turn's tool list, or a caller that skips
         // the list, must not get through on a tool the user switched off.
-        var policy = PluginToolPolicyStore.Resolve(tool, PluginToolPolicyStore.Read(installation.ConfigJson));
-        if (policy == PluginConstants.ToolPolicy.Blocked)
+        var memberPolicy = PluginToolPolicyStore.Resolve(tool, PluginToolPolicyStore.Read(installation.ConfigJson));
+        if (memberPolicy == PluginConstants.ToolPolicy.Blocked)
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,
                 userId,
@@ -230,13 +285,22 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         if (missingScopes.Count > 0)
             return await McpToolAuditRecorder.RecordFailureAsync(_unitOfWork, userId, plugin.Id, request, PluginConstants.ErrorCodes.MissingScope, "Reconnect the provider account with the required scopes.", ct);
 
+        // What actually applies: the member's choice, tightened by the workspace's rule. Blocked
+        // was handled for both above, so this is allow or approval.
+        var policy = PluginConstants.ToolPolicy.Strictest(memberPolicy, workspaceRule);
+        var workspaceRequiresApproval = workspaceRule == PluginConstants.ToolPolicy.Approval;
+
+        // Set only when this call changes the tool's policy — see where it is attached to the
+        // result below.
+        string? appliedToolPolicy = null;
+
         // Asks when the user's policy says to, not when the tool writes. Before WT-687 the two were
         // the same thing; now a user can trust a write tool (allow) or want to see a read tool
         // coming (approval), and the policy already defaults to the old rule when they have not.
         if (policy == PluginConstants.ToolPolicy.Approval && string.IsNullOrWhiteSpace(request.ConfirmationToken))
         {
             var token = await _confirmationTokenService.CreateAsync(userId, plugin.Id, request, ct);
-            return await McpToolAuditRecorder.RecordFailureAsync(
+            var confirmationRequest = await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,
                 userId,
                 plugin.Id,
@@ -245,6 +309,11 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
                 "Confirm this action before WarpBot changes data in the connected app.",
                 ct,
                 confirmationToken: token.Value);
+            // The workspace asks every time, so "Always allow" would be stored on the member's
+            // account and change nothing. Say so, and the card leaves the option out.
+            return workspaceRequiresApproval && confirmationRequest.IsSuccess
+                ? Result.Success(confirmationRequest.Value! with { AlwaysAllowOffered = false })
+                : confirmationRequest;
         }
 
         if (policy == PluginConstants.ToolPolicy.Approval)
@@ -278,13 +347,16 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
 
             // "Always allow" on the card. Recorded only here, after a token that validated, so the
             // flag cannot turn a tool to allow without the user having been shown a real card for it.
-            if (request.AlwaysAllow)
+            // Not while the workspace asks every time: the member's allow would change nothing,
+            // and telling them the next call "will just run" would be untrue.
+            if (request.AlwaysAllow && !workspaceRequiresApproval)
             {
                 installation.ConfigJson = PluginToolPolicyStore.Write(
                     installation.ConfigJson,
                     new Dictionary<string, string> { [tool.Name] = PluginConstants.ToolPolicy.Allow });
                 _unitOfWork.PluginInstallationRepository.Update(installation);
                 await _unitOfWork.SaveChangesAsync(ct);
+                appliedToolPolicy = PluginConstants.ToolPolicy.Allow;
             }
         }
 
@@ -362,6 +434,13 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             result.IsSuccess ? "success" : result.ErrorCode ?? "failed",
             result.ProviderResourceRef,
             ct);
+
+        // The card is gone from this tool for good, and the result is the only thing on its way
+        // back to the person who pressed the button. Carried whether the call then succeeded or
+        // failed: the setting changed either way, and a silent change to what WarpBot may do
+        // without asking is exactly the kind a user should hear about once.
+        if (appliedToolPolicy != null)
+            result = result with { AppliedToolPolicy = appliedToolPolicy };
 
         return Result.Success(result);
     }

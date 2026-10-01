@@ -32,9 +32,18 @@ public class PaymentAppServiceCreditTopUpCheckoutTests
             .Callback<CreateCheckoutSessionRequest, CancellationToken>((r, _) => _sentToStripe = r)
             .ReturnsAsync(Result.Success("https://checkout.stripe.test/session"));
 
+        // backend#467: a top-up is sold only on top of a live plan; these tests buy for a workspace
+        // that has one (the refusal is pinned in PaymentAppServiceTests).
+        var subscriptions = new Mock<ISubscriptionRepository>();
+        subscriptions
+            .Setup(r => r.AnyAsync(It.IsAny<System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.Setup(u => u.SubscriptionRepository).Returns(subscriptions.Object);
+
         _service = new PaymentAppService(
             _stripePaymentService.Object,
-            Mock.Of<IUnitOfWork>(),
+            unitOfWork.Object,
             _logger.Object,
             Mock.Of<IBillingMessagePublisher>(),
             Array.Empty<IPaymentEventHandler>(),

@@ -10,6 +10,9 @@ public class AssistantConversationDto
     public DateTime CreatedAt { get; set; }
     public DateTime? LastMessageAt { get; set; }
     public bool IsArchived { get; set; }
+
+    /// <summary>"workspace" or "platform" — see <see cref="AssistantConversationScopes"/>.</summary>
+    public string Scope { get; set; } = AssistantConversationScopes.Workspace;
 }
 
 public class AssistantConversationDetailDto : AssistantConversationDto

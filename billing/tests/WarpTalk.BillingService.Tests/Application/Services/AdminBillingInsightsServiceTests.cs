@@ -7,6 +7,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 using WarpTalk.BillingService.Tests.Integration;
@@ -155,6 +156,36 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         dto.ActiveWorkspacesByMonth!.Select(m => m.Month).Should().Equal(
             "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09");
         dto.ActiveWorkspacesByMonth!.Select(m => m.ActiveWorkspaces).Should().Equal(0, 0, 0, 0, 0, 2);
+    }
+
+    /// <summary>
+    /// Profit and loss over the same seeded September: the same revenue and AI cost as the Insights cards
+    /// (no fx_rates rows, so the configured 25,000 converts), from the half-hour slot queries.
+    /// </summary>
+    [DockerFact]
+    public async Task ProfitAndLoss_AgreesWithTheInsightsFigures()
+    {
+        var result = await _service.GetProfitAndLossAsync(new AdminInsightsQuery
+        {
+            From = Utc(9, 1), To = Utc(10, 1), Compare = "previousMonth", Tz = "UTC",
+        });
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var pnl = result.Value!;
+        AdminInsightMetric P(string id) => pnl.Metrics.Single(m => m.Id == id);
+
+        P("revenue").Value.Should().Be(4_150_000m);
+        P("aiProviderCost").Value.Should().Be(30_000m);
+        P("grossMargin").Value.Should().Be(4_120_000m);
+        P("creditsConsumed").Value.Should().Be(61_450m);
+        P("activeWorkspaces").Value.Should().Be(3, "W1 and W2 consumed, W8 paid");
+        P("arpa").Value.Should().Be(1_383_333m);
+        pnl.Days.Should().HaveCount(30);
+        pnl.Days.Sum(d => d.Credits).Should().Be(61_450);
+        pnl.Months.Select(m => m.Key).Should().EndWith("2026-09");
+        pnl.TopWorkspaces.First().WorkspaceId.Should().Be(_w2);
+        pnl.TopWorkspaces.First().Days.Sum().Should().Be(61_000);
+        pnl.Plans.Should().NotBeEmpty();
+        pnl.Providers.Should().NotBeEmpty();
     }
 
     [DockerFact]
@@ -414,6 +445,52 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
     }
 
     // ── Seed ────────────────────────────────────────────────────────────────
+
+    // ── One workspace (the admin workspace page): the same counting rules, scoped ──────────
+
+    /// <summary>
+    /// W1 in September: cs_a counted, its in_a twin left out, in_b (no session twin) counted, and
+    /// cs_today counted — the rule Insights applies platform-wide, applied to one tenant.
+    /// </summary>
+    [DockerFact]
+    public async Task WorkspaceRevenue_CountsEachPaidChargeOnce_ForThatWorkspaceOnly()
+    {
+        var unitOfWork = new UnitOfWork(_context);
+
+        var paid = await unitOfWork.PaymentRepository.GetWorkspaceCountedPaidTotalsAsync(_w1, Utc(9, 1), Utc(10, 1));
+        var twins = await unitOfWork.PaymentRepository.CountWorkspaceStripeInvoiceDuplicatesAsync(_w1, Utc(9, 1), Utc(10, 1));
+
+        paid.Should().ContainSingle().Which.Should().Be(new PaymentCurrencyTotal("VND", 3, 1_650_000m));
+        twins.Should().Be(1);
+        (await unitOfWork.PaymentRepository.GetWorkspaceCountedPaidTotalsAsync(_w2, Utc(9, 1), Utc(10, 1)))
+            .Should().ContainSingle().Which.Total.Should().Be(2_000_000m);
+    }
+
+    [DockerFact]
+    public async Task WorkspaceConsumption_PricesOnlyThatWorkspacesRows()
+    {
+        var totals = await new UnitOfWork(_context).CreditTransactionRepository
+            .GetWorkspaceConsumptionTotalsAsync(_w1, Utc(9, 1), Utc(10, 1));
+
+        totals.CreditsConsumed.Should().Be(450);
+        totals.Transactions.Should().Be(3);
+        totals.CostCoveredTransactions.Should().Be(1);
+        totals.ProviderCostUsd.Should().Be(0.2m);
+    }
+
+    [DockerFact]
+    public async Task WorkspaceLedgerAndOutstandingInvoices_AreScopedToTheWorkspace()
+    {
+        var unitOfWork = new UnitOfWork(_context);
+
+        var ledger = await unitOfWork.CreditTransactionRepository.GetWorkspaceLedgerPointsAsync(_w1, Utc(9, 1), Utc(10, 1));
+        ledger.Select(p => p.Amount).Should().Equal(-100, -300, -50, 500);
+        ledger.Last().BalanceAfter.Should().Be(350);
+
+        (await unitOfWork.InvoiceRepository.GetOutstandingForWorkspaceAsync(_w2))
+            .Should().ContainSingle().Which.Total.Should().Be(1_000_000m);
+        (await unitOfWork.InvoiceRepository.GetOutstandingForWorkspaceAsync(_w1)).Should().BeEmpty();
+    }
 
     private async Task SeedAsync()
     {

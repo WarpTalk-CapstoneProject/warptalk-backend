@@ -184,6 +184,28 @@ public static class PluginConstants
 
         public static string DefaultFor(string effect) =>
             effect == ToolEffect.Read ? Allow : Approval;
+
+        /// <summary>
+        /// What a workspace Owner may set for a tool: ask every time, or never. There is no
+        /// workspace "allow" - it would overrule a member who blocked the tool on their own account.
+        /// </summary>
+        public static bool IsWorkspaceRule(string? value) =>
+            value is Approval or Blocked;
+
+        /// <summary>
+        /// The stricter of a member's choice and the workspace's rule (allow &lt; approval &lt;
+        /// blocked). A null rule is "member's choice" and leaves the member's policy as it is.
+        /// </summary>
+        public static string Strictest(string memberPolicy, string? workspaceRule) =>
+            Rank(workspaceRule) > Rank(memberPolicy) ? workspaceRule! : memberPolicy;
+
+        private static int Rank(string? policy) => policy switch
+        {
+            Blocked => 2,
+            Approval => 1,
+            Allow => 0,
+            _ => -1,
+        };
     }
 
     /// <summary>
@@ -238,6 +260,13 @@ public static class PluginConstants
         /// not something reconnecting fixes: the remedy is the user's own setting.
         /// </summary>
         public const string ToolBlocked = "tool_blocked";
+
+        /// <summary>
+        /// The workspace's Owner blocked this tool for everyone in the workspace. Kept apart from
+        /// <see cref="ToolBlocked"/> because the remedy is someone else's: only the Owner can lift it,
+        /// on the workspace plugin page, whatever the member chose.
+        /// </summary>
+        public const string WorkspaceToolBlocked = "workspace_tool_blocked";
 
         /// <summary>
         /// The tool ran and reported its own failure (<c>isError</c> in the result). WT-710. Kept
@@ -325,6 +354,14 @@ public static class PluginConstants
         /// rather than as an exception.
         /// </summary>
         public const string ClientRegistrationUnsupported = "client_registration_unsupported";
+
+        /// <summary>
+        /// GMCAL1001. An <c>alsoConnect</c> list on a connect request named something that cannot
+        /// ride on this consent: a plugin of a different provider, the clicked plugin itself, an
+        /// API-key row, a blank key, or more keys than the cap. Unknown, uninstalled and
+        /// policy-refused keys keep their own codes.
+        /// </summary>
+        public const string InvalidAlsoConnect = "invalid_also_connect";
     }
 
     /// <summary>

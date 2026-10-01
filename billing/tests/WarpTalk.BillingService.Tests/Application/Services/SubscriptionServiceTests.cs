@@ -109,6 +109,8 @@ public class SubscriptionServiceTests
 
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
 
@@ -151,6 +153,8 @@ public class SubscriptionServiceTests
 
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
 
@@ -173,12 +177,17 @@ public class SubscriptionServiceTests
         var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro" };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(It.IsAny<Guid>(), default)).ReturnsAsync(plan);
 
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, "No longer needed");
 
         result.IsSuccess.Should().BeTrue();
-        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Cancelled);
+        // WT-878: cancel-at-period-end is AutoRenew off; Status stays active so the plan's
+        // entitlements run to the end of the paid period.
+        subscription.AutoRenew.Should().BeFalse();
+        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Active);
         subscription.IsActive.Should().BeTrue(); // Still has access until period_end
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
     }
@@ -206,6 +215,8 @@ public class SubscriptionServiceTests
         _mockSubRepo
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default))
             .ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
 
         var result = await _subscriptionService.CancelSubscriptionAsync(Guid.NewGuid(), "again");
 
@@ -225,6 +236,8 @@ public class SubscriptionServiceTests
     public async Task CancelSubscriptionAsync_SubscriptionNotFound_ShouldReturnFailure()
     {
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CancelSubscriptionAsync(Guid.NewGuid(), null);
 
@@ -259,6 +272,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
 
         var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId);
@@ -289,6 +304,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
 
         var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId);
 
@@ -317,6 +334,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
 
         var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId);
 
@@ -343,12 +362,15 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
         _mockAiServiceStateStore
             .Setup(r => r.SetAiServiceStateAsync(workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, default))
             .ReturnsAsync(Result.Success());
 
-        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, new ResumeSubscriptionRequest("paid overdue invoice"));
+        // WT-878: invoice_overdue is liftable only by platform staff, which is what this call is.
+        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, new ResumeSubscriptionRequest("paid overdue invoice"), liftAnyReason: true);
 
         result.IsSuccess.Should().BeTrue();
         subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
@@ -371,6 +393,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
 
         var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, new ResumeSubscriptionRequest());
 
@@ -410,6 +434,8 @@ public class SubscriptionServiceTests
             BillingContactEmail: " billing@example.com ");
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
 
         var result = await _subscriptionService.UpdateContractTermsAsync(workspaceId, request);
@@ -446,6 +472,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
 
         var result = await _subscriptionService.UpdateContractTermsAsync(
@@ -481,6 +509,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
 
         var result = await _subscriptionService.UpdateContractTermsAsync(
@@ -513,6 +543,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
 
         var capResult = await _subscriptionService.UpdateContractTermsAsync(
@@ -562,6 +594,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
 
         var result = await _subscriptionService.UpdateContractTermsAsync(
@@ -599,6 +633,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default))
             // Simulate plan.Price was bumped to 2,200,000 after contract signed
             .ReturnsAsync(new Plan { Id = plan.Id, Name = plan.Name, Price = 2_200_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m });
@@ -632,6 +668,8 @@ public class SubscriptionServiceTests
 
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
 
@@ -655,6 +693,8 @@ public class SubscriptionServiceTests
 
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
 
@@ -678,6 +718,8 @@ public class SubscriptionServiceTests
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
         // No existing active subscription
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CreateTrialSubscriptionAsync(request);
 
@@ -691,6 +733,43 @@ public class SubscriptionServiceTests
             s.OverageCapCreditsOverride == 0 &&
             s.TrialEndsAt != null &&
             s.OwnerEmailDomain == "acme.com"), default), Times.Once);
+    }
+
+    /// <summary>
+    /// billing.trial.days / billing.trial.credits from /admin/settings are read for each new trial:
+    /// the same service instance grants the new values as soon as they are published.
+    /// </summary>
+    [Fact]
+    public async Task CreateTrialSubscriptionAsync_Uses_The_Live_Trial_Settings()
+    {
+        var source = new WarpTalk.Shared.PlatformSettings.InMemoryPlatformSettingsSource();
+        var reader = new WarpTalk.Shared.PlatformSettings.PlatformSettingsReader(
+            source, Microsoft.Extensions.Logging.Abstractions.NullLogger<WarpTalk.Shared.PlatformSettings.PlatformSettingsReader>.Instance,
+            cacheTtl: TimeSpan.Zero);
+        var service = new SubscriptionService(
+            _mockUnitOfWork.Object,
+            new Mock<ILogger<SubscriptionService>>().Object,
+            _mockMessagePublisher.Object,
+            _mockStripePaymentService.Object,
+            CreatePricingConfigService(),
+            new Mock<IWorkspaceClient>().Object,
+            _mockAiServiceStateStore.Object,
+            platformSettings: reader);
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, Slug = "enterprise", IsActive = true };
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Subscription?)null);
+
+        source.Set(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.TrialDays, 30)
+              .Set(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.TrialCredits, 50_000);
+        var first = await service.CreateTrialSubscriptionAsync(new TrialSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), "ceo@one.example"));
+        first.Value!.CreditsRemaining.Should().Be(50_000);
+        (first.Value.TrialEndsAt!.Value - DateTime.UtcNow).TotalDays.Should().BeApproximately(30, 0.1);
+
+        source.Set(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.TrialDays, 7);
+        var second = await service.CreateTrialSubscriptionAsync(new TrialSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), "ceo@two.example"));
+        (second.Value!.TrialEndsAt!.Value - DateTime.UtcNow).TotalDays.Should().BeApproximately(7, 0.1);
     }
 
     [Fact]
@@ -744,6 +823,8 @@ public class SubscriptionServiceTests
         };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
         _mockAiServiceStateStore.Setup(s => s.SetAiServiceStateAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), default))
             .ReturnsAsync(Result.Success());

@@ -5,7 +5,8 @@ namespace WarpTalk.AssistantService.Domain.Interfaces;
 public interface IPluginInstallationRepository : IGenericRepository<PluginInstallation>
 {
     /// <summary>
-    /// How many installations each catalog row has, keyed by plugin id.
+    /// How many users have each catalog row installed now, keyed by plugin id. A removed
+    /// (<c>disabled</c>) installation is not counted.
     /// </summary>
     /// <remarks>
     /// One grouped COUNT rather than loading <c>plugin_installations</c> and counting in memory:

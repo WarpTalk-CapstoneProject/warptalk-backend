@@ -53,7 +53,8 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         Guid userId,
         string? client = null,
         Guid? workspaceId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyList<string>? alsoConnect = null)
     {
         var plugin = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == pluginKey && p.IsActive, ct: ct);
         if (plugin == null)
@@ -77,7 +78,19 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         if (!installed)
             return Result.Failure<PluginConnectUrlDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
 
-        var url = await BuildAuthorizationUrlAsync(plugin, userId, client, ct);
+        // GMCAL1001. This route always goes to the provider, so every sibling simply joins the
+        // consent - no on-the-spot shortcut here, matching what connect-url has always meant.
+        var siblings = await ResolveAlsoConnectAsync(plugin, alsoConnect, userId, workspaceId, ct);
+        if (!siblings.IsSuccess)
+            return Result.Failure<PluginConnectUrlDto>(siblings.Error!, siblings.ErrorCode);
+
+        var url = await BuildAuthorizationUrlAsync(
+            plugin,
+            userId,
+            client,
+            ct,
+            consentFor: siblings.Value!.Count == 0 ? null : [plugin, .. siblings.Value!.Select(s => s.Plugin)],
+            alsoConnectKeys: siblings.Value!.Select(s => s.Plugin.PluginKey).ToList());
         return url.IsSuccess
             ? Result.Success(new PluginConnectUrlDto(url.Value!))
             : Result.Failure<PluginConnectUrlDto>(url.Error!, url.ErrorCode);
@@ -88,7 +101,8 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         Guid userId,
         string? client = null,
         Guid? workspaceId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyList<string>? alsoConnect = null)
     {
         // The same three gates as GetConnectUrlAsync, in the same order, so the two entry points
         // cannot refuse different things.
@@ -108,6 +122,15 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         if (installation == null)
             return Result.Failure<PluginConnectResultDto>("Plugin is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
+
+        // GMCAL1001. Validated before anything is decided, so a bad list refuses the whole request
+        // rather than connecting half of it. Empty when the caller asked for nothing extra, and then
+        // everything below runs exactly as it did before the opt-in existed.
+        var siblings = await ResolveAlsoConnectAsync(plugin, alsoConnect, userId, workspaceId, ct);
+        if (!siblings.IsSuccess)
+            return Result.Failure<PluginConnectResultDto>(siblings.Error!, siblings.ErrorCode);
+        if (siblings.Value!.Count > 0)
+            return await ConnectWithSiblingsAsync(plugin, installation, siblings.Value!, userId, client, ct);
 
         // Nothing to redirect to: an API key is pasted on the plugins page, never typed at a provider.
         if (plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
@@ -144,6 +167,167 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
         return url.IsSuccess
             ? Result.Success(new PluginConnectResultDto(false, url.Value))
             : Result.Failure<PluginConnectResultDto>(url.Error!, url.ErrorCode);
+    }
+
+    /// <summary>
+    /// GMCAL1001. Most sibling plugins one <c>alsoConnect</c> may name. A provider has a handful of
+    /// rows (Google has three); this only bounds a hostile body and the queries it would cost.
+    /// </summary>
+    public const int MaxAlsoConnect = 10;
+
+    /// <summary>A sibling the user opted to connect alongside the clicked plugin, already gated.</summary>
+    private sealed record SiblingTarget(Plugin Plugin, PluginInstallation Installation);
+
+    /// <summary>
+    /// GMCAL1001. Turns the caller's <c>alsoConnect</c> keys into gated siblings, or refuses.
+    /// </summary>
+    /// <remarks>
+    /// Each key passes the same gates the clicked plugin did - active, permitted by the workspace,
+    /// installed - plus the ones that make it a sibling at all: same provider, so one grant can carry
+    /// it, and not an API-key row, which has no consent to join. One bad key refuses the whole
+    /// request: connecting the valid half would act on a choice the user did not make as stated.
+    /// Duplicates collapse silently; naming the clicked plugin itself is refused as a malformed list.
+    /// </remarks>
+    private async Task<Result<IReadOnlyList<SiblingTarget>>> ResolveAlsoConnectAsync(
+        Plugin plugin,
+        IReadOnlyList<string>? alsoConnect,
+        Guid userId,
+        Guid? workspaceId,
+        CancellationToken ct)
+    {
+        if (alsoConnect is not { Count: > 0 })
+            return Result.Success<IReadOnlyList<SiblingTarget>>(Array.Empty<SiblingTarget>());
+
+        if (alsoConnect.Any(string.IsNullOrWhiteSpace))
+            return InvalidAlsoConnect("alsoConnect contains a blank plugin key.");
+
+        var keys = alsoConnect.Select(k => k.Trim()).Distinct(StringComparer.Ordinal).ToList();
+        if (keys.Count > MaxAlsoConnect)
+            return InvalidAlsoConnect($"alsoConnect may name at most {MaxAlsoConnect} plugins.");
+
+        var targets = new List<SiblingTarget>(keys.Count);
+        foreach (var key in keys)
+        {
+            if (string.Equals(key, plugin.PluginKey, StringComparison.Ordinal))
+                return InvalidAlsoConnect($"alsoConnect must not name the plugin being connected ('{key}').");
+
+            var sibling = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == key && p.IsActive, ct: ct);
+            if (sibling == null)
+                return Result.Failure<IReadOnlyList<SiblingTarget>>(
+                    $"Unknown plugin '{key}' in alsoConnect.", PluginConstants.ErrorCodes.UnknownPlugin);
+
+            if (!string.Equals(sibling.Provider, plugin.Provider, StringComparison.Ordinal))
+                return InvalidAlsoConnect($"'{key}' is not from the same provider as '{plugin.PluginKey}'.");
+
+            if (sibling.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+                return InvalidAlsoConnect($"'{key}' connects with an API key, not by signing in.");
+
+            var permitted = await _workspacePluginGuard.CanUsePluginAsync(workspaceId, userId, sibling, ct);
+            if (!permitted.IsSuccess)
+                return Result.Failure<IReadOnlyList<SiblingTarget>>(permitted.Error!, permitted.ErrorCode);
+
+            var installation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
+                i => i.UserId == userId
+                    && i.PluginId == sibling.Id
+                    && i.Status == PluginConstants.InstallationStatus.Installed,
+                ct: ct);
+            if (installation == null)
+                return Result.Failure<IReadOnlyList<SiblingTarget>>(
+                    $"Plugin '{key}' is not installed for this account.", PluginConstants.ErrorCodes.PluginNotInstalled);
+
+            targets.Add(new SiblingTarget(sibling, installation));
+        }
+
+        return Result.Success<IReadOnlyList<SiblingTarget>>(targets);
+
+        static Result<IReadOnlyList<SiblingTarget>> InvalidAlsoConnect(string error) =>
+            Result.Failure<IReadOnlyList<SiblingTarget>>(error, PluginConstants.ErrorCodes.InvalidAlsoConnect);
+    }
+
+    /// <summary>
+    /// GMCAL1001. <see cref="ConnectAsync"/> when the user opted to bring siblings along.
+    /// </summary>
+    /// <remarks>
+    /// The single-plugin decision, made per plugin. A plugin the live grant already covers is
+    /// connected on the spot; everything else shares ONE consent asking for the union of exactly
+    /// those plugins' scopes - never a scope of a plugin the user did not name. The clicked plugin
+    /// keeps its own rule: already connected means reconnect, so it always joins the consent.
+    /// A sibling that is already connected has nothing left to do and is left alone.
+    /// <para>
+    /// The URL is built before anything is stamped, so a provisioning failure refuses the request
+    /// without having connected part of it.
+    /// </para>
+    /// </remarks>
+    private async Task<Result<PluginConnectResultDto>> ConnectWithSiblingsAsync(
+        Plugin plugin,
+        PluginInstallation installation,
+        IReadOnlyList<SiblingTarget> siblings,
+        Guid userId,
+        string? client,
+        CancellationToken ct)
+    {
+        if (plugin.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+            return Result.Success(new PluginConnectResultDto(false, null, ApiKeyRequired: true));
+
+        var connection = await _unitOfWork.PluginConnectionRepository.FirstOrDefaultAsync(
+            c => c.UserId == userId && c.Provider == plugin.Provider, ct: ct);
+        var granted = connection is { Status: PluginConstants.ConnectionStatus.Connected }
+            ? PluginScopeMapper.FromJson(connection.ScopesJson).ToHashSet(StringComparer.Ordinal)
+            : null;
+
+        var onTheSpot = new List<SiblingTarget>();
+        var needConsent = new List<Plugin>();
+        foreach (var target in siblings.Prepend(new SiblingTarget(plugin, installation)))
+        {
+            var isMain = ReferenceEquals(target.Plugin, plugin);
+            if (target.Installation.ConnectedAt is not null)
+            {
+                if (isMain) needConsent.Add(target.Plugin);
+                continue;
+            }
+
+            if (granted != null && Satisfies(target.Plugin, granted))
+                onTheSpot.Add(target);
+            else
+                needConsent.Add(target.Plugin);
+        }
+
+        string? url = null;
+        if (needConsent.Count > 0)
+        {
+            var built = await BuildAuthorizationUrlAsync(
+                plugin,
+                userId,
+                client,
+                ct,
+                consentFor: needConsent,
+                alsoConnectKeys: needConsent
+                    .Where(p => !ReferenceEquals(p, plugin))
+                    .Select(p => p.PluginKey)
+                    .ToList());
+            if (!built.IsSuccess)
+                return Result.Failure<PluginConnectResultDto>(built.Error!, built.ErrorCode);
+            url = built.Value;
+        }
+
+        if (onTheSpot.Count > 0)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var target in onTheSpot)
+            {
+                target.Installation.ConnectedAt = now;
+                _unitOfWork.PluginInstallationRepository.Update(target.Installation);
+                await SyncToolManifestAsync(target.Plugin, connection!, now, ct);
+            }
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+
+        // Connected speaks for the clicked plugin, as it always has; a URL alongside it means the
+        // siblings still need the provider.
+        return Result.Success(new PluginConnectResultDto(
+            onTheSpot.Any(t => ReferenceEquals(t.Plugin, plugin)),
+            url,
+            ConnectedPluginKeys: onTheSpot.Count > 0 ? onTheSpot.Select(t => t.Plugin.PluginKey).ToList() : null));
     }
 
     /// <summary>Longest key accepted. Real API keys are far shorter; this only bounds a hostile body.</summary>
@@ -275,11 +459,19 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             connection));
     }
 
+    /// <param name="consentFor">
+    /// GMCAL1001. The plugins whose scopes this one consent asks for, when that is not simply
+    /// <paramref name="plugin"/> - the opt-in sibling connect. Null keeps the request to the
+    /// clicked plugin's own scopes, which is every connect that did not opt in.
+    /// </param>
+    /// <param name="alsoConnectKeys">The sibling keys sealed into the state for the callback.</param>
     private async Task<Result<string>> BuildAuthorizationUrlAsync(
         Plugin plugin,
         Guid userId,
         string? client,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyList<Plugin>? consentFor = null,
+        IReadOnlyList<string>? alsoConnectKeys = null)
     {
         // For an MCP-backed row this is where discovery runs and the registration ladder settles
         // on a client identity, because everything the authorization URL needs - endpoints, client
@@ -290,9 +482,13 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
         // WT-710: MCP Authorization's scope selection (challenge, then scopes_supported) on top of
         // whatever the row declares. A native row has no discovery and asks for its declared set.
-        var scopes = McpScopeSelection.Select(
-            PluginScopeMapper.FromJson(plugin.RequiredScopesJson),
-            provisioned.Value?.Discovery);
+        var requiredScopes = consentFor is null
+            ? PluginScopeMapper.FromJson(plugin.RequiredScopesJson)
+            : consentFor
+                .SelectMany(p => PluginScopeMapper.FromJson(p.RequiredScopesJson))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        var scopes = McpScopeSelection.Select(requiredScopes, provisioned.Value?.Discovery);
         var oauthClient = OAuthClientFor(plugin);
 
         // Prepare, then seal, then build: the provider produces the secrets that must round-trip
@@ -305,7 +501,8 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
                 userId,
                 plugin.PluginKey,
                 Client: PluginConstants.OAuthClient.Normalize(client),
-                RequestedScopes: scopes));
+                RequestedScopes: scopes,
+                AlsoConnect: alsoConnectKeys is { Count: > 0 } ? alsoConnectKeys : null));
         var state = _stateProtector.Protect(flowState);
         return Result.Success(oauthClient.BuildAuthorizationUrl(plugin, scopes, state, flowState));
     }
@@ -637,6 +834,10 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
 
             await SyncToolManifestAsync(plugin, connection, now, ct);
 
+            // GMCAL1001. The one exception to the rule above: siblings the user explicitly named
+            // in this consent. Still never inferred from the grant alone.
+            await ConnectOptedInSiblingsAsync(plugin, oauthState, connection, token.GrantedScopes, now, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             return new PluginOAuthCallbackOutcomeDto(
@@ -718,6 +919,65 @@ public class PluginConnectionService : IPluginConnectionService, IPluginTokenRef
             .All(sibling => Satisfies(sibling, granted))
             ? PluginConstants.CallbackStatus.Connected
             : PluginConstants.CallbackStatus.Partial;
+    }
+
+    /// <summary>
+    /// GMCAL1001. Marks connected each <c>alsoConnect</c> sibling sealed into the state whose
+    /// required scopes the grant that just came back covers.
+    /// </summary>
+    /// <remarks>
+    /// A sibling whose box the user cleared on the consent screen simply stays unconnected; the
+    /// clicked plugin is not failed for it. Judged against the granted set as returned, never
+    /// unioned with what was stored before - see <see cref="ScopeOutcomeAsync"/> for why.
+    /// <para>
+    /// No workspace gate, for the reason <see cref="SyncToolManifestAsync"/> gives: these keys were
+    /// gated when the flow started, and the callback has no workspace to judge against. Provider,
+    /// activity and installation are re-checked because they can change during the round trip.
+    /// </para>
+    /// </remarks>
+    private async Task ConnectOptedInSiblingsAsync(
+        Plugin plugin,
+        PluginOAuthStateDto oauthState,
+        PluginConnection connection,
+        IReadOnlyList<string> grantedScopes,
+        DateTime now,
+        CancellationToken ct)
+    {
+        if (oauthState.AlsoConnect is not { Count: > 0 } keys) return;
+
+        var granted = new HashSet<string>(grantedScopes, StringComparer.Ordinal);
+        foreach (var key in keys
+                     .Where(k => !string.IsNullOrWhiteSpace(k) && !string.Equals(k, plugin.PluginKey, StringComparison.Ordinal))
+                     .Distinct(StringComparer.Ordinal)
+                     .Take(MaxAlsoConnect))
+        {
+            var sibling = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(p => p.PluginKey == key && p.IsActive, ct: ct);
+            if (sibling == null
+                || !string.Equals(sibling.Provider, plugin.Provider, StringComparison.Ordinal)
+                || sibling.OAuthClientSource == PluginConstants.OAuthClientSource.ApiKey)
+                continue;
+
+            if (!Satisfies(sibling, granted))
+            {
+                _logger.LogInformation(
+                    "Plugin {PluginKey} was opted in to a {Provider} consent but its scopes were not granted; "
+                        + "it stays unconnected.",
+                    key,
+                    plugin.Provider);
+                continue;
+            }
+
+            var siblingInstallation = await _unitOfWork.PluginInstallationRepository.FirstOrDefaultAsync(
+                i => i.UserId == oauthState.UserId
+                    && i.PluginId == sibling.Id
+                    && i.Status == PluginConstants.InstallationStatus.Installed,
+                ct: ct);
+            if (siblingInstallation == null) continue;
+
+            siblingInstallation.ConnectedAt = now;
+            _unitOfWork.PluginInstallationRepository.Update(siblingInstallation);
+            await SyncToolManifestAsync(sibling, connection, now, ct);
+        }
     }
 
     private static bool Satisfies(Plugin plugin, HashSet<string> grantedScopes) =>

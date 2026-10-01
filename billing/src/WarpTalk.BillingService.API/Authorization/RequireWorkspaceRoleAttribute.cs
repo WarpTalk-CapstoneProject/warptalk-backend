@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.BillingService.API.Authorization;
@@ -22,19 +23,34 @@ public sealed class RequireWorkspaceRoleAttribute : TypeFilterAttribute
 internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
 {
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IStaffAccessResolver _staffAccess;
     private readonly string[] _allowedRoles;
 
-    public RequireWorkspaceRoleFilter(IWorkspaceClient workspaceClient, string[] allowedRoles)
+    public RequireWorkspaceRoleFilter(IWorkspaceClient workspaceClient, IStaffAccessResolver staffAccess, string[] allowedRoles)
     {
         _workspaceClient = workspaceClient;
+        _staffAccess = staffAccess;
         _allowedRoles = allowedRoles;
     }
+
+    /// <summary>
+    /// G10: what a platform staff member needs to act on a workspace's OWN billing endpoints
+    /// (the ones listing SystemAdmin): billing.read to look, billing.subscriptions_manage to
+    /// change anything. Before staff roles every "admin" token passed here, which would now mean
+    /// a Read-only Auditor could start a checkout for somebody else's workspace.
+    /// </summary>
+    internal static string StaffOverridePermission(string httpMethod) =>
+        HttpMethods.IsGet(httpMethod) || HttpMethods.IsHead(httpMethod)
+            ? AdminPermissions.BillingRead
+            : AdminPermissions.BillingSubscriptionsManage;
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         if (_allowedRoles.Contains(WorkspaceRoleConstants.SystemAdmin) &&
-            (context.HttpContext.User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
-             context.HttpContext.User.IsInRole(WorkspaceRoleConstants.Admin)))
+            await _staffAccess.StaffOverrideAllowsAsync(
+                context.HttpContext.User,
+                StaffOverridePermission(context.HttpContext.Request.Method),
+                context.HttpContext.RequestAborted))
         {
             await next();
             return;

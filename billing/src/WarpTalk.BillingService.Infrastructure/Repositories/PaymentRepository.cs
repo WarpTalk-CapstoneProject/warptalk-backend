@@ -84,12 +84,88 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
         // asked to shape. Three scalars per paid payment; bucketing by local day happens in the
         // calculator because a UTC date_trunc would put a Vietnam evening on the wrong day.
         var rows = await CountedPaidIn(from, to)
-            .Select(p => new { At = p.PaidAt ?? p.UpdatedAt, Currency = p.Currency.ToUpper(), p.TotalAmount })
+            .Select(p => new
+            {
+                At = p.PaidAt ?? p.UpdatedAt,
+                Currency = p.Currency.ToUpper(),
+                p.TotalAmount,
+                // For the profit-and-loss report: who paid, and on which plan.
+                WorkspaceId = (Guid?)p.Subscription.WorkspaceId,
+                PlanId = (Guid?)p.Subscription.PlanId,
+            })
             .ToListAsync(cancellationToken);
 
         return rows
-            .Select(r => new PaidAmountRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Currency, r.TotalAmount))
+            .Select(r => new PaidAmountRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Currency, r.TotalAmount, r.WorkspaceId, r.PlanId))
             .ToList();
+    }
+
+    public async Task<IReadOnlyList<ProviderPaymentRow>> GetProviderPaymentsAsync(
+        string provider, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var key = provider.Trim().ToLowerInvariant();
+        var paid = await CountedPaidIn(from, to)
+            .Where(p => p.Provider.ToLower() == key)
+            .Select(p => new
+            {
+                At = p.PaidAt ?? p.UpdatedAt,
+                p.Status,
+                Currency = p.Currency.ToUpper(),
+                p.TotalAmount,
+                WorkspaceId = (Guid?)p.Subscription.WorkspaceId,
+            })
+            .ToListAsync(cancellationToken);
+        var failed = await _dbSet.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.Provider.ToLower() == key
+                        && p.Status == PaymentConstants.PaymentStatuses.Failed
+                        && p.UpdatedAt >= from
+                        && p.UpdatedAt < to)
+            .Select(p => new
+            {
+                At = p.UpdatedAt,
+                p.Status,
+                Currency = p.Currency.ToUpper(),
+                p.TotalAmount,
+                WorkspaceId = (Guid?)p.Subscription.WorkspaceId,
+            })
+            .ToListAsync(cancellationToken);
+
+        return paid.Concat(failed)
+            .Select(r => new ProviderPaymentRow(DateTime.SpecifyKind(r.At, DateTimeKind.Utc), r.Status, r.Currency, r.TotalAmount, r.WorkspaceId))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<PaymentCurrencyTotal>> GetWorkspaceCountedPaidTotalsAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var rows = await WithoutStripeInvoiceDuplicates(OfWorkspace(PaidIn(from, to), workspaceId))
+            .GroupBy(p => p.Currency.ToUpper())
+            .Select(g => new { Currency = g.Key, Payments = g.Count(), Total = g.Sum(p => p.TotalAmount) })
+            .ToListAsync(cancellationToken);
+
+        return rows.Select(r => new PaymentCurrencyTotal(r.Currency, r.Payments, r.Total)).ToList();
+    }
+
+    public async Task<int> CountWorkspaceStripeInvoiceDuplicatesAsync(
+        Guid workspaceId, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        var paid = OfWorkspace(PaidIn(from, to), workspaceId);
+        var all = await paid.CountAsync(cancellationToken);
+        var counted = await WithoutStripeInvoiceDuplicates(paid).CountAsync(cancellationToken);
+        return all - counted;
+    }
+
+    /// <summary>
+    /// Scoped through the payment's subscription. The twin rule itself stays platform-wide on
+    /// purpose: a checkout session and its invoice belong to the same subscription, so filtering
+    /// first and de-duplicating after cannot orphan a twin.
+    /// </summary>
+    private IQueryable<Payment> OfWorkspace(IQueryable<Payment> source, Guid workspaceId)
+    {
+        var subscriptionIds = _context.Set<Subscription>().IgnoreQueryFilters()
+            .Where(s => s.WorkspaceId == workspaceId)
+            .Select(s => s.Id);
+        return source.Where(p => subscriptionIds.Contains(p.SubscriptionId));
     }
 
     public async Task<IReadOnlyList<RecentPaymentRow>> GetRecentChargesAsync(int take, CancellationToken cancellationToken = default)
@@ -155,5 +231,17 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
                 && c.Currency.ToUpper() == p.Currency.ToUpper()
                 && (c.PaidAt ?? c.UpdatedAt) >= (p.PaidAt ?? p.UpdatedAt).AddHours(-1)
                 && (c.PaidAt ?? c.UpdatedAt) <= (p.PaidAt ?? p.UpdatedAt).AddHours(1))));
+    }
+
+    public async Task<IReadOnlyList<InboxPaymentRow>> GetDisputedSinceAsync(DateTime since, int take, CancellationToken cancellationToken = default)
+    {
+        var rows = await _dbSet.AsNoTracking()
+            .Where(p => p.Status == PaymentConstants.PaymentStatuses.Disputed && p.UpdatedAt >= since)
+            .OrderByDescending(p => p.UpdatedAt)
+            .Take(take)
+            .Select(p => new { p.Id, p.Subscription.WorkspaceId, p.TotalAmount, p.Currency, p.Provider, p.UpdatedAt })
+            .ToListAsync(cancellationToken);
+
+        return rows.Select(r => new InboxPaymentRow(r.Id, r.WorkspaceId, r.TotalAmount, r.Currency, r.Provider, r.UpdatedAt)).ToList();
     }
 }

@@ -144,7 +144,8 @@ public class AdminMeetingService : IAdminMeetingService
 
     public async Task<Result<AdminMeetingInsightsDto>> GetInsightsAsync(
         AdminInsightsQuery query,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? workspaceId = null)
     {
         if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
         {
@@ -160,7 +161,7 @@ public class AdminMeetingService : IAdminMeetingService
             // current one), then clipped per window in memory.
             var spanFrom = window.PreviousFrom < window.From ? window.PreviousFrom : window.From;
             var spanTo = window.PreviousTo > window.To ? window.PreviousTo : window.To;
-            var spans = await rooms.GetAdminMeetingSpansAsync(spanFrom, spanTo, ct);
+            var spans = await rooms.GetAdminMeetingSpansAsync(spanFrom, spanTo, ct, workspaceId);
 
             var current = AdminMeetingInsightsCalculator.Totals(spans, window.From, window.To, now);
             var previous = AdminMeetingInsightsCalculator.Totals(spans, window.PreviousFrom, window.PreviousTo, now);

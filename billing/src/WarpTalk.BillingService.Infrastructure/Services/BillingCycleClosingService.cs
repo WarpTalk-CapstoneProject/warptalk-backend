@@ -98,6 +98,14 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         DateTime now,
         CancellationToken cancellationToken)
     {
+        // #466: the cycle close owns invoice rows only. The query already says so; this is the
+        // guard for the manual close-now path and for a row that changed owner between the select
+        // and here (the xmin token then fails the save rather than granting twice).
+        if (subscription.RenewalMode != SubscriptionConstants.RenewalModes.Invoice)
+        {
+            return $"Subscription {subscription.Id} renews through {subscription.RenewalMode}, not an invoice.";
+        }
+
         var plan = subscription.Plan ?? throw new InvalidOperationException("Billing cycle close requires subscription.Plan to be loaded.");
         var creditsPerCycle = subscription.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
         var invoiceTermsDays = subscription.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays;
@@ -156,7 +164,16 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
 
         var (newStart, newEnd) = SubscriptionRenewalHelper.CalculateNextCycleDates(subscription.CurrentPeriodEnd, plan.BillingCycle);
 
-        _domainService.RenewCycle(subscription);
+        // WT-878: the rollover cap applies to plan leftover only; purchased credits carry over
+        // whole, and anything the cap removes is a credit_forfeit ledger row (staged before the
+        // grant row below). Shared with the Stripe renewal so both paths renew identically.
+        await CycleRenewalCredits.RenewAsync(
+            _unitOfWork,
+            _domainService,
+            subscription,
+            CycleRenewalCredits.CycleCloseForfeitKey(subscription.Id, newStart),
+            now,
+            cancellationToken);
         subscription.CurrentPeriodStart = newStart;
         subscription.CurrentPeriodEnd = newEnd;
         subscription.UpdatedAt = now;

@@ -177,4 +177,40 @@ public class EntitlementReconcileWorkerTests
 
         _enqueued.Should().BeEmpty();
     }
+
+    /// <summary>
+    /// The sweep only ever asked for ACTIVE rows, and expiring a subscription is exactly what takes
+    /// a row out of that set — so the one change the WT-515 paywall most needed was the one this
+    /// could never repair. A workspace that expired on 23 Sep kept has_active_subscription = true.
+    /// </summary>
+    [Fact]
+    public async Task ARecentlyLapsedWorkspaceIsRepublishedSoThePaywallCloses()
+    {
+        var live = Guid.NewGuid();
+        var lapsed = Guid.NewGuid();
+        _subscriptions
+            .Setup(r => r.GetActiveSubscriptionsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Subscription> { For(live) });
+        _subscriptions
+            .Setup(r => r.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((System.Linq.Expressions.Expression<Func<Subscription, bool>> predicate, CancellationToken _) =>
+                new List<Subscription>
+                {
+                    new()
+                    {
+                        Id = Guid.NewGuid(), WorkspaceId = lapsed, IsActive = false,
+                        Status = SubscriptionConstants.SubscriptionStatuses.Expired, UpdatedAt = DateTime.UtcNow.AddDays(-1),
+                    },
+                    new()
+                    {
+                        Id = Guid.NewGuid(), WorkspaceId = Guid.NewGuid(), IsActive = false,
+                        Status = SubscriptionConstants.SubscriptionStatuses.Expired,
+                        UpdatedAt = DateTime.UtcNow.AddDays(-(EntitlementReconcileWorker.LapsedLookbackDays + 5)),
+                    },
+                }.Where(predicate.Compile()).ToList());
+
+        await Build().ReconcileAsync(CancellationToken.None);
+
+        _enqueued.Select(e => e.WorkspaceId).Should().BeEquivalentTo(new[] { live, lapsed });
+    }
 }

@@ -32,6 +32,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
     private readonly ILogger<AdminBillingInsightsService> _logger;
     private readonly TimeProvider _time;
     private readonly ICartesiaUsageSyncStatus _cartesiaSync;
+    private readonly IFxRateService? _fx;
 
     public const string CartesiaRemainingCreditsNote =
         "Cartesia's API reports usage only, not the credit balance; see play.cartesia.ai/subscription";
@@ -42,8 +43,10 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         IWorkspaceClient workspaceClient,
         ILogger<AdminBillingInsightsService> logger,
         TimeProvider? timeProvider = null,
-        ICartesiaUsageSyncStatus? cartesiaSync = null)
+        ICartesiaUsageSyncStatus? cartesiaSync = null,
+        IFxRateService? fx = null)
     {
+        _fx = fx;
         _unitOfWork = unitOfWork;
         _pricingConfig = pricingConfig;
         _workspaceClient = workspaceClient;
@@ -246,6 +249,218 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             return Result.Failure<AdminBillingSnapshotDto>(
                 "An unexpected error occurred while building the billing snapshot.", ErrorCodes.InternalServerError);
         }
+    }
+
+    public const int TopTrendWorkspaceCount = 5;
+
+    public async Task<Result<AdminProfitAndLossDto>> GetProfitAndLossAsync(AdminInsightsQuery query, CancellationToken ct = default)
+    {
+        if (!AdminComparisonRange.TryResolve(query, out var window, out var error))
+        {
+            return Result.Failure<AdminProfitAndLossDto>(error!, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var now = _time.GetUtcNow().UtcDateTime;
+            var months = AdminComparisonRange.MonthsEnding(window.To, window.TimeZone);
+            var spanFrom = new[] { window.From, window.PreviousFrom, months[0].Start }.Min();
+            var spanTo = new[] { window.To, window.PreviousTo, months[^1].End }.Max();
+
+            // One read of each source over the whole span; every window below is cut from it in memory.
+            var transactions = _unitOfWork.CreditTransactionRepository;
+            var slots = await transactions.GetConsumptionSlotsAsync(spanFrom, spanTo, ct);
+            var workspaceSlots = await transactions.GetWorkspaceSlotsAsync(spanFrom, spanTo, ct);
+            var payments = await _unitOfWork.PaymentRepository.GetCountedPaidAmountsAsync(spanFrom, spanTo, ct);
+            var lastCartesiaDay = DateOnly.FromDateTime(spanTo < now ? spanTo : now);
+            var cartesiaDays = await ReadCartesiaDaysAsync(DateOnly.FromDateTime(spanFrom), lastCartesiaDay, ct);
+            var usdPerCredit = await ReadCartesiaUsdPerCreditAsync(ct);
+            var fxTable = await ReadFxTableAsync(ct);
+
+            var inputs = new ProfitAndLossInputs(slots, workspaceSlots, payments, cartesiaDays, usdPerCredit, fxTable, now);
+            var current = ProfitAndLossCalculator.Compute(inputs, window.From, window.To);
+            var previous = ProfitAndLossCalculator.Compute(inputs, window.PreviousFrom, window.PreviousTo);
+
+            var metrics = new List<AdminInsightMetric>
+            {
+                Metric("revenue", AdminInsightUnits.Money, true, current.Revenue, previous.Revenue),
+                Metric("aiProviderCost", AdminInsightUnits.Money, false, current.AiCost, previous.AiCost),
+                Metric("grossMargin", AdminInsightUnits.Money, true, current.GrossMargin, previous.GrossMargin),
+                Metric("grossMarginPercent", AdminInsightUnits.Percent, true, current.GrossMarginPercent, previous.GrossMarginPercent),
+                Metric("arpa", AdminInsightUnits.Money, true, current.Arpa, previous.Arpa),
+                new AdminInsightMetric("activeWorkspaces", current.ActiveWorkspaces, previous.ActiveWorkspaces, AdminInsightUnits.Count, true,
+                    "workspaces that paid or used credits in the period"),
+                new AdminInsightMetric("creditsConsumed", current.Credits, previous.Credits, AdminInsightUnits.Credits, true),
+            };
+
+            var days = window.Days();
+            var dayRows = days
+                .Select(day => PeriodRow(day.Key, ProfitAndLossCalculator.Compute(inputs, day.Start, day.End), fxTable, day.Start))
+                .ToList();
+            var monthRows = months
+                .Select(month => PeriodRow(month.Key, ProfitAndLossCalculator.Compute(inputs, month.Start, month.End), fxTable,
+                    (month.End < now ? month.End : now).AddTicks(-1)))
+                .ToList();
+
+            var plans = await PlanRowsAsync(current, ct);
+            var top = await TopWorkspaceTrendsAsync(workspaceSlots, window.From, window.To, days, plans, ct);
+
+            return Result.Success(new AdminProfitAndLossDto(
+                window.Range,
+                window.PreviousRange,
+                now,
+                metrics,
+                current.AiCostUsd,
+                current.CoveragePercent,
+                current.AiCost.Note,
+                FxRateTable.Describe(current.FxUsed),
+                dayRows,
+                monthRows,
+                current.Providers.Select(ProviderRow).ToList(),
+                plans,
+                top,
+                _fx is null ? null : await _fx.GetStatusAsync(ct)));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin profit and loss failed. From: {From} To: {To}", window.From, window.To);
+            return Result.Failure<AdminProfitAndLossDto>(
+                "An unexpected error occurred while building the profit and loss report.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    private async Task<FxRateTable> ReadFxTableAsync(CancellationToken ct)
+    {
+        if (_fx is not null) return await _fx.GetTableAsync(ct);
+        var rows = await _unitOfWork.FxRates.GetPairAsync(FxRateConstants.Usd, FxRateConstants.Vnd, ct);
+        return FxRateTable.From(rows, await ReadFxAsync(ct));
+    }
+
+    private static AdminPnlPeriodDto PeriodRow(string key, PeriodPnl period, FxRateTable fx, DateTime rateAt)
+        => new(
+            key,
+            period.Revenue.Value,
+            period.AiCost.Value,
+            period.AiCostUsd,
+            period.GrossMargin.Value,
+            period.GrossMarginPercent.Value,
+            period.Credits,
+            period.CoveragePercent,
+            period.ActiveWorkspaces,
+            period.Arpa.Value,
+            fx.Resolve(rateAt).Rate,
+            period.Providers.Select(p => new AdminProviderPeriodDto(p.Provider, p.Credits, p.CostUsd, p.CostVnd)).ToList());
+
+    private static AdminProviderCostDto ProviderRow(ProviderFigures provider)
+    {
+        var coverage = provider.Credits <= 0 ? 100m : Math.Round(provider.CoveredCredits * 100m / provider.Credits, 1, MidpointRounding.AwayFromZero);
+        var uncovered = provider.Services.Where(s => s.Credits > s.CoveredCredits).Select(s => s.ChargeType).ToList();
+        var notes = new List<string>();
+        if (uncovered.Count > 0)
+        {
+            notes.Add($"no provider price for {string.Join(", ", uncovered)}: its cost is not in this figure");
+        }
+
+        if (provider.MeasuredUsd > 0) notes.Add("measured from the provider's usage API on synced days");
+        return new AdminProviderCostDto(
+            provider.Provider,
+            provider.Credits,
+            provider.CoveredCredits,
+            coverage,
+            provider.CostUsd,
+            provider.CostVnd,
+            provider.MeasuredUsd,
+            provider.Services
+                .Select(s => new AdminProviderServiceDto(s.ChargeType, AiProviderCatalog.ServiceOf(s.ChargeType), s.Credits, s.CoveredCredits, s.CostUsd))
+                .ToList(),
+            notes.Count == 0 ? null : string.Join("; ", notes));
+    }
+
+    public const string UnattributedPlanSlug = "unattributed";
+
+    private async Task<IReadOnlyList<AdminPlanMarginDto>> PlanRowsAsync(PeriodPnl period, CancellationToken ct)
+    {
+        var ids = period.Plans.Where(p => p.PlanId.HasValue).Select(p => p.PlanId!.Value).Distinct().ToArray();
+        var labels = ids.Length == 0
+            ? new Dictionary<Guid, (string Slug, string Name)>()
+            : (await _unitOfWork.Plans.FindAsync(plan => ids.Contains(plan.Id), ct))
+                .ToDictionary(plan => plan.Id, plan => (plan.Slug, plan.Name));
+
+        return period.Plans
+            .Where(plan => plan.Credits > 0 || plan.Payments > 0 || plan.CostUsd > 0)
+            .Select(plan =>
+            {
+                var (slug, name) = plan.PlanId is { } id
+                    ? labels.TryGetValue(id, out var label) ? label : ("unknown", "Unknown plan")
+                    : (UnattributedPlanSlug, "Not attributable to a plan");
+                var coverage = plan.Credits <= 0 ? 100m : Math.Round(plan.CoveredCredits * 100m / plan.Credits, 1, MidpointRounding.AwayFromZero);
+                var revenue = new AdminBillingInsightsCalculator.MetricSide(plan.RevenueVnd, plan.RevenueVnd is null ? "payments in a currency with no rate to VND" : null);
+
+                AdminBillingInsightsCalculator.MetricSide cost;
+                if (plan.Credits > 0 && plan.CoveredCredits == 0 && plan.CostUsd == 0)
+                    cost = AdminBillingInsightsCalculator.MetricSide.Unavailable("none of its credits has a provider cost");
+                else if (plan.CostVnd is null)
+                    cost = AdminBillingInsightsCalculator.MetricSide.Unavailable("no USD→VND rate");
+                else
+                    cost = new(plan.CostVnd, coverage < 100m
+                        ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"AI cost covers {coverage:0.#}% of its credits, so the margin is overstated")
+                        : null);
+
+                var margin = ProfitAndLossCalculator.GrossMargin(revenue, cost, 100m, [], 0);
+                var percent = ProfitAndLossCalculator.MarginPercent(revenue, margin);
+                var arpa = ProfitAndLossCalculator.Arpa(revenue, plan.ActiveWorkspaces);
+                var note = string.Join("; ", new[] { revenue.Note, cost.Note }.Where(n => n is not null));
+                return new AdminPlanMarginDto(
+                    plan.PlanId, slug, name, plan.RevenueVnd, plan.Credits, cost.Value, margin.Value, percent.Value,
+                    plan.ActiveWorkspaces, arpa.Value, coverage, note.Length == 0 ? null : note);
+            })
+            .OrderByDescending(plan => plan.Revenue ?? 0m)
+            .ThenByDescending(plan => plan.Credits)
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<AdminWorkspaceCreditsTrendDto>> TopWorkspaceTrendsAsync(
+        IReadOnlyList<WorkspaceSlotRow> slots,
+        DateTime from,
+        DateTime to,
+        IReadOnlyList<AdminLocalDay> days,
+        IReadOnlyList<AdminPlanMarginDto> plans,
+        CancellationToken ct)
+    {
+        var inWindow = slots.Where(row => row.SlotStart >= from && row.SlotStart < to && row.Credits > 0).ToList();
+        var top = inWindow
+            .GroupBy(row => row.WorkspaceId)
+            .Select(group => (WorkspaceId: group.Key, Credits: group.Sum(row => row.Credits), Rows: group.ToList()))
+            .OrderByDescending(workspace => workspace.Credits)
+            .ThenBy(workspace => workspace.WorkspaceId)
+            .Take(TopTrendWorkspaceCount)
+            .ToList();
+        if (top.Count == 0) return Array.Empty<AdminWorkspaceCreditsTrendDto>();
+
+        var names = await ResolveNamesAsync(top.Select(workspace => workspace.WorkspaceId), ct);
+        var planNames = plans.Where(p => p.PlanId.HasValue).ToDictionary(p => p.PlanId!.Value, p => p.PlanName);
+        return top
+            .Select(workspace =>
+            {
+                var perDay = new long[days.Count];
+                foreach (var row in workspace.Rows)
+                {
+                    var index = AdminComparisonRange.IndexOfDay(days, row.SlotStart);
+                    if (index >= 0) perDay[index] += row.Credits;
+                }
+
+                var mainPlan = workspace.Rows
+                    .GroupBy(row => row.PlanId)
+                    .OrderByDescending(group => group.Sum(row => row.Credits))
+                    .First().Key;
+                return new AdminWorkspaceCreditsTrendDto(
+                    workspace.WorkspaceId,
+                    NameOf(names, workspace.WorkspaceId),
+                    mainPlan is { } planId && planNames.TryGetValue(planId, out var planName) ? planName : null,
+                    workspace.Credits,
+                    perDay);
+            })
+            .ToList();
     }
 
     private async Task<PeriodMetrics> ReadPeriodAsync(

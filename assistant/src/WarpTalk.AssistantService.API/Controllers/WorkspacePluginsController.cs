@@ -28,10 +28,17 @@ namespace WarpTalk.AssistantService.API.Controllers;
 public class WorkspacePluginsController : ControllerBase
 {
     private readonly IWorkspacePluginMarketplaceService _service;
+    private readonly IWorkspacePluginMemberService _memberService;
+    private readonly IWorkspaceToolPolicyService _toolPolicyService;
 
-    public WorkspacePluginsController(IWorkspacePluginMarketplaceService service)
+    public WorkspacePluginsController(
+        IWorkspacePluginMarketplaceService service,
+        IWorkspacePluginMemberService memberService,
+        IWorkspaceToolPolicyService toolPolicyService)
     {
         _service = service;
+        _memberService = memberService;
+        _toolPolicyService = toolPolicyService;
     }
 
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
@@ -42,6 +49,46 @@ public class WorkspacePluginsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetOverview(Guid workspaceId, CancellationToken ct) =>
         ToResponse(await _service.GetOverviewAsync(workspaceId, CurrentUserId, User.GetEmail(), ct));
+
+    /// <summary>
+    /// The workspace's members who have connected this plugin: when, their connection's state, and
+    /// their last use here. Owner or Admin. Connection metadata only - never a token or an account.
+    /// </summary>
+    [HttpGet("{pluginKey}/members")]
+    [ProducesResponseType(typeof(IReadOnlyList<WorkspacePluginMemberDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> ListConnectedMembers(Guid workspaceId, string pluginKey, CancellationToken ct) =>
+        ToResponse(await _memberService.ListConnectedMembersAsync(workspaceId, CurrentUserId, pluginKey, ct));
+
+    /// <summary>
+    /// The plugin's tools with this workspace's rules for WarpBot: <c>approval</c> (ask every time),
+    /// <c>blocked</c>, or null (each member's own choice). Owner or Admin; <c>canManage</c> is true
+    /// for the Owner only.
+    /// </summary>
+    [HttpGet("{pluginKey}/tool-policies")]
+    [ProducesResponseType(typeof(WorkspaceToolPoliciesDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetToolPolicies(Guid workspaceId, string pluginKey, CancellationToken ct) =>
+        ToResponse(await _toolPolicyService.GetAsync(workspaceId, CurrentUserId, pluginKey, ct));
+
+    /// <summary>
+    /// Sets or clears one tool's rule. Owner. A rule only tightens: WarpBot gets the stricter of it and
+    /// each member's own choice, so there is no "allow".
+    /// </summary>
+    [HttpPut("{pluginKey}/tool-policies")]
+    [ProducesResponseType(typeof(WorkspaceToolPoliciesDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetToolPolicy(
+        Guid workspaceId,
+        string pluginKey,
+        [FromBody] UpdateWorkspaceToolPolicyRequest request,
+        CancellationToken ct) =>
+        ToResponse(await _toolPolicyService.SetAsync(workspaceId, CurrentUserId, pluginKey, request, ct));
 
     /// <summary>Adds a marketplace plugin. Owner.</summary>
     [HttpPost("marketplace/{pluginKey}")]
@@ -124,10 +171,12 @@ public class WorkspacePluginsController : ControllerBase
             or WorkspacePluginConstants.ErrorCodes.PluginAlreadyAvailable
             or WorkspacePluginConstants.ErrorCodes.PluginRetired
             or WorkspacePluginConstants.ErrorCodes.ListChangedConcurrently
-            or WorkspacePluginConstants.ErrorCodes.RequestByOwner => StatusCodes.Status409Conflict,
+            or WorkspacePluginConstants.ErrorCodes.RequestByOwner
+            or PluginWorkspaceAccessConstants.ErrorCodes.DisabledByPlatform => StatusCodes.Status409Conflict,
         // The workspace service did not answer, so nothing was written: the page should say "try
         // again", not "you did something wrong".
-        WorkspacePluginConstants.ErrorCodes.PolicyUnavailable => StatusCodes.Status503ServiceUnavailable,
+        WorkspacePluginConstants.ErrorCodes.PolicyUnavailable
+            or WorkspacePluginConstants.ErrorCodes.MembersUnavailable => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status400BadRequest,
     };
 

@@ -8,15 +8,18 @@ using StackExchange.Redis;
 using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Configuration;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Monitoring;
 using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.PlatformSettings;
 using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -63,6 +66,15 @@ builder.Services.AddWarpTalkJwtAuthentication(
                     context.Token = accessToken;
                 }
 
+                // The embedded Grafana's ForwardAuth call, and nothing else: an iframe cannot
+                // send an Authorization header, so the admin's access-token cookie stands in for
+                // it on that one path. See GrafanaForwardAuth.
+                if (string.IsNullOrEmpty(context.Token)
+                    && WarpTalk.Gateway.Monitoring.GrafanaForwardAuth.TryReadCookieToken(context.Request, out var cookieToken))
+                {
+                    context.Token = cookieToken;
+                }
+
                 return Task.CompletedTask;
             }
         };
@@ -72,15 +84,23 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
+// Staff authorization for the embedded Grafana's ForwardAuth endpoint (health.read) — the same
+// permission check every admin endpoint in the services makes, answered by the auth service.
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
     ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
 
+// A cross-origin download can only name its file, or say it was cut short, through response
+// headers the browser is told it may read. The admin audit log's CSV export uses all three.
+string[] exposedHeaders = ["Content-Disposition", "X-Audit-Export-Rows", "X-Audit-Export-Truncated"];
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
+        policy.WithExposedHeaders(exposedHeaders);
         if (builder.Environment.IsDevelopment())
         {
             policy.SetIsOriginAllowed(origin => true) // Allow ngrok dynamic URLs
@@ -188,6 +208,22 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisStreamConnectionString + ",abortConnect=false"));
 
 builder.Services.AddSingleton<RedisStreamService>();
+
+// Platform settings (/admin/settings), read from the snapshot the workspace service publishes to
+// Redis: maintenance mode, the public status the web polls, and the live rate limits.
+builder.Services.AddWarpTalkPlatformSettings();
+// What the settings console's Integrations page shows for the gateway: whether Redis is set, and
+// the public CORS origins and rate-limit window (non-secret deploy-time configuration).
+builder.Services.AddWarpTalkIntegrationStatus("gateway", _ => new IntegrationStatusSnapshot(
+    new Dictionary<string, IntegrationReport>
+    {
+        [IntegrationKeys.Redis] = new(!string.IsNullOrWhiteSpace(redisStreamConnectionString), "realtime, rate limits, settings"),
+    },
+    [
+        new DeployConfigReport("cors.allowed_origins", "CORS allowed origins", allowedOrigins),
+        new DeployConfigReport("rate_limits.window_seconds", "Rate-limit window (seconds)",
+            [builder.Configuration["RateLimits:WindowSeconds"] ?? "60"]),
+    ]));
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 
 // Member presence. Registered after the multiplexer above because it is Redis-backed rather
@@ -243,6 +279,10 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 // because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
 // WorkspaceService — the same two clauses the REST paths enforce.
 builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+// Live Meet speaker names from the bridge capturer's desktop -> meeting:{room}:far_speaker_hints.
+// Singleton: it holds the per-room rate budget, a short authorization cache and the high-water
+// marks that stop a re-reported caption block from being written twice.
+builder.Services.AddSingleton<WarpTalk.Gateway.Services.FarSpeakerHintIngest>();
 // Server-side check of the workspace's allowed-language policy for SetSpeakLanguage and
 // SetListenLanguage. Composes the same two clients for the same reason: the room says which
 // workspace it belongs to, the workspace says which languages it permits. Until this existed the
@@ -251,6 +291,9 @@ builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomLanguagePolicy, WarpTa
 // WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
 // singleton would also be the wrong lifetime for something that must never cache its answer.
 builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
+// The one presence snapshot both NotificationHub.QueryPresence and POST /api/v1/presence/query
+// answer from. Scoped because it composes the scoped visibility check above.
+builder.Services.AddScoped<IPresenceQueryService, PresenceQueryService>();
 
 var app = builder.Build();
 
@@ -271,6 +314,10 @@ app.Use(async (context, next) =>
 });
 
 app.UseAuthentication();
+
+// Maintenance mode needs the caller's identity (the allowlist is by e-mail), so it runs after
+// authentication; and before the limiter and the proxy, so a blocked call costs neither.
+app.UseMiddleware<WarpTalk.Gateway.Platform.MaintenanceModeMiddleware>();
 
 // AFTER UseAuthentication, and this ordering is load-bearing. The global limiter partitions a
 // signed-in caller by user id so that everyone behind one NAT — an office, a venue, a defence
@@ -295,6 +342,8 @@ app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
     .RequireAuthorization("RequireAuth");
 
 app.MapPresenceEndpoints();
+app.MapGrafanaForwardAuth();
+WarpTalk.Gateway.Platform.PlatformStatusEndpoints.MapPlatformStatus(app);
 
 
 

@@ -26,7 +26,7 @@ using WarpTalk.TranslationRoomService.Domain.ValueObjects;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
 
-public class TranslationRoomService : ITranslationRoomService
+public partial class TranslationRoomService : ITranslationRoomService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomRepository _translationRoomRepository;
@@ -62,6 +62,17 @@ public class TranslationRoomService : ITranslationRoomService
     /// anything that groups, counts, or mutes notifications by type.
     /// </summary>
     private const string MeetingStartedNotificationType = "MEETING_STARTED";
+
+    /// <summary>
+    /// WT-612: "your meeting's slot has arrived and the room is open", sent by the clock rather
+    /// than by somebody pressing Start.
+    ///
+    /// Its own type for the same reason MEETING_STARTED is not MEETING_INVITED: the three are
+    /// different messages — you were invited, the door just opened, somebody is in there talking —
+    /// and a client that wants to treat them differently (this one lands people on the room's
+    /// setup screen, not straight into the call) can only do so if they are distinguishable.
+    /// </summary>
+    private const string MeetingOpenedNotificationType = "MEETING_OPENED";
 
     /// <summary>
     /// Cross-process relay every room event already travels on. The SignalR hub lives in the
@@ -124,6 +135,14 @@ public class TranslationRoomService : ITranslationRoomService
     /// "MeetingEvent", giving exactly one silent list refresh.
     /// </summary>
     private const string MeetingInvitedEventType = "MeetingInvited";
+
+    /// <summary>
+    /// WT-612: "this booking is now open". Unbound on the client for the same reason
+    /// <see cref="MeetingInvitedEventType"/> is — it arrives once as "MeetingEvent" and silently
+    /// refreshes the room lists, instead of firing a second toast on top of the MEETING_OPENED
+    /// notification the invitees are already getting.
+    /// </summary>
+    private const string MeetingOpenedEventType = "MeetingOpened";
 
     /// <summary>
     /// The invitation states this service writes. PENDING is set at creation; ACCEPTED is the
@@ -368,11 +387,26 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <inheritdoc />
-    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
+    public Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
         CreateTranslationRoomRequest request,
         Guid hostId,
         CancellationToken ct = default,
-        SeriesOccurrenceContext? occurrence = null)
+        SeriesOccurrenceContext? occurrence = null) =>
+        CreateTranslationRoomCoreAsync(request, hostId, ct, occurrence, bridgeMeetCode: null);
+
+    /// <summary>
+    /// The one creation path. <paramref name="bridgeMeetCode"/> is set only by bridge claim
+    /// (<see cref="ClaimBridgeRoomAsync"/>): the room is stamped with that normalized Meet code and
+    /// the creator as its first capturer BEFORE the insert, so the per-workspace unique index on
+    /// open bridge rooms is what decides a concurrent claim. A loser of that race gets
+    /// <see cref="ErrorCodes.Conflict"/> with nothing left tracked, and re-reads the winner's room.
+    /// </summary>
+    private async Task<Result<TranslationRoomDto>> CreateTranslationRoomCoreAsync(
+        CreateTranslationRoomRequest request,
+        Guid hostId,
+        CancellationToken ct,
+        SeriesOccurrenceContext? occurrence,
+        string? bridgeMeetCode)
     {
         try
         {
@@ -406,6 +440,21 @@ public class TranslationRoomService : ITranslationRoomService
             // WT-65: Validate Target Languages
             if (targetLangs == null || !targetLangs.Any())
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ValidationTargetLanguagesRequired, ErrorCodes.ValidationError);
+
+            // The far side of a bridge room is a language of the room like any other: it joins the
+            // targets BEFORE they are checked, so an unsupported one is refused here and the
+            // workspace policy below vets it with the rest instead of it slipping in through the
+            // stand-in's row.
+            string? externalMeetingLanguage = null;
+            if (TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType))
+                && !string.IsNullOrWhiteSpace(request.ExternalMeetingLanguage))
+            {
+                externalMeetingLanguage = LanguageHelper.NormalizeLanguageCode(request.ExternalMeetingLanguage);
+                if (!targetLangs.Contains(externalMeetingLanguage))
+                {
+                    targetLangs.Add(externalMeetingLanguage);
+                }
+            }
 
             foreach (var lang in targetLangs)
             {
@@ -449,6 +498,19 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>(reason, policy.ErrorCode);
             }
 
+            // GMCAL1001: a Google Meet room filed through the ordinary create (WarpBot books a Meet,
+            // then the AI worker files its WarpTalk room) carries the Meet code too, so the
+            // desktop's later bridge claim FINDS this room instead of opening a second one. Only
+            // the code: the capturer is whoever first claims from the desktop, not the booker.
+            var meetCode = bridgeMeetCode ?? MeetCodeOfOrdinaryCreate(request, occurrence);
+            if (bridgeMeetCode is null && meetCode is not null)
+            {
+                // Cheap pre-check; the unique index below still decides a race.
+                var existing = await _translationRoomRepository.GetOpenBridgeRoomByMeetCodeAsync(workspaceId, meetCode, ct);
+                if (existing is not null)
+                    return await ExistingMeetRoomForCreatorAsync(existing, hostId, ct);
+            }
+
             // 1. Determine initial status
             var status = request.ScheduledAt.HasValue ? "SCHEDULED" : "WAITING";
 
@@ -488,6 +550,19 @@ public class TranslationRoomService : ITranslationRoomService
             room.SeriesId = occurrence?.SeriesId;
             room.SeriesOccurrenceLocalDate = occurrence?.LocalDate;
 
+            // Bridge claim: the Meet code and the first capturer are part of the INSERT, never a
+            // follow-up update, so the unique index sees them at the moment it has to decide.
+            if (bridgeMeetCode is not null)
+            {
+                room.ExternalMeetingCode = bridgeMeetCode;
+                room.BridgeCapturerUserId = hostId;
+                room.BridgeCapturerHeartbeatAt = _utcNow();
+            }
+            else if (meetCode is not null)
+            {
+                room.ExternalMeetingCode = meetCode;
+            }
+
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
@@ -508,14 +583,40 @@ public class TranslationRoomService : ITranslationRoomService
             // they are actually sitting in. The stand-in is seeded here, at creation, rather than
             // when the room starts, because the audio mesh is built from whoever holds a seat and
             // a bridge room with one seat would generate no routes at all.
+            TranslationRoomParticipant? standIn = null;
             if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
             {
-                await _participantRepository.AddAsync(
-                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs),
-                    ct);
+                standIn = TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs, externalMeetingLanguage);
+                await _participantRepository.AddAsync(standIn, ct);
             }
 
-            await _unitOfWork.SaveChangesAsync(ct);
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+            catch (Exception ex) when (meetCode is not null && PersistenceConflict.IsUniqueViolation(ex))
+            {
+                // Another desktop claimed this Meet code first. Untrack the losing rows — Remove on
+                // an Added entity detaches it — so the caller's follow-up join does not try to
+                // insert them again on its own SaveChanges.
+                if (standIn is not null) _participantRepository.Remove(standIn);
+                _participantRepository.Remove(hostParticipant);
+                _translationRoomRepository.Remove(room);
+
+                // GMCAL1001: an ordinary create that lost the race answers like the pre-check did.
+                if (bridgeMeetCode is null)
+                {
+                    var winner = await _translationRoomRepository.GetOpenBridgeRoomByMeetCodeAsync(room.WorkspaceId, meetCode, ct);
+                    return winner is null
+                        ? Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict)
+                        : await ExistingMeetRoomForCreatorAsync(winner, hostId, ct);
+                }
+
+                _logger.LogInformation(
+                    "Bridge claim for Meet code {MeetCode} in workspace {WorkspaceId} lost the create race; joining the existing room.",
+                    bridgeMeetCode, room.WorkspaceId);
+                return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
+            }
             await PublishRoomTargetLanguagesAsync(room, ct);
 
             // Send invitations
@@ -608,6 +709,46 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while creating translation room for HostId: {HostId}", hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while creating the room.", ErrorCodes.InternalServerError);
         }
+    }
+
+    private const string MeetRoomAlreadyExists = "An open room for this Google Meet call already exists.";
+
+    /// <summary>
+    /// The normalized Meet code an ordinary create stamps: a one-off (never a series occurrence)
+    /// EXTERNAL_BRIDGE room on GOOGLE_MEET whose join link parses. Null for every other room.
+    /// </summary>
+    private static string? MeetCodeOfOrdinaryCreate(CreateTranslationRoomRequest request, SeriesOccurrenceContext? occurrence)
+    {
+        if (occurrence is not null
+            || !TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType))
+            || !string.Equals(request.ExternalProvider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal))
+            return null;
+
+        return GoogleMeetCode.TryNormalize(request.ExternalMeetingUrl, out var code) ? code : null;
+    }
+
+    /// <summary>
+    /// GMCAL1001: creating a room for a Meet code that already has an open one in the workspace
+    /// is idempotent — the caller gets that room back (same DTO as a fresh create), so a retried
+    /// WarpBot booking or a second filing never 500s on the unique index. Only when the caller
+    /// could already read it: host (effective or booker) or participant — the RoomReadAccess
+    /// clauses answerable without an email. Anyone else gets 409 rather than a stranger's room.
+    /// </summary>
+    private async Task<Result<TranslationRoomDto>> ExistingMeetRoomForCreatorAsync(
+        TranslationRoom existing, Guid callerId, CancellationToken ct)
+    {
+        var readable = existing.HostId == callerId
+            || existing.IsHostedBy(callerId)
+            || await _participantRepository.GetByRoomAndUserAsync(existing.Id, callerId, ct) is not null;
+        if (!readable)
+            return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
+
+        _logger.LogInformation(
+            "Create for Meet code {MeetCode} in workspace {WorkspaceId} returned the existing open room {RoomId}.",
+            existing.ExternalMeetingCode, existing.WorkspaceId, existing.Id);
+        return Result.Success(existing.ToResponseDto(
+            await _participantRepository.CountSeatHoldingParticipantsAsync(existing.Id, ct),
+            await _participantRepository.CountEverJoinedAsync(existing.Id, ct)));
     }
 
     public async Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default)
@@ -794,7 +935,7 @@ public class TranslationRoomService : ITranslationRoomService
             var query = (await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct))
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
-            var activeRequest = request with { Status = request.Status ?? "SCHEDULED,WAITING,IN_PROGRESS,PAUSED" };
+            var activeRequest = request with { Status = request.Status ?? "SCHEDULED,OPEN,WAITING,IN_PROGRESS,PAUSED" };
             query = ApplyRoomFilters(query, activeRequest);
 
             // WT-327: one row per BOOKING, not per occurrence. Resolved before the count so that
@@ -915,6 +1056,13 @@ public class TranslationRoomService : ITranslationRoomService
             // way to probe which codes exist. The join itself is where a bad code is reported.
             if (room == null || room.WorkspaceId == Guid.Empty)
                 return Result.Success(EmptyJoinLanguagePolicy);
+
+            // WT-866: a link to a meeting that is over opened the full pre-join screen — camera,
+            // microphone, language pickers — and only the Join press learned it was dead. The
+            // join refuses with exactly this fact (see JoinTranslationRoomAsync), so saying it
+            // here first reveals nothing the join does not, and spares the round trip.
+            if (TranslationRoomConstants.TerminalStatuses.Contains(room.Status))
+                return Result.Success(EmptyJoinLanguagePolicy with { RoomEnded = true });
 
             // WT-490: the languages this ROOM declares — its source plus its targets, deduped.
             // A room is defined by the set of languages that will be spoken in it, and the screen
@@ -1128,7 +1276,7 @@ public class TranslationRoomService : ITranslationRoomService
                 !isHost &&
                 !TranslationRoomParticipantStatuses.HoldsSeat(participant?.Status))
             {
-                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct);
+                var seatsTaken = await CountSeatsAgainstCapacityAsync(translationRoom, ct);
                 if (seatsTaken >= translationRoom.MaxParticipants)
                 {
                     // Conflict, not Forbidden or InvalidState: the caller is permitted and the room
@@ -1239,6 +1387,32 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
+            // WT-612: the first person through the door starts the meeting.
+            //
+            // OPEN says the booking's slot arrived and the clock unlocked the room; IN_PROGRESS
+            // says people are in it. Nobody should have to press Start to cross that line, which
+            // is the complaint this whole change exists for — the meeting was booked for 14:00 and
+            // at 14:00 the first arrival found a room that had to be opened by hand.
+            //
+            // Only for a participant who actually got in: with RequiresApproval a joiner lands
+            // WAITING and is still standing in the lobby, and a lobby is not a meeting.
+            //
+            // StartTranslationRoomAsync rather than a second copy of its body: routes, the
+            // languages publish, RoomStarted and the MEETING_STARTED notification are all what
+            // "the meeting began" means, and it is already idempotent for a room that is running.
+            // Best-effort — the join itself is saved above, and a person in a room the service
+            // still calls OPEN is strictly better than a failed join.
+            if (translationRoom.Status == "OPEN" && participant.Status == TranslationRoomParticipantStatuses.Connected)
+            {
+                var autoStart = await StartTranslationRoomAsync(translationRoom.Id, userId, userEmail, ct);
+                if (!autoStart.IsSuccess)
+                {
+                    _logger.LogWarning(
+                        "Could not take open room {RoomId} to IN_PROGRESS for its first participant {UserId}: {Error}",
+                        translationRoom.Id, userId, autoStart.Error);
+                }
+            }
+
             // WT-446: tell the billing worker who is a guest, because it cannot find out itself.
             //
             // Externality is workspace membership, which lives a gRPC hop from here and two
@@ -1258,6 +1432,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (participant.Status == TranslationRoomParticipantStatuses.Waiting)
             {
                 await PublishParticipantWaitingAsync(translationRoom.Id, userId, participant.DisplayName);
+            }
+
+            // The first admitted join is when this meeting started, for the platform success rate.
+            // A row still in the lobby has not joined anything yet.
+            if (participant.Status != TranslationRoomParticipantStatuses.Waiting)
+            {
+                await RecordMeetingStartedOnceAsync(translationRoom.Id);
             }
 
             // BR-008: Return comprehensive context
@@ -1359,6 +1540,75 @@ public class TranslationRoomService : ITranslationRoomService
                 publishEx,
                 "Failed to publish participant externality for RoomId: {RoomId}, UserId: {UserId}; their usage will be attributed as internal.",
                 translationRoomId, userId);
+        }
+    }
+
+    /// <summary>
+    /// Counts this room's meeting as started, once, however many people join and however many
+    /// replicas serve them: the counter is guarded by an atomic SET NX on the shared marker, so
+    /// only the writer that creates it increments. Best-effort like every other realtime write on
+    /// the join path — a metric must never be able to fail somebody's join.
+    /// </summary>
+    private async Task RecordMeetingStartedOnceAsync(Guid translationRoomId)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var won = await _redisStateRepository.StringSetIfAbsentAsync(
+                MeetingLifecycleKeys.StartedAt(translationRoomId),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture),
+                MeetingLifecycleKeys.Ttl);
+            if (won)
+            {
+                MeetingLifecycleMetrics.RecordStarted();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not record the meeting start marker for RoomId: {RoomId}", translationRoomId);
+        }
+    }
+
+    /// <summary>
+    /// Records how this room's meeting ended — see <see cref="MeetingLifecycleMetrics"/>.
+    ///
+    /// Only a room somebody actually joined is a meeting: a room created and ended with nobody
+    /// ever in it has no start marker and is skipped, so it cannot read as a failed meeting.
+    /// </summary>
+    private async Task RecordMeetingEndedAsync(Guid translationRoomId, string endReason, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var startedRaw = await _redisStateRepository.StringGetAsync(MeetingLifecycleKeys.StartedAt(translationRoomId));
+            if (string.IsNullOrEmpty(startedRaw))
+            {
+                return;
+            }
+
+            var captionRaw = await _redisStateRepository.StringGetAsync(MeetingLifecycleKeys.FirstCaptionAt(translationRoomId));
+            var everJoined = await _participantRepository.CountEverJoinedAsync(translationRoomId, ct);
+
+            TimeSpan? duration = long.TryParse(startedRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var startedMs)
+                ? DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(startedMs)
+                : null;
+
+            MeetingLifecycleMetrics.RecordEnded(
+                endReason,
+                MeetingLifecycleMetrics.ReachedLive(everJoined, !string.IsNullOrEmpty(captionRaw)),
+                duration);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not record the meeting outcome for RoomId: {RoomId}", translationRoomId);
         }
     }
 
@@ -1469,6 +1719,68 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-612 — the booked slot arrives and the room opens itself. Called only by
+    /// ScheduledRoomLifecycleWorker; there is no endpoint and no caller id, because the whole point
+    /// is that nobody had to press anything.
+    ///
+    /// What it deliberately does NOT do: generate audio routes, open a translation session, or
+    /// publish RoomStarted. Those belong to a meeting that is actually happening, and at this
+    /// instant the room may well be empty. OPEN means the door is unlocked — no billable AI runs
+    /// until somebody walks through it and the room becomes IN_PROGRESS.
+    ///
+    /// Idempotent, and quiet about it: two instances polling the same minute is the expected case
+    /// (the worker holds a Redis lock, but a lock is an optimisation, not a guarantee), and the
+    /// second one must not send a second round of notifications.
+    /// </summary>
+    public async Task<Result> OpenScheduledRoomAsync(Guid translationRoomId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (translationRoom.Status == "OPEN")
+                return Result.Success();
+
+            // SCHEDULED only. A host who opened the lobby early, started it early, or cancelled it
+            // has already decided this room's fate; the clock does not get to overrule them.
+            if (translationRoom.Status != "SCHEDULED")
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToOpen, ErrorCodes.InvalidState);
+
+            // The status check above is a read; this is the decision. Only the call that moves the
+            // row off SCHEDULED announces the opening, so a second opener — another replica's
+            // sweep, or a host racing the clock — changes nothing and notifies nobody.
+            if (!await _translationRoomRepository.TryTransitionStatusAsync(translationRoomId, OpenableStatuses, "OPEN", ct))
+                return Result.Success();
+
+            translationRoom.Status = "OPEN";
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+            // StartedAt stays null on purpose: it is the clock for "the meeting ran", which is
+            // what the history, the duration and the artifacts all read. A room that opened and
+            // that nobody attended never started.
+
+            // Both best-effort and both after the save, the same order every other transition
+            // here uses: the status is the fact, and a client that reacts to either of these must
+            // never be able to refetch a room that is still SCHEDULED.
+            await PublishRoomOpenedAsync(translationRoom);
+            await NotifyRoomOpenedAsync(translationRoom, ct);
+
+            _logger.LogInformation(
+                "Scheduled room {RoomId} opened at its slot ({ScheduledAt:o}).",
+                translationRoom.Id,
+                translationRoom.ScheduledAt);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error opening scheduled room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(
         Guid translationRoomId,
         Guid callerId,
@@ -1508,7 +1820,10 @@ public class TranslationRoomService : ITranslationRoomService
                     await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
             }
 
-            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
+            // OPEN joins the two here rather than replacing them (WT-612): the clock opens the
+            // booking, but a host who wants to begin before their slot still may, and a room the
+            // clock opened has to be startable by the first person who arrives.
+            if (!StartableStatuses.Contains(translationRoom.Status))
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
             // A suspended workspace may not take a room live. This is the transition that actually
@@ -1537,14 +1852,41 @@ public class TranslationRoomService : ITranslationRoomService
             if (!routeResult.IsSuccess)
                 _logger.LogWarning("Could not generate audio routes while starting room {RoomId}: {Error}", translationRoomId, routeResult.Error);
 
-            translationRoom.Status = "IN_PROGRESS";
-            translationRoom.StartedAt ??= DateTime.UtcNow;
-            translationRoom.UpdatedAt = DateTime.UtcNow;
-            translationRoom.UpdatedBy = callerId;
+            // The status check above is a read; this is the decision. A double-clicked Start on two
+            // replicas used to take the room live twice — two MEETING_STARTED rounds to the whole
+            // invite list, two started events. The loser of the compare-and-set reports the room
+            // as started (it is) and does none of that.
+            await _unitOfWork.BeginTransactionAsync(ct);
+            try
+            {
+                if (!await _translationRoomRepository.TryTransitionStatusAsync(translationRoomId, StartableStatuses, "IN_PROGRESS", ct))
+                {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
+                    _logger.LogInformation(
+                        "Room {RoomId} was started by a concurrent request; this Start changes nothing.",
+                        translationRoomId);
+                    translationRoom.Status = "IN_PROGRESS";
+                    return Result.Success(translationRoom.ToResponseDto(
+                        await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
+                        await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                }
 
-            _translationRoomRepository.Update(translationRoom);
+                translationRoom.Status = "IN_PROGRESS";
+                translationRoom.StartedAt ??= DateTime.UtcNow;
+                translationRoom.UpdatedAt = DateTime.UtcNow;
+                translationRoom.UpdatedBy = callerId;
 
-            await _unitOfWork.SaveChangesAsync(ct);
+                _translationRoomRepository.Update(translationRoom);
+
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _unitOfWork.CommitTransactionAsync(ct);
+            }
+            catch
+            {
+                await _unitOfWork.RollbackTransactionAsync(CancellationToken.None);
+                throw;
+            }
+
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
 
             // WT-322: tell everyone already in the room that translation is now live. Published
@@ -1656,6 +1998,148 @@ public class TranslationRoomService : ITranslationRoomService
     /// Never throws. The room is IN_PROGRESS and persisted by the time this runs; failing the
     /// start over an undelivered bell would trade the meeting for the announcement of it.
     /// </summary>
+    /// <summary>
+    /// WT-612: the room-list refresh for "this booking just opened". Same channel and same shape
+    /// as <see cref="PublishRoomInvitationsChangedAsync"/>; see <see cref="MeetingOpenedEventType"/>
+    /// for why the event name is one the client does not bind by name.
+    /// </summary>
+    private async Task PublishRoomOpenedAsync(TranslationRoom room)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                eventType = MeetingOpenedEventType,
+                workspaceId = room.WorkspaceId.ToString(),
+                roomId = room.Id.ToString(),
+                title = room.Title,
+                status = room.Status
+            });
+
+            await _redisStateRepository.PublishAsync(MeetingEventsChannel, payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish {EventType} for RoomId: {RoomId}. The room is OPEN; lists will catch up on their next reload.",
+                MeetingOpenedEventType,
+                room.Id);
+        }
+    }
+
+    /// <summary>
+    /// WT-612: tell the people who were expecting this meeting that the door is open.
+    ///
+    /// The recipient list is wider than <see cref="NotifyRoomStartedAsync"/>'s on purpose. That
+    /// one runs when a human pressed Start, so it skips the presser and writes to the invitees.
+    /// Nobody pressed anything here: the host has not been told either, and the host is the
+    /// person most likely to be waiting for exactly this. So it is host + everyone with a
+    /// participant row + everyone with a live invitation, de-duplicated by user id.
+    ///
+    /// Reminders (T-30/T-10/T-1) go only to host and participants, because an invitation carries
+    /// an email and no user id until the person joins. Resolving those emails here is what lets
+    /// an invitee who has never opened the room still learn that it started — the gap WT-326
+    /// recorded as an accepted limit for reminders.
+    ///
+    /// Never throws: the room is OPEN and persisted, and a notification that did not arrive must
+    /// not make the sweep look like it failed and retry the transition.
+    /// </summary>
+    private async Task NotifyRoomOpenedAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_notificationClient is null)
+            return;
+
+        try
+        {
+            var recipientIds = new HashSet<Guid> { room.HostId };
+
+            var participants = await _participantRepository.GetByRoomIdAsync(room.Id, ct);
+            foreach (var participant in participants ?? Enumerable.Empty<TranslationRoomParticipant>())
+            {
+                if (participant.UserId.HasValue)
+                    recipientIds.Add(participant.UserId.Value);
+            }
+
+            if (_userClient is not null)
+            {
+                var invitations = await _unitOfWork.TranslationRoomInvitationRepository
+                    .FindAsync(i => i.TranslationRoomId == room.Id, ct: ct);
+
+                var emails = (invitations ?? Enumerable.Empty<TranslationRoomInvitation>())
+                    .Where(i => RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status))
+                    .Select(i => RoomReadAccess.NormalizeEmail(i.Email))
+                    .Where(email => email is not null)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var email in emails)
+                {
+                    try
+                    {
+                        var user = await _userClient.GetUserByEmailAsync(
+                            new WarpTalk.Shared.Protos.GetUserByEmailRequest { Email = email! },
+                            cancellationToken: ct);
+
+                        if (Guid.TryParse(user?.Id, out var invitedUserId))
+                            recipientIds.Add(invitedUserId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Could not resolve one invitee of RoomId {RoomId} while announcing that it opened; the remaining recipients are unaffected.",
+                            room.Id);
+                    }
+                }
+            }
+
+            // The room's own page, NOT /room/{id}: that route forwards straight into the live
+            // meeting, and this notification's whole promise is that you have a moment to set your
+            // microphone and languages before walking in.
+            var roomLink = $"{_frontendBaseUrl.TrimEnd('/')}/room/{room.Id}";
+
+            foreach (var userId in recipientIds)
+            {
+                try
+                {
+                    var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+                    {
+                        UserId = userId.ToString(),
+                        Type = MeetingOpenedNotificationType,
+                        Title = $"\"{room.Title}\" is open",
+                        Body = $"It's time for \"{room.Title}\". Set up your microphone and languages, then join.",
+                        ActionUrl = roomLink,
+                    };
+                    request.Metadata.Add("room_id", room.Id.ToString());
+                    request.Metadata.Add("room_title", room.Title);
+
+                    await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Could not tell user {UserId} that RoomId {RoomId} opened; the remaining recipients are unaffected.",
+                        userId,
+                        room.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to announce that RoomId {RoomId} opened. The room is OPEN and unaffected.",
+                room.Id);
+        }
+    }
+
     private async Task NotifyRoomStartedAsync(TranslationRoom room, Guid startedBy, CancellationToken ct)
     {
         if (_notificationClient is null || _userClient is null)
@@ -1934,6 +2418,22 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private async Task<Result> EnsureTranslationCreditsAsync(TranslationRoom translationRoom, CancellationToken ct)
     {
+        // The workspace must have a live subscription at all. The Redis flags below only ever
+        // described a subscription that EXISTS and cannot pay; a subscription that expired wrote
+        // none, so a workspace that expired on 23 Sep started translation on 24 Sep and ran free.
+        // This asks the replicated entitlement snapshot — WT-515's own answer — and only a snapshot
+        // that positively says "no live subscription" refuses (null = unknown = allow; billing
+        // refuses every charge of such a workspace anyway, which stops the room).
+        if (translationRoom.WorkspaceId != Guid.Empty
+            && await _workspaceMeetingPolicy.HasActiveSubscriptionAsync(translationRoom.WorkspaceId, ct) == false)
+        {
+            _logger.LogWarning(
+                "Refused Start Translation in room {RoomId}: workspace {WorkspaceId} has no active subscription.",
+                translationRoom.Id,
+                translationRoom.WorkspaceId);
+            return Result.Failure(TranslationSuspendedMessage("subscription_expired"), ErrorCodes.Forbidden);
+        }
+
         if (_redisStateRepository is null)
             return Result.Success();
 
@@ -2006,6 +2506,8 @@ public class TranslationRoomService : ITranslationRoomService
             "Translation is unavailable because this workspace has an overdue invoice. Ask a workspace owner to settle it.",
         "trial_ended" =>
             "Translation is unavailable because this workspace's trial has ended. Ask a workspace owner to choose a plan.",
+        "subscription_expired" =>
+            "Translation is unavailable because this workspace's subscription has expired. Ask a workspace owner to renew the plan.",
         "overage_cap" or "insufficient_credits" =>
             "This workspace has run out of credits, so translation cannot start. Ask a workspace owner to add credits or upgrade the plan.",
         _ =>
@@ -2036,7 +2538,8 @@ public class TranslationRoomService : ITranslationRoomService
             // saying why.
             //
             // Stopping stays host-only below and in StopTranslationAsync: opening a meeting up is
-            // not the same as letting anyone cut it off for everybody.
+            // not the same as letting anyone cut it off for everybody. (Exception, both ways: the
+            // current capturer of an EXTERNAL_BRIDGE room — RoomBridgeControlAccess.)
             if (!await RoomStartTranslationAccess.CanStartTranslationAsync(
                     translationRoom, hostId, _workspaceMemberDirectory, _participantRepository, ct))
             {
@@ -2118,7 +2621,9 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            // Host (IsHostedBy, unchanged) OR — EXTERNAL_BRIDGE only — the current capturer
+            // (PO 2026-10-01). Every other room type answers exactly as IsHostedBy did.
+            if (!RoomBridgeControlAccess.CanControlBridgeSession(translationRoom, hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             // Only a live room can stop translating. A PAUSED room is not translating either, but
             // resuming it is a different act with a different endpoint, and quietly accepting the
@@ -2165,8 +2670,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (!translationRoom.IsHostedBy(hostId))
                 return Result.Failure<TranslationRoomDto>("Only the host can cancel the room.", ErrorCodes.Forbidden);
 
-            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
-                return Result.Failure<TranslationRoomDto>("Only scheduled or waiting rooms can be cancelled.", ErrorCodes.InvalidState);
+            // WT-612: an OPEN room is one nobody has walked into yet, so cancelling it is the
+            // same act as cancelling a SCHEDULED one.
+            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING" && translationRoom.Status != "OPEN")
+                return Result.Failure<TranslationRoomDto>("Only scheduled, open or waiting rooms can be cancelled.", ErrorCodes.InvalidState);
 
             translationRoom.Status = "CANCELLED";
             translationRoom.EndedAt ??= DateTime.UtcNow;
@@ -2230,7 +2737,9 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "EXPIRED")
                 return Result.Success();
 
-            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
+            // WT-612: OPEN is the other status a booking nobody attended can be sitting in when
+            // its grace period runs out.
+            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING" && translationRoom.Status != "OPEN")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToExpired, ErrorCodes.InvalidState);
 
             translationRoom.Status = "EXPIRED";
@@ -2265,11 +2774,12 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.EndReasonExpired, ct);
 
-            // WT-314: same door as Cancel above. Expiry is driven by IdleRoomMonitoringWorker
-            // on rooms nobody ever started, which is precisely the population that has no
-            // audio routes — so without this publish the ingress bot for an expired room was
-            // never told to leave.
+            // WT-314: same door as Cancel above. Expiry is driven by the booking sweep
+            // (ScheduledRoomLifecycleWorker, WT-714) on rooms nobody ever started, which is
+            // precisely the population that has no audio routes — so without this publish the
+            // ingress bot for an expired room was never told to leave.
             await PublishTerminalLifecycleAsync(translationRoomId, "expiring", ct);
 
             return Result.Success();
@@ -2308,6 +2818,18 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// The statuses a host may end a room from. OPEN alongside WAITING (WT-612): both are rooms
+    /// standing open with nothing running in them, and a host must be able to close either one.
+    /// </summary>
+    private static readonly string[] EndableStatuses = ["IN_PROGRESS", "PAUSED", "WAITING", "OPEN"];
+
+    /// <summary>The statuses Start takes live: see the OPEN note in StartTranslationRoomAsync.</summary>
+    private static readonly string[] StartableStatuses = ["SCHEDULED", "WAITING", "OPEN"];
+
+    /// <summary>Only a booking the clock has not yet opened, and nobody has touched, opens.</summary>
+    private static readonly string[] OpenableStatuses = ["SCHEDULED"];
+
     public async Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
         try
@@ -2327,7 +2849,8 @@ public class TranslationRoomService : ITranslationRoomService
             // isActiveHost); this accepted only the ORIGINAL one. So after a host transfer the
             // first call tore down LiveKit and marked the meeting FINISHED, the second was refused,
             // and the translation room stayed IN_PROGRESS forever — never reaching History, and
-            // repaired by nothing, since ExpireTranslationRoomAsync has no production callers. A
+            // repaired by nothing: the one caller ExpireTranslationRoomAsync now has (WT-714) only
+    // touches bookings nobody ever got into, not a room that is running. A
             // network blip between the two calls leaves the same orphan.
             //
             // Widening to workspace Owner/Admin does not close the mismatch completely: an active
@@ -2341,40 +2864,76 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (translationRoom.Status == "ENDED")
                 return Result.Success();
-            if (translationRoom.Status != "IN_PROGRESS" && translationRoom.Status != "PAUSED" && translationRoom.Status != "WAITING")
+            if (!EndableStatuses.Contains(translationRoom.Status))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 
-            translationRoom.Status = "ENDED";
-            translationRoom.EndedAt = DateTime.UtcNow;
-            translationRoom.UpdatedAt = DateTime.UtcNow;
+            var endedAt = DateTime.UtcNow;
 
-            _translationRoomRepository.Update(translationRoom);
-
-            // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
-            // translation session is still open so it gets an EndedAt.
-            await EndActiveTranslationSessionAsync(translationRoomId, ct);
-
-            var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
-            if (participants != null)
+            // ONE caller ends the meeting; every other concurrent End is told "done" and goes home.
+            // The status check above is a read, and "End for everyone" arrives more than once per
+            // meeting — with two replicas those repeats run in parallel, each reads IN_PROGRESS,
+            // and each used to go on to queue finalization (two sets of artifacts, two "Summary
+            // ready" notifications) and count the meeting as ended again. The compare-and-set runs
+            // inside the same transaction as the rest of the end, so the room is never left ENDED
+            // without its participants released, and a loser changes nothing at all.
+            await _unitOfWork.BeginTransactionAsync(ct);
+            try
             {
-                var participantsToUpdate = participants
-                    // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
-                    // somebody who was never let in had been in the room, and DISCONNECTED is the
-                    // one status the rejoin path treats as proof of admission — so it handed the
-                    // lobby's occupants a way in. A row still waiting stays waiting; the room
-                    // ending makes it moot rather than admitted.
-                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
-                    .ToList();
-
-                foreach (var participant in participantsToUpdate)
+                if (!await _translationRoomRepository.TryTransitionStatusAsync(translationRoomId, EndableStatuses, "ENDED", ct))
                 {
-                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
-                    participant.UpdatedAt = DateTime.UtcNow;
-                    _participantRepository.Update(participant);
+                    await _unitOfWork.RollbackTransactionAsync(ct);
+                    _logger.LogInformation(
+                        "Room {RoomId} was ended by a concurrent request; this End changes nothing.",
+                        translationRoomId);
+                    return Result.Success();
                 }
+
+                translationRoom.Status = "ENDED";
+                translationRoom.EndedAt = endedAt;
+                translationRoom.UpdatedAt = endedAt;
+
+                // WT-826: publish the record to the people who took part, unless the host turned that
+                // off. Inside the same save as ENDED, so there is no moment in which the meeting is
+                // over and its record is still waiting on a click nobody is going to make.
+                await ApplyRecordAutoShareAtEndAsync(translationRoom, ct);
+
+                _translationRoomRepository.Update(translationRoom);
+
+                // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
+                // translation session is still open so it gets an EndedAt.
+                await EndActiveTranslationSessionAsync(translationRoomId, ct);
+
+                var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
+                if (participants != null)
+                {
+                    var participantsToUpdate = participants
+                        // WT-563: CONNECTED only. Demoting a WAITING row to DISCONNECTED said that
+                        // somebody who was never let in had been in the room, and DISCONNECTED is the
+                        // one status the rejoin path treats as proof of admission — so it handed the
+                        // lobby's occupants a way in. A row still waiting stays waiting; the room
+                        // ending makes it moot rather than admitted.
+                        .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
+                        .ToList();
+
+                    foreach (var participant in participantsToUpdate)
+                    {
+                        participant.Status = TranslationRoomParticipantStatuses.Disconnected;
+                        participant.UpdatedAt = DateTime.UtcNow;
+                        _participantRepository.Update(participant);
+                    }
+                }
+
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _unitOfWork.CommitTransactionAsync(ct);
+            }
+            catch
+            {
+                await _unitOfWork.RollbackTransactionAsync(CancellationToken.None);
+                throw;
             }
 
-            await _unitOfWork.SaveChangesAsync(ct);
+            // After the commit, so a failed save can never be counted as an ended meeting.
+            await RecordMeetingEndedAsync(translationRoomId, MeetingLifecycleMetrics.CurrentEndReason, ct);
 
             // WT-191: tell everyone still in the room that it is over. The host ends the meeting
             // over REST, so TranslationRoomHub.EndTranslationRoom (which broadcasts
@@ -2456,10 +3015,27 @@ public class TranslationRoomService : ITranslationRoomService
             // happen once the meeting is over and those artifacts exist. Routing it through that
             // method would have made the feature refuse in exactly the state it is for.
             var settings = ReadSettings(translationRoom.Settings);
-            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal))
+
+            // WT-826: before the meeting has ended, Publish/Unpublish IS the host stating whether
+            // the record should be shared when it ends — so it sets the toggle too, and ending the
+            // room cannot quietly reverse a host who chose "keep private" mid-meeting. After the
+            // end the toggle has already done its one job; leave it as the record of what happened.
+            //
+            // Part of the no-op test below, not only of the write: a room created before the
+            // toggle already STORES HOST_ONLY (as a default), so "keep it private" sends the level
+            // it already has — and returning early there would drop the one thing the host said.
+            var ended = string.Equals(translationRoom.Status, "ENDED", StringComparison.Ordinal);
+            bool? autoShareRecord = ended
+                ? settings.AutoShareRecord
+                : string.Equals(level, ArtifactAccessLevels.AllParticipants, StringComparison.Ordinal);
+
+            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal)
+                && settings.AutoShareRecord == autoShareRecord)
                 return Result.Success();
 
             settings.ArtifactAccess = level;
+            settings.AutoShareRecord = autoShareRecord;
+
             translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
             translationRoom.UpdatedAt = DateTime.UtcNow;
             translationRoom.UpdatedBy = hostId;
@@ -2651,6 +3227,62 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <summary>
+    /// WT-826: at the moment a room ends, share its record if the room's toggle says so, and let
+    /// that count as the host releasing the recording consent hold (backend #432 made the host and
+    /// booker read directly; everybody else waits for a release, and this is one).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only recordings that exist NOW are released here. A recording LiveKit finishes uploading
+    /// after the end is written by <c>RecordingLifecycleEventProcessor</c>, which asks
+    /// <see cref="RecordAutoShare.ReleasesRecordingHold"/> the same question.
+    /// </para>
+    /// <para>
+    /// A failure to release is logged and does not fail the end. The meeting is over either way,
+    /// and a recording left held is what the host's own release button already fixes — whereas a
+    /// room that refused to end strands everybody in it.
+    /// </para>
+    /// </remarks>
+    private async Task ApplyRecordAutoShareAtEndAsync(TranslationRoom translationRoom, CancellationToken ct)
+    {
+        var settings = RecordAutoShare.Read(translationRoom.Settings);
+        if (!RecordAutoShare.ApplyAtMeetingEnd(settings))
+            return;
+
+        translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
+
+        try
+        {
+            var held = await _unitOfWork.TranslationRoomArtifactRepository.FindAsync(
+                artifact => artifact.TranslationRoomId == translationRoom.Id
+                    && artifact.ConsentRequired
+                    && artifact.DeletedAt == null,
+                ct: ct);
+
+            foreach (var artifact in held)
+            {
+                artifact.ConsentRequired = false;
+                _unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not release the recording consent hold while auto-sharing room {RoomId}; the host can still release it by hand",
+                translationRoom.Id);
+        }
+
+        // The same audit line a host's own Publish writes: who opened this up and when is the
+        // question asked afterwards, and "the room's own setting, at the end" is an answer.
+        _logger.LogInformation(
+            "artifact_access_changed: RoomId={RoomId} HostId={HostId} Level={Level} Reason=auto_share_at_end",
+            translationRoom.Id,
+            translationRoom.HostId,
+            settings.ArtifactAccess);
+    }
+
+    /// <summary>
     /// A room's settings blob, or an empty one. Unparseable JSON yields defaults rather than
     /// throwing — the same direction ArtifactAccessHelper fails in.
     /// </summary>
@@ -2773,7 +3405,9 @@ public class TranslationRoomService : ITranslationRoomService
             if (!translationRoom.IsHostedBy(hostId))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
+            // WT-612: the settings window closes when the meeting starts, not when the door
+            // opens — an OPEN room has no session, no transcript and no artifacts to contradict.
+            if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING" && translationRoom.Status != "OPEN")
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
 
             // ArtifactAccess is a free-form string in a jsonb blob, and for its whole life nothing
@@ -2924,6 +3558,17 @@ public class TranslationRoomService : ITranslationRoomService
                 // about the twelve, and turning it off cannot unwrite what is already committed.
                 current.SaveTranscript = request.Settings.SaveTranscript ?? current.SaveTranscript;
 
+                // WT-826. The toggle carries the room's level with it while the meeting has not
+                // happened yet, so the two cannot disagree — a room saying "share automatically"
+                // while holding HOST_ONLY would show the host "Draft" all meeting and then publish
+                // anyway. A caller that names a level outright still wins, as on create.
+                if (request.Settings.AutoShareRecord is { } autoShareRecord)
+                {
+                    current.AutoShareRecord = autoShareRecord;
+                    if (request.Settings.ArtifactAccess is null)
+                        current.ArtifactAccess = RecordAutoShare.ArtifactAccessFor(autoShareRecord);
+                }
+
                 translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(current);
             }
 
@@ -2960,8 +3605,14 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var historyRequest = request with { Status = request.Status ?? "ENDED,CANCELLED" };
 
+            // Only ever NARROWS: RoomTimelineScope.Mine is the ordinary read boundary every
+            // non-Owner already gets (see BuildListableRoomsQueryAsync).
+            var scope = string.Equals(request.Scope?.Trim(), "mine", StringComparison.OrdinalIgnoreCase)
+                ? RoomTimelineScope.Mine
+                : RoomTimelineScope.Workspace;
+
             return Result.Success(await BuildRoomTimelinePageAsync(
-                historyRequest, userId, userEmail, RoomTimelineOrder.EndedFirst, RoomTimelineScope.Workspace, ct));
+                historyRequest, userId, userEmail, RoomTimelineOrder.EndedFirst, scope, ct));
         }
         catch (Exception ex)
         {
@@ -3126,6 +3777,30 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <summary>
+    /// WT-849: which rooms on a page hold a standing invitation for this caller — the invitation
+    /// half of <see cref="ArtifactAccessHelper.IsParticipantOrInvited"/>, asked once for the whole
+    /// page instead of loading the navigation per room. Same email normalisation and the same
+    /// status allow-list as the single-room gate, so the list and the download endpoint agree.
+    /// </summary>
+    private async Task<HashSet<Guid>> LoadRoomsInvitingCallerAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        string? userEmail,
+        CancellationToken ct)
+    {
+        var email = RoomReadAccess.NormalizeEmail(userEmail);
+        if (email is null || roomIds.Count == 0) return new HashSet<Guid>();
+
+        return (await _unitOfWork.TranslationRoomInvitationRepository
+                .Query()
+                .Where(i => roomIds.Contains(i.TranslationRoomId)
+                    && i.Email.ToLower() == email
+                    && RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status))
+                .Select(i => i.TranslationRoomId)
+                .ToListAsync(ct))
+            .ToHashSet();
+    }
+
+    /// <summary>
     /// One page of rooms with their roster and artifacts, shared by the workspace archive
     /// (<see cref="GetTranslationRoomHistoryAsync"/>) and the personal timeline
     /// (<see cref="GetMyMeetingsAsync"/>).
@@ -3209,6 +3884,7 @@ public class TranslationRoomService : ITranslationRoomService
         var participantUserIdsByRoom = participantEntities
             .GroupBy(p => p.TranslationRoomId)
             .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+        var roomsInvitingCaller = await LoadRoomsInvitingCallerAsync(roomIds, userEmail, ct);
 
         var artifactsByRoom = artifactEntities
             .GroupBy(a => a.TranslationRoomId)
@@ -3220,7 +3896,8 @@ public class TranslationRoomService : ITranslationRoomService
                     var includeContent = ArtifactAccessHelper.HasAccessToRoomArtifacts(
                         room.HostId,
                         room.Settings,
-                        participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true,
+                        participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true
+                            || roomsInvitingCaller.Contains(g.Key),
                         userId);
 
                     return g.Select(a => ToArtifactDto(a, includeContent)).ToList();
@@ -3396,6 +4073,7 @@ public class TranslationRoomService : ITranslationRoomService
                     .ToListAsync(ct))
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+            var roomsInvitingCaller = await LoadRoomsInvitingCallerAsync(roomIds, userEmail, ct);
 
             // Which of the meetings ON THIS PAGE already have minutes — asked once for the page
             // rather than per card. This is what lets the grid offer "draw up the minutes" on a
@@ -3436,7 +4114,8 @@ public class TranslationRoomService : ITranslationRoomService
                 var canOpen = ArtifactAccessHelper.HasAccessToRoomArtifacts(
                     room.HostId,
                     room.Settings,
-                    participantUserIdsByRoom.GetValueOrDefault(room.Id)?.Contains(userId) == true,
+                    participantUserIdsByRoom.GetValueOrDefault(room.Id)?.Contains(userId) == true
+                        || roomsInvitingCaller.Contains(room.Id),
                     userId);
 
                 var minutesUnavailableReason = ResolveMinutesUnavailableReason(
@@ -3560,9 +4239,9 @@ public class TranslationRoomService : ITranslationRoomService
             // same predicate rather than letting the list be the looser of the two.
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
                 r => r.Id == translationRoomId,
-                "TranslationRoomParticipants",
+                "TranslationRoomParticipants,TranslationRoomInvitations",
                 ct);
-            var includeContent = room != null && ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId);
+            var includeContent = room != null && ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId, userEmail);
 
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()

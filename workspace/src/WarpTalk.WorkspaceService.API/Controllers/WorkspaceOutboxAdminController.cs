@@ -18,12 +18,12 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 // the workspace-administrator role, which auth.user_roles also hands out globally (the seeded demo
 // accounts carry it), so a tenant admin could read other tenants' event payload errors and
 // re-publish their events. The system-admin policy is the gate every other admin surface uses.
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public sealed class WorkspaceOutboxAdminController(
     WorkspaceDbContext dbContext,
     TimeProvider timeProvider) : ControllerBase
 {
     [HttpGet("dead-letters")]
+    [RequirePermission(AdminPermissions.HealthRead)]
     public async Task<IActionResult> GetDeadLetters(
         [FromQuery] int limit = 100,
         CancellationToken cancellationToken = default)
@@ -50,6 +50,7 @@ public sealed class WorkspaceOutboxAdminController(
     }
 
     [HttpPost("{eventId:guid}/replay")]
+    [RequirePermission(AdminPermissions.HealthOperate)]
     public async Task<IActionResult> Replay(
         Guid eventId,
         CancellationToken cancellationToken = default)

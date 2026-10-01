@@ -1,6 +1,7 @@
 using System.Web;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.WebUtilities;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
@@ -64,16 +65,22 @@ public class AssistantPluginsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("catalog")]
-    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [RequirePermission(AdminPermissions.PluginsManage)]
     public async Task<IActionResult> CreateMcpPlugin(
         [FromBody] CreateMcpPluginRequest request,
         CancellationToken ct)
     {
         var result = await _installationService.CreateMcpPluginAsync(request, CurrentUserId, ct);
         if (!result.IsSuccess)
-            return BadRequest(new { error = result.Error, errorCode = result.ErrorCode });
+        {
+            var body = new { error = result.Error, errorCode = result.ErrorCode };
+            // The platform audit log could not take the record, so the row was not created.
+            return result.ErrorCode == ErrorCodes.ServiceUnavailable
+                ? StatusCode(StatusCodes.Status503ServiceUnavailable, body)
+                : BadRequest(body);
+        }
 
         return CreatedAtAction(nameof(ListCatalog), new { }, result.Value);
     }
@@ -191,6 +198,10 @@ public class AssistantPluginsController : ControllerBase
     /// <c>client=desktop</c> says the caller is the Electron shell rather than a browser tab. It is
     /// sealed into the OAuth state here and read back at the callback, because by then the consent
     /// has happened in the system browser and nothing else on that request says where it started.
+    /// <para>
+    /// GMCAL1001: <c>alsoConnect</c> (repeatable, <c>?alsoConnect=google_drive&amp;alsoConnect=google_meet</c>)
+    /// adds same-provider siblings to the one consent, as on <c>POST connect</c>.
+    /// </para>
     /// </remarks>
     [HttpGet("{pluginKey}/connect-url")]
     [ProducesResponseType(typeof(PluginConnectUrlDto), StatusCodes.Status200OK)]
@@ -201,9 +212,11 @@ public class AssistantPluginsController : ControllerBase
         string pluginKey,
         [FromQuery] string? client,
         [FromQuery] Guid? workspaceId,
+        [FromQuery] string[]? alsoConnect,
         CancellationToken ct)
     {
-        var result = await _connectionService.GetConnectUrlAsync(pluginKey, CurrentUserId, client, workspaceId, ct);
+        var result = await _connectionService.GetConnectUrlAsync(
+            pluginKey, CurrentUserId, client, workspaceId, ct, alsoConnect);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
@@ -219,6 +232,14 @@ public class AssistantPluginsController : ControllerBase
     /// when the provider's existing grant already covers the plugin, and a consent URL otherwise.
     /// A POST because the first answer changes state. <c>connect-url</c> above stays for clients
     /// that predate this route; it always sends the user to the provider.
+    /// <para>
+    /// GMCAL1001: the optional body <c>{"alsoConnect": ["google_drive", ...]}</c> connects the
+    /// named same-provider siblings with the same single consent (or on the spot, when the grant
+    /// already covers them); <c>connectedPluginKeys</c> lists what was connected on the spot. A
+    /// bodiless POST is the connect as it always was. An invalid key refuses the whole request:
+    /// 404 unknown_plugin, 409 plugin_not_installed, 403 permission_denied, or 400
+    /// invalid_also_connect (other provider, the clicked key itself, API-key row, blank, over 10).
+    /// </para>
     /// </remarks>
     [HttpPost("{pluginKey}/connect")]
     [ProducesResponseType(typeof(PluginConnectResultDto), StatusCodes.Status200OK)]
@@ -229,9 +250,12 @@ public class AssistantPluginsController : ControllerBase
         string pluginKey,
         [FromQuery] string? client,
         [FromQuery] Guid? workspaceId,
+        // Allow, not the default: every existing client POSTs this route with no body at all.
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ConnectPluginRequest? request,
         CancellationToken ct)
     {
-        var result = await _connectionService.ConnectAsync(pluginKey, CurrentUserId, client, workspaceId, ct);
+        var result = await _connectionService.ConnectAsync(
+            pluginKey, CurrentUserId, client, workspaceId, ct, request?.AlsoConnect);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == PluginConstants.ErrorCodes.UnknownPlugin) return NotFound(result.Error);
@@ -275,7 +299,7 @@ public class AssistantPluginsController : ControllerBase
         var hint = _connectionService.ReadFlowHint(state);
 
         var refusal = ClassifyBeforeExchange(hint?.PluginKey, code, state, error);
-        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+        if (refusal != null) return Redirect(RefuseBeforeExchange(hint, refusal, error));
 
         return await CompleteAsync(
             hint,
@@ -321,7 +345,7 @@ public class AssistantPluginsController : ControllerBase
         var hint = _connectionService.ReadFlowHint(state);
 
         var refusal = ClassifyBeforeExchange(hint?.PluginKey, code, state, error);
-        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+        if (refusal != null) return Redirect(RefuseBeforeExchange(hint, refusal, error));
 
         return await CompleteAsync(
             hint,
@@ -359,7 +383,7 @@ public class AssistantPluginsController : ControllerBase
             ?? new PluginOAuthFlowHintDto(pluginKey, PluginConstants.OAuthClient.Web);
 
         var refusal = ClassifyBeforeExchange(pluginKey, code, state, error);
-        if (refusal != null) return Redirect(RefusedUrl(hint, refusal));
+        if (refusal != null) return Redirect(RefuseBeforeExchange(hint, refusal, error));
 
         return await CompleteAsync(
             hint,
@@ -392,6 +416,55 @@ public class AssistantPluginsController : ControllerBase
         // A response with neither an error nor a code is not something any provider should send;
         // there is nothing to exchange either way.
         return string.IsNullOrWhiteSpace(code) ? PluginConstants.ErrorCodes.ProviderUnavailable : null;
+    }
+
+    /// <summary>
+    /// Logs a refusal decided from the query string, then sends the browser back to the plugins page.
+    /// </summary>
+    /// <remarks>
+    /// WT-905. When the provider itself answers the redirect with <c>error=...</c> (anything but a
+    /// cancel), the user reads "The provider could not complete the sign-in" and, before this, the
+    /// logs held nothing at all - the exchange never ran, so the exchange's own error log never
+    /// fired, and the <c>ref</c> the user quoted pointed at a request with no line explaining it.
+    /// <para>
+    /// Only the provider's error CODE is written, and only after it is reduced to the characters an
+    /// OAuth error code is made of (RFC 6749 section 4.1.2.1) and bounded. Never the code, the state or
+    /// any description text: the query string is attacker-controlled, and the code and state are
+    /// credentials for the length of the flow.
+    /// </para>
+    /// </remarks>
+    private string RefuseBeforeExchange(PluginOAuthFlowHintDto? hint, string reason, string? providerError)
+    {
+        if (!string.IsNullOrWhiteSpace(providerError)
+            && !string.Equals(reason, PluginConstants.ErrorCodes.AccessDenied, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "OAuth provider returned error {ProviderError} instead of a code for plugin {PluginKey} ({Reason}, ref {CorrelationId}).",
+                SanitizeProviderError(providerError),
+                hint?.PluginKey,
+                reason,
+                CorrelationId);
+        }
+        else if (!string.Equals(reason, PluginConstants.ErrorCodes.AccessDenied, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "OAuth callback for plugin {PluginKey} was refused before the code exchange ({Reason}, ref {CorrelationId}).",
+                hint?.PluginKey,
+                reason,
+                CorrelationId);
+        }
+
+        return RefusedUrl(hint, reason);
+    }
+
+    /// <summary>An OAuth error code is printable ASCII without quotes or backslash; keep a safe subset, bounded.</summary>
+    private static string SanitizeProviderError(string providerError)
+    {
+        var kept = new string(providerError
+            .Where(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.')
+            .Take(64)
+            .ToArray());
+        return kept.Length == 0 ? "(unprintable)" : kept;
     }
 
     /// <summary>

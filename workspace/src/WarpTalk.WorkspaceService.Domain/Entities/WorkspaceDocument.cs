@@ -96,6 +96,41 @@ public partial class WorkspaceDocument
 
     public bool IsAiAllowed { get; set; }
 
+    // ── WT-854: a corrected file awaiting review, kept beside the approved one ──────────────
+    //
+    // A re-upload on a PUBLISHED document used to overwrite StorageKey and its metadata at once,
+    // so readers, downloads and the AI index switched to an unreviewed file the moment it was
+    // uploaded, and a rejection had no way back. The replacement now waits here: every reader
+    // keeps using StorageKey (the approved file) until a reviewer approves, which promotes these
+    // values into the columns above; a rejection deletes the object and clears them.
+    //
+    // All null together when there is no pending revision; PendingStorageKey is the marker.
+
+    public string? PendingStorageKey { get; set; }
+
+    public string? PendingStorageProvider { get; set; }
+
+    /// <summary>The display name the revision asked for; null keeps the current one.</summary>
+    public string? PendingName { get; set; }
+
+    public string? PendingFileName { get; set; }
+
+    public string? PendingFileExtension { get; set; }
+
+    public string? PendingMimeType { get; set; }
+
+    public long? PendingSizeBytes { get; set; }
+
+    public string? PendingContentHash { get; set; }
+
+    /// <summary>The uploader's note to the reviewer.</summary>
+    public string? PendingNote { get; set; }
+
+    /// <summary>External AuthService user id. No physical FK.</summary>
+    public Guid? PendingUploadedBy { get; set; }
+
+    public DateTime? PendingUploadedAt { get; set; }
+
     public virtual Workspace Workspace { get; set; } = null!;
 
     public virtual ICollection<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicies { get; set; } = new List<WorkspaceDocumentAccessPolicy>();

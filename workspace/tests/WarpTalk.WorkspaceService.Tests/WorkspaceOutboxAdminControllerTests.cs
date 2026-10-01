@@ -16,15 +16,13 @@ namespace WarpTalk.WorkspaceService.Tests;
 public class WorkspaceOutboxAdminControllerTests
 {
     [Fact]
-    public void Controller_IsGatedOnTheSharedSystemAdminPolicy()
+    public void ListingNeedsHealthRead_AndReplayNeedsHealthOperate()
     {
-        var authorize = typeof(WorkspaceOutboxAdminController)
-            .GetCustomAttributes<AuthorizeAttribute>(inherit: true)
-            .SingleOrDefault();
-
-        Assert.NotNull(authorize);
-        Assert.Equal(SystemAdminAuthorization.PolicyName, authorize!.Policy);
-        Assert.Null(authorize.Roles);
+        // G10: looking at dead letters and replaying them are different powers.
+        Assert.Equal(AdminPermissions.HealthRead, typeof(WorkspaceOutboxAdminController)
+            .GetMethod(nameof(WorkspaceOutboxAdminController.GetDeadLetters))!.GetCustomAttribute<RequirePermissionAttribute>()!.Permission);
+        Assert.Equal(AdminPermissions.HealthOperate, typeof(WorkspaceOutboxAdminController)
+            .GetMethod(nameof(WorkspaceOutboxAdminController.Replay))!.GetCustomAttribute<RequirePermissionAttribute>()!.Permission);
     }
 
     [Fact]

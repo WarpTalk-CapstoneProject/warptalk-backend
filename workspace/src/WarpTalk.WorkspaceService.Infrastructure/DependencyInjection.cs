@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Net.Http;
 using Amazon.S3;
@@ -57,6 +58,12 @@ public static class DependencyInjection
         services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
         services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
         services.AddScoped<IAdminAuditLogRepository, AdminAuditLogRepository>();
+        services.AddScoped<IWorkspaceAdminNoteRepository, WorkspaceAdminNoteRepository>();
+        services.AddScoped<IAdminInboxStateRepository, AdminInboxStateRepository>();
+        services.AddScoped<IAdminInboxNoteRepository, AdminInboxNoteRepository>();
+        // Platform settings console: stored values and their append-only history.
+        services.AddScoped<IPlatformSettingValueRepository, PlatformSettingValueRepository>();
+        services.AddScoped<IPlatformSettingChangeRepository, PlatformSettingChangeRepository>();
 
         // 3. Object Storage Options & Adapters
         services.AddWarpTalkObjectStorageOptions(configuration);
@@ -152,6 +159,27 @@ public static class DependencyInjection
             // should be told so in seconds, not hold a request thread for the default 100.
             client.Timeout = TimeSpan.FromSeconds(8);
         });
+        // Firing alerts come from Alertmanager, the only place silences and inhibitions exist.
+        // Same "unconfigured is supported" rule: unreachable degrades to a warning on the screen.
+        var alertmanagerUrl = configuration["Monitoring:AlertmanagerUrl"];
+        services.AddHttpClient<IPlatformAlertSource, AlertmanagerAlertSource>(client =>
+        {
+            var configured = string.IsNullOrWhiteSpace(alertmanagerUrl)
+                ? "http://localhost:9093"
+                : alertmanagerUrl.TrimEnd('/');
+            client.BaseAddress = new Uri(configured + "/");
+            client.Timeout = TimeSpan.FromSeconds(8);
+        });
+        services.AddScoped<IOutboxDeadLetterReader, WorkspaceOutboxDeadLetterReader>();
+        // G12 pending-work inbox: the owning services' inbox-items endpoints, read directly with the
+        // caller's token. Unconfigured URLs default to the local development ports.
+        services.AddSingleton(AdminInboxOptions.From(configuration));
+        services.AddHttpClient(AdminInboxSourceClient.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15));
+        services.AddScoped<IAdminInboxSourceClient, AdminInboxSourceClient>();
+        services.AddSingleton(new PlatformHealthOptions
+        {
+            GrafanaEmbedPath = NormalizeEmbedPath(configuration["Monitoring:GrafanaEmbedPath"]),
+        });
         services.AddScoped<IDocumentEmbeddingResultProcessor, DocumentEmbeddingResultProcessor>();
         services.AddScoped<WorkspaceOutboxWriter>();
         services.AddScoped<WorkspaceOutboxDelivery>();
@@ -179,6 +207,30 @@ public static class DependencyInjection
         });
         services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
         services.AddScoped<IWorkspaceCacheService, WorkspaceCacheService>();
+
+        // Platform settings: this service writes the published snapshot (and re-publishes it every
+        // minute, which heals an eviction); it also reads settings like every other service.
+        services.AddSingleton<IPlatformSettingsPublisher, RedisPlatformSettingsPublisher>();
+        services.AddWarpTalkPlatformSettings();
+        services.AddWarpTalkIntegrationStatus("workspace", sp =>
+        {
+            var config = sp.GetRequiredService<IConfiguration>();
+            return IntegrationStatusServiceCollectionExtensions.Snapshot(
+                (IntegrationKeys.Resend, new IntegrationReport(
+                    IntegrationReport.FromConfiguration(config, null, "Resend:ApiKey").Configured
+                    || IntegrationReport.FromConfiguration(config, null, "RESEND_API_KEY").Configured, "invitation e-mail")),
+                (IntegrationKeys.ObjectStorage, IntegrationReport.ObjectStorage(config, "knowledge documents")),
+                (IntegrationKeys.Qdrant, IntegrationReport.FromConfiguration(config, "knowledge search", "VectorDb:Url")),
+                (IntegrationKeys.Prometheus, IntegrationReport.FromConfiguration(config, "system health", "Monitoring:PrometheusUrl")),
+                (IntegrationKeys.Alertmanager, IntegrationReport.FromConfiguration(config, "system health", "Monitoring:AlertmanagerUrl")),
+                (IntegrationKeys.Grafana, IntegrationReport.FromConfiguration(config, "embedded dashboards", "Monitoring:GrafanaEmbedPath")),
+                (IntegrationKeys.Redis, new IntegrationReport(true, "settings snapshot, caches")),
+                (IntegrationKeys.Postgres, IntegrationReport.FromConfiguration(config, "workspace database", "ConnectionStrings:WorkspaceDb")));
+        });
+        services.AddHostedService<PlatformSettingsPublisherWorker>();
+        // Integrations section: assembles every service's self-report and runs read-only tests.
+        services.AddHttpClient(PlatformIntegrationsService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(10));
+        services.AddScoped<IPlatformIntegrationsService, PlatformIntegrationsService>();
 
         // 6. Hosted Background Consumer Services
         services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
@@ -260,5 +312,18 @@ public static class DependencyInjection
             throw new InvalidOperationException(
                 "CRITICAL SECURITY ERROR: non-placeholder Storage:S3 credentials are required outside Development.");
         }
+    }
+
+    /// <summary>
+    /// A same-origin path or nothing. An absolute URL here would put a cross-origin frame on the
+    /// admin page, which is exactly what the ForwardAuth design exists to avoid.
+    /// </summary>
+    public static string? NormalizeEmbedPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim().TrimEnd('/');
+        return trimmed.StartsWith('/') && !trimmed.StartsWith("//", StringComparison.Ordinal) && trimmed.Length > 1
+            ? trimmed
+            : null;
     }
 }

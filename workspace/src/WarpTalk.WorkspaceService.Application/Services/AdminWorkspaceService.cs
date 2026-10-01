@@ -9,6 +9,7 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.Shared.Events;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Mappers.Admin;
 using WarpTalk.WorkspaceService.Application.Models;
@@ -41,6 +42,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         WorkspaceDirectorySort.MembersDesc,
         WorkspaceDirectorySort.MembersAsc,
         WorkspaceDirectorySort.UpdatedDesc,
+        WorkspaceDirectorySort.UpdatedAsc,
     ];
 
     private readonly IUnitOfWork _unitOfWork;
@@ -107,6 +109,13 @@ public class AdminWorkspaceService : IAdminWorkspaceService
                 WorkspaceAdminErrors.InvalidMemberCountRange, ErrorCodes.ValidationError);
         }
 
+        if (AdminDateFilter.ValidateRange(query.CreatedFrom, query.CreatedTo, "createdFrom", "createdTo")
+            is { } createdRangeError)
+        {
+            return Result.Failure<AdminPagedResult<AdminWorkspaceSummaryDto>>(
+                createdRangeError, ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize) = query.Normalize();
 
         var filter = new WorkspaceDirectoryFilter(
@@ -116,7 +125,9 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             status,
             query.MinMembers is { } minMembers ? Math.Max(minMembers, 0) : null,
             query.MaxMembers is { } maxMembers ? Math.Max(maxMembers, 0) : null,
-            sort);
+            sort,
+            AdminDateFilter.ToUtc(query.CreatedFrom),
+            AdminDateFilter.ToUtc(query.CreatedTo));
 
         try
         {
@@ -283,6 +294,11 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             workspace.DeletedAt = now;
             workspace.UpdatedAt = now;
             workspace.UpdatedBy = actorId;
+
+            // Same as the Owner's own delete: the workspace's domains are released with it. This
+            // path used to skip it, and a domain held by a deleted workspace is held forever —
+            // nobody is left who could revoke it (prod, 30 Sep 2026: fpt.edu.vn).
+            await WorkspaceHelper.ReleaseVerifiedDomainsAsync(_unitOfWork, workspace, actorId, now, ct);
 
             // WT-417 semantics, same as the Owner's own delete: the membership rows go with the
             // workspace. Unlike that path there is no tracked `executingMember` here — the actor

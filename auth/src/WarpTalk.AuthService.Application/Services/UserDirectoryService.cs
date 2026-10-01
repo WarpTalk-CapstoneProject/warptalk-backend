@@ -46,7 +46,8 @@ public class UserDirectoryService : IUserDirectoryService
             user.Email,
             user.FullName,
             user.AvatarUrl,
-            user.PreferredLanguage));
+            user.PreferredLanguage,
+            user.CreatedAt));
     }
 
     public async Task<Result<UserIdentityDto>> GetUserByEmailAsync(string email, CancellationToken ct = default)
@@ -63,7 +64,8 @@ public class UserDirectoryService : IUserDirectoryService
             user.Email,
             user.FullName,
             user.AvatarUrl,
-            user.PreferredLanguage));
+            user.PreferredLanguage,
+            user.CreatedAt));
     }
 
     public async Task<Result<UserLanguageDefaultsDto?>> GetLanguageDefaultsAsync(Guid userId, CancellationToken ct = default)

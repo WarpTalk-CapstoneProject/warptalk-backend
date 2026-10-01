@@ -20,8 +20,17 @@ public record AdminWorkspaceDirectoryQuery : AdminPageRequest
     public int? MaxMembers { get; init; }
 
     /// <summary>
+    /// Inclusive lower bound on <c>created_at</c> (UTC; a value without an offset is read as
+    /// UTC). Must not be later than <see cref="CreatedTo"/>.
+    /// </summary>
+    public DateTime? CreatedFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on <c>created_at</c> (UTC).</summary>
+    public DateTime? CreatedTo { get; init; }
+
+    /// <summary>
     /// created_desc | created_asc | name_asc | name_desc | members_desc | members_asc |
-    /// updated_desc. Defaults to created_desc.
+    /// updated_desc | updated_asc. Defaults to created_desc.
     /// </summary>
     public string? Sort { get; init; }
 }

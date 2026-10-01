@@ -25,12 +25,54 @@ public static class PaymentConstants
         /// </summary>
         public const string CreditTopUp = "CreditTopUp";
 
+        /// <summary>G11: a catalog credit pack (subscription.credit_packs), priced from the pack.</summary>
+        public const string CreditPack = "CreditPack";
+
+        /// <summary>
+        /// G11: a catalog add-on — its own Stripe subscription, never the plan's. The webhook maps
+        /// the add-on subscription's later events onto the three types below so that none of them
+        /// can reach the plan's handlers (a deleted add-on subscription must not cancel the plan).
+        /// </summary>
+        public const string AddOn = "AddOn";
+        public const string AddOnRenewal = "AddOnRenewal";
+        public const string AddOnUpdate = "AddOnUpdate";
+        public const string AddOnCancellation = "AddOnCancellation";
+
+        public static readonly IReadOnlySet<string> AddOnLifecycleTypes = new HashSet<string>
+        {
+            AddOn,
+            AddOnRenewal,
+            AddOnUpdate,
+            AddOnCancellation
+        };
+
         public static readonly IReadOnlySet<string> SubscriptionLifecycleTypes = new HashSet<string>
         {
             Subscription,
             SubscriptionRenewal,
             SubscriptionUpdate
         };
+
+        /// <summary>
+        /// WT-878: the ONLY types a customer may start through <c>POST /payments/checkout</c> —
+        /// each one has a server-priced path in PaymentAppService. Everything else (the lifecycle
+        /// types SubscriptionUpdate / SubscriptionRenewal, InvoicePayment, the add-on lifecycle, any
+        /// unknown string) is refused there: those types exist for events Stripe or the server
+        /// raises, and a checkout that named one used to fall through to the generic session and
+        /// charge the client's own Amount for a plan the webhook then activated.
+        /// InvoicePayment has its own endpoint (InvoiceService.CreateInvoiceCheckoutSessionAsync), priced
+        /// from the invoice.
+        /// </summary>
+        public static readonly IReadOnlyList<string> CustomerCheckoutTypes = new[]
+        {
+            Subscription,
+            CreditTopUp,
+            CreditPack,
+            AddOn
+        };
+
+        public const string CheckoutTypeNotAllowedMessage =
+            "This payment type cannot be purchased through checkout.";
     }
 
     public static class PaymentStatuses
@@ -82,6 +124,19 @@ public static class PaymentConstants
         /// re-deriving it from the amount (which would make the rate a client input).
         /// </summary>
         public const string Credits = "Credits";
+
+        /// <summary>#466: whether the plan checkout was sold as a recurring Stripe Subscription.</summary>
+        public const string AutoRenew = "AutoRenew";
+
+        /// <summary>
+        /// WT-878, plan checkouts: the period total (before any coupon) and currency the server
+        /// priced the session at. Activation checks the payment against these rather than the
+        /// plan's CURRENT price, so an admin repricing a plan while a buyer is on the Stripe page
+        /// cannot leave a paid checkout with no plan. Absent on sessions created before this.
+        /// </summary>
+        public const string ExpectedAmount = "ExpectedAmount";
+
+        public const string ExpectedCurrency = "ExpectedCurrency";
     }
 
     public static class StripeEvents
@@ -98,6 +153,9 @@ public static class PaymentConstants
         public const string CustomerSubscriptionUpdated = "customer.subscription.updated";
         public const string CustomerSubscriptionDeleted = "customer.subscription.deleted";
         public const string InvoicePaid = "invoice.paid";
+
+        /// <summary>#466: a renewal charge failed — dunning starts.</summary>
+        public const string InvoicePaymentFailed = "invoice.payment_failed";
     }
 
     public static class StripePrefixes

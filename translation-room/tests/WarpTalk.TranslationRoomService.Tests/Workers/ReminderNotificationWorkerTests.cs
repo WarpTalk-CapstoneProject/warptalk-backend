@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using StackExchange.Redis;
+using WarpTalk.Shared.Coordination;
 using WarpTalk.TranslationRoomService.API.Workers;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -37,6 +38,39 @@ public sealed class ReminderNotificationWorkerTests
     private static readonly Guid HostId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid GuestA = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid GuestB = Guid.Parse("33333333-3333-3333-3333-333333333333");
+
+    // ─────────────────────────────────────────────────────────────
+    // k8s multi-replica dedupe — one sweep at a time, cluster-wide
+    // ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Tick_WhileAnotherReplicaHoldsTheSweepLease_SendsNothing()
+    {
+        var locks = new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System);
+        var room = Room(status: "SCHEDULED", startsIn: TimeSpan.FromMinutes(5));
+        var harness = new Harness(locks, room);
+        await using var otherReplica = await locks.TryAcquireAsync(
+            ReminderNotificationWorker.SweepLockResource, TimeSpan.FromMinutes(2));
+        otherReplica.Should().NotBeNull();
+
+        var outcome = await harness.TickAsync();
+
+        outcome.Should().Be(ExclusiveTickOutcome.Skipped);
+        harness.Notifications.Attempts.Should().BeEmpty();
+        room.Reminder10MinSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Tick_HoldingTheSweepLease_Reminds()
+    {
+        var room = Room(status: "SCHEDULED", startsIn: TimeSpan.FromMinutes(5));
+        var harness = new Harness(room);
+
+        var outcome = await harness.TickAsync();
+
+        outcome.Should().Be(ExclusiveTickOutcome.Ran);
+        harness.Notifications.SentTo.Should().BeEquivalentTo(new[] { HostId.ToString() });
+    }
 
     // ─────────────────────────────────────────────────────────────
     // A1 — opening the lobby early must not disarm the reminder
@@ -359,6 +393,11 @@ public sealed class ReminderNotificationWorkerTests
         public RecordingNotificationClient Notifications { get; } = new();
 
         public Harness(params TranslationRoom[] rooms)
+            : this(new DistributedLockProvider(new InProcessLeaseStore(TimeProvider.System), TimeProvider.System), rooms)
+        {
+        }
+
+        public Harness(IDistributedLockProvider locks, params TranslationRoom[] rooms)
         {
             var roomRepository = new Mock<ITranslationRoomRepository>();
             roomRepository
@@ -381,10 +420,13 @@ public sealed class ReminderNotificationWorkerTests
                 NullLogger<ReminderNotificationWorker>.Instance,
                 Options.Create(new AppSettings { FrontendBaseUrl = "https://warptalk.test" }),
                 Notifications,
-                new FakeRedis().Multiplexer);
+                new FakeRedis().Multiplexer,
+                locks);
         }
 
         public Task PollAsync() => _worker.CheckAndSendRemindersAsync(CancellationToken.None);
+
+        public Task<ExclusiveTickOutcome> TickAsync() => _worker.RunTickAsync(CancellationToken.None);
     }
 
     /// <summary>

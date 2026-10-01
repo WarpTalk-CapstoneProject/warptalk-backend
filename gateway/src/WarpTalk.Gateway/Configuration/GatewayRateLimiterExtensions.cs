@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using WarpTalk.Gateway.Services;
+using WarpTalk.Shared.PlatformSettings;
 
 namespace WarpTalk.Gateway.Configuration;
 
@@ -16,6 +17,16 @@ namespace WarpTalk.Gateway.Configuration;
 /// </summary>
 public static class GatewayRateLimiterExtensions
 {
+    /// <summary>
+    /// The permit limit for one policy: the live platform setting when one is set, otherwise the
+    /// configured <paramref name="configured"/> value. Synchronous — it answers from the settings
+    /// snapshot this process already holds, so the limiter never waits on Redis.
+    /// </summary>
+    public static int LivePermitLimit(HttpContext httpContext, string settingKey, int configured)
+        => httpContext.RequestServices?.GetService<IPlatformSettings>() is { } settings
+            ? settings.GetInt32(settingKey, configured)
+            : configured;
+
     /// <summary>Requests under this prefix are never throttled. See <see cref="IsHealthProbe"/>.</summary>
     public const string HealthProbePrefix = "/health";
 
@@ -122,14 +133,22 @@ public static class GatewayRateLimiterExtensions
             var isAuthenticated = httpContext.User.Identity?.IsAuthenticated == true
                 && !userKey.StartsWith(RequestRateLimitPartitionKeys.AnonymousPrefix, StringComparison.Ordinal);
 
+            // Live from /admin/settings, with the RateLimits section as the fallback. The limit is
+            // part of the partition key because a partition's options are fixed when it is created:
+            // a changed limit therefore opens a fresh partition with the new budget instead of being
+            // ignored until the process restarts.
+            var permitLimit = isAuthenticated
+                ? LivePermitLimit(httpContext, PlatformSettingsCatalog.UserRateLimit, limits.UserPermitLimit)
+                : LivePermitLimit(httpContext, PlatformSettingsCatalog.IpRateLimit, limits.IpPermitLimit);
+
             return RateLimitPartition.GetFixedWindowLimiter(
                 partitionKey: isAuthenticated
-                    ? $"user:{userKey}"
-                    : $"ip:{RequestRateLimitPartitionKeys.Ip(httpContext)}",
+                    ? $"user:{userKey}|{permitLimit}"
+                    : $"ip:{RequestRateLimitPartitionKeys.Ip(httpContext)}|{permitLimit}",
                 factory: _ => new FixedWindowRateLimiterOptions
                 {
                     AutoReplenishment = true,
-                    PermitLimit = isAuthenticated ? limits.UserPermitLimit : limits.IpPermitLimit,
+                    PermitLimit = permitLimit,
                     Window = window
                 });
         });
@@ -147,14 +166,17 @@ public static class GatewayRateLimiterExtensions
         // to key on. (RequestRateLimitPartitionKeys.Workspace falls back to the X-Workspace-Id
         // request header, which a caller sets freely — never partition a limiter on that.)
         options.AddPolicy(LoginPolicyName, httpContext =>
-            RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: RequestRateLimitPartitionKeys.Ip(httpContext),
+        {
+            var permitLimit = LivePermitLimit(httpContext, PlatformSettingsCatalog.LoginRateLimit, limits.LoginPermitLimit);
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: $"{RequestRateLimitPartitionKeys.Ip(httpContext)}|{permitLimit}",
                 factory: _ => new FixedWindowRateLimiterOptions
                 {
                     AutoReplenishment = true,
-                    PermitLimit = limits.LoginPermitLimit,
+                    PermitLimit = permitLimit,
                     Window = window
-                }));
+                });
+        });
 
         // The inbox route is authenticated, so the caller's own identity is the honest key here;
         // it falls back to "anonymous:<ip>" when no subject claim is present.

@@ -71,6 +71,15 @@ public static class NotificationValidator
             }
         },
         {
+            // WT-612. Same two fields as MEETING_STARTED, because the client resolves both
+            // through one payload reader — the difference between them is where the click goes,
+            // not what they carry.
+            NotificationConstants.TypeMeetingOpened, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
             NotificationConstants.TypeMeetingSummaryReady, new PayloadSchema
             {
                 RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
@@ -127,6 +136,18 @@ public static class NotificationValidator
                     { "workspace_id", JsonValueKind.String },
                     { "workspace_name", JsonValueKind.String },
                     { "reason", JsonValueKind.String }
+                }
+            }
+        },
+        {
+            // The admin workspace page's "send a notice to the owner". The notice text is the
+            // title and body; the payload only says which workspace it is about.
+            NotificationConstants.TypeWorkspaceAdminNotice, new PayloadSchema
+            {
+                RequiredFields =
+                {
+                    { "workspace_id", JsonValueKind.String },
+                    { "workspace_name", JsonValueKind.String }
                 }
             }
         },

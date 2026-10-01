@@ -11,6 +11,7 @@ using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Persistence;
 using WarpTalk.TranscriptService.Infrastructure.Persistence.Contexts;
 using WarpTalk.TranscriptService.Infrastructure.Repositories;
+using WarpTalk.Shared.AdminAudit;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -40,8 +41,10 @@ builder.WebHost.ConfigureKestrel(options =>
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranscriptDb"));
 var dataSource = dataSourceBuilder.Build();
 
-builder.Services.AddDbContext<TranscriptDbContext>(options =>
-    options.UseNpgsql(dataSource));
+builder.Services.AddDbContext<TranscriptDbContext>((provider, options) =>
+    options.UseNpgsql(dataSource)
+        // [AdminAudited] global-glossary routes record each save before it commits.
+        .AddAdminAuditInterceptor(provider));
 builder.Services.AddWarpTalkServiceHealthChecks<TranscriptDbContext>(
     "transcript-database");
 
@@ -66,6 +69,12 @@ builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.
 builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptPauseAccess,
     WarpTalk.TranscriptService.Application.Authorization.TranscriptPauseAccess>();
 
+// Glossaries carry a workspaceId supplied by the caller (route or body), and IGlossaryService
+// itself trusts it — GlossariesController is the only boundary that can ask whether the caller
+// actually belongs to that workspace before honoring the request.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Interfaces.IWorkspaceMembershipClient,
+    WarpTalk.TranscriptService.Infrastructure.Clients.WorkspaceMembershipGrpcClient>();
+
 // --- Application Services ---
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
 builder.Services.AddScoped<IGlossaryService, GlossaryService>();
@@ -87,13 +96,16 @@ var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
+// Platform settings (/admin/settings): flags.global_glossary is read at every meeting start.
+WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(builder.Services);
+
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
 
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddWarpTalkSystemAdminAuthorization();
+builder.Services.AddWarpTalkStaffAuthorization(builder.Configuration, builder.Environment);
 
 // --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
@@ -125,6 +137,45 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+// The platform audit log is hosted by the workspace service, on the same address. The global
+// glossary is platform-wide reference data every workspace's translation reads, so an edit to it
+// is an admin action like a plan change: recorded before it commits, refused if it cannot be.
+builder.Services.AddGrpcClient<AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddWarpTalkAdminAuditing(WarpTalk.Shared.Events.AdminAuditSources.TranscriptService);
+
+// Google Meet bridge: after a bridge room ends, its far-side (stand-in) segments are named from
+// Google Meet's own transcript. AssistantService holds the host's Google grant and reads Meet REST
+// on our behalf; the job's lease keeps it on one replica per tick.
+builder.Services.AddGrpcClient<MeetConferenceService.MeetConferenceServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:AssistantServiceUrl",
+        "http://localhost:50058");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// Live far-side speaker names on stand-in segments (persistence consumer) and the relabel's
+// fallback for segments Google's transcript cannot attribute. Same key the Gateway reads.
+builder.Services.AddSingleton(WarpTalk.TranscriptService.Application.FarSpeakers.FarSpeakerNameOptions.From(
+    builder.Configuration.GetValue<double?>(WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey)));
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IBridgeRoomLookup,
+    WarpTalk.TranscriptService.Application.FarSpeakers.BridgeRoomLookup>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IMeetTranscriptSource,
+    WarpTalk.TranscriptService.Application.FarSpeakers.MeetTranscriptSource>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IFarSpeakerRelabelStore,
+    WarpTalk.TranscriptService.Infrastructure.Repositories.FarSpeakerRelabelStore>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IFarSpeakerRelabelService,
+    WarpTalk.TranscriptService.Application.FarSpeakers.FarSpeakerRelabelService>();
+WarpTalk.Shared.Coordination.CoordinationServiceCollectionExtensions.AddWarpTalkDistributedLocks(builder.Services);
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Workers.FarSpeakerRelabelWorker>();
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>

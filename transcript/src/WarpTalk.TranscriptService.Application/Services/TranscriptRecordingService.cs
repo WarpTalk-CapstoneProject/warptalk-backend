@@ -54,7 +54,7 @@ public class TranscriptRecordingService : ITranscriptRecordingService
     {
         try
         {
-            if (!await _pauseAccess.IsRoomHostAsync(translationRoomId, callerId, cancellationToken))
+            if (!await _pauseAccess.CanPauseTranscriptAsync(translationRoomId, callerId, cancellationToken))
                 return Result.Failure("Only the host can pause the transcript.", "FORBIDDEN");
 
             var active = await _unitOfWork.TranscriptPauseWindows.GetActiveWindowByRoomIdAsync(translationRoomId, cancellationToken);
@@ -91,7 +91,7 @@ public class TranscriptRecordingService : ITranscriptRecordingService
     {
         try
         {
-            if (!await _pauseAccess.IsRoomHostAsync(translationRoomId, callerId, cancellationToken))
+            if (!await _pauseAccess.CanPauseTranscriptAsync(translationRoomId, callerId, cancellationToken))
                 return Result.Failure("Only the host can resume the transcript.", "FORBIDDEN");
 
             var active = await _unitOfWork.TranscriptPauseWindows.GetActiveWindowByRoomIdAsync(translationRoomId, cancellationToken);
@@ -118,12 +118,14 @@ public class TranscriptRecordingService : ITranscriptRecordingService
         }
     }
 
-    public async Task<Result<IReadOnlyList<TranscriptPauseWindowDto>>> GetPauseWindowsAsync(Guid translationRoomId, Guid callerId, CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<TranscriptPauseWindowDto>>> GetPauseWindowsAsync(Guid translationRoomId, Guid callerId, string? callerEmail = null, CancellationToken cancellationToken = default)
     {
         try
         {
             // Read access, not pause access: every participant sees the divider, not only the host.
-            if (!await _readAccess.CanReadRoomTranscriptAsync(translationRoomId, callerId, cancellationToken))
+            // WT-849: callerEmail lets invited-but-absent users read pause windows too, consistent
+            // with segment / clean-sentence / translation reads that already pass the email.
+            if (!await _readAccess.CanReadRoomTranscriptAsync(translationRoomId, callerId, callerEmail, cancellationToken))
                 return Result.Failure<IReadOnlyList<TranscriptPauseWindowDto>>("You do not have access to this transcript.", "FORBIDDEN");
 
             var windows = await _unitOfWork.TranscriptPauseWindows.GetWindowsByRoomIdAsync(translationRoomId, cancellationToken);

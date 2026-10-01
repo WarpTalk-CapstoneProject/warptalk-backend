@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 
 using WarpTalk.BillingService.Infrastructure.Persistence;
 
@@ -98,7 +99,11 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
         return rows;
     }
 
-    private static IQueryable<Subscription> ApplyAdminFilters(
+    /// <summary>
+    /// The directory's WHERE clause. Public so tests can run it over plain rows and ask Npgsql to
+    /// translate it (ToQueryString) without a database.
+    /// </summary>
+    public static IQueryable<Subscription> ApplyAdminFilters(
         IQueryable<Subscription> query,
         AdminSubscriptionFilter filter)
     {
@@ -118,16 +123,43 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             query = query.Where(s => s.Plan.Slug == slug);
         }
 
+        if (!string.IsNullOrWhiteSpace(filter.ServiceState))
+        {
+            var serviceState = filter.ServiceState;
+            query = query.Where(s => s.ServiceState == serviceState);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.BillingCycle))
+        {
+            var cycle = filter.BillingCycle;
+            query = query.Where(s => s.Plan.BillingCycle == cycle);
+        }
+
+        if (filter.AutoRenew is { } autoRenew)
+            query = query.Where(s => s.AutoRenew == autoRenew);
+
+        if (filter.WorkspaceId is { } workspaceId)
+            query = query.Where(s => s.WorkspaceId == workspaceId);
+
+        // Half-open: inclusive from, exclusive to.
+        if (filter.PeriodEndFrom is { } periodEndFrom)
+            query = query.Where(s => s.CurrentPeriodEnd >= periodEndFrom);
+
+        if (filter.PeriodEndTo is { } periodEndTo)
+            query = query.Where(s => s.CurrentPeriodEnd < periodEndTo);
+
         return query;
     }
 
-    private static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
+    /// <summary>The directory's ORDER BY. Public for the same reason as <see cref="ApplyAdminFilters"/>.</summary>
+    public static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
         => sort switch
         {
             "period_end_desc" => query.OrderByDescending(s => s.CurrentPeriodEnd),
             "created_desc" => query.OrderByDescending(s => s.CreatedAt),
             "created_asc" => query.OrderBy(s => s.CreatedAt),
             "credits_asc" => query.OrderBy(s => s.CreditsRemaining),
+            "credits_desc" => query.OrderByDescending(s => s.CreditsRemaining),
             // Soonest renewal first: the default, because the question this screen answers is
             // "what needs attention", and what needs attention is what runs out next.
             _ => query.OrderBy(s => s.CurrentPeriodEnd),
@@ -169,22 +201,49 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
         DateTime lowerBound,
         CancellationToken cancellationToken = default)
     {
+        // #466: invoice rows only. A card customer's renewal is Stripe's to charge and grant.
         return await _dbSet
             .Include(s => s.Plan)
-            .Where(s =>
-                s.IsActive &&
-                s.DeletedAt == null &&
-                s.AutoRenew &&
-                s.Status == SubscriptionConstants.SubscriptionStatuses.Active &&
-                s.CurrentPeriodEnd <= renewalThreshold &&
-                s.CurrentPeriodEnd > lowerBound)
+            .Where(SubscriptionOwnership.DueForCycleClose(renewalThreshold, lowerBound))
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(DateTime now, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(
+        DateTime now,
+        TimeSpan renewalLookback,
+        TimeSpan stripeSafetyMargin,
+        CancellationToken cancellationToken = default)
     {
         return await _dbSet
-            .Where(s => s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd < now)
+            .Where(SubscriptionOwnership.DueForExpiry(now, renewalLookback, stripeSafetyMargin))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<Subscription?> GetByStripeSubscriptionIdAsync(
+        string stripeSubscriptionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(stripeSubscriptionId))
+        {
+            return null;
+        }
+
+        return await _dbSet
+            .Include(s => s.Plan)
+            .FirstOrDefaultAsync(s => s.StripeSubscriptionId == stripeSubscriptionId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Subscription>> GetUnlinkedCardSubscriptionsAsync(
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Where(s => s.IsActive
+                        && s.DeletedAt == null
+                        && s.RenewalMode == SubscriptionConstants.RenewalModes.None
+                        && s.StripeSubscriptionId == null)
+            .OrderBy(s => s.CurrentPeriodEnd)
+            .Take(limit)
             .ToListAsync(cancellationToken);
     }
 
@@ -201,13 +260,27 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             query = query.Include(s => s.Plan);
         }
 
-        return await query
-            .OrderByDescending(s => s.CreatedAt)
-            .FirstOrDefaultAsync(s =>
-                s.WorkspaceId == workspaceId &&
-                s.IsActive &&
-                s.DeletedAt == null &&
-                (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow), cancellationToken);
+        // WT-878: the same order GetCurrentForWorkspaceAsync uses (SubscriptionSelection), so the
+        // two agree on which live row is "the" subscription when a race left two of them.
+        var live = SubscriptionSelection.ForWorkspace(query, workspaceId)
+            .Where(s => s.IsActive && (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow));
+        return await SubscriptionSelection.OrderCurrentFirst(live).FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<Subscription?> GetCurrentForWorkspaceAsync(
+        Guid workspaceId,
+        bool includePlan = false,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<Subscription> query = _dbSet;
+        if (includePlan)
+        {
+            query = query.Include(s => s.Plan);
+        }
+
+        return await SubscriptionSelection
+            .OrderCurrentFirst(SubscriptionSelection.ForWorkspace(query, workspaceId))
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     // ── Admin Insights (2026-09-17) ──────────────────────────────────────────
@@ -280,6 +353,30 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
 
         return rows
             .Select(r => new EndingSoonSubscriptionRow(r.WorkspaceId, r.PlanName, r.CurrentPeriodEnd, r.AutoRenew, r.Status))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<InboxSubscriptionRow>> GetNeedingAttentionAsync(
+        DateTime now, DateTime until, int take, CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s => s.IsActive && (
+                (s.TrialEndsAt != null && s.TrialEndsAt > now && s.TrialEndsAt <= until)
+                || (!s.AutoRenew && s.CurrentPeriodEnd > now && s.CurrentPeriodEnd <= until)
+                || s.ServiceState == SubscriptionConstants.ServiceStates.Suspended))
+            .OrderBy(s => s.TrialEndsAt ?? s.CurrentPeriodEnd)
+            .Take(take)
+            .Select(s => new
+            {
+                s.Id, s.WorkspaceId, PlanName = s.Plan.Name, s.TrialEndsAt, s.CurrentPeriodEnd, s.AutoRenew,
+                s.ServiceState, s.SuspendedReason, s.UpdatedAt,
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new InboxSubscriptionRow(
+                r.Id, r.WorkspaceId, r.PlanName, r.TrialEndsAt, r.CurrentPeriodEnd, r.AutoRenew, r.ServiceState, r.SuspendedReason, r.UpdatedAt))
             .ToList();
     }
 }

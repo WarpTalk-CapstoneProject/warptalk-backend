@@ -24,13 +24,13 @@ public class TranscriptExportService : ITranscriptExportService
         _readAccess = readAccess;
     }
 
-    public async Task<TranscriptExportDto> CreateExportAsync(Guid transcriptId, CreateTranscriptExportRequest request, Guid userId)
+    public async Task<TranscriptExportDto> CreateExportAsync(Guid transcriptId, CreateTranscriptExportRequest request, Guid userId, string? userEmail = null)
     {
         var transcript = await _unitOfWork.Transcripts.GetByIdAsync(transcriptId);
         if (transcript == null)
             throw new Exception("Transcript not found"); // Usually a custom NotFoundException
 
-        if (!await CanAccessTranscriptAsync(transcript, userId))
+        if (!await CanAccessTranscriptAsync(transcript, userId, userEmail))
             throw new UnauthorizedAccessException("You do not have access to this transcript.");
 
         var exportId = Guid.NewGuid(); // Alternatively, rely on DB to generate UUID
@@ -62,7 +62,7 @@ public class TranscriptExportService : ITranscriptExportService
         );
     }
 
-    public async Task<(byte[] FileBytes, string ContentType, string FileName)> DownloadExportAsync(Guid transcriptId, Guid exportId, Guid userId)
+    public async Task<(byte[] FileBytes, string ContentType, string FileName)> DownloadExportAsync(Guid transcriptId, Guid exportId, Guid userId, string? userEmail = null)
     {
         var export = await _unitOfWork.TranscriptExports.GetByIdAsync(exportId);
         if (export == null || export.TranscriptId != transcriptId)
@@ -72,7 +72,7 @@ public class TranscriptExportService : ITranscriptExportService
         if (transcript == null)
             throw new Exception("Transcript not found");
 
-        if (!await CanAccessTranscriptAsync(transcript, userId))
+        if (!await CanAccessTranscriptAsync(transcript, userId, userEmail))
             throw new UnauthorizedAccessException("You do not have access to this transcript export.");
 
         var segments = await _unitOfWork.TranscriptSegments.FindAsync(s => s.TranscriptId == transcriptId);
@@ -198,6 +198,6 @@ public class TranscriptExportService : ITranscriptExportService
         return field;
     }
 
-    private Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId)
-        => _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId);
+    private Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId, string? userEmail = null)
+        => _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, userEmail);
 }

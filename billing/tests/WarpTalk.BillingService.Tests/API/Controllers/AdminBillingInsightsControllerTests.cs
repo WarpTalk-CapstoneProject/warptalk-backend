@@ -32,6 +32,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
 {
     private const string Insights = "/api/v1/admin/billing/insights";
     private const string Snapshot = "/api/v1/admin/billing/insights/snapshot";
+    private const string Pnl = "/api/v1/admin/billing/insights/pnl";
 
     private readonly Mock<IAdminBillingInsightsService> _service = new();
     private WebApplication _app = null!;
@@ -48,7 +49,13 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
             .AddAuthentication(TestAuthHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
         builder.Services.AddAuthorization();
-        builder.Services.AddWarpTalkSystemAdminAuthorization();
+        // G10: the auth service's answer, stubbed — the caller authenticated as "admin" is staff
+        // holding billing.read; everyone else is not staff at all.
+        builder.Services.AddWarpTalkStaffAuthorizationCore();
+        builder.Services.AddSingleton<IStaffAccessSource>(new DelegateStaffAccessSource(id =>
+            id == TestAuthHandler.StaffUserId
+                ? DelegateStaffAccessSource.Staff(AdminPermissions.BillingRead)
+                : StaffAccess.None));
         builder.Services.AddScoped<IAdminBillingInsightsService>(_ => _useRealService
             // Validation runs before any data access, so the real service needs no database here.
             ? new AdminBillingInsightsService(
@@ -76,6 +83,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     [Theory]
     [InlineData(Insights + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z")]
     [InlineData(Snapshot)]
+    [InlineData(Pnl + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z")]
     public async Task Anonymous_Is401(string url)
     {
         (await _client.GetAsync(url)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -87,6 +95,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     [InlineData(Insights + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z", "Admin")]
     [InlineData(Snapshot, "Owner")]
     [InlineData(Snapshot, "Admin")]
+    [InlineData(Pnl + "?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z", "Admin")]
     public async Task NonSystemAdmin_Is403(string url, string role)
     {
         // "Admin" (capital A) is the WORKSPACE administrator role; only lowercase "admin" is the platform one.
@@ -104,6 +113,19 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
         _useRealService = true;
 
         var response = await Send(Insights + queryString, SystemAdminAuthorization.RoleName);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain(ErrorCodes.ValidationError);
+    }
+
+    [Theory]
+    [InlineData("?from=2026-09-17T00:00:00Z&to=2026-09-01T00:00:00Z")]
+    [InlineData("?from=2026-09-01T00:00:00Z&to=2026-09-17T00:00:00Z&tz=Asia/Atlantis")]
+    public async Task Pnl_InvalidRange_Is400(string queryString)
+    {
+        _useRealService = true;
+
+        var response = await Send(Pnl + queryString, SystemAdminAuthorization.RoleName);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain(ErrorCodes.ValidationError);
@@ -203,6 +225,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
     {
         public const string SchemeName = "Test";
         public const string RoleHeader = "X-Test-Role";
+        public static readonly Guid StaffUserId = Guid.NewGuid();
 
         public TestAuthHandler(
             IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
@@ -216,7 +239,7 @@ public sealed class AdminBillingInsightsControllerTests : IAsyncLifetime
                 return Task.FromResult(AuthenticateResult.NoResult());
 
             var identity = new ClaimsIdentity(
-                [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim(ClaimTypes.Role, role.ToString())],
+                [new Claim(ClaimTypes.NameIdentifier, (role.ToString() == "admin" ? StaffUserId : Guid.NewGuid()).ToString()), new Claim(ClaimTypes.Role, role.ToString())],
                 SchemeName);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
         }

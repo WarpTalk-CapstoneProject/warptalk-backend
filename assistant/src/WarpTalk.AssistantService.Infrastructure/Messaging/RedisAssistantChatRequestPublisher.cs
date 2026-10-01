@@ -61,6 +61,40 @@ public class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
             // WT-687. Same compatibility story: from_redis() defaults it to "", so an older worker
             // ignores it and simply offers every installed plugin.
             new("disabled_plugin_keys_json", disabledPluginKeysJson ?? ""),
+            // Explicit, though "" / missing means the same to the worker: the scope is the one
+            // field that decides which tool set a turn is offered, so it is never left implied.
+            new("scope", "workspace"),
+            new("timestamp_ms", timestampMs.ToString(CultureInfo.InvariantCulture)),
+        };
+
+        await db.StreamAddAsync(StreamName, entries, maxLength: 10000, useApproximateMaxLength: true);
+    }
+
+    public async Task PublishPlatformAsync(
+        Guid requestId,
+        Guid conversationId,
+        Guid userId,
+        string? bearerToken,
+        IReadOnlyList<ChatTurnDto> history,
+        CancellationToken ct = default)
+    {
+        var db = _redis.GetDatabase();
+        var historyJson = JsonSerializer.Serialize(history.Select(h => new { role = h.Role, content = h.Content }));
+        var timestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        // No page context, mentions, attachments or plugin switches: each of those names workspace
+        // content. workspace_id is present but EMPTY, because ChatRequestMessage.from_redis reads
+        // the key — and an empty id scopes nothing even if a workspace tool were ever reached.
+        var entries = new NameValueEntry[]
+        {
+            new("request_id", requestId.ToString()),
+            new("conversation_id", conversationId.ToString()),
+            new("workspace_id", ""),
+            new("user_id", userId.ToString()),
+            new("origin", "assistant"),
+            new("scope", "platform"),
+            new("bearer_token", bearerToken ?? ""),
+            new("history_json", historyJson),
             new("timestamp_ms", timestampMs.ToString(CultureInfo.InvariantCulture)),
         };
 

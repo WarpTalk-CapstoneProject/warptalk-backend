@@ -14,7 +14,9 @@ namespace WarpTalk.Gateway.Services;
 /// and pushes them to connected clients via SignalR.
 ///
 /// Streams consumed per active translationRoom:
-///   - stt:results:{translationRoomId}     → TranscriptSegmentReceived (original transcript)
+///   - stt:results:{translationRoomId}     → TranscriptSegmentReceived (original transcript,
+///                                           plus WT-716 tier-1 cleanText/cleanFlags)
+///   - transcript:clean                    → TranscriptCleanSentenceReceived (WT-716 tier 2)
 ///   - tts:results:{translationRoomId}     → TranslatedAudioReceived (translated + cloned voice) 
 ///   - ai_assistant:results:{translationRoomId} → AiAssistantResult (summaries, action items)
 ///                                              → AiSuggestionReceived when type="suggestion"
@@ -65,20 +67,65 @@ public sealed class AiResultConsumerService : BackgroundService
     /// </summary>
     private readonly ConcurrentDictionary<string, string> _speakerNameCache = new();
 
+    private readonly MeetingCaptionMetrics _captionMetrics;
+
+    /// <summary>
+    /// How sure stt_worker must be of a live far-side speaker name before a bridge stand-in line
+    /// carries it — <see cref="WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey"/>, the same
+    /// key TranscriptService reads, so the live line and the saved row agree.
+    /// </summary>
+    private readonly double _farSpeakerMinConfidence;
+
+    // ── Pending-list hygiene (WarpTalkAiPendingStuck) ────────
+    //
+    // Every stream this service reads, for the housekeeping pass. Kept in step with the consume
+    // loops by StalePendingHousekeepingTests.
+    public static readonly IReadOnlyList<string> ConsumedStreams =
+    [
+        "stt:results",
+        "transcript:clean",
+        "translate:results",
+        "tts:results",
+        "voice:clone:state",
+        "ai_assistant:results",
+    ];
+
+    // Everything here is a live broadcast: a caption or a summary minutes old is worthless to the
+    // room, so an entry pending this long is retired, not redelivered.
+    private static readonly TimeSpan StalePendingAge = TimeSpan.FromMinutes(5);
+
+    // A live consumer polls several times a second, so an hour of silence means its process is
+    // gone. Deliberately far above anything a Redis blip or a slow deploy could produce.
+    private static readonly TimeSpan DeadConsumerIdle = TimeSpan.FromHours(1);
+
+    private static readonly TimeSpan HousekeepingInterval = TimeSpan.FromMinutes(5);
+
+    // Lets the consume loops create their groups first, so the first pass does not trip NOGROUP.
+    private static readonly TimeSpan HousekeepingStartDelay = TimeSpan.FromSeconds(30);
+
+    // Unroutable entries are logged at Warning at most once a minute per stream, Debug otherwise:
+    // a producer that drops meeting_id on stt:results would otherwise log every sentence spoken.
+    private static readonly long UnroutableWarningIntervalMs = (long)TimeSpan.FromMinutes(1).TotalMilliseconds;
+    private readonly ConcurrentDictionary<string, long> _unroutableWarnedAt = new();
+
     public AiResultConsumerService(
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IHubContext<TranslationRoomHub> hubContext,
         WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
         WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
-        ILogger<AiResultConsumerService> logger)
+        ILogger<AiResultConsumerService> logger,
+        IConfiguration? configuration = null)
     {
+        _farSpeakerMinConfidence = WarpTalk.Shared.FarSpeakerNames.NormalizeMinConfidence(
+            configuration?.GetValue<double?>(WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey));
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _hubContext = hubContext;
         _workspaceClient = workspaceClient;
         _roomClient = roomClient;
         _logger = logger;
+        _captionMetrics = new MeetingCaptionMetrics(streamService, logger);
     }
 
 
@@ -95,7 +142,9 @@ public sealed class AiResultConsumerService : BackgroundService
                 ConsumeTranslationResultsAsync(stoppingToken),
                 ConsumeTTSResultsAsync(stoppingToken),
                 ConsumeAiAssistantResultsAsync(stoppingToken),
-                ConsumeVoiceCloneStateAsync(stoppingToken));
+                ConsumeCleanSentencesAsync(stoppingToken),
+                ConsumeVoiceCloneStateAsync(stoppingToken),
+                HousekeepConsumerGroupsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
         {
@@ -170,6 +219,96 @@ public sealed class AiResultConsumerService : BackgroundService
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Acknowledge an entry no room can receive (no meeting_id, or a payload the client cannot
+    /// render), and say so.
+    /// </summary>
+    /// <remarks>
+    /// WarpTalkAiPendingStuck. Four loops used to <c>continue</c> past such an entry without
+    /// XACK, so it stayed pending on this consumer forever — and, once the pod was replaced, on a
+    /// consumer nobody would ever read as again. On 30 Sep ai_assistant:results held 62 of them
+    /// (summaries and action items published without a meeting_id) across 12 dead pods. Retrying
+    /// is pointless: an entry with no room can never become routable.
+    /// </remarks>
+    private async Task AcknowledgeUnroutableAsync(string streamKey, StreamEntry entry)
+    {
+        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+
+        var now = Environment.TickCount64;
+        var warn = !_unroutableWarnedAt.TryGetValue(streamKey, out var last)
+            || now - last >= UnroutableWarningIntervalMs;
+        if (warn) _unroutableWarnedAt[streamKey] = now;
+
+        _logger.Log(
+            warn ? LogLevel.Warning : LogLevel.Debug,
+            "Acknowledged unroutable entry {EntryId} on {Stream} (type={Type}) without delivering it: "
+            + "no meeting_id or no usable payload, so no room can receive it.",
+            entry.Id.ToString(), streamKey, RedisStreamService.GetField(entry, "type") ?? "(none)");
+    }
+
+    /// <summary>
+    /// Periodically retire stale pending entries and remove dead consumers from this service's
+    /// group on every stream it reads. WarpTalkAiPendingStuck.
+    /// </summary>
+    /// <remarks>
+    /// Acking every entry in the loops is not enough on its own: an exception mid-entry (a
+    /// SignalR send, say) or a pod killed between read and XACK still leaves entries pending on a
+    /// consumer that never comes back, because each process reads under a fresh random name and
+    /// nothing reclaims another's. The group also collected one consumer per process ever started
+    /// (97 on 30 Sep). Both are cleaned here.
+    ///
+    /// Runs on every replica with no leader: a claim resets the idle time of what it claims, XACK
+    /// is idempotent, and a consumer idle for an hour with nothing pending is dead on any replica's
+    /// view. A failure only logs — like EnsureConsumerGroupWithRetryAsync, nothing here may throw
+    /// out of ExecuteAsync and stop the host — and the next pass tries again.
+    /// </remarks>
+    private async Task HousekeepConsumerGroupsAsync(CancellationToken ct)
+    {
+        await Task.Delay(HousekeepingStartDelay, ct);
+
+        while (!ct.IsCancellationRequested)
+        {
+            foreach (var streamKey in ConsumedStreams)
+            {
+                await HousekeepConsumerGroupAsync(streamKey);
+            }
+
+            await Task.Delay(HousekeepingInterval, ct);
+        }
+    }
+
+    private async Task HousekeepConsumerGroupAsync(string streamKey)
+    {
+        try
+        {
+            // Claim first: it moves stale entries off dead consumers, which is what lets the
+            // deletion below remove them in the same pass.
+            var retired = await _streamService.AcknowledgeStalePendingAsync(
+                streamKey, ConsumerGroupName, _consumerName, StalePendingAge);
+            if (retired > 0)
+            {
+                _logger.LogWarning(
+                    "Retired {Count} entries pending longer than {Age} on {Stream}/{Group} without delivering them.",
+                    retired, StalePendingAge, streamKey, ConsumerGroupName);
+            }
+
+            var removed = await _streamService.DeleteDeadConsumersAsync(
+                streamKey, ConsumerGroupName, _consumerName, DeadConsumerIdle);
+            if (removed.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Removed {Count} dead consumer(s) idle longer than {Idle} from {Stream}/{Group}.",
+                    removed.Count, DeadConsumerIdle, streamKey, ConsumerGroupName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Pending-list housekeeping failed on {Stream}/{Group}; retrying next pass.",
+                streamKey, ConsumerGroupName);
+        }
     }
 
     // ── Profanity Masking ────────────────────────────────────
@@ -313,14 +452,24 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
-
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "text") ?? "";
+                    // WT-716 tier 1. Masked under the same switch as the raw text: Clean is the
+                    // DEFAULT view, so an unmasked clean line would be the profanity filter off for
+                    // most readers.
+                    var cleanText = TryReadCleanText(entry);
 
                     if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
                     {
                         originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
+                        cleanText = cleanText is null
+                            ? null
+                            : WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(cleanText);
                     }
 
                     var speakerId = RedisStreamService.GetField(entry, "speaker_id") ?? "";
@@ -337,18 +486,28 @@ public sealed class AiResultConsumerService : BackgroundService
                         // had this problem: TranscriptRedisConsumerService resolves the name over
                         // auth gRPC before it writes the row, so the two copies of the same
                         // meeting disagreed about who spoke.
-                        SpeakerName: await ResolveSpeakerNameAsync(translationRoomId, speakerId),
+                        //
+                        // A bridge stand-in line is not looked up at all: its LiveKit name is the
+                        // seat ("External Meeting"), not whoever spoke. It is named from the live
+                        // far-side hint on the entry, by the rule the saved row uses.
+                        SpeakerName: TryResolveStandInSpeakerName(entry, _farSpeakerMinConfidence)
+                            ?? await ResolveSpeakerNameAsync(translationRoomId, speakerId),
                         OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
                         TargetLanguage: null,
                         Confidence: TryReadSttConfidence(entry),
                         StartTimeMs: int.TryParse(RedisStreamService.GetField(entry, "start_ms"), out var start) ? start : 0,
-                        EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_ms"), out var end) ? end : 0);
+                        EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_ms"), out var end) ? end : 0,
+                        CleanText: cleanText,
+                        CleanFlags: ReadFlags(RedisStreamService.GetField(entry, "clean_flags")));
 
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
                         .SendAsync("TranscriptSegmentReceived", segment, ct);
+
+                    MeetingCaptionMetrics.RecordDelivered(MeetingCaptionMetrics.KindTranscript);
+                    await _captionMetrics.MarkFirstCaptionAsync(translationRoomId);
 
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
                 }
@@ -365,6 +524,30 @@ public sealed class AiResultConsumerService : BackgroundService
                 await Task.Delay(1000, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// The live name of a bridge stand-in line, or <c>null</c> when the entry's speaker is not the
+    /// stand-in (<see cref="WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId"/>).
+    /// </summary>
+    /// <remarks>
+    /// <c>far_speaker_name</c> when stt_worker attached one with <c>far_speaker_confidence</c> at
+    /// or above <paramref name="minConfidence"/>, "Google Meet participants" otherwise — see
+    /// <see cref="WarpTalk.Shared.FarSpeakerNames"/>, which TranscriptService applies to the saved
+    /// row too. Pure and static so the rule is testable without a running consumer.
+    /// </remarks>
+    public static string? TryResolveStandInSpeakerName(StreamEntry entry, double minConfidence)
+    {
+        if (!Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var speaker)
+            || speaker != WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId)
+        {
+            return null;
+        }
+
+        return WarpTalk.Shared.FarSpeakerNames.ResolveLive(
+            RedisStreamService.GetField(entry, "far_speaker_name"),
+            WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
+            minConfidence);
     }
 
     /// <summary>
@@ -412,6 +595,166 @@ public sealed class AiResultConsumerService : BackgroundService
         return speakerId;
     }
 
+    // ── Clean sentences → TranscriptCleanSentenceReceived ────
+
+    /// <summary>
+    /// WT-716 tier 2: relay each whole cleaned sentence to the room as it is (re)written, so the
+    /// live Clean view does not have to wait for the meeting to end and reload.
+    ///
+    /// Stateless, like every relay here: revisions go out in the order they arrive, and the client
+    /// keeps the highest per sentence id — the same rule TranscriptService applies when it stores
+    /// them. Not gated on Pause Transcript, for the reason in this class's summary: this is a
+    /// display lane, and the web client already keeps paused segments out of its transcript store,
+    /// so a sentence naming only those has nothing to attach to.
+    /// </summary>
+    private async Task ConsumeCleanSentencesAsync(CancellationToken ct)
+    {
+        var streamKey = "transcript:clean";
+
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
+
+        _logger.LogDebug("Consuming clean sentences: {StreamKey}", streamKey);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var entries = await _streamService.ConsumeAsync(
+                    streamKey, ConsumerGroupName, _consumerName, count: 10, blockMs: 2000);
+
+                foreach (var entry in entries)
+                {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    var sentence = TryReadCleanSentence(entry);
+
+                    // Acknowledged even when unusable, so a malformed entry cannot wedge the group
+                    // for every later sentence of every room. TranscriptService's own consumer
+                    // group dead-letters it with its payload; that is where it gets looked at.
+                    if (string.IsNullOrEmpty(translationRoomId) || sentence is null)
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
+
+                    if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
+                    {
+                        sentence = sentence with
+                        {
+                            CleanText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(sentence.CleanText),
+                        };
+                    }
+
+                    await _hubContext.Clients
+                        .Group($"translationRoom:{translationRoomId}")
+                        .SendAsync("TranscriptCleanSentenceReceived", sentence, ct);
+
+                    await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
+                _logger.LogError(ex, "Error consuming clean sentences");
+                await Task.Delay(1000, ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// WT-716 tier 1: the <c>clean_text</c> on an stt:results entry, or <c>null</c> when the field
+    /// is absent. Absent ("not cleaned — show the raw text") and empty ("filler only — hide it")
+    /// are different answers and are kept apart; same rule as TranscriptService's
+    /// TranscriptConsumerPollingPolicy.ResolveCleanText, so the live line and the stored row agree.
+    /// </summary>
+    public static string? TryReadCleanText(StreamEntry entry)
+    {
+        foreach (var nv in entry.Values)
+        {
+            if (nv.Name == "clean_text")
+                return nv.Value.IsNull ? string.Empty : nv.Value.ToString();
+        }
+        return null;
+    }
+
+    /// <summary>A comma-separated flag list as a trimmed, de-duplicated array; empty (never null)
+    /// when absent. Unknown flags pass through — the producer owns the vocabulary.</summary>
+    public static IReadOnlyList<string> ReadFlags(string? raw) =>
+        string.IsNullOrWhiteSpace(raw)
+            ? Array.Empty<string>()
+            : raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+    /// <summary>
+    /// WT-716 tier 2: one <c>transcript:clean</c> entry as a client payload, or <c>null</c> when it
+    /// cannot be applied (no sentence id, revision, segment ids or clean_text). Pure and static,
+    /// like <see cref="TryReadSuggestion"/>, so it is testable without Redis.
+    /// </summary>
+    public static TranscriptCleanSentenceDto? TryReadCleanSentence(StreamEntry entry)
+    {
+        if (!Guid.TryParse(RedisStreamService.GetField(entry, "sentence_id"), out var sentenceId))
+            return null;
+        if (!int.TryParse(RedisStreamService.GetField(entry, "revision"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision)
+            || revision < 0)
+            return null;
+
+        var cleanText = RedisStreamService.GetField(entry, "clean_text");
+        if (cleanText is null)
+            return null;
+
+        var segmentIds = TryReadSegmentIds(RedisStreamService.GetField(entry, "segment_ids"));
+        if (segmentIds is null)
+            return null;
+
+        var language = RedisStreamService.GetField(entry, "language");
+        var source = RedisStreamService.GetField(entry, "source");
+
+        return new TranscriptCleanSentenceDto(
+            Id: sentenceId,
+            SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var speaker) ? speaker : null,
+            SegmentIds: segmentIds,
+            CleanText: cleanText,
+            Language: string.IsNullOrWhiteSpace(language) ? "unknown" : language.Trim(),
+            Flags: ReadFlags(RedisStreamService.GetField(entry, "flags")),
+            Source: string.IsNullOrWhiteSpace(source) ? "unknown" : source.Trim(),
+            Revision: revision);
+    }
+
+    /// <summary>A non-empty JSON array of GUID strings, order kept, duplicates dropped — or null.
+    /// One bad element voids the list: a sentence silently missing a segment looks complete.</summary>
+    private static IReadOnlyList<Guid>? TryReadSegmentIds(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            var raw = JsonSerializer.Deserialize<string[]>(json);
+            if (raw is null || raw.Length == 0)
+                return null;
+
+            var ids = new List<Guid>(raw.Length);
+            foreach (var item in raw)
+            {
+                if (!Guid.TryParse(item, out var id))
+                    return null;
+                if (!ids.Contains(id))
+                    ids.Add(id);
+            }
+            return ids;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     // ── Translation Results → TranslationTextReceived ────────
 
     private async Task ConsumeTranslationResultsAsync(CancellationToken ct)
@@ -431,7 +774,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "original_text") ?? "";
                     var translatedText = RedisStreamService.GetField(entry, "translated_text") ?? "";
@@ -457,6 +804,9 @@ public sealed class AiResultConsumerService : BackgroundService
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
                         .SendAsync("TranslationTextReceived", dto, ct);
+
+                    MeetingCaptionMetrics.RecordDelivered(MeetingCaptionMetrics.KindTranslation);
+                    await _captionMetrics.MarkFirstCaptionAsync(translationRoomId);
 
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
                 }
@@ -496,7 +846,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
                     var audioDto = new TranslatedAudioDto(
                         SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
@@ -517,6 +871,8 @@ public sealed class AiResultConsumerService : BackgroundService
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
                         .SendAsync("TranslatedAudioReceived", audioDto, ct);
+
+                    MeetingCaptionMetrics.RecordDelivered(MeetingCaptionMetrics.KindAudio);
 
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
 
@@ -578,7 +934,7 @@ public sealed class AiResultConsumerService : BackgroundService
                     // and stop every later message for every room.
                     if (string.IsNullOrEmpty(translationRoomId) || string.IsNullOrEmpty(reason))
                     {
-                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
                         continue;
                     }
 
@@ -646,7 +1002,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     // Inline transcript suggestions ride this same stream but are a different
                     // client event with a different shape. Route them out FIRST and leave the

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Models;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 
@@ -23,13 +24,30 @@ public class RoomArtifactsController : ControllerBase
         _artifactService = artifactService;
     }
 
+    /// <summary>
+    /// The artifact's content, or a short-lived link to it, plus the name it should be saved under.
+    /// </summary>
+    /// <param name="disposition">
+    /// <c>attachment</c> when the caller is saving the file, anything else (the default) when it is
+    /// going to play or render it in the page.
+    ///
+    /// INLINE IS THE DEFAULT ON PURPOSE. This one endpoint serves both readers: the Download button
+    /// and the record page's &lt;video&gt; element, which fetches the very same link. Defaulting to
+    /// attachment would hand the player a response the browser is entitled to save instead of play
+    /// — a broken video for anyone whose client is older than the one that learned to ask. So the
+    /// old behaviour stays the default and the download button opts in.
+    /// </param>
     [HttpGet("{id}/download")]
-    public async Task<IActionResult> DownloadArtifact(Guid id, CancellationToken ct = default)
+    public async Task<IActionResult> DownloadArtifact(
+        Guid id,
+        [FromQuery] string? disposition = null,
+        CancellationToken ct = default)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _artifactService.GetArtifactDownloadAsync(id, userId.Value, ct);
+        var asAttachment = string.Equals(disposition, "attachment", StringComparison.OrdinalIgnoreCase);
+        var result = await _artifactService.GetArtifactDownloadAsync(id, userId.Value, User.GetEmail(), asAttachment, ct);
 
         if (!result.IsSuccess)
         {
@@ -66,7 +84,7 @@ public class RoomArtifactsController : ControllerBase
         var bearerToken = Request.Headers["Authorization"].ToString();
 
         var result = await _artifactService.GetOrQueueSummaryVariantAsync(
-            roomId, userId.Value, template ?? "general", language, bearerToken, ct);
+            roomId, userId.Value, template ?? "general", language, bearerToken, User.GetEmail(), ct);
 
         if (!result.IsSuccess)
         {
@@ -75,6 +93,8 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             // WT-703: a language this meeting's artifacts cannot be generated in.
             if (result.ErrorCode == ErrorCodes.ValidationError) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-870: the meeting kept no transcript, so there is nothing to summarise.
+            if (result.ErrorCode == TranscriptRetention.ErrorCodeTranscriptNotSaved) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
@@ -93,7 +113,7 @@ public class RoomArtifactsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _artifactService.GetSummaryVariantsAsync(roomId, userId.Value, ct);
+        var result = await _artifactService.GetSummaryVariantsAsync(roomId, userId.Value, User.GetEmail(), ct);
 
         if (!result.IsSuccess)
         {
@@ -128,6 +148,7 @@ public class RoomArtifactsController : ControllerBase
             request?.TemplateKey ?? "general",
             request?.Language,
             bearerToken,
+            User.GetEmail(),
             ct);
 
         if (!result.IsSuccess)
@@ -137,6 +158,8 @@ public class RoomArtifactsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.InvalidState) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             // WT-703: a language this meeting's artifacts cannot be generated in.
             if (result.ErrorCode == ErrorCodes.ValidationError) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-870: the meeting kept no transcript, so there is nothing to summarise.
+            if (result.ErrorCode == TranscriptRetention.ErrorCodeTranscriptNotSaved) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
@@ -164,7 +187,7 @@ public class RoomArtifactsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _artifactService.GetSummaryRewriteStatusAsync(roomId, userId.Value, requestId, ct);
+        var result = await _artifactService.GetSummaryRewriteStatusAsync(roomId, userId.Value, requestId, User.GetEmail(), ct);
 
         if (!result.IsSuccess)
         {

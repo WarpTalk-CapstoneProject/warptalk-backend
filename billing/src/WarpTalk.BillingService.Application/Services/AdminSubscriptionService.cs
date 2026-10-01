@@ -26,7 +26,25 @@ public class AdminSubscriptionService : IAdminSubscriptionService
     ];
 
     private static readonly string[] Sorts =
-        ["period_end_asc", "period_end_desc", "created_desc", "created_asc", "credits_asc"];
+        ["period_end_asc", "period_end_desc", "created_desc", "created_asc", "credits_asc", "credits_desc"];
+
+    private static readonly string[] ServiceStates =
+    [
+        SubscriptionConstants.ServiceStates.Healthy,
+        SubscriptionConstants.ServiceStates.LowBalance,
+        SubscriptionConstants.ServiceStates.InOverage,
+        SubscriptionConstants.ServiceStates.Suspended,
+    ];
+
+    /// <summary>
+    /// The plan's cycle as plans.billing_cycle stores it (CHECK IN ('monthly','yearly')) — not
+    /// Stripe's "month"/"year", which never appears in that column.
+    /// </summary>
+    private static readonly string[] BillingCycles =
+    [
+        SubscriptionConstants.BillingCycles.Monthly,
+        SubscriptionConstants.BillingCycles.Yearly,
+    ];
 
     /// <summary>
     /// The renewal horizon the summary reports. Fourteen days rather than thirty: a month is long
@@ -68,12 +86,48 @@ public class AdminSubscriptionService : IAdminSubscriptionService
                 ErrorCodes.ValidationError);
         }
 
+        // "all" is accepted for the same reason as on status (WT-439): it is how a select says
+        // "no filter".
+        var serviceState = Normalize(query.ServiceState);
+        if (serviceState == "all") serviceState = null;
+        if (serviceState != null && !ServiceStates.Contains(serviceState, StringComparer.Ordinal))
+        {
+            return Result.Failure<AdminPagedResult<AdminSubscriptionSummaryDto>>(
+                $"Unknown serviceState. Expected one of: {string.Join(", ", ServiceStates)}.",
+                ErrorCodes.ValidationError);
+        }
+
+        var billingCycle = Normalize(query.BillingCycle);
+        if (billingCycle == "all") billingCycle = null;
+        if (billingCycle != null && !BillingCycles.Contains(billingCycle, StringComparer.Ordinal))
+        {
+            return Result.Failure<AdminPagedResult<AdminSubscriptionSummaryDto>>(
+                $"Unknown billingCycle. Expected one of: {string.Join(", ", BillingCycles)}.",
+                ErrorCodes.ValidationError);
+        }
+
+        if (AdminDateFilter.ValidateRange(query.PeriodEndFrom, query.PeriodEndTo, "periodEndFrom", "periodEndTo")
+            is { } periodError)
+        {
+            return Result.Failure<AdminPagedResult<AdminSubscriptionSummaryDto>>(
+                periodError, ErrorCodes.ValidationError);
+        }
+
         var (page, pageSize) = query.Normalize();
 
         try
         {
             var (rows, total) = await _unitOfWork.SubscriptionRepository.GetAdminDirectoryAsync(
-                new AdminSubscriptionFilter(status, Normalize(query.PlanSlug), sort),
+                new AdminSubscriptionFilter(
+                    status,
+                    Normalize(query.PlanSlug),
+                    sort,
+                    serviceState,
+                    billingCycle,
+                    query.AutoRenew,
+                    query.WorkspaceId,
+                    AdminDateFilter.ToUtc(query.PeriodEndFrom),
+                    AdminDateFilter.ToUtc(query.PeriodEndTo)),
                 page,
                 pageSize,
                 ct);

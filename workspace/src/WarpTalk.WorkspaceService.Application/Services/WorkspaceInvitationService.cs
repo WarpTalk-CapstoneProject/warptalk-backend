@@ -210,6 +210,22 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 {
                     return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
                 }
+
+                // WT-624. Acceptance refuses an Internal invitation to somebody who already holds
+                // an internal seat in another Enterprise workspace, and this path never asked. So
+                // an Owner could create an invitation that nobody could ever accept, the email
+                // went out, the row sat PENDING, and the only person who ever learned it was dead
+                // was the invitee — as a bare 403 on a workspace they had just been told to join.
+                //
+                // Asked here through the same helper acceptance uses, so the two doors cannot
+                // disagree about which invitations are possible; the same reason
+                // WorkspaceInvitationPolicy exists at all. Refused with a message that names the
+                // way out (invite them as External), because the Owner is the one who can take it.
+                if (await IsInviteeBlockedFromInternalSeatAsync(workspace, membershipTypeEnum, targetUser.Id, emailAddress.Value, ct))
+                {
+                    return Result.Failure<InviteMemberResponse>(
+                        WorkspaceConstants.Errors.InviteeAlreadyInternalElsewhere, ErrorCodes.Forbidden);
+                }
             }
 
             var membershipType = membershipTypeEnum.ToString();
@@ -1368,7 +1384,48 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             roleName,
             ct);
 
-        return !policyResult.IsSuccess;
+        if (!policyResult.IsSuccess)
+        {
+            return true;
+        }
+
+        // WT-624. The enterprise-seat rule is the other reason acceptance refuses, and leaving it
+        // out here reopened exactly the WT-375 trap for it: the Owner's way out is to re-invite
+        // the same person as External, and that was answered "an active pending invitation already
+        // exists" because the dead Internal one was still PENDING. Rows created before the invite
+        // path started refusing this combination are still out there, so this arm is what unsticks
+        // them.
+        var invitee = await _authIdentity.GetUserByEmailAsync(invitation.Email, ct);
+        return invitee != null
+            && await IsInviteeBlockedFromInternalSeatAsync(workspace, storedType, invitee.Id, invitation.Email, ct);
+    }
+
+    /// <summary>
+    /// Whether handing <paramref name="inviteeUserId"/> an <paramref name="membershipType"/> seat
+    /// in <paramref name="workspace"/> would be refused by the one-Enterprise-workspace rule.
+    /// </summary>
+    /// <remarks>
+    /// Both halves of the condition matter and both are checked in
+    /// <see cref="WorkspaceInvitationAcceptanceProcessor.ValidateAcceptanceAsync"/> too: the seat
+    /// has to be an Internal one, and the workspace handing it out has to be an Enterprise
+    /// workspace for that seat to be an enterprise identity rather than merely "not an outside
+    /// collaborator".
+    /// </remarks>
+    private async Task<bool> IsInviteeBlockedFromInternalSeatAsync(
+        Workspace workspace,
+        MembershipType membershipType,
+        Guid inviteeUserId,
+        string inviteeEmail,
+        CancellationToken ct)
+    {
+        if (membershipType != MembershipType.Internal
+            || !WorkspaceHelper.GetWorkspaceConfig(workspace).RequireVerifiedDomainForInternal)
+        {
+            return false;
+        }
+
+        return await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(
+            _unitOfWork, inviteeUserId, inviteeEmail, ct);
     }
 
     private async Task<Result> EnsureTrialInviteCapacityAsync(Guid workspaceId, CancellationToken ct)

@@ -22,6 +22,13 @@ public static class WorkspacePluginConstants
         /// <summary>A marketplace plugin the workspace does not have; a member may request it.</summary>
         public const string NotAdded = "not_added";
 
+        /// <summary>
+        /// A marketplace plugin the PLATFORM has turned off for this workspace (retired, an override,
+        /// the plan rule or an opt-in default). Not in the Owner's marketplace, not requestable, not
+        /// usable - whatever the workspace's own list says. Members' connections are kept, inert.
+        /// </summary>
+        public const string DisabledByPlatform = "platform_disabled";
+
         public static bool IsUsable(string availability) =>
             availability is Added or Private;
     }
@@ -64,6 +71,12 @@ public static class WorkspacePluginConstants
         /// changed, and trying again later is the whole remedy.
         /// </summary>
         public const string PolicyUnavailable = "workspace_plugin_policy_unavailable";
+
+        /// <summary>
+        /// The workspace service could not list the workspace's members, so the page cannot be told
+        /// which of them connected a plugin without guessing. 503: try again.
+        /// </summary>
+        public const string MembersUnavailable = "workspace_members_unavailable";
     }
 
     public static class Messages
@@ -73,6 +86,7 @@ public static class WorkspacePluginConstants
         public const string OwnerOrAdminOnly = "Only a workspace owner or admin can see this workspace's plugins and requests.";
         public const string PrivatePluginNeedsItsWorkspace = "This plugin belongs to a workspace. Use it from that workspace.";
         public const string PolicyUnavailable = "Couldn't read this workspace's plugin settings right now, so nothing was changed. Try again in a moment.";
+        public const string MembersUnavailable = "Couldn't read this workspace's members right now. Try again in a moment.";
         public const string ListChangedConcurrently = "This workspace's plugins changed while you were editing them. Refresh and try again.";
         public const string OwnerAddsDirectly = "You own this workspace, so there's no one to ask. Add the plugin from the workspace's Plugins settings instead.";
     }

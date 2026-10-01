@@ -1,5 +1,6 @@
 using System;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.Shared.AdminAudit;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
@@ -43,14 +44,16 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 "Billing worker options are missing or invalid.")
             .ValidateOnStart();
 
-        services.AddDbContext<BillingDbContext>(options =>
+        services.AddDbContext<BillingDbContext>((provider, options) =>
             options.UseNpgsql(
                 configuration.GetConnectionString("BillingDb"),
                 npgsqlOptions =>
                 {
                     npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
                     npgsqlOptions.CommandTimeout(30);
-                }));
+                })
+            // [AdminAudited] routes record each save before it commits (see AddWarpTalkAdminAuditing).
+            .AddAdminAuditInterceptor(provider));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped(sp => sp.GetRequiredService<IUnitOfWork>().SubscriptionRepository);
@@ -65,6 +68,20 @@ public static class BillingInfrastructureServiceCollectionExtensions
 
         services.AddSingleton<IConnectionMultiplexer>(_ =>
             ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
+
+        // Platform settings (/admin/settings): trial length and credits are read live.
+        WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.AddWarpTalkPlatformSettings(services);
+        WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.AddWarpTalkIntegrationStatus(services, "billing", sp =>
+        {
+            var config = sp.GetRequiredService<IConfiguration>();
+            return WarpTalk.Shared.PlatformSettings.IntegrationStatusServiceCollectionExtensions.Snapshot(
+                (WarpTalk.Shared.PlatformSettings.IntegrationKeys.Stripe,
+                    WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, "checkout and webhooks", "Stripe:SecretKey", "Stripe:WebhookSecret")),
+                (WarpTalk.Shared.PlatformSettings.IntegrationKeys.Cartesia,
+                    WarpTalk.Shared.PlatformSettings.IntegrationReport.FromConfiguration(config, "usage sync", "Cartesia:AdminApiKey")),
+                (WarpTalk.Shared.PlatformSettings.IntegrationKeys.ObjectStorage,
+                    WarpTalk.Shared.PlatformSettings.IntegrationReport.ObjectStorage(config, "expense receipts")));
+        });
 
         services.AddScoped<RedisBillingStore>();
         services.AddScoped<IRedisBillingStore>(sp => sp.GetRequiredService<RedisBillingStore>());
@@ -82,9 +99,23 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IUsageRateCardResolverService, UsageRateCardResolverService>();
         services.AddScoped<IUsageSettlementRepository, UsageSettlementRepository>();
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
+        // G11: pushes credit packs, add-ons and coupons to Stripe Products/Prices/Coupons (admin only).
+        services.AddScoped<IStripeCatalogSync, StripeCatalogSyncService>();
+        // #466: recurring plan billing (auto-renew = a Stripe Subscription).
+        services.AddScoped<IStripeRecurringGateway, StripeRecurringGateway>();
+        // Stripe's USD→VND rate, recorded daily (FxRateRefreshWorker) and read by every VND report.
+        // Every Stripe call is counted for the admin Providers page (StripeCallObserver); the FX
+        // client builds its own StripeClient, so it is handed the observed HTTP client too.
+        services.AddSingleton<IProviderCallRecorder, RedisProviderCallRecorder>();
+        services.AddSingleton<IStripeFxClient>(sp => new StripeFxClient(
+            configuration["Stripe:SecretKey"],
+            configuration["Stripe:FxQuotesApiVersion"],
+            StripeCallObserver.CreateStripeHttpClient(sp.GetRequiredService<IProviderCallRecorder>())));
+        services.AddScoped<IFxRateService, WarpTalk.BillingService.Application.Services.FxRateService>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 
         AddCartesiaUsageSync(services, configuration);
+        AddProviderStatus(services, configuration);
 
         // WT-263: the entitlement layer. The resolver is the single place entitlements are computed;
         // the publisher is the single place they leave this service.
@@ -125,6 +156,22 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 configured: options.IsConfigured && options.UsageSyncIntervalMinutes > 0,
                 filteredToApiKey: options.IsFilteredToApiKey,
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RedisCartesiaUsageSyncStatus>>()));
+    }
+
+    /// <summary>
+    /// Admin Providers page: status page polling options, its HTTP client and shared state. The
+    /// pages are public URLs (ProviderStatus:Pages:{provider}); none configured = no polling.
+    /// </summary>
+    private static void AddProviderStatus(IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddOptions<ProviderStatusOptions>().Bind(configuration.GetSection(ProviderStatusOptions.SectionName));
+        services.AddHttpClient(Workers.ProviderStatusPollWorker.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("WarpTalk-Billing-StatusPoll/1.0");
+        });
+        services.AddSingleton<IProviderStatusPageState>(sp =>
+            new RedisProviderStatusPageState(sp.GetRequiredService<IConnectionMultiplexer>()));
     }
 
     public static void VerifyBillingDatabase(this IServiceProvider serviceProvider)

@@ -292,6 +292,42 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
         result.Value!.Rooms.Should().BeEmpty();
     }
 
+    private Task<WarpTalk.Shared.Result<TranslationRoomHistoryResponse>> MineHistoryAsync(Guid userId, string scope = "mine") =>
+        _service.GetTranslationRoomHistoryAsync(
+            new GetTranslationRoomsRequest(WorkspaceId: WorkspaceId, PageSize: 100, Scope: scope),
+            userId,
+            $"{userId}@example.test");
+
+    /// <summary>
+    /// The Artifacts page asks history for <c>scope=mine</c>: the same Admin the archive widens for
+    /// gets only the meetings she hosted, joined or was invited to — the ones whose documents she
+    /// could ever read.
+    /// </summary>
+    [Fact]
+    public async Task History_ScopeMine_ExcludesWorkspaceRooms_TheAdminIsNoPartOf()
+    {
+        await SeedRoomAsync(WorkspaceId, "ENDED");
+        var ownRoom = await SeedRoomAsync(WorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+
+        var result = await MineHistoryAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == ownRoom.Id);
+        result.Value.Total.Should().Be(1);
+    }
+
+    /// <summary>Any other value keeps the archive's reading; the parameter can only narrow.</summary>
+    [Fact]
+    public async Task History_UnknownScope_KeepsTheWorkspaceReading()
+    {
+        var room = await SeedRoomAsync(WorkspaceId, "ENDED");
+
+        var result = await MineHistoryAsync(WorkspaceAdminId, scope: "everything");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == room.Id);
+    }
+
     // ---------------------------------------------------------------------------------------
     // WT-333 — My Meetings (UC 25).
     //

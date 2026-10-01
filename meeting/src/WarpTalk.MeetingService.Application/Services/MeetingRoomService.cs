@@ -1,3 +1,4 @@
+using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
@@ -7,6 +8,7 @@ using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Events;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.MeetingService.Application.Services;
 
@@ -29,6 +31,17 @@ public class MeetingRoomService : IMeetingRoomService
     // Gateway process that owns TranslationRoomHub.
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
+    private readonly IPlatformSettings? _platformSettings;
+
+    /// <summary>
+    /// Serialises recording start per room across replicas. Null only in tests that construct the
+    /// service by hand; the host always registers it (AddWarpTalkDistributedLocks).
+    /// </summary>
+    private readonly IDistributedLockProvider? _locks;
+
+    /// <summary>User-facing refusal when meetings.recording.enabled is off.</summary>
+    public const string RecordingDisabledMessage = "Recording is turned off on this platform right now.";
+
     public MeetingRoomService(
         ILiveKitTokenService tokenService,
         ITranslationRoomGrpcService grpcService,
@@ -36,8 +49,12 @@ public class MeetingRoomService : IMeetingRoomService
         IRedisService redisService,
         ILiveKitEgressService egressService,
         ILiveKitRoomAdminService roomAdminService,
-        ILogger<MeetingRoomService> logger)
+        ILogger<MeetingRoomService> logger,
+        IPlatformSettings? platformSettings = null,
+        IDistributedLockProvider? locks = null)
     {
+        _platformSettings = platformSettings;
+        _locks = locks;
         _tokenService = tokenService;
         _grpcService = grpcService;
         _unitOfWork = unitOfWork;
@@ -72,7 +89,10 @@ public class MeetingRoomService : IMeetingRoomService
             await _redisService.SetCacheAsync(roomCacheKey, roomDetails, TimeSpan.FromHours(24));
         }
 
-        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED")
+        // EXPIRED belongs with these (WT-714): a booking nobody attended is now moved there by the
+        // booking sweep instead of sitting in SCHEDULED, and a terminal status that still let
+        // people in would be a room the translation service considers over accepting joins.
+        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED" || roomDetails.Status == "EXPIRED")
         {
             return Result.Failure<JoinMeetingResponse>("This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
@@ -391,9 +411,11 @@ public class MeetingRoomService : IMeetingRoomService
     /// participant_identity. Breaking it here is deliberate and is exactly why it is fenced.
     ///
     /// BOTH gates are load-bearing, neither is belt-and-braces:
-    ///   host-only    otherwise anyone who can reach a room could add a ghost participant to
-    ///                someone else's meeting, and everything it "said" would be attributed to
-    ///                the far side of a call they are not on.
+    ///   capturer     otherwise anyone who can reach a room could add a ghost participant to
+    ///   only         someone else's meeting, and everything it "said" would be attributed to
+    ///                the far side of a call they are not on. The capturer is the one participant
+    ///                of the shared bridge room whose desktop publishes the far side; a legacy
+    ///                room without one falls back to its host (IsBridgeAudioOwner).
     ///   bridge-only  otherwise the host of an ordinary meeting could mint a second identity
     ///                into their own room, which no product surface would explain.
     ///
@@ -420,13 +442,22 @@ public class MeetingRoomService : IMeetingRoomService
                 "This meeting does not bridge an external call.", ErrorCodes.Forbidden);
         }
 
-        if (!string.Equals(room.HostId, callerUserId.ToString(), StringComparison.OrdinalIgnoreCase))
+        // The CAPTURER, not every participant: a bridge room is shared by every WarpTalk user in the
+        // Meet call, and only one desktop may publish as the stand-in or the far side is doubled.
+        // A room with no capturer (created before bridge claim) keeps the old rule: its host.
+        //
+        // Deliberately NOT ExternalBridgeConstants.CanControlBridgeSession (host OR capturer, PO
+        // 2026-10-01). That rule covers the bridge's session CONTROLS — Start/Stop translation,
+        // transcript Pause/Resume, "They speak" — which change state, not audio. This token
+        // PUBLISHES the far side: letting the host mint it while someone else captures would put
+        // two stand-in publishers in the room and double every far-side line. One capturer only.
+        if (!ExternalBridgeConstants.IsBridgeAudioOwner(room.BridgeCapturerUserId, room.HostId, callerUserId.ToString()))
         {
             return Result.Failure<BridgeTokenResponse>(
-                "Only the host may connect this meeting to an external call.", ErrorCodes.Forbidden);
+                "Only the participant capturing the external call may connect it to this meeting.", ErrorCodes.Forbidden);
         }
 
-        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED")
+        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED")
         {
             return Result.Failure<BridgeTokenResponse>(
                 "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
@@ -466,7 +497,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         _logger.LogInformation(
-            "Issued a bridge token for room {RoomId} to host {UserId}", translationRoomId, callerUserId);
+            "Issued a bridge token for room {RoomId} to capturer {UserId}", translationRoomId, callerUserId);
 
         return Result.Success(new BridgeTokenResponse
         {
@@ -951,14 +982,25 @@ public class MeetingRoomService : IMeetingRoomService
                 deleteRoomResult.Error ?? "Failed to end LiveKit room.",
                 deleteRoomResult.ErrorCode);
 
-        if (meetingRoom != null)
-        {
-            meetingRoom.Status = "FINISHED";
-            meetingRoom.EndedAt = DateTime.UtcNow;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-        }
+        // One conditional UPDATE decides which call ended the meeting. "End for everyone" arrives
+        // more than once per meeting — production showed up to six calls within 0.7 s, on both replicas —
+        // and each used to publish its own __MEETING_END__, so the assistant worker summarised the
+        // same meeting up to six times. Only the call that actually moved ended_at off null goes
+        // on to trigger the summary; the rest have already done everything that is theirs to do
+        // (the LiveKit room is gone either way) and report success, because the meeting IS ended.
+        //
+        // No meeting-room row means nobody ever joined through this service, so there is no
+        // audio, no transcript and nothing to summarise: no trigger either.
+        var endedByThisCall = meetingRoom != null
+            && await _unitOfWork.MeetingRoomRepository.TryMarkFinishedAsync(meetingRoom.Id, DateTime.UtcNow);
 
-        await _unitOfWork.SaveChangesAsync();
+        if (!endedByThisCall)
+        {
+            _logger.LogInformation(
+                "Meeting {RoomId} was already ended (or never joined); not triggering its summary again.",
+                translationRoomId);
+            return Result.Success(true);
+        }
 
         // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
         // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from
@@ -966,6 +1008,21 @@ public class MeetingRoomService : IMeetingRoomService
         // "__MEETING_END__" text segment (see AIAssistantWorker.process/_generate_summary) —
         // this mirrors that exact existing async-worker trigger instead of adding a new one.
         // Best-effort: a failed publish must not fail EndMeetingAsync itself.
+        //
+        // WT-870: not for a meeting that keeps no transcript. Live captions keep STT running, so
+        // the worker has every line anyway, and this marker is what turns them into a summary the
+        // host said the meeting should not have. HasSaveTranscript, like TranscriptService: absent
+        // means a translation-room that predates the field (or a cache entry written by one), and
+        // that fails OPEN here because translation-room's finalizer re-checks the setting from its
+        // own database and refuses to store a summary for such a room regardless.
+        if (roomDetails.HasSaveTranscript && !roomDetails.SaveTranscript)
+        {
+            _logger.LogInformation(
+                "Room {RoomId} does not save its transcript; not requesting an AI summary.",
+                translationRoomId);
+            return Result.Success(true);
+        }
+
         try
         {
             await _redisService.PublishStreamMessageAsync("stt:results", new Dictionary<string, string>
@@ -1079,19 +1136,47 @@ public class MeetingRoomService : IMeetingRoomService
             if (!string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
                 return Result.Failure<RecordingStateDto>("Recording is already in progress.", ErrorCodes.InvalidState);
 
-            var startResult = await _egressService.StartRoomCompositeEgressAsync(meetingRoom.ProviderRoomName);
-            if (!startResult.IsSuccess || string.IsNullOrEmpty(startResult.Value))
-                return Result.Failure<RecordingStateDto>(startResult.Error ?? "Failed to start recording.", ErrorCodes.InternalServerError);
+            // The platform kill switch (meetings.recording.enabled), read on every start: off refuses
+            // new recordings; one already running is stopped the normal way below.
+            if (_platformSettings is not null
+                && !await _platformSettings.GetBooleanAsync(PlatformSettingsCatalog.RecordingEnabled))
+                return Result.Failure<RecordingStateDto>(RecordingDisabledMessage, ErrorCodes.Forbidden);
 
-            meetingRoom.ActiveEgressId = startResult.Value;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
+            if (_locks is null)
+                return await StartRecordingAsync(translationRoomId, meetingRoom);
 
-            await PublishRecordingStartedAsync(translationRoomId, meetingRoom.ActiveEgressId);
+            // The ActiveEgressId check above is a read. Two Start Recording presses on two replicas
+            // both passed it, both asked LiveKit for an egress, and the second overwrote the first
+            // one's id — leaving a recording nobody could stop, and two files for one meeting. The
+            // start runs under a per-room lease, and re-checks the row (not the tracked copy) once
+            // it holds it, so the second press sees the first one's egress.
+            Result<RecordingStateDto>? started = null;
+            var outcome = await _locks.TryRunExclusiveAsync(
+                RecordingStartLockResource(translationRoomId),
+                TimeSpan.FromSeconds(30),
+                async ct =>
+                {
+                    if (await _unitOfWork.MeetingRoomRepository.AnyAsync(
+                            r => r.Id == meetingRoom.Id && r.ActiveEgressId != null && r.ActiveEgressId != "",
+                            ct))
+                    {
+                        started = Result.Failure<RecordingStateDto>("Recording is already in progress.", ErrorCodes.InvalidState);
+                        return;
+                    }
 
-            await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = true });
+                    started = await StartRecordingAsync(translationRoomId, meetingRoom);
+                },
+                _logger,
+                CancellationToken.None);
 
-            return Result.Success(new RecordingStateDto { Recording = true, EgressId = meetingRoom.ActiveEgressId });
+            return outcome switch
+            {
+                ExclusiveTickOutcome.Ran when started is not null => started,
+                ExclusiveTickOutcome.Skipped => Result.Failure<RecordingStateDto>(
+                    "Recording is already being started.", ErrorCodes.InvalidState),
+                _ => Result.Failure<RecordingStateDto>(
+                    "Could not start recording right now. Please try again.", ErrorCodes.InternalServerError),
+            };
         }
 
         if (normalizedAction == "stop")
@@ -1164,6 +1249,26 @@ public class MeetingRoomService : IMeetingRoomService
     /// about a recording that is running, and they would press Record again into "already in
     /// progress". What is lost is only the in-progress marker, which is the smaller harm.
     /// </summary>
+    public static string RecordingStartLockResource(Guid translationRoomId) =>
+        $"meeting:recording-start:{translationRoomId}";
+
+    private async Task<Result<RecordingStateDto>> StartRecordingAsync(Guid translationRoomId, MeetingRoom meetingRoom)
+    {
+        var startResult = await _egressService.StartRoomCompositeEgressAsync(meetingRoom.ProviderRoomName);
+        if (!startResult.IsSuccess || string.IsNullOrEmpty(startResult.Value))
+            return Result.Failure<RecordingStateDto>(startResult.Error ?? "Failed to start recording.", ErrorCodes.InternalServerError);
+
+        meetingRoom.ActiveEgressId = startResult.Value;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync();
+
+        await PublishRecordingStartedAsync(translationRoomId, meetingRoom.ActiveEgressId);
+
+        await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = true });
+
+        return Result.Success(new RecordingStateDto { Recording = true, EgressId = meetingRoom.ActiveEgressId });
+    }
+
     private async Task PublishRecordingStartedAsync(Guid translationRoomId, string egressId)
     {
         try
