@@ -212,6 +212,43 @@ public class BridgeRecordingControlTests
         VerifyNoEgressCall();
     }
 
+    /// <summary>
+    /// WT-916: cache empty AND translation-room unreachable — the room type is unknown, so nobody
+    /// is let through, not the member with a live participant row and not the active host either.
+    /// </summary>
+    [Theory]
+    [InlineData("start", false)]
+    [InlineData("stop", false)]
+    [InlineData("start", true)]
+    [InlineData("stop", true)]
+    public async Task UnknownRoomType_IsRefused_ForMemberAndHostAlike(string action, bool callerIsHost)
+    {
+        _meetingRoom.ActiveEgressId = action == "stop" ? "egress-1" : null;
+        _meetingRoom.ActiveHostId = _hostId;
+        SetupCache(null);
+        SetupGrpc(Result.Failure<RoomResponse>("down", ErrorCodes.ServiceUnavailable));
+
+        var result = await _sut.SetRecordingAsync(_translationRoomId, callerIsHost ? _hostId : _memberId, action);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
+        Assert.Equal(MeetingRoomService.RecordingControlUnverifiableMessage, result.Error);
+        VerifyNoEgressCall();
+    }
+
+    /// <summary>A gRPC answer that succeeds but carries no room is as unknown as a failure.</summary>
+    [Fact]
+    public async Task UnknownRoomType_IsRefused_WhenTheReadReturnsNoRoom()
+    {
+        SetupCache(null);
+        SetupGrpc(Result.Success<RoomResponse>(null!));
+
+        var result = await _sut.SetRecordingAsync(_translationRoomId, _memberId, "start");
+
+        Assert.Equal(ErrorCodes.ServiceUnavailable, result.ErrorCode);
+        VerifyNoEgressCall();
+    }
+
     [Fact]
     public async Task ActiveHostOfThisService_CountsAsHost_InABridgeRoom()
     {

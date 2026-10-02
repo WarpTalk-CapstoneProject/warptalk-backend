@@ -1143,6 +1143,13 @@ public class MeetingRoomService : IMeetingRoomService
         // The bridge rule REPLACES the participation check rather than adding to it: the capturer
         // is named by the translation-room service itself (bridge claim), which is stronger
         // evidence of presence than a LiveKit participant row their web window may not have yet.
+        //
+        // WHEN THE ROOM TYPE CANNOT BE DETERMINED, THE REQUEST IS REFUSED (WT-916, PO 2026-10-02):
+        // a member must never be able to start or stop the recording of a Google Meet bridge room
+        // because a lookup failed. Cache empty AND the gRPC read failing returns
+        // ServiceUnavailable for start and stop alike. Accepted consequence: in that window native
+        // recording start/stop is refused too, until the lookup works again. A warm cache keeps
+        // native behaviour exactly as it was, with no extra gRPC call.
         var bridgeAccess = await CheckBridgeRecordingControlAsync(translationRoomId, meetingRoom, callerUserId);
         if (bridgeAccess is not null)
         {
@@ -1389,6 +1396,10 @@ public class MeetingRoomService : IMeetingRoomService
     public const string BridgeRecordingControlForbiddenMessage =
         "Only the host can start or stop recording this Google Meet call.";
 
+    /// <summary>Refusal when the room could not be read, so who may control recording is unknown.</summary>
+    public const string RecordingControlUnverifiableMessage =
+        "Could not verify who may control recording for this call. Please try again.";
+
     /// <summary>
     /// WT-910. The recording gate for an EXTERNAL_BRIDGE room, or <c>null</c> when the room is not
     /// a bridge and the native rule (<see cref="IsInMeetingAsync"/>) applies. See the comment in
@@ -1401,10 +1412,15 @@ public class MeetingRoomService : IMeetingRoomService
     /// <see cref="GenerateBridgeTokenAsync"/>). If that fresh read fails the request is refused,
     /// never decided on a projection that may name yesterday's capturer.
     ///
-    /// When the type cannot be learned at all (cache miss AND gRPC failure) the native rule
-    /// applies. That is not a widening past "in the meeting" — a stranger is still refused — and
-    /// the cache is written on every join, so a caller who is actually in a bridge room is
-    /// essentially never in that branch.
+    /// FAILS CLOSED WHEN THE TYPE CANNOT BE LEARNED (WT-916, PO 2026-10-02). Cache miss AND gRPC
+    /// failure used to fall back to the native rule; now the request is refused with
+    /// ServiceUnavailable, start and stop alike, host and member alike. A member must never be
+    /// able to start or stop the recording of a Google Meet bridge room because a lookup failed,
+    /// and when the type is unknown there is no telling which kind of room this is.
+    ///
+    /// Accepted consequence: while translation-room is down AND the cache is cold, recording
+    /// start/stop is refused in NATIVE rooms too, until the lookup works again. A warm cache keeps
+    /// native behaviour exactly as before, with no extra gRPC call.
     /// </summary>
     private async Task<Result?> CheckBridgeRecordingControlAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
     {
@@ -1416,7 +1432,12 @@ public class MeetingRoomService : IMeetingRoomService
         {
             var grpcResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
             if (!grpcResult.IsSuccess || grpcResult.Value == null)
-                return null;
+            {
+                _logger.LogWarning(
+                    "Could not learn the type of room {RoomId} to authorize a recording change by {UserId}: {Error}",
+                    translationRoomId, callerUserId, grpcResult.Error);
+                return Result.Failure(RecordingControlUnverifiableMessage, ErrorCodes.ServiceUnavailable);
+            }
             room = grpcResult.Value;
             isFresh = true;
         }
@@ -1432,9 +1453,7 @@ public class MeetingRoomService : IMeetingRoomService
                 _logger.LogWarning(
                     "Could not read bridge room {RoomId} to authorize a recording change by {UserId}: {Error}",
                     translationRoomId, callerUserId, freshResult.Error);
-                return Result.Failure(
-                    "Could not verify who may control recording for this call. Please try again.",
-                    ErrorCodes.ServiceUnavailable);
+                return Result.Failure(RecordingControlUnverifiableMessage, ErrorCodes.ServiceUnavailable);
             }
             room = freshResult.Value;
         }
