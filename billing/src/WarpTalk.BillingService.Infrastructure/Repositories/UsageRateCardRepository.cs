@@ -19,6 +19,7 @@ public class UsageRateCardRepository : IUsageRateCardRepository
     private const string UpsertNotes = "Updated from admin pricing controls";
     private const string CreditCurrency = "CRD";
     private const string ProviderCostNote = "Provider cost set from admin pricing controls";
+    private const string CreditPriceNote = "Credit price set from admin platform settings";
 
     private readonly BillingDbContext _context;
     private IDbContextTransaction? _currentTransaction;
@@ -203,6 +204,59 @@ public class UsageRateCardRepository : IUsageRateCardRepository
             EffectiveFrom = supersededAt,
             IsActive = true,
             Notes = note,
+        };
+        _context.UsageRateCards.Add(copy);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return new RateCardProviderCostOutcome(RateCardProviderCostChange.Superseded, ToDto(copy));
+    }
+
+    public async Task<RateCardProviderCostOutcome?> SetCreditRateCardUnitPriceAsync(
+        Guid id, decimal unitPrice, CancellationToken cancellationToken = default)
+    {
+        var row = await _context.UsageRateCards
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
+
+        if (row is null)
+            return null;
+
+        // The same three refusals as the provider cost: a USD card's credit price is derived from
+        // its cost by the editor, a retired card prices nothing, and a price needs a unit.
+        if (!string.Equals(row.Currency.Trim(), CreditCurrency, StringComparison.OrdinalIgnoreCase) ||
+            !row.IsActive || row.EffectiveTo is not null || string.IsNullOrWhiteSpace(row.Unit))
+        {
+            return new RateCardProviderCostOutcome(RateCardProviderCostChange.Refused, ToDto(row));
+        }
+
+        if (row.UnitPrice == unitPrice)
+            return new RateCardProviderCostOutcome(RateCardProviderCostChange.Unchanged, ToDto(row));
+
+        // A price is never edited in place: credit_transactions reference the card they were
+        // settled on, and that card has to keep saying what was actually charged. Close first and
+        // flush, for the partial unique index. billing_worker resolves the newest open window for
+        // (charge type, currency, languages), so the copy is in force for the very next charge.
+        var supersededAt = DateTime.UtcNow;
+        row.IsActive = false;
+        row.EffectiveTo = supersededAt;
+        await _context.SaveChangesAsync(cancellationToken);
+
+        var copy = new UsageRateCard
+        {
+            ChargeType = row.ChargeType,
+            Unit = row.Unit,
+            Currency = row.Currency,
+            Provider = row.Provider,
+            Model = row.Model,
+            SourceLanguageCode = row.SourceLanguageCode,
+            TargetLanguageCode = row.TargetLanguageCode,
+            UnitPrice = unitPrice,
+            ProviderUnitCost = row.ProviderUnitCost,
+            MarkupMultiplier = row.MarkupMultiplier,
+            EffectiveFrom = supersededAt,
+            IsActive = true,
+            Notes = string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"{CreditPriceNote}: {unitPrice} CRD/{row.Unit.Trim()} (was {row.UnitPrice})"),
         };
         _context.UsageRateCards.Add(copy);
         await _context.SaveChangesAsync(cancellationToken);

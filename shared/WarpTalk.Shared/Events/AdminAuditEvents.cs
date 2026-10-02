@@ -143,6 +143,7 @@ public static class AdminAuditBillingActions
     public const string RateCardUpserted = "rate_card.upserted";
     public const string RateCardDeactivated = "rate_card.deactivated";
     public const string RateCardCostSet = "rate_card.provider_cost_set";
+    public const string RateCardCreditPriceSet = "rate_card.credit_price_set";
     public const string PricingConfigUpdated = "pricing_config.updated";
     public const string BillingPolicyUpdated = "billing_policy.updated";
     public const string ContractCreated = "subscription.contract_created";
@@ -164,7 +165,7 @@ public static class AdminAuditBillingActions
 
     public static readonly string[] All =
     [
-        PlanCreated, PlanUpdated, RateCardUpserted, RateCardDeactivated, RateCardCostSet,
+        PlanCreated, PlanUpdated, RateCardUpserted, RateCardDeactivated, RateCardCostSet, RateCardCreditPriceSet,
         PricingConfigUpdated, BillingPolicyUpdated, ContractCreated, ContractTermsUpdated,
         SubscriptionCancelled, SubscriptionReactivated, SubscriptionResumed, SalesLeadStatusChanged,
         PaymentRecorded, FxRateRefreshed, FxRateOverridden, FxRateOverrideCleared,

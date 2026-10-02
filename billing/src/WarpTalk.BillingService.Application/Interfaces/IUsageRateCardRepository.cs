@@ -25,6 +25,15 @@ public interface IUsageRateCardRepository
     Task<RateCardProviderCostOutcome?> SetCreditRateCardProviderCostAsync(
         Guid id, decimal providerUnitCostUsd, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Sets what one internal credit-unit (CRD) card charges per unit — the number billing_worker
+    /// multiplies a meeting's seconds by. Always a supersede: the card is closed and a copy with the
+    /// new price opened, so usage already settled keeps the price that applied to it. Returns null
+    /// when no row has that id.
+    /// </summary>
+    Task<RateCardProviderCostOutcome?> SetCreditRateCardUnitPriceAsync(
+        Guid id, decimal unitPrice, CancellationToken cancellationToken = default);
+
     Task<decimal> ReadPricingConfigValueAsync(string key, decimal defaultValue, CancellationToken cancellationToken = default);
     Task UpsertPricingConfigValueAsync(string key, decimal value, CancellationToken cancellationToken = default);
     
