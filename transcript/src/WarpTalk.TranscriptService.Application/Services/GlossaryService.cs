@@ -171,6 +171,19 @@ public class GlossaryService : IGlossaryService
         }
     }
 
+    public async Task<Result<GlossaryWarpBotStatusDto>> GetWarpBotStatusAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return Result.Success(await GlossaryWarpBotStatus.ReadAsync(_redis.GetDatabase(), id));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read the WarpBot status of glossary {GlossaryId}", id);
+            return Result.Failure<GlossaryWarpBotStatusDto>("The WarpBot status could not be read.", "INTERNAL_ERROR");
+        }
+    }
+
     /// <summary>"en-US", "EN", "en_us" → "en"; null when it is not a 2–3 letter code.</summary>
     internal static string? NormalizeGlossaryLanguage(string? value)
     {
@@ -196,6 +209,7 @@ public class GlossaryService : IGlossaryService
             {
                 await TryPublishEmbeddingDeleteRequestAsync(glossary.WorkspaceId, termId, cancellationToken);
             }
+            await TryForgetWarpBotStatusAsync(db => GlossaryWarpBotStatus.ForgetGlossaryAsync(db, id));
 
             return Result.Success();
         }
@@ -461,6 +475,7 @@ public class GlossaryService : IGlossaryService
             {
                 await TryPublishEmbeddingDeleteRequestAsync(glossary.WorkspaceId, termId, cancellationToken);
             }
+            await TryForgetWarpBotStatusAsync(db => GlossaryWarpBotStatus.ForgetTermAsync(db, glossaryId, termId));
 
             return Result.Success();
         }
@@ -502,9 +517,10 @@ public class GlossaryService : IGlossaryService
                 },
             };
 
+            var jobId = Guid.NewGuid().ToString();
             var entries = new NameValueEntry[]
             {
-                new("job_id", Guid.NewGuid().ToString()),
+                new("job_id", jobId),
                 new("workspace_id", workspaceId.ToString()),
                 new("collection_id", $"workspace_{workspaceId}"),
                 new("source_type", "glossary_term"),
@@ -518,11 +534,37 @@ public class GlossaryService : IGlossaryService
             };
 
             var db = _redis.GetDatabase();
-            await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
+
+            // "Is it in WarpBot yet?" - counted per glossary, settled by GlossaryIndexResultConsumer.
+            // Recorded BEFORE the publish so a fast result cannot arrive for an unknown job; undone
+            // if the publish fails, so a request that never left is not shown as loading forever.
+            await GlossaryWarpBotStatus.RecordRequestedAsync(db, term.GlossaryId, term.Id, jobId);
+            try
+            {
+                await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
+            }
+            catch
+            {
+                await GlossaryWarpBotStatus.ForgetRequestAsync(db, term.GlossaryId, jobId);
+                throw;
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to publish embedding index request for term {TermId}", term.Id);
+        }
+    }
+
+    /// <summary>Status bookkeeping follows the delete; it never fails it.</summary>
+    private async Task TryForgetWarpBotStatusAsync(Func<IDatabase, Task> forget)
+    {
+        try
+        {
+            await forget(_redis.GetDatabase());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not clear the WarpBot status of a deleted glossary item");
         }
     }
 

@@ -26,6 +26,10 @@ public interface IGlossaryService
     /// ISO-639 code ("en-US" → "en"); anything else is BAD_REQUEST. Terms are not touched.
     /// </summary>
     Task<Result<GlossaryDto>> UpdateGlossaryLanguagesAsync(Guid id, UpdateGlossaryLanguagesDto dto, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Whether this glossary's terms have reached WarpBot's knowledge (see GlossaryWarpBotStatus).
+    /// </summary>
+    Task<Result<GlossaryWarpBotStatusDto>> GetWarpBotStatusAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Result> DeleteGlossaryAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<Result> AddTermAsync(Guid glossaryId, CreateGlossaryTermDto dto, CancellationToken cancellationToken = default);

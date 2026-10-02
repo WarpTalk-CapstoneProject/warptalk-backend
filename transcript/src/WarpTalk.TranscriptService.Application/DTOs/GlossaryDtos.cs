@@ -160,3 +160,18 @@ public record GlossaryTermDto(
     DateTime CreatedAt,
     DateTime UpdatedAt
 );
+
+/// <summary>
+/// PO 2026-10-02: whether a glossary's terms have reached WarpBot's knowledge (GlossaryWarpBotStatus).
+/// </summary>
+/// <param name="State">idle | loading | stalled | failed | ready.</param>
+/// <param name="Failed">Terms whose latest index result was a failure.</param>
+/// <param name="Pending">Index requests still waiting for a result.</param>
+public sealed record GlossaryWarpBotStatusDto(
+    string State,
+    long Requested,
+    long Indexed,
+    long Failed,
+    long Blocked,
+    long Pending,
+    DateTime? UpdatedAt);
