@@ -1122,7 +1122,41 @@ public class MeetingRoomService : IMeetingRoomService
         // RecordingStateChanged below, and the client raises a toast for every participant on
         // receipt. Nobody is recorded without being told; that notice is what makes this rule
         // acceptable rather than the permission check.
-        if (!await IsInMeetingAsync(translationRoomId, meetingRoom, callerUserId))
+        //
+        // EXCEPT IN A GOOGLE MEET BRIDGE ROOM (EXTERNAL_BRIDGE), WHERE ONLY THE HOST OR THE CURRENT
+        // CAPTURER MAY START OR STOP IT (WT-910, PO 2026-10-01).
+        //
+        // native  anyone in the room, for every reason above: the recording belongs to the room.
+        // bridge  the host (booker, effective host after a transfer, or this service's active
+        //         host) OR the current capturer — ExternalBridgeConstants.CanControlBridgeSession,
+        //         the same set that drives the bridge's other session controls (Start/Stop
+        //         translation, transcript Pause/Resume, "They speak").
+        //
+        // Why narrower there: a bridge recording is not a WarpTalk meeting recording itself — it is
+        // the host's capture of a third-party call (Google Meet), and it starts BY DEFAULT when
+        // capture starts. The bridge room is also shared by every WarpTalk user in that Meet call,
+        // most of whom never booked anything; letting any of them stop it would let a passenger
+        // switch off the host's record of the call without the host deciding to. The capturer is
+        // included because after a takeover the person whose desktop is in the call may not be the
+        // host, and the auto-start is fired from their web window.
+        //
+        // The bridge rule REPLACES the participation check rather than adding to it: the capturer
+        // is named by the translation-room service itself (bridge claim), which is stronger
+        // evidence of presence than a LiveKit participant row their web window may not have yet.
+        //
+        // WHEN THE ROOM TYPE CANNOT BE DETERMINED, THE REQUEST IS REFUSED (WT-916, PO 2026-10-02):
+        // a member must never be able to start or stop the recording of a Google Meet bridge room
+        // because a lookup failed. Cache empty AND the gRPC read failing returns
+        // ServiceUnavailable for start and stop alike. Accepted consequence: in that window native
+        // recording start/stop is refused too, until the lookup works again. A warm cache keeps
+        // native behaviour exactly as it was, with no extra gRPC call.
+        var bridgeAccess = await CheckBridgeRecordingControlAsync(translationRoomId, meetingRoom, callerUserId);
+        if (bridgeAccess is not null)
+        {
+            if (!bridgeAccess.IsSuccess)
+                return Result.Failure<RecordingStateDto>(bridgeAccess.Error!, bridgeAccess.ErrorCode);
+        }
+        else if (!await IsInMeetingAsync(translationRoomId, meetingRoom, callerUserId))
         {
             return Result.Failure<RecordingStateDto>(
                 "Only someone in this meeting can control recording.",
@@ -1356,6 +1390,101 @@ public class MeetingRoomService : IMeetingRoomService
         bool isOriginalHost = roomDetails.HostId == callerUserId.ToString();
         bool isActiveHost = meetingRoom.ActiveHostId == callerUserId;
         return isOriginalHost || isActiveHost;
+    }
+
+    /// <summary>User-facing refusal for a bridge-room member who is neither host nor capturer.</summary>
+    public const string BridgeRecordingControlForbiddenMessage =
+        "Only the host can start or stop recording this Google Meet call.";
+
+    /// <summary>Refusal when the room could not be read, so who may control recording is unknown.</summary>
+    public const string RecordingControlUnverifiableMessage =
+        "Could not verify who may control recording for this call. Please try again.";
+
+    /// <summary>
+    /// WT-910. The recording gate for an EXTERNAL_BRIDGE room, or <c>null</c> when the room is not
+    /// a bridge and the native rule (<see cref="IsInMeetingAsync"/>) applies. See the comment in
+    /// <see cref="SetRecordingAsync"/> for why the two differ.
+    ///
+    /// The room TYPE is read through the same cache <see cref="IsHostAsync"/> uses — it never
+    /// changes after creation, so a stale projection still answers it correctly, and a native
+    /// press costs no extra round-trip. The CAPTURER is not: a takeover moves it at any moment, so
+    /// for a bridge the decision is made on a fresh gRPC read (the same reasoning as
+    /// <see cref="GenerateBridgeTokenAsync"/>). If that fresh read fails the request is refused,
+    /// never decided on a projection that may name yesterday's capturer.
+    ///
+    /// FAILS CLOSED WHEN THE TYPE CANNOT BE LEARNED (WT-916, PO 2026-10-02). Cache miss AND gRPC
+    /// failure used to fall back to the native rule; now the request is refused with
+    /// ServiceUnavailable, start and stop alike, host and member alike. A member must never be
+    /// able to start or stop the recording of a Google Meet bridge room because a lookup failed,
+    /// and when the type is unknown there is no telling which kind of room this is.
+    ///
+    /// Accepted consequence: while translation-room is down AND the cache is cold, recording
+    /// start/stop is refused in NATIVE rooms too, until the lookup works again. A warm cache keeps
+    /// native behaviour exactly as before, with no extra gRPC call.
+    /// </summary>
+    private async Task<Result?> CheckBridgeRecordingControlAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
+    {
+        var cached = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>($"meeting:room:v2:{translationRoomId}");
+        var room = cached?.Value;
+        var isFresh = false;
+
+        if (room == null)
+        {
+            var grpcResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+            if (!grpcResult.IsSuccess || grpcResult.Value == null)
+            {
+                _logger.LogWarning(
+                    "Could not learn the type of room {RoomId} to authorize a recording change by {UserId}: {Error}",
+                    translationRoomId, callerUserId, grpcResult.Error);
+                return Result.Failure(RecordingControlUnverifiableMessage, ErrorCodes.ServiceUnavailable);
+            }
+            room = grpcResult.Value;
+            isFresh = true;
+        }
+
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+            return null;
+
+        if (!isFresh)
+        {
+            var freshResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+            if (!freshResult.IsSuccess || freshResult.Value == null)
+            {
+                _logger.LogWarning(
+                    "Could not read bridge room {RoomId} to authorize a recording change by {UserId}: {Error}",
+                    translationRoomId, callerUserId, freshResult.Error);
+                return Result.Failure(RecordingControlUnverifiableMessage, ErrorCodes.ServiceUnavailable);
+            }
+            room = freshResult.Value;
+        }
+
+        return CanControlBridgeRecording(room, meetingRoom.ActiveHostId, callerUserId)
+            ? Result.Success()
+            : Result.Failure(BridgeRecordingControlForbiddenMessage, ErrorCodes.Forbidden);
+    }
+
+    /// <summary>
+    /// WT-910, the pure half of <see cref="CheckBridgeRecordingControlAsync"/>: the host — booker
+    /// (<c>HostId</c>), effective host after a transfer (<c>EffectiveHostId</c>) or this service's
+    /// <paramref name="activeHostId"/>, the same "host" <see cref="IsHostAsync"/> accepts — OR the
+    /// current capturer of an EXTERNAL_BRIDGE room. Workspace Owner/Admin is deliberately NOT
+    /// added: they are not in the Meet call and this is not a governance action.
+    /// </summary>
+    public static bool CanControlBridgeRecording(
+        Shared.Protos.GetTranslationRoomResponse room,
+        Guid? activeHostId,
+        Guid callerUserId)
+    {
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+            return false;
+
+        return activeHostId == callerUserId
+            || ExternalBridgeConstants.CanControlBridgeSession(
+                room.TranslationRoomType,
+                room.HostId,
+                room.EffectiveHostId,
+                room.BridgeCapturerUserId,
+                callerUserId.ToString());
     }
 
     /// <summary>
