@@ -7,17 +7,20 @@ namespace WarpTalk.TranscriptService.Application.GlossaryImportTemplates;
 /// to default". Served whenever <c>transcript.glossary_import_template</c> holds no row, so the
 /// template works with zero admin action and no data migration.
 ///
-/// Groups (PO decision 2026-10-02): Source = Term, Context, Part of speech; Target = Translation,
-/// Note; General = Field, Definition, Priority. The header names are the ones every earlier
+/// Groups (PO decisions 2026-10-02): Source = Term, Context, Part of speech; Target = Translation,
+/// Definition, Note; General = Field, Priority. Definition is in Target because it is written in
+/// the target language: "Bug" in an EN→JA glossary is defined in Japanese, in an EN→EN glossary
+/// in English. The header names are the ones every earlier
 /// template and sample file used, and the aliases are the importer's historical ones, so a file
 /// made before this change still imports.
 ///
 /// The web keeps an identical copy (src/lib/glossary/import-template.ts, DEFAULT_IMPORT_TEMPLATE)
 /// as its offline fallback; change both together.
 ///
-/// Sample values describe ONE concept ("invoice") in each language, so any pair lines up: the
-/// Source group shows the source language's word and sentence, the Target group the target
-/// language's word. They are not domain vocabulary and are skipped by the importer.
+/// Sample values describe ONE concept in each language, the PO's own example: an engineering
+/// meeting where "Bug" must reach a Japanese listener as 不具合, not 虫 (insect). Any pair lines
+/// up: the Source group shows the source language's word and sentence, the Target group the target
+/// language's word, definition and note. They are skipped by the importer.
 /// </summary>
 public static class GlossaryImportTemplateDefaults
 {
@@ -31,13 +34,13 @@ public static class GlossaryImportTemplateDefaults
             ["partofspeech", "pos"]),
         new(GlossaryImportTemplateColumnKeys.TargetTerm, GlossaryImportTemplateGroups.Target, 0, false, "Translation",
             ["target term", "targetterm", "target", "translate as"]),
-        new(GlossaryImportTemplateColumnKeys.UsageNote, GlossaryImportTemplateGroups.Target, 1, false, "Note",
+        new(GlossaryImportTemplateColumnKeys.Definition, GlossaryImportTemplateGroups.Target, 1, false, "Definition",
+            ["meaning"]),
+        new(GlossaryImportTemplateColumnKeys.UsageNote, GlossaryImportTemplateGroups.Target, 2, false, "Note",
             ["usage note", "usagenote"]),
         new(GlossaryImportTemplateColumnKeys.Domain, GlossaryImportTemplateGroups.General, 0, false, "Field",
             ["domain", "business domain"]),
-        new(GlossaryImportTemplateColumnKeys.Definition, GlossaryImportTemplateGroups.General, 1, false, "Definition",
-            ["meaning"]),
-        new(GlossaryImportTemplateColumnKeys.Priority, GlossaryImportTemplateGroups.General, 2, false, "Priority",
+        new(GlossaryImportTemplateColumnKeys.Priority, GlossaryImportTemplateGroups.General, 1, false, "Priority",
             []),
     ];
 
@@ -46,35 +49,35 @@ public static class GlossaryImportTemplateDefaults
         {
             ["en"] = new Dictionary<string, string>
             {
-                [GlossaryImportTemplateColumnKeys.SourceTerm] = "invoice",
-                [GlossaryImportTemplateColumnKeys.Context] = "Please send the invoice before Friday.",
+                [GlossaryImportTemplateColumnKeys.SourceTerm] = "Bug",
+                [GlossaryImportTemplateColumnKeys.Context] = "We need to fix this bug before the Sprint 14 release.",
                 [GlossaryImportTemplateColumnKeys.PartOfSpeech] = "noun",
-                [GlossaryImportTemplateColumnKeys.TargetTerm] = "invoice",
-                [GlossaryImportTemplateColumnKeys.UsageNote] = "Use in billing and payment talk",
-                [GlossaryImportTemplateColumnKeys.Domain] = "Finance",
-                [GlossaryImportTemplateColumnKeys.Definition] = "A document listing goods or services and the amount due",
+                [GlossaryImportTemplateColumnKeys.TargetTerm] = "Bug",
+                [GlossaryImportTemplateColumnKeys.Definition] = "A defect in software that causes wrong behaviour",
+                [GlossaryImportTemplateColumnKeys.UsageNote] = "Used in engineering meetings",
+                [GlossaryImportTemplateColumnKeys.Domain] = "Software engineering",
                 [GlossaryImportTemplateColumnKeys.Priority] = "5",
             },
             ["vi"] = new Dictionary<string, string>
             {
-                [GlossaryImportTemplateColumnKeys.SourceTerm] = "hóa đơn",
-                [GlossaryImportTemplateColumnKeys.Context] = "Vui lòng gửi hóa đơn trước thứ Sáu.",
+                [GlossaryImportTemplateColumnKeys.SourceTerm] = "lỗi phần mềm",
+                [GlossaryImportTemplateColumnKeys.Context] = "Chúng ta cần fix gấp Bug này trước khi release Sprint 14.",
                 [GlossaryImportTemplateColumnKeys.PartOfSpeech] = "danh từ",
-                [GlossaryImportTemplateColumnKeys.TargetTerm] = "hóa đơn",
-                [GlossaryImportTemplateColumnKeys.UsageNote] = "Dùng khi nói về thanh toán",
-                [GlossaryImportTemplateColumnKeys.Domain] = "Tài chính",
-                [GlossaryImportTemplateColumnKeys.Definition] = "Chứng từ ghi hàng hóa, dịch vụ và số tiền phải trả",
+                [GlossaryImportTemplateColumnKeys.TargetTerm] = "lỗi phần mềm",
+                [GlossaryImportTemplateColumnKeys.Definition] = "Sai sót trong phần mềm khiến chương trình chạy sai",
+                [GlossaryImportTemplateColumnKeys.UsageNote] = "Kỹ sư thường nói tắt là \"bug\"",
+                [GlossaryImportTemplateColumnKeys.Domain] = "Kỹ thuật phần mềm",
                 [GlossaryImportTemplateColumnKeys.Priority] = "5",
             },
             ["ja"] = new Dictionary<string, string>
             {
-                [GlossaryImportTemplateColumnKeys.SourceTerm] = "請求書",
-                [GlossaryImportTemplateColumnKeys.Context] = "金曜日までに請求書を送ってください。",
+                [GlossaryImportTemplateColumnKeys.SourceTerm] = "不具合",
+                [GlossaryImportTemplateColumnKeys.Context] = "リリース前にこの不具合を修正する必要があります。",
                 [GlossaryImportTemplateColumnKeys.PartOfSpeech] = "名詞",
-                [GlossaryImportTemplateColumnKeys.TargetTerm] = "請求書",
-                [GlossaryImportTemplateColumnKeys.UsageNote] = "支払いの話で使う",
-                [GlossaryImportTemplateColumnKeys.Domain] = "財務",
-                [GlossaryImportTemplateColumnKeys.Definition] = "商品やサービスと支払金額を記載した書類",
+                [GlossaryImportTemplateColumnKeys.TargetTerm] = "不具合",
+                [GlossaryImportTemplateColumnKeys.Definition] = "ソフトウェアの欠陥や誤動作",
+                [GlossaryImportTemplateColumnKeys.UsageNote] = "「ソフトウェア障害」とも言う",
+                [GlossaryImportTemplateColumnKeys.Domain] = "ソフトウェア工学",
                 [GlossaryImportTemplateColumnKeys.Priority] = "5",
             },
         };

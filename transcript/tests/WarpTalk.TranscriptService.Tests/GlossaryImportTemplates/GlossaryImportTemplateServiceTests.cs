@@ -81,9 +81,10 @@ public sealed class GlossaryImportTemplateServiceTests
         Assert.True(result.IsSuccess);
         Assert.True(result.Value!.IsDefault);
         Assert.Equal(new[] { "sourceTerm", "context", "partOfSpeech" }, KeysIn(result.Value, "source"));
-        Assert.Equal(new[] { "targetTerm", "usageNote" }, KeysIn(result.Value, "target"));
-        Assert.Equal(new[] { "domain", "definition", "priority" }, KeysIn(result.Value, "general"));
-        Assert.Equal(new[] { "Term", "Context", "Part of speech", "Translation", "Note", "Field", "Definition", "Priority" },
+        // Definition is written in the target language, so it sits in Target (PO, 2026-10-02).
+        Assert.Equal(new[] { "targetTerm", "definition", "usageNote" }, KeysIn(result.Value, "target"));
+        Assert.Equal(new[] { "domain", "priority" }, KeysIn(result.Value, "general"));
+        Assert.Equal(new[] { "Term", "Context", "Part of speech", "Translation", "Definition", "Note", "Field", "Priority" },
             result.Value.Columns.Select(c => c.Name).ToArray());
         Assert.Contains("en", result.Value.Samples.Keys);
         Assert.Contains("vi", result.Value.Samples.Keys);
@@ -120,8 +121,8 @@ public sealed class GlossaryImportTemplateServiceTests
         Assert.True(saved.IsSuccess, saved.Error);
         Assert.False(read.Value!.IsDefault);
         Assert.Equal(Admin, read.Value.UpdatedBy);
-        Assert.Equal(new[] { "usageNote", "domain", "definition", "priority" }, KeysIn(read.Value, "general"));
-        Assert.Equal(new[] { 0, 1, 2, 3 }, read.Value.Columns.Where(c => c.Group == "general").Select(c => c.Order).ToArray());
+        Assert.Equal(new[] { "usageNote", "domain", "priority" }, KeysIn(read.Value, "general"));
+        Assert.Equal(new[] { 0, 1, 2 }, read.Value.Columns.Where(c => c.Group == "general").Select(c => c.Order).ToArray());
         Assert.Equal("Usage note", read.Value.Columns.Single(c => c.Key == "usageNote").Name);
         Assert.True(read.Value.Columns.Single(c => c.Key == "partOfSpeech").Hidden);
         // Blank sample values are dropped rather than stored as "".
