@@ -2670,6 +2670,31 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode);
             }
 
+            // WT-929. IsIndexEligible is a fact about the DOCUMENT; `ai_retrieval` is the answer
+            // for THIS CALLER, and nothing on this read asked it. An owner who set "Deny AI
+            // retrieval" for a member (or for the Member role) took the document out of that
+            // person's semantic search — ListAiRetrievableDocumentIdsAsync asks the evaluator —
+            // while an @document mention, or get_document with an id, still read the whole text
+            // back through here on the strength of `view` alone.
+            //
+            // Same evaluator call, same permission as the ai-retrievable list, so the two cannot
+            // disagree: what the assistant may not retrieve for a person it may not quote to them
+            // either. That includes the index-side half of the permission (ingestion finished,
+            // indexed, AiEligible) — a document the index has not caught up with is one the
+            // list does not offer yet, and this read now says the same.
+            //
+            // The same refusal as above on purpose: the caller already holds `view`, so there is
+            // nothing to hide about the document's existence, and one error code means WarpBot
+            // has one thing to explain.
+            var aiAccess = await _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.AiRetrieval, ct);
+            if (!aiAccess.IsSuccess)
+            {
+                return Result.Failure<ExtractedTextDto>(
+                    WorkspaceConstants.Errors.DocumentNotAiEligible,
+                    WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode);
+            }
+
             string extractedText = string.Empty;
             try
             {
