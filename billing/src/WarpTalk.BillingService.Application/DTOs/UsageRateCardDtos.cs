@@ -39,6 +39,9 @@ public record UpsertUsageRateCardRequest(
 /// </summary>
 public record SetRateCardProviderCostRequest(decimal? ProviderUnitCostUsd);
 
+/// <summary>Credits charged per unit by an internal credit-unit (CRD) card.</summary>
+public record SetRateCardCreditPriceRequest(decimal? UnitPrice);
+
 /// <summary>
 /// Prices a hypothetical rate change before it is published. The credit value falls back to the
 /// stored pricing config when omitted, so an admin can preview against live economics or against a

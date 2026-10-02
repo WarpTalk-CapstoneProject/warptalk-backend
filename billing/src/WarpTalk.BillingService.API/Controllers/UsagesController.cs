@@ -156,6 +156,30 @@ public class UsagesController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// What a meeting is charged per second of translation or dubbing. These credit-unit cards are
+    /// what billing_worker settles on, and nothing else in the admin surface could change them.
+    /// </summary>
+    [HttpPut("rate-card/{id:guid}/credit-price")]
+    [AdminAudited(AdminAuditBillingActions.RateCardCreditPriceSet, AdminAuditEntityTypes.UsageRate, typeof(UsageRateCard), EntityRouteKey = "id")]
+    [RequirePermission(AdminPermissions.BillingPricingManage)]
+    public async Task<ActionResult<UsageRateCardDto>> SetUsageRateCardCreditPrice(
+        Guid id, [FromBody] SetRateCardCreditPriceRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _rateCardAdminService.SetCreditPriceAsync(id, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+            return result.ErrorCode switch
+            {
+                ErrorCodes.NotFound => NotFound(error),
+                ErrorCodes.InternalServerError => StatusCode(500, error),
+                _ => BadRequest(error),
+            };
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPost("rate-card/preview")]
     [RequirePermission(AdminPermissions.BillingPricingManage)]
     public async Task<ActionResult<RateCardPreviewDto>> PreviewUsageRateCard([FromBody] RateCardPreviewRequest request, CancellationToken cancellationToken)
