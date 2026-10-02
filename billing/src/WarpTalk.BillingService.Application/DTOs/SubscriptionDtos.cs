@@ -43,7 +43,10 @@ public record SubscriptionDto(
     DateTime? OverageStartedAt = null,
     string ServiceState = SubscriptionConstants.ServiceStates.Healthy,
     string? SuspendedReason = null,
-    DateTime? TrialEndsAt = null
+    DateTime? TrialEndsAt = null,
+    // The currency `Price` is in: the plan's own (USD by default, VND for a plan still sold in it).
+    // A price without it read as whatever the screen assumed, which was VND until 2 Oct 2026.
+    string PlanCurrency = PaymentConstants.Currencies.UsdAccounting
 )
 {
     public int CurrentCredits => CreditsRemaining;

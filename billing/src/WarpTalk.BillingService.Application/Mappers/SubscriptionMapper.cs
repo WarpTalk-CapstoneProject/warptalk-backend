@@ -14,7 +14,7 @@ namespace WarpTalk.BillingService.Application.Mappers;
 
 public static class SubscriptionMapper
 {
-    public static SubscriptionDto ToDto(this Subscription sub, string planName, decimal price) => new(
+    public static SubscriptionDto ToDto(this Subscription sub, string planName, decimal price, string? planCurrency = null) => new(
         sub.Id,
         sub.UserId,
         sub.WorkspaceId,
@@ -40,8 +40,12 @@ public static class SubscriptionMapper
         OverageStartedAt: sub.OverageStartedAt,
         ServiceState: sub.ServiceState,
         SuspendedReason: sub.SuspendedReason,
-        TrialEndsAt: sub.TrialEndsAt
+        TrialEndsAt: sub.TrialEndsAt,
+        PlanCurrency: NormalizeCurrency(planCurrency ?? sub.Plan?.Currency)
     );
+
+    private static string NormalizeCurrency(string? currency) =>
+        string.IsNullOrWhiteSpace(currency) ? PaymentConstants.Currencies.UsdAccounting : currency.Trim().ToUpperInvariant();
 
     public static SubscriptionDto ToDto(this Subscription sub, Plan plan) => new(
         sub.Id,
@@ -66,6 +70,7 @@ public static class SubscriptionMapper
         InvoiceTermsDaysOverride: sub.InvoiceTermsDaysOverride,
         BillingContactEmail: sub.BillingContactEmail,
         EffectiveCreditsPerCycle: sub.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
+        PlanCurrency: NormalizeCurrency(plan.Currency),
         EffectiveContractPrice: sub.ContractPriceUsd ?? plan.Price,
         EffectiveContractCurrency: sub.ContractPriceUsd is not null
             ? PaymentConstants.Currencies.UsdAccounting
