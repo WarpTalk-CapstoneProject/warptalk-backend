@@ -1192,32 +1192,21 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Failure<RecordingStateDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        // Anyone IN the meeting may start or stop the recording — not only the host.
+        // ONLY THE HOST MAY START OR STOP THE RECORDING (owner decision, 2026-10-02).
         //
-        // The host-only rule here did not match anything else in the product. The web client has
-        // shown the record button to workspace Owners/Admins since WT-188 (isHost in
-        // persistent-meeting-session includes role === "owner" | "admin"), and the auto-start
-        // effect fires on that same flag — so a workspace Owner joining a meeting somebody else
-        // booked got an automatic, unprompted 403 and a "Could not start recording." toast on
-        // every single join. The gateway hub (RoomHostAuthority) and the translation-room service
-        // (RoomHostAccess) had both already been widened past host-only for exactly this reason;
-        // this method was the one that never was.
+        // "Host" is IsHostAsync: whoever booked the room, or this service's active host after a
+        // transfer. It was host-only originally, then widened to every participant because the
+        // web client offered the button — and fired an auto-start — on a flag that also included
+        // workspace Owners/Admins, who then got an unprompted 403 on every join. The client now
+        // offers the control to the room host alone, so the rule and the button agree again.
         //
-        // Widened to every participant rather than to Owner/Admin because recording a meeting is
-        // not a governance action over a tenant — it is a thing the people in the room do, and
-        // whoever needs the transcript to have timestamps is usually not whoever booked it.
-        // Participation is still REQUIRED: a stranger holding a room id must not be able to spin
-        // up an Egress against a room they are not in, which is a billable action.
-        //
-        // Everyone in the room is told either way — SetRecordingAsync broadcasts
-        // RecordingStateChanged below, and the client raises a toast for every participant on
-        // receipt. Nobody is recorded without being told; that notice is what makes this rule
-        // acceptable rather than the permission check.
+        // Everyone in the room is still told: SetRecordingAsync broadcasts RecordingStateChanged
+        // below and the client raises a toast for every participant on receipt.
         //
         // EXCEPT IN A GOOGLE MEET BRIDGE ROOM (EXTERNAL_BRIDGE), WHERE ONLY THE HOST OR THE CURRENT
         // CAPTURER MAY START OR STOP IT (WT-910, PO 2026-10-01).
         //
-        // native  anyone in the room, for every reason above: the recording belongs to the room.
+        // native  the host only, as above.
         // bridge  the host (booker, effective host after a transfer, or this service's active
         //         host) OR the current capturer — ExternalBridgeConstants.CanControlBridgeSession,
         //         the same set that drives the bridge's other session controls (Start/Stop
@@ -1247,10 +1236,10 @@ public class MeetingRoomService : IMeetingRoomService
             if (!bridgeAccess.IsSuccess)
                 return Result.Failure<RecordingStateDto>(bridgeAccess.Error!, bridgeAccess.ErrorCode);
         }
-        else if (!await IsInMeetingAsync(translationRoomId, meetingRoom, callerUserId))
+        else if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
         {
             return Result.Failure<RecordingStateDto>(
-                "Only someone in this meeting can control recording.",
+                "Only the host can start or stop recording.",
                 ErrorCodes.Forbidden);
         }
 
@@ -1493,7 +1482,7 @@ public class MeetingRoomService : IMeetingRoomService
 
     /// <summary>
     /// WT-910. The recording gate for an EXTERNAL_BRIDGE room, or <c>null</c> when the room is not
-    /// a bridge and the native rule (<see cref="IsInMeetingAsync"/>) applies. See the comment in
+    /// a bridge and the native rule (<see cref="IsHostAsync"/>) applies. See the comment in
     /// <see cref="SetRecordingAsync"/> for why the two differ.
     ///
     /// The room TYPE is read through the same cache <see cref="IsHostAsync"/> uses — it never
@@ -1576,36 +1565,6 @@ public class MeetingRoomService : IMeetingRoomService
                 room.EffectiveHostId,
                 room.BridgeCapturerUserId,
                 callerUserId.ToString());
-    }
-
-    /// <summary>
-    /// Whether this caller is actually in this meeting — the host, or a participant who has
-    /// joined and not left.
-    ///
-    /// Deliberately weaker than <see cref="IsHostAsync"/> and used only where the action belongs
-    /// to the room rather than to whoever booked it (recording). It is still a real check: the
-    /// room id travels in a shareable link, so "authenticated" is not "present", and starting an
-    /// Egress costs money against the workspace.
-    ///
-    /// The host is admitted without a participant row because a host who has opened the room but
-    /// whose LiveKit join has not landed yet is unambiguously in the meeting, and the recording
-    /// auto-start fires in exactly that window.
-    /// </summary>
-    private async Task<bool> IsInMeetingAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
-    {
-        if (await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
-            return true;
-
-        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(
-            p => p.MeetingRoomId == meetingRoom.Id
-                 && p.UserId == callerUserId
-                 && p.DeletedAt == null);
-
-        // IsActive OR LeftAt == null: the two are written by different paths (the disconnect
-        // handler flips IsActive, the leave endpoint stamps LeftAt) and a participant who is
-        // present according to either one is present. Requiring both would make a brief
-        // reconnect look like an intruder.
-        return participant != null && (participant.IsActive || participant.LeftAt == null);
     }
 
     private Task<Result> PublishGatewayCommandAsync(string command, Guid translationRoomId, object extraFields)

@@ -82,7 +82,7 @@ public class MeetingRoomServiceTests
     }
 
     /// <summary>
-    /// The single participant row <c>IsInMeetingAsync</c> looks up, or null for "not in the room".
+    /// The single participant row a membership lookup returns, or null for "not in the room".
     /// </summary>
     private static Mock<IRtcStreamParticipantRepository> SetupMeetingParticipant(
         Mock<IUnitOfWork> unitOfWorkMock,
@@ -531,13 +531,9 @@ public class MeetingRoomServiceTests
             Times.Once);
     }
 
-    // Recording is no longer host-only. It is a thing the people in the room do, and the person
-    // who needs the transcript timestamped is usually not whoever booked the meeting — while the
-    // web client had been offering the button to workspace Owners/Admins since WT-188, so the
-    // host-only rule here produced an unprompted 403 on every join for them. What remains is
-    // PARTICIPATION: the room id travels in a shareable link, and starting an Egress spends money.
-    //
-    // The two tests below pin both halves of the new rule.
+    // Recording is host-only (owner decision, 2026-10-02): the room's booker or its active host.
+    // It had been widened to every participant; the two tests below pin that it no longer is —
+    // neither for a stranger holding the room id nor for someone who is really in the room.
 
     [Fact]
     public async Task SetRecordingAsync_ReturnsForbidden_WhenCallerIsNotInTheMeeting()
@@ -562,7 +558,7 @@ public class MeetingRoomServiceTests
     }
 
     [Fact]
-    public async Task SetRecordingAsync_Starts_ForAnOrdinaryParticipantWhoIsNotTheHost()
+    public async Task SetRecordingAsync_ReturnsForbidden_ForAParticipantWhoIsNotTheHost()
     {
         var translationRoomId = Guid.NewGuid();
         var meetingRoomId = Guid.NewGuid();
@@ -589,10 +585,11 @@ public class MeetingRoomServiceTests
 
         var result = await _sut.SetRecordingAsync(translationRoomId, participantUserId, "start");
 
-        Assert.True(result.IsSuccess);
-        Assert.True(result.Value!.Recording);
-        Assert.Equal("egress-1", meetingRoom.ActiveEgressId);
-        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Null(meetingRoom.ActiveEgressId);
+        _egressServiceMock.Verify(e => e.StartRoomCompositeEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Never);
     }
 
     // WT-234: a departing host used to hand the room to the earliest-joined participant.
