@@ -83,8 +83,6 @@ public static class AdminAuditEntityTypes
 
     /// <summary>A platform setting (/admin/settings). Entity key = the setting key; no entity id.</summary>
     public const string PlatformSetting = "platform_setting";
-    /// <summary>WT-880: the glossary import file shape (/admin/global-glossary, Import template tab). Singleton; entity key = "1".</summary>
-    public const string GlossaryImportTemplate = "glossary_import_template";
 
     /// <summary>
     /// Every value above, so the audit screen's entity filter and the web's label table have one
@@ -99,7 +97,7 @@ public static class AdminAuditEntityTypes
         StaffMember, StaffRole, StaffInvitation,
         OperatingExpense, ExpenseCategory, ExpenseBudget, InboxItem,
         CreditPack, Addon, Coupon,
-        PlatformSetting, GlossaryImportTemplate,
+        PlatformSetting,
     ];
 }
 
@@ -254,12 +252,9 @@ public static class AdminAuditGlossaryActions
     public const string TermPublished = "glossary.term_published";
     public const string TermArchived = "glossary.term_archived";
     public const string BulkImported = "glossary.bulk_imported";
-    /// <summary>WT-880: the import template saved, or reset to the built-in default.</summary>
-    public const string TemplateUpdated = "glossary.template_updated";
-    public const string TemplateReset = "glossary.template_reset";
 
     public static readonly string[] All =
-        [TermCreated, TermUpdated, TermDeleted, TermPublished, TermArchived, BulkImported, TemplateUpdated, TemplateReset];
+        [TermCreated, TermUpdated, TermDeleted, TermPublished, TermArchived, BulkImported];
 }
 
 /// <summary>Verbs for platform announcements (notification service, /admin/announcements).</summary>
