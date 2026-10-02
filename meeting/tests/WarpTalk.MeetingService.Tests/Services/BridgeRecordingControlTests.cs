@@ -264,18 +264,19 @@ public class BridgeRecordingControlTests
     [Theory]
     [InlineData("start")]
     [InlineData("stop")]
-    public async Task NativeMember_IsStillAllowed(string action)
+    public async Task NativeMember_IsRefused_AndTheNativeCapturerClauseDoesNotApply(string action)
     {
         _meetingRoom.ActiveEgressId = action == "stop" ? "egress-1" : null;
         // "Capturer" set on a native room on purpose: the capturer clause must not leak out of a
-        // bridge, and the native rule must not start caring about it.
+        // bridge. A native room is host-only (owner decision, 2026-10-02), member or "capturer".
         SetupCache(Room("MEETING", _capturerId));
         SetupGrpc(Result.Success(Room("MEETING", _capturerId)));
 
-        var result = await _sut.SetRecordingAsync(_translationRoomId, _memberId, action);
+        var member = await _sut.SetRecordingAsync(_translationRoomId, _memberId, action);
+        var capturer = await _sut.SetRecordingAsync(_translationRoomId, _capturerId, action);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(action == "start", result.Value!.Recording);
+        Assert.Equal(ErrorCodes.Forbidden, member.ErrorCode);
+        Assert.Equal(ErrorCodes.Forbidden, capturer.ErrorCode);
         // A native press with a warm cache costs no gRPC round-trip, exactly as before WT-910.
         _grpcServiceMock.Verify(g => g.GetRoomDetailsAsync(It.IsAny<Guid>()), Times.Never);
     }
