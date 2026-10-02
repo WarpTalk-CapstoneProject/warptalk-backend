@@ -35,6 +35,20 @@ public record UpdateGlossaryDto(
     bool IsActive
 );
 
+/// <summary>
+/// PO 2026-10-02: a glossary's language pair can change after creation (an en→en import that
+/// should have been en→vi). Terms are kept exactly as they are — nothing is re-translated.
+/// </summary>
+public record UpdateGlossaryLanguagesDto(
+    [Required(ErrorMessage = "SourceLanguage is required.")]
+    [MaxLength(10, ErrorMessage = "SourceLanguage cannot exceed 10 characters.")]
+    string SourceLanguage,
+
+    [Required(ErrorMessage = "TargetLanguage is required.")]
+    [MaxLength(10, ErrorMessage = "TargetLanguage cannot exceed 10 characters.")]
+    string TargetLanguage
+);
+
 public record GlossaryDto(
     Guid Id,
     Guid WorkspaceId,

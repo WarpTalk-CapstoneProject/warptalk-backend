@@ -141,6 +141,25 @@ public class GlossariesController : ControllerBase
         return Ok();
     }
 
+    /// <summary>
+    /// PO 2026-10-02: change a glossary's language pair in place, Owner/Admin only (same gate as
+    /// editing the glossary). Terms are kept as they are. Answers the updated glossary.
+    /// </summary>
+    [HttpPut("{id}/languages")]
+    public async Task<ActionResult<GlossaryDto>> UpdateGlossaryLanguages(Guid id, [FromBody] UpdateGlossaryLanguagesDto request, CancellationToken cancellationToken)
+    {
+        var existing = await _glossaryService.GetGlossaryByIdAsync(id, cancellationToken);
+        if (!existing.IsSuccess) return HandleFailure(existing.ErrorCode, existing.Error);
+
+        var authError = await EnsureManagerAsync(existing.Value!.WorkspaceId, cancellationToken);
+        if (authError != null) return authError;
+
+        var result = await _glossaryService.UpdateGlossaryLanguagesAsync(id, request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+
+        return Ok(result.Value);
+    }
+
     [HttpDelete("{id}")]
     public async Task<ActionResult> DeleteGlossary(Guid id, CancellationToken cancellationToken)
     {

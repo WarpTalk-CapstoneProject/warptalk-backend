@@ -139,6 +139,45 @@ public class GlossaryService : IGlossaryService
         }
     }
 
+    public async Task<Result<GlossaryDto>> UpdateGlossaryLanguagesAsync(Guid id, UpdateGlossaryLanguagesDto dto, CancellationToken cancellationToken = default)
+    {
+        var source = NormalizeGlossaryLanguage(dto.SourceLanguage);
+        var target = NormalizeGlossaryLanguage(dto.TargetLanguage);
+        if (source is null || target is null)
+            return Result.Failure<GlossaryDto>(
+                "Languages must be language codes such as en, vi or ja.", "BAD_REQUEST");
+
+        try
+        {
+            var glossary = await _unitOfWork.Glossaries.GetByIdAsync(id, cancellationToken);
+            if (glossary == null)
+                return Result.Failure<GlossaryDto>($"Glossary with ID {id} not found.", "NOT_FOUND");
+
+            // Only the pair moves. Existing terms keep their text exactly as imported — the owner
+            // was told so before confirming — so no term row is read or written here.
+            glossary.SourceLanguage = source;
+            glossary.TargetLanguage = target;
+            glossary.UpdatedAt = DateTime.UtcNow;
+
+            _unitOfWork.Glossaries.Update(glossary);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(glossary.ToDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error changing the languages of glossary {GlossaryId}", id);
+            return Result.Failure<GlossaryDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    /// <summary>"en-US", "EN", "en_us" → "en"; null when it is not a 2–3 letter code.</summary>
+    internal static string? NormalizeGlossaryLanguage(string? value)
+    {
+        var code = (value ?? string.Empty).Trim().ToLowerInvariant().Split('-', '_')[0];
+        return code.Length is >= 2 and <= 3 && code.All(c => c is >= 'a' and <= 'z') ? code : null;
+    }
+
     public async Task<Result> DeleteGlossaryAsync(Guid id, CancellationToken cancellationToken = default)
     {
         try
