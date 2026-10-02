@@ -1897,18 +1897,20 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     {
         try
         {
-            var (document, isOwnerOrAdmin, _, failure) = await LoadForVisibilityChangeAsync(workspaceId, documentId, userId, ct);
-            if (failure != null)
+            var (loaded, isOwnerOrAdmin, _, failure) = await LoadForVisibilityChangeAsync(workspaceId, documentId, userId, ct);
+            if (failure != null || loaded == null)
             {
-                return failure;
+                return failure ?? Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
             }
+
+            var document = loaded;
 
             if (!isOwnerOrAdmin)
             {
                 return Result.Failure<WorkspaceDocumentDto>("Forbidden. Only a workspace Owner or Admin can re-scan a document.", ErrorCodes.Forbidden);
             }
 
-            if (!document!.IsRestricted())
+            if (!document.IsRestricted())
             {
                 return Result.Failure<WorkspaceDocumentDto>("Only a restricted document has a masked version.", ErrorCodes.ValidationError);
             }
