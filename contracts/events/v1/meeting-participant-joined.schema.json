@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/meeting-participant-joined.schema.json",
+  "title": "Meeting participant joined v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "meeting.participant_joined"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "meeting.participant_joined"
+        },
+        "producer": {
+          "const": "meeting-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "room_name",
+            "participant_identity",
+            "joined_at"
+          ],
+          "properties": {
+            "room_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "participant_identity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "joined_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

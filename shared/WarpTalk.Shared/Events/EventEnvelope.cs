@@ -129,10 +129,25 @@ public sealed record MeetingTrackPublishedEventPayload(
     [property: JsonPropertyName("published_at")] DateTime PublishedAt
 );
 
+/// <summary>
+/// A person (not one of our bots) connected to a meeting's LiveKit room. WT-923.
+///
+/// Published so the ingress bot can be IN the room before anybody speaks. It used to be summoned
+/// only by <see cref="MeetingEventTypes.TrackPublished"/>, i.e. by the first microphone — and a
+/// participant who joins muted publishes no microphone until they unmute, so the bot was still
+/// dialling LiveKit while the first sentence was being said, and that sentence never reached STT.
+/// </summary>
+public sealed record MeetingParticipantJoinedEventPayload(
+    [property: JsonPropertyName("room_name")] string RoomName,
+    [property: JsonPropertyName("participant_identity")] string ParticipantIdentity,
+    [property: JsonPropertyName("joined_at")] DateTime JoinedAt
+);
+
 public static class MeetingEventTypes
 {
     public const string Started = "meeting.started";
     public const string TrackPublished = "meeting.track_published";
+    public const string ParticipantJoined = "meeting.participant_joined";
     public const string RecordingCompleted = "meeting.recording_completed";
     public const string RecordingStarted = "meeting.recording_started";
     public const string RecordingFailed = "meeting.recording_failed";

@@ -27,4 +27,20 @@ public interface IMeetingRoomRepository : IGenericRepository<MeetingRoom>
     /// can rewrite it after the end), so ending twice repairs the row and never un-ends it.
     /// </summary>
     Task<bool> TryMarkFinishedAsync(Guid meetingRoomId, DateTime endedAtUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-916 (B20). Takes a TRANSACTION-scoped lock on provisioning the meeting_rooms row for
+    /// <paramref name="translationRoomId"/>, held until the caller's transaction commits or rolls
+    /// back. Must be called inside a transaction: outside one the lock is released as soon as the
+    /// statement ends and serialises nothing.
+    ///
+    /// The row has two creators — the normal join and the Google Meet bridge's stand-in token — and
+    /// they routinely arrive together (the capturer's desktop asks for the bridge token while its
+    /// web window is still joining). <c>idx_meeting_rooms_translation_room_id</c> is NOT unique, so
+    /// two "no row yet → insert" paths running side by side would both insert, and the meeting
+    /// would be split across two rows: recording state on one, participants on the other, and
+    /// webhook lookups by provider_room_name landing on either. Whoever takes this lock second
+    /// re-reads after the first has committed and finds the row instead of adding another.
+    /// </summary>
+    Task AcquireProvisioningLockAsync(Guid translationRoomId, CancellationToken ct = default);
 }
