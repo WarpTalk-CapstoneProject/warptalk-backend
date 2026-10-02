@@ -228,7 +228,7 @@ public class ArtifactsReconciliationWorker : BackgroundService
     /// <summary>
     /// WT-379 — the summary that arrived after the finalizer stopped waiting.
     ///
-    /// `ArtifactsFinalizer.FinalizeSummaryAsync` waits 90s for ai_assistant_worker. When that
+    /// `ArtifactsFinalizer.FinalizeSummaryAsync` waits up to 120s for ai_assistant_worker. When that
     /// window closes it writes an insufficient-data artifact and DELIBERATELY KEEPS the Redis
     /// key, with a comment saying it does so "so a late result is not lost". Nothing read the
     /// key back. The summary landed seconds later, into a key with no reader, while the meeting
