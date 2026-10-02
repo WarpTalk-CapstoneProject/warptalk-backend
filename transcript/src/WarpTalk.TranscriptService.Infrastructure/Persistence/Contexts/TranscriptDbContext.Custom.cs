@@ -7,6 +7,8 @@ public partial class TranscriptDbContext
 {
     public virtual DbSet<FarSpeakerRelabelJob> FarSpeakerRelabelJobs { get; set; }
 
+    public virtual DbSet<GlossaryImportTemplate> GlossaryImportTemplates { get; set; }
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
         // Bridge far-side relabel. See migration 20261001120100_add_far_speaker_relabel_jobs.
@@ -25,6 +27,18 @@ public partial class TranscriptDbContext
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
             entity.Property(e => e.CreatedAt).HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        // WT-880 glossary import file shape. See migration 20261002090000_add_glossary_import_template.
+        modelBuilder.Entity<GlossaryImportTemplate>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("glossary_import_template_pkey");
+            entity.ToTable("glossary_import_template", "transcript");
+
+            entity.Property(e => e.Id).HasColumnName("id").ValueGeneratedNever();
+            entity.Property(e => e.Config).HasColumnType("jsonb").HasColumnName("config");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
         });
     }
 }

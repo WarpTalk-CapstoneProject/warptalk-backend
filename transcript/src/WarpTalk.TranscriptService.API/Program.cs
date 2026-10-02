@@ -176,6 +176,11 @@ builder.Services.AddScoped<WarpTalk.TranscriptService.Application.FarSpeakers.IF
     WarpTalk.TranscriptService.Application.FarSpeakers.FarSpeakerRelabelService>();
 WarpTalk.Shared.Coordination.CoordinationServiceCollectionExtensions.AddWarpTalkDistributedLocks(builder.Services);
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Workers.FarSpeakerRelabelWorker>();
+// WT-880: the glossary import file shape (admin-configured, read by every workspace).
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.GlossaryImportTemplates.IGlossaryImportTemplateStore,
+    WarpTalk.TranscriptService.Infrastructure.Repositories.GlossaryImportTemplateStore>();
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.GlossaryImportTemplates.IGlossaryImportTemplateService,
+    WarpTalk.TranscriptService.Application.GlossaryImportTemplates.GlossaryImportTemplateService>();
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
