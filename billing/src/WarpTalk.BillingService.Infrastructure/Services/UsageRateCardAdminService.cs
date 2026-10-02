@@ -190,6 +190,64 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         }
     }
 
+    /// <summary>
+    /// The largest per-unit credit price the admin surface accepts. Credits are whole numbers and
+    /// every charge rounds up, so a typo here empties a workspace within one sentence; a ceiling
+    /// turns "25" typed for "2.5" into a refusal rather than an incident.
+    /// </summary>
+    public const decimal MaxCreditUnitPrice = 100m;
+
+    public async Task<Result<UsageRateCardDto>> SetCreditPriceAsync(
+        Guid id, SetRateCardCreditPriceRequest request, CancellationToken cancellationToken = default)
+    {
+        if (id == Guid.Empty)
+            return Result.Failure<UsageRateCardDto>("A rate-card id is required.", ErrorCodes.ValidationError);
+
+        if (request?.UnitPrice is not (> 0 and <= MaxCreditUnitPrice))
+        {
+            return Result.Failure<UsageRateCardDto>(
+                $"Credit price must be greater than 0 and at most {MaxCreditUnitPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)} credits per unit.",
+                ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            await _repository.BeginTransactionAsync(cancellationToken);
+
+            var outcome = await _repository.SetCreditRateCardUnitPriceAsync(
+                id, request.UnitPrice.Value, cancellationToken);
+            if (outcome is null)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>($"Rate card {id} was not found.", ErrorCodes.NotFound);
+            }
+
+            if (outcome.Change == RateCardProviderCostChange.Refused)
+            {
+                await _repository.RollbackTransactionAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>(CreditPriceRefusalReason(outcome.Card), ErrorCodes.ValidationError);
+            }
+
+            await _repository.CommitTransactionAsync(cancellationToken);
+            return Result.Success(outcome.Card);
+        }
+        catch (Exception ex)
+        {
+            await _repository.RollbackTransactionAsync(cancellationToken);
+            _logger.LogError(ex, "Error setting credit price on usage rate card {RateCardId}", id);
+            return Result.Failure<UsageRateCardDto>("Unable to set the credit price.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    private static string CreditPriceRefusalReason(UsageRateCardDto card)
+    {
+        if (!string.Equals(card.Currency?.Trim(), "CRD", StringComparison.OrdinalIgnoreCase))
+            return "Only credit-unit (CRD) cards take a credit price directly; a USD card is repriced from its cost by the rate-card editor.";
+        if (!card.IsActive || card.EffectiveTo is not null)
+            return "This rate card is retired; set the price on the card that is in effect.";
+        return "This rate card has no unit, so a per-unit price cannot be applied to it.";
+    }
+
     private static string RefusalReason(UsageRateCardDto card)
     {
         if (!string.Equals(card.Currency?.Trim(), "CRD", StringComparison.OrdinalIgnoreCase))
