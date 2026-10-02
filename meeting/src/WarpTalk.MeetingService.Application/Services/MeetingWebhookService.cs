@@ -188,6 +188,8 @@ public class MeetingWebhookService : IMeetingWebhookService
         var roomName = root.GetProperty("room").GetProperty("name").GetString();
         var identity = root.GetProperty("participant").GetProperty("identity").GetString();
 
+        await PublishParticipantJoinedAsync(roomName, identity);
+
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
         if (room == null) return;
 
@@ -198,6 +200,60 @@ public class MeetingWebhookService : IMeetingWebhookService
         {
             participant.JoinedAt = DateTime.UtcNow;
             participant.LeftAt = null;
+        }
+    }
+
+    /// <summary>
+    /// Identities of our own LiveKit participants: the ingress bot ("AIBot_{room}") and the TTS
+    /// interpreters ("ai-interpreter-*"). Same list as livekit_ingress_worker's
+    /// _AI_BOT_IDENTITY_PREFIXES. The ingress bot's own join must not summon the ingress bot.
+    /// </summary>
+    private static readonly string[] BotIdentityPrefixes = ["AIBot_", "ai-interpreter-"];
+
+    /// <summary>
+    /// WT-923: tell the ingress worker a person is in the room, so its bot is connected and
+    /// subscribed before that person's first sentence instead of after it.
+    ///
+    /// Not before a track exists for a reason that sounds like it should matter and does not: the
+    /// bot reads nothing until a microphone is published and unmuted (WT-542), so joining early
+    /// costs only the connection. What it buys is that the first unmute arrives on a connection
+    /// LiveKit already holds — a subscribe within the SFU — rather than starting a webhook →
+    /// Redis → token → WebRTC dial while the person is already talking.
+    ///
+    /// Best effort, unlike track_published: that event is still published and still summons the
+    /// bot, so a failure here costs the old latency and nothing else. Throwing would turn a
+    /// warm-up miss into a 500 and a LiveKit retry of a webhook whose real work already succeeded.
+    /// </summary>
+    private async Task PublishParticipantJoinedAsync(string? roomName, string? identity)
+    {
+        if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(identity))
+            return;
+        if (BotIdentityPrefixes.Any(prefix => identity.StartsWith(prefix, StringComparison.Ordinal)))
+            return;
+
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.ParticipantJoined,
+            "meeting-service",
+            workspaceId: null,
+            new MeetingParticipantJoinedEventPayload(roomName, identity, DateTime.UtcNow));
+        try
+        {
+            var result = await _redisService.PublishEventAsync(MeetingEventTypes.ParticipantJoined, envelope);
+            if (!result.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "Could not publish {EventType} for room {RoomName}: {Error}. The ingress bot will "
+                    + "join on the first published microphone instead.",
+                    MeetingEventTypes.ParticipantJoined, roomName, result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not publish {EventType} for room {RoomName}. The ingress bot will join on the "
+                + "first published microphone instead.",
+                MeetingEventTypes.ParticipantJoined, roomName);
         }
     }
 
