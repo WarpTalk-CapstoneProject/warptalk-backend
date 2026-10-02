@@ -68,9 +68,8 @@ public class SubscriptionServiceTests
 
     private static PricingConfigDto CreatePricingConfig() => new(
         FxRateUsdVnd: 26300m,
-        CreditValueVnd: 4m,
-        MinimumPricePerCreditVnd: 2.60m,
-        MinimumContractPriceVnd: 15000m,
+        CreditValueUsd: 0.0001520913m,
+        MinimumPricePerCreditUsd: 0.0000988593m,
         MinimumContractPriceUsd: 0.50m,
         SalesUsageWeight: 0.45m,
         SalesMembersWeight: 0.15m,
@@ -90,7 +89,7 @@ public class SubscriptionServiceTests
             PlanId: Guid.NewGuid(),
             ContractTerms: new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 710_000,
-                ContractPriceVnd: 1_900_000m,
+                ContractPriceUsd: 1_900_000m,
                 OverageCapCreditsOverride: 105_000,
                 OveragePricePerCreditOverride: 4m,
                 InvoiceTermsDaysOverride: 15,
@@ -117,13 +116,13 @@ public class SubscriptionServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value!.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Active);
         result.Value.CreditsRemaining.Should().Be(710_000);
-        result.Value.ContractPriceVnd.Should().Be(1_900_000m);
+        result.Value.ContractPriceUsd.Should().Be(1_900_000m);
         result.Value.BillingContactEmail.Should().Be("billing@example.com");
         _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s =>
             s.Status == SubscriptionConstants.SubscriptionStatuses.Active &&
             s.IsActive &&
             s.CreditsRemaining == 710_000 &&
-            s.ContractPriceVnd == 1_900_000m), default), Times.Once);
+            s.ContractPriceUsd == 1_900_000m), default), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }
 
@@ -135,7 +134,7 @@ public class SubscriptionServiceTests
             PlanId: Guid.NewGuid(),
             ContractTerms: new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: null,
-                ContractPriceVnd: null,
+                ContractPriceUsd: null,
                 OverageCapCreditsOverride: null,
                 OveragePricePerCreditOverride: null,
                 InvoiceTermsDaysOverride: null,
@@ -159,14 +158,14 @@ public class SubscriptionServiceTests
         var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        // ContractPriceVnd override is null (not provided) -- correct
-        result.Value!.ContractPriceVnd.Should().BeNull();
+        // ContractPriceUsd override is null (not provided) -- correct
+        result.Value!.ContractPriceUsd.Should().BeNull();
         // But the EFFECTIVE price must fallback to plan.Price
-        result.Value.EffectiveContractPriceVnd.Should().Be(2_500_000m);
+        result.Value.EffectiveContractPrice.Should().Be(2_500_000m);
         result.Value.CreditsRemaining.Should().Be(800_000);
 
         _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s =>
-            s.ContractPriceVnd == null && s.CreditsRemaining == 800_000), default), Times.Once);
+            s.ContractPriceUsd == null && s.CreditsRemaining == 800_000), default), Times.Once);
     }
 
     [Fact]
@@ -427,7 +426,7 @@ public class SubscriptionServiceTests
         };
         var request = new UpdateSubscriptionContractTermsRequest(
             CreditsPerCycleOverride: 800_000,
-            ContractPriceVnd: 2_400_000m,
+            ContractPriceUsd: 2_400_000m,
             OverageCapCreditsOverride: 120_000,
             OveragePricePerCreditOverride: 4.5m,
             InvoiceTermsDaysOverride: 30,
@@ -442,13 +441,13 @@ public class SubscriptionServiceTests
 
         result.IsSuccess.Should().BeTrue();
         subscription.CreditsPerCycleOverride.Should().Be(800_000);
-        subscription.ContractPriceVnd.Should().Be(2_400_000m);
+        subscription.ContractPriceUsd.Should().Be(2_400_000m);
         subscription.OverageCapCreditsOverride.Should().Be(120_000);
         subscription.OveragePricePerCreditOverride.Should().Be(4.5m);
         subscription.InvoiceTermsDaysOverride.Should().Be(30);
         subscription.BillingContactEmail.Should().Be("billing@example.com");
         result.Value!.EffectiveCreditsPerCycle.Should().Be(800_000);
-        result.Value.EffectiveContractPriceVnd.Should().Be(2_400_000m);
+        result.Value.EffectiveContractPrice.Should().Be(2_400_000m);
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }
@@ -480,7 +479,7 @@ public class SubscriptionServiceTests
             workspaceId,
             new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 1_000_000,
-                ContractPriceVnd: 2_000_000m));
+                ContractPriceUsd: 90m)); // $0.00009 per credit, under the $0.0000988593 floor
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
@@ -551,7 +550,7 @@ public class SubscriptionServiceTests
             workspaceId,
             new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 700_000,
-                ContractPriceVnd: 1_900_000m,
+                ContractPriceUsd: 1_900_000m,
                 OverageCapCreditsOverride: 800_000,
                 OveragePricePerCreditOverride: 4m));
 
@@ -559,7 +558,7 @@ public class SubscriptionServiceTests
             workspaceId,
             new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 700_000,
-                ContractPriceVnd: 1_900_000m,
+                ContractPriceUsd: 1_900_000m,
                 OverageCapCreditsOverride: 105_000,
                 OveragePricePerCreditOverride: 3m));
 
@@ -602,7 +601,7 @@ public class SubscriptionServiceTests
             workspaceId,
             new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 600_000,
-                ContractPriceVnd: 1_800_000m));
+                ContractPriceUsd: 1_800_000m));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionConflict);
@@ -617,7 +616,7 @@ public class SubscriptionServiceTests
     [Fact]
     public async Task UpdateContractTerms_ChangingPlanPrice_DoesNotAffectExistingContractPrice()
     {
-        // Arrange: existing contract has ContractPriceVnd locked at 1,900,000
+        // Arrange: existing contract has ContractPriceUsd locked at 1,900,000
         var workspaceId = Guid.NewGuid();
         var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 1_900_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
         var subscription = new Subscription
@@ -628,7 +627,7 @@ public class SubscriptionServiceTests
             IsActive = true,
             Status = SubscriptionConstants.SubscriptionStatuses.Active,
             CreditsRemaining = 700_000,
-            ContractPriceVnd = 1_900_000m, // Locked at signing time
+            ContractPriceUsd = 1_900_000m, // Locked at signing time
             CreditsPerCycleOverride = 700_000,
         };
 
@@ -641,12 +640,12 @@ public class SubscriptionServiceTests
 
         // Act: update contract terms without changing price
         var result = await _subscriptionService.UpdateContractTermsAsync(workspaceId,
-            new UpdateSubscriptionContractTermsRequest(ContractPriceVnd: 1_900_000m));
+            new UpdateSubscriptionContractTermsRequest(ContractPriceUsd: 1_900_000m));
 
         // Assert: success, and entity still has the original locked price
         result.IsSuccess.Should().BeTrue();
-        // The subscription entity's ContractPriceVnd is the field that matters for invoice generation
-        subscription.ContractPriceVnd.Should().Be(1_900_000m, "contract price is locked at signing, plan.Price bump should not override it");
+        // The subscription entity's ContractPriceUsd is the field that matters for invoice generation
+        subscription.ContractPriceUsd.Should().Be(1_900_000m, "contract price is locked at signing, plan.Price bump should not override it");
     }
 
     // ========================================================================
@@ -656,13 +655,13 @@ public class SubscriptionServiceTests
     [Fact]
     public async Task CreateContractSubscription_PriceBelowFloor_ShouldReturnValidationError()
     {
-        // Floor = 2.60 VND/credit. 500_000 credits at 1,200,000 VND = 2.40 VND/credit < floor
+        // Floor = $0.0000988593/credit. 500_000 credits at $49 = $0.000098/credit < floor
         var request = new CreateWorkspaceContractSubscriptionRequest(
             WorkspaceId: Guid.NewGuid(),
             PlanId: Guid.NewGuid(),
             ContractTerms: new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 500_000,
-                ContractPriceVnd: 1_200_000m), // 2.40 VND/credit < 2.60 floor
+                ContractPriceUsd: 49m), // $0.000098/credit < floor
             UserId: Guid.NewGuid());
         var plan = new Plan { Id = request.PlanId, Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
 
@@ -681,13 +680,13 @@ public class SubscriptionServiceTests
     [Fact]
     public async Task CreateContractSubscription_PriceAtOrAboveFloor_ShouldSucceed()
     {
-        // Exactly at floor: 500_000 credits * 2.60 = 1,300,000 VND
+        // At the floor: 500_000 credits * $0.0000988593 = $49.43 (to the cent, just above)
         var request = new CreateWorkspaceContractSubscriptionRequest(
             WorkspaceId: Guid.NewGuid(),
             PlanId: Guid.NewGuid(),
             ContractTerms: new UpdateSubscriptionContractTermsRequest(
                 CreditsPerCycleOverride: 500_000,
-                ContractPriceVnd: 1_300_000m), // Exactly 2.60 VND/credit
+                ContractPriceUsd: 49.43m), // at the floor
             UserId: Guid.NewGuid());
         var plan = new Plan { Id = request.PlanId, Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
 

@@ -119,7 +119,7 @@ public static class PackageCatalogConstants
         public const string Vnd = PaymentConstants.Currencies.Vnd;
         public const string Usd = PaymentConstants.Currencies.Usd;
 
-        public static readonly string[] All = [Vnd, Usd];
+        public static readonly string[] All = [Usd, Vnd];
 
         /// <summary>
         /// The smallest amount Stripe will charge in each currency (Stripe's documented minimum

@@ -93,8 +93,8 @@ public class SalesInquiryContractConversionTests
         pricing
             .Setup(s => s.GetPricingConfigAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(new PricingConfigDto(
-                FxRateUsdVnd: 26300m, CreditValueVnd: 4m, MinimumPricePerCreditVnd: 2.60m,
-                MinimumContractPriceVnd: 15000m, MinimumContractPriceUsd: 0.50m,
+                FxRateUsdVnd: 26300m, CreditValueUsd: 0.0001520913m, MinimumPricePerCreditUsd: 0.0000988593m,
+                MinimumContractPriceUsd: 0.50m,
                 SalesUsageWeight: 0.45m, SalesMembersWeight: 0.15m, SalesLanguagesWeight: 0.15m, SalesAiServicesWeight: 0.25m,
                 DefaultOverageCapRatio: 0.15m, DefaultInvoiceTermsDays: 15m, DefaultInvoiceGraceHours: 360m,
                 Formula: "", ResolverKey: "")));
@@ -132,7 +132,7 @@ public class SalesInquiryContractConversionTests
         _enterprisePlan.Id,
         new UpdateSubscriptionContractTermsRequest(
             CreditsPerCycleOverride: 710_000,
-            ContractPriceVnd: 1_900_000m,
+            ContractPriceUsd: 1_900_000m,
             OverageCapCreditsOverride: 105_000,
             OveragePricePerCreditOverride: 4m,
             InvoiceTermsDaysOverride: 15,

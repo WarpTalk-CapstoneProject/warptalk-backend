@@ -20,7 +20,8 @@ namespace WarpTalk.BillingService.Application.Services;
 /// currency the pack is not priced in — is refused with the reason.
 ///
 /// CURRENCY: a workspace has no currency of its own; the web charges plans in the plan's currency
-/// (WT-459/WT-518), so the catalog defaults to the workspace plan's currency, VND without one. A
+/// (WT-459/WT-518), so the catalog defaults to the workspace plan's currency, USD (the accounting
+/// currency) without one. A
 /// checkout may name the other currency only when the item is priced in it.
 /// </summary>
 public sealed class CustomerCatalogService : ICustomerCatalogService
@@ -55,7 +56,7 @@ public sealed class CustomerCatalogService : ICustomerCatalogService
         var subscription = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
             workspaceId, includePlan: false, cancellationToken: ct);
         var plan = subscription is null ? null : await _unitOfWork.Plans.GetByIdAsync(subscription.PlanId, ct);
-        var currency = PackageCatalogConstants.Currencies.Normalize(plan?.Currency) ?? PackageCatalogConstants.Currencies.Vnd;
+        var currency = PackageCatalogConstants.Currencies.Normalize(plan?.Currency) ?? PackageCatalogConstants.Currencies.Usd;
         return new WorkspaceState(workspaceId, subscription, plan, subscription?.GrantsPlanEntitlements(Now) == true, currency);
     }
 
@@ -206,7 +207,7 @@ public sealed class CustomerCatalogService : ICustomerCatalogService
     {
         var currency = PackageCatalogConstants.Currencies.Normalize(request.Currency);
         if (currency is null)
-            return Result.Failure<CouponPreviewDto>("Currency must be VND or USD.", ErrorCodes.ValidationError);
+            return Result.Failure<CouponPreviewDto>("Currency must be USD or VND.", ErrorCodes.ValidationError);
         if (!PackageCatalogConstants.ItemTypes.All.Contains(request.ItemType, StringComparer.Ordinal))
             return Result.Failure<CouponPreviewDto>("Unknown item type.", ErrorCodes.ValidationError);
 
@@ -465,7 +466,9 @@ public sealed class CustomerCatalogService : ICustomerCatalogService
                 : Fail(PackageCatalogConstants.Errors.CouponNotApplicable);
         }
 
-        var currency = PackageCatalogConstants.Currencies.Normalize(request.Currency) ?? PackageCatalogConstants.Currencies.Vnd;
+        var currency = PackageCatalogConstants.Currencies.Normalize(request.Currency)
+            ?? PackageCatalogConstants.Currencies.Normalize(plan.Currency)
+            ?? PackageCatalogConstants.Currencies.Usd;
         var (coupon, evaluation, autoApplied) = await ResolveCouponAsync(
             request.CouponCode, PackageCatalogConstants.ItemTypes.Plan, plan.Id, currency, request.Amount, true, request.WorkspaceId, ct);
 

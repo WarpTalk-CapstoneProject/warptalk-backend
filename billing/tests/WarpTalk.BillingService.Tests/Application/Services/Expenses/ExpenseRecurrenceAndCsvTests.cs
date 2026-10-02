@@ -127,7 +127,7 @@ public sealed class ExpenseCsvTests
     public void Tags_and_currency_are_normalized()
     {
         ExpenseCsv.ParseTags("Infra; infra|Prod").Should().Equal("infra", "prod");
-        ExpenseCsv.NormalizeCurrency(null).Should().Be("VND");
+        ExpenseCsv.NormalizeCurrency(null).Should().Be("USD");
         ExpenseCsv.NormalizeCurrency("usd").Should().Be("USD");
         ExpenseCsv.NormalizeCurrency("EUR").Should().BeNull();
     }

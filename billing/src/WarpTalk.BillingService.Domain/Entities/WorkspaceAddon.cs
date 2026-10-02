@@ -16,7 +16,7 @@ public class WorkspaceAddon
     public Guid UserId { get; set; }
     public int Quantity { get; set; }
     public string BillingCycle { get; set; } = SubscriptionConstants.BillingCycles.Monthly;
-    public string Currency { get; set; } = PackageCatalogConstants.Currencies.Vnd;
+    public string Currency { get; set; } = PackageCatalogConstants.Currencies.Usd;
 
     /// <summary>List price of one unit per cycle when bought (before any coupon).</summary>
     public decimal UnitPrice { get; set; }

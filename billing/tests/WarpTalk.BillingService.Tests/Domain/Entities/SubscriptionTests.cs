@@ -34,7 +34,7 @@ public class SubscriptionTests
             Status = status,
             ServiceState = serviceState,
             CreditsRemaining = 700000,
-            ContractPriceVnd = contractPrice,
+            ContractPriceUsd = contractPrice,
             OverageCapCreditsOverride = overageCapOverride,
             BillingContactEmail = billingContactEmail,
             OwnerEmailDomain = ownerEmailDomain,
@@ -50,7 +50,7 @@ public class SubscriptionTests
         subscription.Status.Should().Be(status);
         subscription.ServiceState.Should().Be(serviceState);
         subscription.CreditsRemaining.Should().Be(700000);
-        subscription.ContractPriceVnd.Should().Be(contractPrice);
+        subscription.ContractPriceUsd.Should().Be(contractPrice);
         subscription.OverageCapCreditsOverride.Should().Be(overageCapOverride);
         subscription.BillingContactEmail.Should().Be(billingContactEmail);
         subscription.OwnerEmailDomain.Should().Be(ownerEmailDomain);

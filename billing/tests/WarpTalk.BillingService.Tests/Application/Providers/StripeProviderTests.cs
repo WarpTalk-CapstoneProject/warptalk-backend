@@ -199,8 +199,7 @@ public sealed class StripeProviderTests
 
         var figures = Window(input, Atoms(input, Now.AddDays(-1), Now.AddHours(1)), Now.AddDays(-1), Now.AddHours(1));
 
-        figures.CostUsd.Should().Be(1.88m);
-        figures.CostVnd.Should().Be(47_000m);
+        figures.CostUsd.Should().Be(1.88m, "the VND fee converts to USD at its day's rate; the USD fee is native");
         NoteOf(input, figures, Metrics.CostUsd).Should().Contain("balance transaction");
     }
 
@@ -213,7 +212,7 @@ public sealed class StripeProviderTests
 
         figures.CostUsd.Should().BeNull();
         NoteOf(input, figures, Metrics.CostUsd).Should().Contain("none has been read");
-        MetricsOf(ProviderCatalog.Stripe).Select(m => m.Key).Should().Contain([Metrics.Calls, Metrics.ErrorRate, Metrics.P95, Metrics.CostVnd]);
+        MetricsOf(ProviderCatalog.Stripe).Select(m => m.Key).Should().Contain([Metrics.Calls, Metrics.ErrorRate, Metrics.P95, Metrics.CostUsd]);
     }
 
     // ── reading the fee ────────────────────────────────────────────────────────────────────────

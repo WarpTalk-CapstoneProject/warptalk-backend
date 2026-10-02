@@ -25,14 +25,30 @@ public class PaymentAppService : IPaymentAppService
     private readonly IAiServiceStateStore? _aiServiceStateStore;
     private readonly IStripeRecurringGateway? _recurring;
 
-    /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
-    private const string CreditValueConfigKey = "credit_value_vnd";
+    /// <summary>WT-429: the admin-editable USD price of one credit.</summary>
+    private const string CreditValueConfigKey = BillingPricingConfigKeys.CreditValueUsd;
 
     /// <summary>
     /// WT-429: the smallest top-up worth a Stripe round trip, mirrored by the web's own minimum.
     /// A floor also stops a 1-credit purchase whose Stripe fee exceeds the amount charged.
+    ///
+    /// 5,000 since USD: 1,500 credits was 6,000 VND but is $0.23, under Stripe's $0.50 minimum charge,
+    /// so every smallest top-up would have been refused by Stripe. 5,000 is ~$0.76. The check below
+    /// also raises it to whatever the CURRENT credit value needs, so a cheaper credit cannot reopen it.
     /// </summary>
-    private const int MinimumTopUpCredits = 1500;
+    private const int MinimumTopUpCredits = 5000;
+
+    /// <summary>
+    /// The fewest credits a top-up may buy at <paramref name="creditValueUsd"/>: the fixed floor, or
+    /// more when that many credits would come to less than Stripe's minimum USD charge.
+    /// </summary>
+    public static int MinimumTopUpCreditsFor(decimal creditValueUsd)
+    {
+        if (creditValueUsd <= 0) return MinimumTopUpCredits;
+        var forStripe = (int)Math.Ceiling(
+            PackageCatalogConstants.Currencies.MinimumCharge(PaymentConstants.Currencies.Usd) / creditValueUsd);
+        return Math.Max(MinimumTopUpCredits, forStripe);
+    }
 
     public PaymentAppService(
         IStripePaymentService stripePaymentService,
@@ -211,33 +227,35 @@ public class PaymentAppService : IPaymentAppService
             // authoritative field, which is what the grant handler needs.
             if (string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.CreditTopUp, StringComparison.OrdinalIgnoreCase))
             {
-                if (request.Credits < MinimumTopUpCredits)
-                {
-                    return Result.Failure<string>(
-                        string.Format(
-                            BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum,
-                            MinimumTopUpCredits),
-                        ErrorCodes.ValidationError);
-                }
-
-                var creditValueVnd = await _rateCards.ReadPricingConfigValueAsync(
+                var creditValueUsd = await _rateCards.ReadPricingConfigValueAsync(
                     CreditValueConfigKey,
-                    SubscriptionConstants.RateCardDefaults.CreditValueVnd);
+                    SubscriptionConstants.RateCardDefaults.CreditValueUsd);
 
-                if (creditValueVnd <= 0)
+                if (creditValueUsd <= 0)
                 {
                     _logger.LogError(
                         "credit_topup_rate_unavailable: {Key} resolved to {Value}; refusing to price a top-up.",
-                        CreditValueConfigKey, creditValueVnd);
+                        CreditValueConfigKey, creditValueUsd);
                     return Result.Failure<string>(
                         BillingMessageConstants.ErrorMessages.CreditTopUpRateUnavailable,
                         ErrorCodes.InternalServerError);
                 }
 
+                var minimumCredits = MinimumTopUpCreditsFor(creditValueUsd);
+                if (request.Credits < minimumCredits)
+                {
+                    return Result.Failure<string>(
+                        string.Format(
+                            BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum,
+                            minimumCredits),
+                        ErrorCodes.ValidationError);
+                }
+
                 request = request with
                 {
-                    Amount = decimal.Round(request.Credits * creditValueVnd, 0, MidpointRounding.AwayFromZero),
-                    Currency = PaymentConstants.Currencies.Vnd,
+                    // Cents, rounded up: a top-up never charges less than the credits are worth.
+                    Amount = decimal.Round(request.Credits * creditValueUsd, 2, MidpointRounding.AwayFromZero),
+                    Currency = PaymentConstants.Currencies.Usd,
                 };
             }
             else

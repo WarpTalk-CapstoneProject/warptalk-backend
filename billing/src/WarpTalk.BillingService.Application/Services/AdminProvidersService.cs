@@ -108,7 +108,6 @@ public sealed class AdminProvidersService : IAdminProvidersService
                         info.UsageUnit,
                         today.Usage,
                         today.CostUsd,
-                        today.CostVnd,
                         NoteOf(input, today, Metrics.Usage),
                         NoteOf(input, today, Metrics.CostUsd)),
                     new AdminProviderLiveDto(
@@ -399,7 +398,6 @@ public sealed class AdminProvidersService : IAdminProvidersService
                 tail.Sum(i => i.Value),
                 null,
                 tail.All(i => i.CostUsd is null) ? null : tail.Sum(i => i.CostUsd ?? 0),
-                tail.All(i => i.CostVnd is null) ? null : tail.Sum(i => i.CostVnd ?? 0),
                 tail.All(i => i.Calls is null) ? null : tail.Sum(i => i.Calls ?? 0),
                 tail.All(i => i.Failures is null) ? null : tail.Sum(i => i.Failures ?? 0)));
         }
@@ -413,7 +411,6 @@ public sealed class AdminProvidersService : IAdminProvidersService
 
     private async Task<Slices> ByWorkspaceAsync(string provider, DateTime from, DateTime to, FxRateTable fx, CancellationToken ct)
     {
-        var fxDay = fx.Resolve(to.AddTicks(-1)).Rate;
         switch (provider)
         {
             case ProviderCatalog.OpenAi:
@@ -427,12 +424,12 @@ public sealed class AdminProvidersService : IAdminProvidersService
                 var names = await NamesAsync(rows.Select(r => r.Workspace), ct);
                 var items = rows.Select(r => new AdminProviderBreakdownItemDto(
                         r.Workspace.ToString(), NameOf(names, r.Workspace), r.Credits, null,
-                        Math.Round(r.Cost, 6), fxDay is { } rate ? Math.Round(r.Cost * rate, 0) : null, null, null))
+                        Math.Round(r.Cost, 6), null, null))
                     .ToList();
                 var note = provider == ProviderCatalog.Cartesia
                     ? "WarpTalk credits charged per workspace; cost is the rate-card estimate (Cartesia does not split its usage by customer)"
                     : "WarpTalk credits charged per workspace; cost only where the rate card carries a provider price";
-                return new Slices(Units.Credits, true, items, note + (fxDay is null ? "" : "; VND at the period's last USD→VND rate"));
+                return new Slices(Units.Credits, true, items, note);
             }
             case ProviderCatalog.LiveKit:
             {
@@ -449,7 +446,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
                         decimal? cost = price is { } p ? Math.Round(r.Minutes * p, 6) : null;
                         return new AdminProviderBreakdownItemDto(
                             r.Workspace.ToString(), NameOf(names, r.Workspace), Math.Round(r.Minutes, 1), null,
-                            cost, cost is { } usd && fxDay is { } rate ? Math.Round(usd * rate, 0) : null, null, null);
+                            cost, null, null);
                     })
                     .ToList();
                 return new Slices(Units.Minutes, true, items, "estimated participant minutes per workspace");
@@ -459,13 +456,13 @@ public sealed class AdminProvidersService : IAdminProvidersService
                 var payments = await _unitOfWork.PaymentRepository.GetProviderPaymentsAsync(ProviderCatalog.Stripe, from, to, ct);
                 var rows = payments.Where(p => p.Status != PaymentConstants.PaymentStatuses.Failed && p.WorkspaceId is not null)
                     .GroupBy(p => p.WorkspaceId!.Value)
-                    .Select(g => (Workspace: g.Key, Vnd: g.Sum(p => ToVnd(p, fx) ?? 0m), Count: g.LongCount()))
+                    .Select(g => (Workspace: g.Key, Usd: g.Sum(p => ToUsd(p, fx) ?? 0m), Count: g.LongCount()))
                     .ToList();
                 var names = await NamesAsync(rows.Select(r => r.Workspace), ct);
                 var items = rows.Select(r => new AdminProviderBreakdownItemDto(
-                        r.Workspace.ToString(), NameOf(names, r.Workspace), Math.Round(r.Vnd, 0), null, null, null, r.Count, null))
+                        r.Workspace.ToString(), NameOf(names, r.Workspace), Math.Round(r.Usd, 2), null, null, r.Count, null))
                     .ToList();
-                return new Slices(Units.Vnd, true, items, "payment volume per workspace, VND (USD at the day's rate)");
+                return new Slices(Units.Usd, true, items, "payment volume per workspace, USD (VND at the day's rate)");
             }
         }
     }
@@ -487,9 +484,8 @@ public sealed class AdminProvidersService : IAdminProvidersService
             .Select(g =>
             {
                 var cost = g.Sum(s => s.CoveredCredits > 0 || s.CoveredTransactions > 0 ? s.CostUsd : 0m);
-                var vnd = g.Sum(s => (s.CoveredCredits > 0 || s.CoveredTransactions > 0 ? s.CostUsd : 0m) * (fx.Resolve(s.SlotStart).Rate ?? 0m));
                 return new AdminProviderBreakdownItemDto(
-                    g.Key, g.Key, g.Sum(s => s.Credits), null, Math.Round(cost, 6), Math.Round(vnd, 0), g.Sum(s => (long)s.Transactions), null);
+                    g.Key, g.Key, g.Sum(s => s.Credits), null, Math.Round(cost, 6), g.Sum(s => (long)s.Transactions), null);
             })
             .ToList();
         return new Slices(Units.Credits, true, items, "WarpTalk credits per service; cost only where the rate card carries a provider price");
@@ -505,7 +501,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
             if (models.Count > 0)
             {
                 var items = models.GroupBy(m => m.GroupId)
-                    .Select(g => new AdminProviderBreakdownItemDto(g.Key, g.Last().GroupLabel ?? g.Key, g.Sum(m => m.Credits), null, null, null, null, null))
+                    .Select(g => new AdminProviderBreakdownItemDto(g.Key, g.Last().GroupLabel ?? g.Key, g.Sum(m => m.Credits), null, null, null, null))
                     .ToList();
                 return new Slices(Units.ProviderCredits, true, items, "credits Cartesia reports per model, by whole UTC day");
             }
@@ -535,7 +531,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
 
         var items = calls.GroupBy(key)
             .Select(g => new AdminProviderBreakdownItemDto(
-                g.Key, g.Key, g.Sum(Domain.Services.ProviderCallStatMerge.Calls), null, null, null,
+                g.Key, g.Key, g.Sum(Domain.Services.ProviderCallStatMerge.Calls), null, null,
                 g.Sum(Domain.Services.ProviderCallStatMerge.Calls), g.Sum(Domain.Services.ProviderCallStatMerge.Failures)))
             .ToList();
         return new Slices(Units.Count, true, items, null);
@@ -560,7 +556,7 @@ public sealed class AdminProvidersService : IAdminProvidersService
             ("client_error", Sum(r => r.ClientError)),
             ("declined", Sum(r => r.Declined)),
         };
-        var items = counts.Select(c => new AdminProviderBreakdownItemDto(c.Key, c.Key, c.Count, null, null, null, c.Count, null)).ToList();
+        var items = counts.Select(c => new AdminProviderBreakdownItemDto(c.Key, c.Key, c.Count, null, null, c.Count, null)).ToList();
         var note = counts.All(c => c.Count == 0)
             ? "no failed call in the period"
             : "client_error is a request WarpTalk got wrong and declined a card the issuer refused; neither counts against the provider";
@@ -756,12 +752,12 @@ public sealed class AdminProvidersService : IAdminProvidersService
     private static string NameOf(IReadOnlyDictionary<Guid, string> names, Guid id)
         => names.TryGetValue(id, out var name) && !string.IsNullOrWhiteSpace(name) ? name : id.ToString()[..8];
 
-    private static decimal? ToVnd(ProviderPaymentRow payment, FxRateTable fx)
+    private static decimal? ToUsd(ProviderPaymentRow payment, FxRateTable fx)
     {
         var code = payment.Currency.Trim().ToUpperInvariant();
-        if (code == FxRateConstants.Vnd) return payment.Total;
-        if (code != FxRateConstants.Usd) return null;
-        return fx.Resolve(payment.At).Rate is { } rate ? payment.Total * rate : null;
+        if (code == FxRateConstants.Usd) return payment.Total;
+        if (code != FxRateConstants.Vnd) return null;
+        return fx.Resolve(payment.At).Rate is { } rate && rate > 0 ? payment.Total / rate : null;
     }
 
     /// <summary>The last <paramref name="count"/> local days of <paramref name="timeZone"/>, today last.</summary>

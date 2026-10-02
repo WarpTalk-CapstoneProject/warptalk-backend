@@ -131,8 +131,10 @@ public static class SubscriptionConstants
         // commercial plan values through the Enterprise baseline screen.
         public const decimal MinimumVndPlanPrice = 15000m;
         public const decimal MinimumUsdPlanPrice = 0.50m;
-        public const decimal PriceFloorPerCredit = 2.60m;
-        public const decimal OveragePricePerCredit = 4.0000m;
+        // USD per credit. The former VND defaults (2.60 and 4 VND per credit) at the 26,300 seed rate;
+        // the live values are billing_pricing_config rows, converted at Stripe's rate by migration.
+        public const decimal PriceFloorPerCreditUsd = 0.0000988593m;
+        public const decimal OveragePricePerCredit = 0.0001520913m;
         public const int InvoiceTermsDays = 15;
         public const int InvoiceGraceHours = 360;
         public const int MaxParticipants = 2;
@@ -157,7 +159,8 @@ public static class SubscriptionConstants
         // Seed values for initial admin pricing config. Live pricing rows can override
         // these values through the rate-card admin workflow.
         public const decimal FxRateUsdVnd = 26300m;
-        public const decimal CreditValueVnd = 4m;
+        /// <summary>USD one credit is worth (4 VND at the 26,300 seed rate).</summary>
+        public const decimal CreditValueUsd = 0.0001520913m;
         public const decimal SalesUsageWeight = 0.45m;
         public const decimal SalesMembersWeight = 0.15m;
         public const decimal SalesLanguagesWeight = 0.15m;
@@ -169,10 +172,11 @@ public static class SubscriptionConstants
     {
         // Baseline seed for the default Enterprise contract: about 700k monthly credits,
         // 15% extra-usage cap, NET-15 payment terms, and 15-day invoice grace window.
-        public const decimal PriceVnd = 1900000m;
+        /// <summary>USD (1,900,000 VND at the 26,300 seed rate, rounded to a sellable price).</summary>
+        public const decimal PriceUsd = 72m;
         public const int CreditsPerCycle = 700000;
         public const int OverageCapCredits = 105000;
-        public const decimal OveragePricePerCredit = 4.0000m;
+        public const decimal OveragePricePerCredit = PlanDefaults.OveragePricePerCredit;
         public const int LowBalanceThresholdCredits = 140000;
         public const int RolloverCapCredits = 700000;
         public const int InvoiceTermsDays = 15;

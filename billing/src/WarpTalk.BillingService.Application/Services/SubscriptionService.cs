@@ -993,7 +993,7 @@ public class SubscriptionService : ISubscriptionService
         PricingConfigDto? pricingConfig)
     {
         if (request.CreditsPerCycleOverride is <= 0 ||
-            request.ContractPriceVnd is < 0 ||
+            request.ContractPriceUsd is < 0 ||
             request.OverageCapCreditsOverride is < 0 ||
             request.OveragePricePerCreditOverride is < 0 ||
             request.InvoiceTermsDaysOverride is <= 0)
@@ -1006,10 +1006,14 @@ public class SubscriptionService : ISubscriptionService
         var currentCreditsPerCycle = subscription.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
         var currentOverageCap = subscription.OverageCapCreditsOverride ?? plan.OverageCapCredits;
         var nextCreditsPerCycle = request.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
-        var nextContractPrice = request.ContractPriceVnd ?? plan.Price;
+        // The floor is USD per credit, so it only judges a price that is in USD: a negotiated contract
+        // price always is; without one the cycle costs the plan's price in the plan's currency.
+        var nextContractPrice = request.ContractPriceUsd ?? plan.Price;
+        var nextContractPriceIsUsd = request.ContractPriceUsd is not null ||
+            string.Equals(plan.Currency?.Trim(), PaymentConstants.Currencies.UsdAccounting, StringComparison.OrdinalIgnoreCase);
         var nextOverageCap = request.OverageCapCreditsOverride ?? plan.OverageCapCredits;
         var nextOveragePrice = request.OveragePricePerCreditOverride ?? plan.OveragePricePerCredit;
-        var minimumPricePerCreditVnd = pricingConfig?.MinimumPricePerCreditVnd ?? SubscriptionConstants.PlanDefaults.PriceFloorPerCredit;
+        var minimumPricePerCreditUsd = pricingConfig?.MinimumPricePerCreditUsd ?? SubscriptionConstants.PlanDefaults.PriceFloorPerCreditUsd;
 
         if (!string.IsNullOrWhiteSpace(request.BillingContactEmail) && !IsValidEmail(request.BillingContactEmail))
         {
@@ -1018,8 +1022,9 @@ public class SubscriptionService : ISubscriptionService
                 ErrorCodes.ValidationError);
         }
 
-        if (nextCreditsPerCycle > 0 &&
-            nextContractPrice / nextCreditsPerCycle < minimumPricePerCreditVnd)
+        if (nextContractPriceIsUsd &&
+            nextCreditsPerCycle > 0 &&
+            nextContractPrice / nextCreditsPerCycle < minimumPricePerCreditUsd)
         {
             return Result.Failure(
                 BillingMessageConstants.ApiErrorMessages.BillingContractPriceBelowFloor,

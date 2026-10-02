@@ -18,9 +18,9 @@ using WarpTalk.Shared.Contracts.Admin;
 namespace WarpTalk.BillingService.Application.Services.Expenses;
 
 /// <summary>
-/// G12 operating expenses. Everything VND is converted on read at the USD→VND rate of the expense's
-/// own date (<see cref="FxRateTable"/>, the table the Insights P&amp;L uses), so an FX correction reaches
-/// every past figure and there is no stored VND amount to go stale.
+/// G12 operating expenses. Reported in USD, the accounting currency: a VND expense is converted on read at
+/// the USD→VND rate of its own date (<see cref="FxRateTable"/>, the table the Insights P&amp;L uses), so an
+/// FX correction reaches every past figure and there is no stored converted amount to go stale.
 /// </summary>
 public sealed partial class OperatingExpenseService : IOperatingExpenseService
 {
@@ -250,7 +250,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
         if (request.ExpenseDate.Year < 2000 || request.ExpenseDate.Year > 2100) return Fail("The date is out of range.");
 
         var currency = (request.Currency ?? string.Empty).Trim().ToUpperInvariant();
-        if (!OperatingExpenseConstants.Currencies.All.Contains(currency)) return Fail("The currency must be VND or USD.");
+        if (!OperatingExpenseConstants.Currencies.All.Contains(currency)) return Fail("The currency must be USD or VND.");
         if (currency == OperatingExpenseConstants.Currencies.Vnd && decimal.Truncate(request.Amount) != request.Amount)
             return Fail("A VND amount has no decimals.");
 
@@ -438,8 +438,8 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
                 return Result.Failure<IReadOnlyList<ExpenseBudgetDto>>("Unknown expense category.", ErrorCodes.ValidationError);
             if (!ExpenseRecurrence.TryParseMonth(item.Month, out var month))
                 return Result.Failure<IReadOnlyList<ExpenseBudgetDto>>("Each budget month must be yyyy-MM.", ErrorCodes.ValidationError);
-            if (item.AmountVnd is < 0 or > 1_000_000_000_000m)
-                return Result.Failure<IReadOnlyList<ExpenseBudgetDto>>("A budget must be between 0 and 1,000,000,000,000 VND.", ErrorCodes.ValidationError);
+            if (item.AmountUsd is < 0 or > 1_000_000_000m)
+                return Result.Failure<IReadOnlyList<ExpenseBudgetDto>>("A budget must be between 0 and 1,000,000,000 USD.", ErrorCodes.ValidationError);
             if (item.Note?.Length > 500)
                 return Result.Failure<IReadOnlyList<ExpenseBudgetDto>>("A budget note may be at most 500 characters.", ErrorCodes.ValidationError);
             parsed.Add((item, month));
@@ -450,7 +450,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
         foreach (var (input, month) in parsed.GroupBy(p => (p.Input.CategoryId, p.Month)).Select(g => g.Last()))
         {
             var existing = await _unitOfWork.ExpenseBudgets.GetAsync(input.CategoryId, month, ct);
-            if (input.AmountVnd is null)
+            if (input.AmountUsd is null)
             {
                 if (existing is not null) _unitOfWork.ExpenseBudgets.Remove(existing);
                 continue;
@@ -468,7 +468,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
                 await _unitOfWork.ExpenseBudgets.AddAsync(existing, ct);
             }
 
-            existing.AmountVnd = decimal.Round(input.AmountVnd.Value, 0, MidpointRounding.AwayFromZero);
+            existing.AmountUsd = decimal.Round(input.AmountUsd.Value, 2, MidpointRounding.AwayFromZero);
             existing.Note = Blank(input.Note);
             existing.UpdatedAt = now;
             existing.UpdatedBy = actorId;
@@ -619,7 +619,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
 
         var rows = new List<ExpenseImportRowDto>();
         var requests = new List<SaveOperatingExpenseRequest>();
-        decimal totalVnd = 0;
+        decimal totalUsd = 0;
         foreach (var row in document.Rows)
         {
             var errors = new List<string>();
@@ -641,7 +641,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
             if (amount is null) errors.Add("amount: expected a number such as 1500000 or 1,500,000 or 12.50");
 
             var currency = ExpenseCsv.NormalizeCurrency(row.Get(ExpenseCsv.Currency));
-            if (currency is null) errors.Add("currency: must be VND or USD");
+            if (currency is null) errors.Add("currency: must be USD or VND");
 
             var status = row.Get(ExpenseCsv.Status)?.ToLowerInvariant() ?? OperatingExpenseConstants.Statuses.Paid;
             var recurrence = row.Get(ExpenseCsv.Recurrence)?.ToLowerInvariant() ?? OperatingExpenseConstants.Recurrences.None;
@@ -657,26 +657,26 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
                 if (validation.Error is not null) errors.Add(validation.Error);
             }
 
-            decimal? amountVnd = null;
+            decimal? amountUsd = null;
             if (errors.Count == 0)
             {
                 var key = DuplicateKey(save.ExpenseDate, save.Vendor, save.Amount, save.Currency);
                 if (existingKeys.Contains(key)) warnings.Add("An expense with the same date, vendor and amount is already recorded.");
                 if (!seenInFile.Add(key)) warnings.Add("The same date, vendor and amount appear earlier in this file.");
 
-                amountVnd = ToVnd(save.Amount, save.Currency, save.ExpenseDate, fx).Vnd;
-                if (amountVnd is null) warnings.Add("No USD→VND rate is recorded for this date; the amount stays out of VND totals until one is.");
-                totalVnd += amountVnd ?? 0;
+                amountUsd = ToUsd(save.Amount, save.Currency, save.ExpenseDate, fx).Usd;
+                if (amountUsd is null) warnings.Add("No USD→VND rate is recorded for this date; the amount stays out of USD totals until one is.");
+                totalUsd += amountUsd ?? 0;
                 requests.Add(save);
             }
 
             rows.Add(new ExpenseImportRowDto(
                 row.Line, errors.Count == 0, errors, warnings, date, vendor, category?.Id, category?.Name, amount, currency,
-                amountVnd, status, save.PaymentMethod, save.PaidBy, tags, save.Description, recurrence));
+                amountUsd, status, save.PaymentMethod, save.PaidBy, tags, save.Description, recurrence));
         }
 
         var preview = new ExpenseImportPreviewDto(
-            document.Columns, document.UnknownColumns, rows, rows.Count(r => r.Valid), rows.Count(r => !r.Valid), totalVnd);
+            document.Columns, document.UnknownColumns, rows, rows.Count(r => r.Valid), rows.Count(r => !r.Valid), totalUsd);
         return Result.Success(new PreparedImport(preview, requests));
     }
 
@@ -743,20 +743,20 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
 
     // ── Conversion and mapping ────────────────────────────────────────────────────────────────
 
-    public sealed record Converted(OperatingExpense Expense, decimal? Vnd, FxRateResolution? Fx);
+    public sealed record Converted(OperatingExpense Expense, decimal? Usd, FxRateResolution? Fx);
 
     public static Converted Convert(OperatingExpense expense, FxRateTable fx)
     {
-        var (vnd, resolution) = ToVnd(expense.Amount, expense.Currency, expense.ExpenseDate, fx);
-        return new Converted(expense, vnd, resolution);
+        var (usd, resolution) = ToUsd(expense.Amount, expense.Currency, expense.ExpenseDate, fx);
+        return new Converted(expense, usd, resolution);
     }
 
-    public static (decimal? Vnd, FxRateResolution? Fx) ToVnd(decimal amount, string currency, DateOnly date, FxRateTable fx)
+    public static (decimal? Usd, FxRateResolution? Fx) ToUsd(decimal amount, string currency, DateOnly date, FxRateTable fx)
     {
-        if (currency == OperatingExpenseConstants.Currencies.Vnd) return (amount, null);
+        if (currency == OperatingExpenseConstants.Currencies.Usd) return (amount, null);
         var resolution = fx.Resolve(date);
-        return resolution.Rate is { } rate
-            ? (decimal.Round(amount * rate, 0, MidpointRounding.AwayFromZero), resolution)
+        return resolution.Rate is { } rate && rate > 0
+            ? (decimal.Round(amount / rate, 2, MidpointRounding.AwayFromZero), resolution)
             : (null, resolution);
     }
 
@@ -766,10 +766,10 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
     private static ExpenseTotalsDto Totals(IReadOnlyCollection<Converted> rows)
         => new(
             rows.Count,
-            rows.Sum(r => r.Vnd ?? 0),
-            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Paid).Sum(r => r.Vnd ?? 0),
-            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Planned).Sum(r => r.Vnd ?? 0),
-            rows.Count(r => r.Vnd is null));
+            rows.Sum(r => r.Usd ?? 0),
+            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Paid).Sum(r => r.Usd ?? 0),
+            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Planned).Sum(r => r.Usd ?? 0),
+            rows.Count(r => r.Usd is null));
 
     public static OperatingExpenseDto ToDto(Converted converted)
     {
@@ -785,7 +785,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
             e.Description,
             e.Amount,
             e.Currency,
-            converted.Vnd,
+            converted.Usd,
             converted.Fx?.Rate,
             converted.Fx?.Source,
             converted.Fx?.RateDate,
@@ -808,7 +808,7 @@ public sealed partial class OperatingExpenseService : IOperatingExpenseService
         => new(category.Id, category.Slug, category.Name, category.Description, category.Color, category.SortOrder, category.IsActive, inUse);
 
     private static ExpenseBudgetDto ToDto(ExpenseBudget budget)
-        => new(budget.CategoryId, ExpenseRecurrence.MonthKey(budget.Month), budget.AmountVnd, budget.Note);
+        => new(budget.CategoryId, ExpenseRecurrence.MonthKey(budget.Month), budget.AmountUsd, budget.Note);
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 

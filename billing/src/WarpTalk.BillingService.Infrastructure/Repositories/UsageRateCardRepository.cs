@@ -15,7 +15,7 @@ namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class UsageRateCardRepository : IUsageRateCardRepository
 {
-    private const string DefaultCurrency = PaymentConstants.Currencies.VndAccounting;
+    private const string DefaultCurrency = PaymentConstants.Currencies.UsdAccounting;
     private const string UpsertNotes = "Updated from admin pricing controls";
     private const string CreditCurrency = "CRD";
     private const string ProviderCostNote = "Provider cost set from admin pricing controls";
@@ -151,7 +151,7 @@ public class UsageRateCardRepository : IUsageRateCardRepository
         if (row is null)
             return null;
 
-        // Only an open, unit-bearing CRD card. A VND card's credit price is derived from its cost,
+        // Only an open, unit-bearing CRD card. A USD (editor-priced) card's credit price is derived from its cost,
         // so changing one without the other belongs to the full editor; a retired card prices
         // nothing new; and a cost with no unit is a number nobody can multiply.
         if (!string.Equals(row.Currency.Trim(), CreditCurrency, StringComparison.OrdinalIgnoreCase) ||

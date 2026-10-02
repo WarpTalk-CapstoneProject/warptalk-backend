@@ -17,7 +17,7 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 /// </summary>
 public class PaymentAppServiceCreditTopUpCheckoutTests
 {
-    private const string CreditValueConfigKey = "credit_value_vnd";
+    private const string CreditValueConfigKey = "credit_value_usd";
 
     private readonly Mock<IStripePaymentService> _stripePaymentService = new();
     private readonly Mock<IUsageRateCardRepository> _rateCards = new();
@@ -54,7 +54,7 @@ public class PaymentAppServiceCreditTopUpCheckoutTests
     [Fact]
     public async Task CreateCheckoutSessionAsync_UTCID03_CreditTopUp_OverwritesAmountFromCreditsAndCallsStripe()
     {
-        SetupCreditValue(4m);
+        SetupCreditValue(0.00015m);
         var request = TopUpRequest(credits: 10000, clientAmount: 1m);
 
         var result = await _service.CreateCheckoutSessionAsync(request);
@@ -62,31 +62,29 @@ public class PaymentAppServiceCreditTopUpCheckoutTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be("https://checkout.stripe.test/session");
         _sentToStripe.Should().NotBeNull();
-        _sentToStripe!.Amount.Should().Be(40000m, "client Amount is discarded and recomputed as Credits * credit_value_vnd");
-        _sentToStripe.Currency.Should().Be(PaymentConstants.Currencies.Vnd);
+        _sentToStripe!.Amount.Should().Be(1.50m, "client Amount is discarded and recomputed as Credits * credit_value_usd");
+        _sentToStripe.Currency.Should().Be(PaymentConstants.Currencies.Usd);
         // Fields StripePaymentService turns into session metadata.
         _sentToStripe.Credits.Should().Be(10000);
         _sentToStripe.PaymentType.Should().Be(PaymentConstants.PaymentTypes.CreditTopUp);
         _sentToStripe.WorkspaceId.Should().Be(request.WorkspaceId);
         _sentToStripe.UserId.Should().Be(request.UserId);
         _rateCards.Verify(
-            r => r.ReadPricingConfigValueAsync(CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueVnd, It.IsAny<CancellationToken>()),
+            r => r.ReadPricingConfigValueAsync(CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueUsd, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
     [Fact]
     public async Task CreateCheckoutSessionAsync_UTCID04_CreditsBelowMinimum_ReturnsValidationError()
     {
-        SetupCreditValue(4m);
+        SetupCreditValue(0.00015m);
 
-        var result = await _service.CreateCheckoutSessionAsync(TopUpRequest(credits: 1499));
+        var result = await _service.CreateCheckoutSessionAsync(TopUpRequest(credits: 4999));
 
+        // The credit value is read first: the minimum depends on it (Stripe's $0.50 floor).
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
-        result.Error.Should().Be(string.Format(BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum, 1500));
-        _rateCards.Verify(
-            r => r.ReadPricingConfigValueAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+        result.Error.Should().Be(string.Format(BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum, 5000));
         VerifyStripeNeverCalled();
     }
 
@@ -116,15 +114,15 @@ public class PaymentAppServiceCreditTopUpCheckoutTests
     [Fact]
     public async Task CreateCheckoutSessionAsync_UTCID07_CreditsExactlyMinimum_Succeeds()
     {
-        SetupCreditValue(4m);
+        SetupCreditValue(0.00015m);
 
-        var result = await _service.CreateCheckoutSessionAsync(TopUpRequest(credits: 1500));
+        var result = await _service.CreateCheckoutSessionAsync(TopUpRequest(credits: 5000));
 
         result.IsSuccess.Should().BeTrue();
         _sentToStripe.Should().NotBeNull();
-        _sentToStripe!.Amount.Should().Be(6000m);
-        _sentToStripe.Currency.Should().Be(PaymentConstants.Currencies.Vnd);
-        _sentToStripe.Credits.Should().Be(1500);
+        _sentToStripe!.Amount.Should().Be(0.75m);
+        _sentToStripe.Currency.Should().Be(PaymentConstants.Currencies.Usd);
+        _sentToStripe.Credits.Should().Be(5000);
     }
 
     private void SetupCreditValue(decimal value) =>
@@ -144,4 +142,12 @@ public class PaymentAppServiceCreditTopUpCheckoutTests
         Currency: PaymentConstants.Currencies.Usd,
         PaymentType: PaymentConstants.PaymentTypes.CreditTopUp,
         Credits: credits);
+
+    [Fact]
+    public void MinimumTopUp_RisesWhenTheFloorWouldChargeUnderStripesMinimum()
+    {
+        // 5,000 credits at $0.00005 is $0.25, under Stripe's $0.50: the floor follows the credit value.
+        PaymentAppService.MinimumTopUpCreditsFor(0.00005m).Should().Be(10_000);
+        PaymentAppService.MinimumTopUpCreditsFor(0.00015m).Should().Be(5_000);
+    }
 }

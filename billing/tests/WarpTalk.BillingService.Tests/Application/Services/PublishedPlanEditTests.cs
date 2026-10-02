@@ -49,9 +49,8 @@ public class PublishedPlanEditTests
 
     private static readonly PricingConfigDto PricingConfig = new(
         FxRateUsdVnd: 26300m,
-        CreditValueVnd: 4m,
-        MinimumPricePerCreditVnd: 2.60m,
-        MinimumContractPriceVnd: 15000m,
+        CreditValueUsd: 0.0001520913m,
+        MinimumPricePerCreditUsd: 0.0000988593m,
         MinimumContractPriceUsd: 0.50m,
         SalesUsageWeight: 0.45m,
         SalesMembersWeight: 0.15m,
@@ -119,6 +118,34 @@ public class PublishedPlanEditTests
             .Setup(repo => repo.AnyAsync(
                 It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(hasSubscribers);
+    }
+
+    [Fact]
+    public async Task UpdatePlan_AVndPlanMayKeepVnd_WhenEdited()
+    {
+        // A plan sold in VND before USD became the accounting currency: its subscribers' Stripe
+        // prices are VND, so an unrelated edit must not be refused for its currency.
+        var stored = LivePlan();
+        stored.Currency = "VND";
+        stored.Price = 1_900_000m;
+        GivenStoredPlan(stored, hasSubscribers: true);
+
+        var result = await _planService.UpdatePlanAsync(
+            PlanId, SameAsStored(price: 1_900_000m, sortOrder: 3) with { Currency = "VND" });
+
+        result.ErrorCode.Should().NotBe(ErrorCodes.ValidationError, result.Error);
+    }
+
+    [Fact]
+    public async Task UpdatePlan_AUsdPlanCannotMoveToVnd()
+    {
+        GivenStoredPlan(LivePlan(), hasSubscribers: false);
+
+        var result = await _planService.UpdatePlanAsync(
+            PlanId, SameAsStored(price: 1_900_000m) with { Currency = "VND" });
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanCurrencyInvalid);
     }
 
     [Fact]

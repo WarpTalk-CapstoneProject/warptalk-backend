@@ -13,11 +13,10 @@ namespace WarpTalk.BillingService.Infrastructure.Services;
 
 public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 {
-    private const string DefaultCurrency = PaymentConstants.Currencies.VndAccounting;
-    private const string FxRateConfigKey = "fx_rate_usd_vnd";
-    private const string CreditValueConfigKey = "credit_value_vnd";
-    private const string MinimumPricePerCreditVndConfigKey = "minimum_price_per_credit_vnd";
-    private const string MinimumContractPriceVndConfigKey = "minimum_contract_price_vnd";
+    private const string DefaultCurrency = PaymentConstants.Currencies.UsdAccounting;
+    private const string FxRateConfigKey = FxRateConstants.RateConfigKey;
+    private const string CreditValueConfigKey = BillingPricingConfigKeys.CreditValueUsd;
+    private const string MinimumPricePerCreditUsdConfigKey = BillingPricingConfigKeys.MinimumPricePerCreditUsd;
     private const string MinimumContractPriceUsdConfigKey = "minimum_contract_price_usd";
     private const string SalesUsageWeightConfigKey = "sales_usage_weight";
     private const string SalesMembersWeightConfigKey = "sales_members_weight";
@@ -26,7 +25,7 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     private const string DefaultOverageCapRatioConfigKey = "default_overage_cap_ratio";
     private const string DefaultInvoiceTermsDaysConfigKey = "default_invoice_terms_days";
     private const string DefaultInvoiceGraceHoursConfigKey = "default_invoice_grace_hours";
-    private const string PricingFormula = "provider_unit_cost_usd * fx_rate_usd_vnd * markup_multiplier / credit_value_vnd";
+    private const string PricingFormula = "provider_unit_cost_usd * markup_multiplier / credit_value_usd";
     private const string ResolverKey = "provider + model + charge_type + unit + source_language_code + target_language_code";
 
     private static readonly HashSet<RateCardIdentity> RegisteredBillingIdentities = new()
@@ -211,16 +210,12 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     {
         try
         {
-            var fxRate = request.FxRateUsdVnd
+            var creditValue = request.CreditValueUsd
                 ?? await _repository.ReadPricingConfigValueAsync(
-                    FxRateConfigKey, SubscriptionConstants.RateCardDefaults.FxRateUsdVnd, cancellationToken);
-            var creditValue = request.CreditValueVnd
-                ?? await _repository.ReadPricingConfigValueAsync(
-                    CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
+                    CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueUsd, cancellationToken);
 
             var breakdown = RateCardPricingCalculator.Calculate(
                 request.ProviderUnitCostUsd,
-                fxRate,
                 request.MarkupMultiplier,
                 creditValue,
                 request.Quantity);
@@ -228,11 +223,10 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             return Result.Success(new RateCardPreviewDto(
                 breakdown.UnitPriceCredits,
                 breakdown.CreditsCharged,
-                breakdown.CustomerPriceVnd,
-                breakdown.ProviderCostVnd,
-                breakdown.MarginVnd,
+                breakdown.CustomerPriceUsd,
+                breakdown.ProviderCostUsd,
+                breakdown.MarginUsd,
                 breakdown.MarginRatio,
-                fxRate,
                 creditValue,
                 PricingFormula));
         }
@@ -256,9 +250,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
 
             var fxRate = await _repository.ReadPricingConfigValueAsync(FxRateConfigKey, SubscriptionConstants.RateCardDefaults.FxRateUsdVnd, cancellationToken);
-            var creditValue = await _repository.ReadPricingConfigValueAsync(CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
-            var minimumPricePerCredit = await _repository.ReadPricingConfigValueAsync(MinimumPricePerCreditVndConfigKey, SubscriptionConstants.PlanDefaults.PriceFloorPerCredit, cancellationToken);
-            var minimumContractPrice = await _repository.ReadPricingConfigValueAsync(MinimumContractPriceVndConfigKey, SubscriptionConstants.PlanDefaults.MinimumVndPlanPrice, cancellationToken);
+            var creditValue = await _repository.ReadPricingConfigValueAsync(CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueUsd, cancellationToken);
+            var minimumPricePerCredit = await _repository.ReadPricingConfigValueAsync(MinimumPricePerCreditUsdConfigKey, SubscriptionConstants.PlanDefaults.PriceFloorPerCreditUsd, cancellationToken);
             var minimumContractPriceUsd = await _repository.ReadPricingConfigValueAsync(MinimumContractPriceUsdConfigKey, SubscriptionConstants.PlanDefaults.MinimumUsdPlanPrice, cancellationToken);
             var salesUsageWeight = await _repository.ReadPricingConfigValueAsync(SalesUsageWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesUsageWeight, cancellationToken);
             var salesMembersWeight = await _repository.ReadPricingConfigValueAsync(SalesMembersWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesMembersWeight, cancellationToken);
@@ -275,7 +268,6 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 fxStatus?.Rate ?? fxRate,
                 creditValue,
                 minimumPricePerCredit,
-                minimumContractPrice,
                 minimumContractPriceUsd,
                 salesUsageWeight,
                 salesMembersWeight,
@@ -298,9 +290,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         // Null credit value / price floor = "keep what is stored" (WT-690); a value, when sent,
         // must still be positive.
         if (request.FxRateUsdVnd is <= 0 ||
-            request.CreditValueVnd is <= 0 ||
-            request.MinimumPricePerCreditVnd is <= 0 ||
-            request.MinimumContractPriceVnd <= 0 ||
+            request.CreditValueUsd is <= 0 ||
+            request.MinimumPricePerCreditUsd is <= 0 ||
             request.MinimumContractPriceUsd <= 0 ||
             request.SalesUsageWeight < 0 ||
             request.SalesMembersWeight < 0 ||
@@ -336,12 +327,11 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 await _repository.UpsertPricingConfigValueAsync(FxRateConfigKey, overrideRate, cancellationToken);
             }
             var creditValue = await WriteOrReadAsync(
-                CreditValueConfigKey, request.CreditValueVnd,
-                SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
+                CreditValueConfigKey, request.CreditValueUsd,
+                SubscriptionConstants.RateCardDefaults.CreditValueUsd, cancellationToken);
             var minimumPricePerCredit = await WriteOrReadAsync(
-                MinimumPricePerCreditVndConfigKey, request.MinimumPricePerCreditVnd,
-                SubscriptionConstants.PlanDefaults.PriceFloorPerCredit, cancellationToken);
-            await _repository.UpsertPricingConfigValueAsync(MinimumContractPriceVndConfigKey, request.MinimumContractPriceVnd, cancellationToken);
+                MinimumPricePerCreditUsdConfigKey, request.MinimumPricePerCreditUsd,
+                SubscriptionConstants.PlanDefaults.PriceFloorPerCreditUsd, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(MinimumContractPriceUsdConfigKey, request.MinimumContractPriceUsd, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(SalesUsageWeightConfigKey, request.SalesUsageWeight, cancellationToken);
             await _repository.UpsertPricingConfigValueAsync(SalesMembersWeightConfigKey, request.SalesMembersWeight, cancellationToken);
@@ -376,7 +366,6 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 fxStatus?.Rate ?? fxOverride ?? storedFx,
                 creditValue,
                 minimumPricePerCredit,
-                request.MinimumContractPriceVnd,
                 request.MinimumContractPriceUsd,
                 request.SalesUsageWeight,
                 request.SalesMembersWeight,
@@ -469,9 +458,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
     private static PricingConfigDto CreatePricingConfig(
         decimal fxRateUsdVnd,
-        decimal creditValueVnd,
-        decimal minimumPricePerCreditVnd,
-        decimal minimumContractPriceVnd,
+        decimal creditValueUsd,
+        decimal minimumPricePerCreditUsd,
         decimal minimumContractPriceUsd,
         decimal salesUsageWeight,
         decimal salesMembersWeight,
@@ -484,9 +472,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     {
         return new PricingConfigDto(
             fxRateUsdVnd,
-            creditValueVnd,
-            minimumPricePerCreditVnd,
-            minimumContractPriceVnd,
+            creditValueUsd,
+            minimumPricePerCreditUsd,
             minimumContractPriceUsd,
             salesUsageWeight,
             salesMembersWeight,

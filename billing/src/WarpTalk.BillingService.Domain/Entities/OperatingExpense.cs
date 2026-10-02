@@ -1,12 +1,13 @@
 using System;
 using System.Collections.Generic;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
 /// <summary>
-/// subscription.operating_expenses (G12): one company operating expense, in its own currency (VND or
-/// USD). Reports convert a USD row at the USD→VND rate of its <see cref="ExpenseDate"/>; no VND
-/// figure is stored.
+/// subscription.operating_expenses (G12): one company operating expense, in its own currency (USD or
+/// VND). Reports are in USD and convert a VND row at the USD→VND rate of its <see cref="ExpenseDate"/>;
+/// no converted figure is stored.
 ///
 /// A row whose <see cref="Recurrence"/> is monthly or yearly is also a series: ExpenseRecurrenceWorker
 /// writes each next occurrence as a planned row (its <see cref="RecurringSourceId"/> = this row)
@@ -21,7 +22,7 @@ public class OperatingExpense
     public ExpenseCategory? Category { get; set; }
     public string? Description { get; set; }
     public decimal Amount { get; set; }
-    public string Currency { get; set; } = "VND";
+    public string Currency { get; set; } = PaymentConstants.Currencies.UsdAccounting;
     public string? PaymentMethod { get; set; }
     public string Status { get; set; } = "paid";
     public DateTime? PaidAt { get; set; }

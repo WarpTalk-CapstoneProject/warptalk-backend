@@ -23,7 +23,7 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 /// run the real migration SQL over them (twice — it must be idempotent), and read Insights back from
 /// PostgreSQL (Testcontainers — needs Docker).
 ///
-/// Consume rows (September, FX 25,000 VND/USD), all on CRD cards:
+/// Consume rows (September, reported in USD), all on CRD cards:
 ///   dub   120 s standard  30 credits   0.00049  USD/s → 0.0588 USD
 ///   clone  60 s clone     40 credits   0.000735 USD/s → 0.0441 USD
 ///   old    10 s standard   3 credits   RETIRED standard card, same model → 0.0049 USD
@@ -141,12 +141,12 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
         var dto = await SeptemberAsync();
 
         var cost = M(dto, "aiProviderCost");
-        cost.Value.Should().Be(2_695m);
+        cost.Value.Should().Be(0.11m);
         cost.Note.Should().Be(
-            "covers 100% of consumed credits (3 of 3 transactions have a provider cost); dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period; USD converted at 25,000 VND/USD");
+            "covers 100% of consumed credits (3 of 3 transactions have a provider cost); dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period");
 
         var margin = M(dto, "grossMargin");
-        margin.Value.Should().Be(-2_695m, "no payments in the period, so the margin is the cost, negated");
+        margin.Value.Should().Be(-0.11m, "no payments in the period, so the margin is the cost, negated");
         margin.Note.Should().BeNull("every consumed credit carries a cost");
     }
 
@@ -160,9 +160,9 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
 
         // Translation adds 27 credits with no provider cost: 73 of 100 credits are covered.
         var cost = M(dto, "aiProviderCost");
-        cost.Value.Should().Be(2_695m);
+        cost.Value.Should().Be(0.11m);
         cost.Note.Should().Be(
-            "covers 73% of consumed credits (3 of 4 transactions have a provider cost); no provider cost for TRANSLATION (27%); dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period; USD converted at 25,000 VND/USD");
+            "covers 73% of consumed credits (3 of 4 transactions have a provider cost); no provider cost for TRANSLATION (27%); dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period");
         M(dto, "grossMargin").Note.Should().Be(
             "AI cost covers only 73% of consumed credits (no provider cost for TRANSLATION (27%)), so this margin is overstated");
     }
@@ -195,7 +195,7 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
 
         // 108 s of translated speech × 0.0001 = 0.0108 USD = 270 VND on top of the dubbing.
         var cost = M(await SeptemberAsync(), "aiProviderCost");
-        cost.Value.Should().Be(2_965m);
+        cost.Value.Should().Be(0.12m);
         cost.Note.Should().StartWith("covers 100% of consumed credits (4 of 4 transactions");
     }
 
@@ -221,7 +221,7 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
         old.EffectiveTo.Should().NotBeNull();
 
         // September was settled on the old card, so it keeps the old price.
-        M(await SeptemberAsync(), "aiProviderCost").Value.Should().Be(2_695m);
+        M(await SeptemberAsync(), "aiProviderCost").Value.Should().Be(0.11m);
 
         // Same price again is a no-op, not another version.
         var again = await new UsageRateCardRepository(_context).SetCreditRateCardProviderCostAsync(outcome.Card.Id, 0.0006m);
@@ -236,7 +236,7 @@ public sealed class CrdRateCardProviderCostTests : IAsyncLifetime
         var repository = new UsageRateCardRepository(_context);
 
         (await repository.SetCreditRateCardProviderCostAsync(_vndDubbing, 0.0001m))!.Change
-            .Should().Be(RateCardProviderCostChange.Refused, "a VND card's credit price is derived from its cost");
+            .Should().Be(RateCardProviderCostChange.Refused, "a USD (editor-priced) card's credit price is derived from its cost");
         (await repository.SetCreditRateCardProviderCostAsync(_retiredDubbing, 0.0001m))!.Change
             .Should().Be(RateCardProviderCostChange.Refused);
         // Before the migration the CRD cards have no unit.
