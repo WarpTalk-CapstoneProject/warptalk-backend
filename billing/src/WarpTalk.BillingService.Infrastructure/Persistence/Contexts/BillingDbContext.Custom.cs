@@ -267,7 +267,7 @@ public partial class BillingDbContext
             entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
             entity.Property(e => e.CategoryId).HasColumnName("category_id");
             entity.Property(e => e.Month).HasColumnName("month");
-            entity.Property(e => e.AmountVnd).HasColumnName("amount_vnd").HasPrecision(18, 2);
+            entity.Property(e => e.AmountUsd).HasColumnName("amount_usd").HasPrecision(18, 2);
             entity.Property(e => e.Note).HasColumnName("note").HasMaxLength(500);
             entity.Property(e => e.CreatedAt).HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");

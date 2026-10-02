@@ -51,7 +51,7 @@ public sealed record AdminAiProviderCostBasisDto(
 
 /// <summary>
 /// <paramref name="Date"/> is a local calendar date of the request's <c>tz</c>, <c>yyyy-MM-dd</c>.
-/// Revenue in VND; null only when that day's every payment was in a currency that could not be
+/// Revenue in USD; null only when that day's every payment was in a currency that could not be
 /// converted (see the series note), never 0 for "unknown".
 /// </summary>
 public sealed record AdminRevenueByDayDto(string Date, decimal? Revenue);
@@ -124,7 +124,7 @@ public sealed record AdminActiveByCycleDto(int Monthly, int Yearly, int Other);
 public sealed record AdminChurnRateMonthDto(int Cancelled, int AtMonthStart, decimal? Rate);
 
 /// <summary>
-/// <paramref name="Amount"/> is in VND and null when no outstanding invoice's currency could be
+/// <paramref name="Amount"/> is in USD and null when no outstanding invoice's currency could be
 /// converted; <paramref name="AmountNote"/> says what was converted or left out.
 /// <paramref name="OldestPastDueWorkspace"/> is a workspace name (null if unresolved or none).
 /// </summary>

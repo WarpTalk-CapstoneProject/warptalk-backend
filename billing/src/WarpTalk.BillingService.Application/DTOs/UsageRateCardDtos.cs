@@ -40,33 +40,32 @@ public record UpsertUsageRateCardRequest(
 public record SetRateCardProviderCostRequest(decimal? ProviderUnitCostUsd);
 
 /// <summary>
-/// Prices a hypothetical rate change before it is published. FX rate and credit value
-/// fall back to the stored pricing config when omitted, so an admin can preview against
-/// live economics or against a proposed change to them.
+/// Prices a hypothetical rate change before it is published. The credit value falls back to the
+/// stored pricing config when omitted, so an admin can preview against live economics or against a
+/// proposed change to them. No exchange rate: cost and credit value are both USD.
 /// </summary>
 public record RateCardPreviewRequest(
     decimal ProviderUnitCostUsd,
     decimal MarkupMultiplier,
     decimal Quantity = 1m,
-    decimal? FxRateUsdVnd = null,
-    decimal? CreditValueVnd = null);
+    decimal? CreditValueUsd = null);
 
 public record RateCardPreviewDto(
     decimal UnitPriceCredits,
     decimal CreditsCharged,
-    decimal CustomerPriceVnd,
-    decimal ProviderCostVnd,
-    decimal MarginVnd,
+    decimal CustomerPriceUsd,
+    decimal ProviderCostUsd,
+    decimal MarginUsd,
     decimal MarginRatio,
-    decimal FxRateUsdVnd,
-    decimal CreditValueVnd,
+    decimal CreditValueUsd,
     string Formula);
 
 public record PricingConfigDto(
+    // VND per US dollar. Not part of pricing any more: it is what turns a VND amount (a historical
+    // payment, a VND-priced sale, a VND expense) into the USD every report is in.
     decimal FxRateUsdVnd,
-    decimal CreditValueVnd,
-    decimal MinimumPricePerCreditVnd,
-    decimal MinimumContractPriceVnd,
+    decimal CreditValueUsd,
+    decimal MinimumPricePerCreditUsd,
     decimal MinimumContractPriceUsd,
     decimal SalesUsageWeight,
     decimal SalesMembersWeight,
@@ -78,7 +77,7 @@ public record PricingConfigDto(
     string Formula,
     string ResolverKey,
     // USD per Cartesia credit (billing_pricing_config cartesia_usd_per_credit). Insights price the
-    // dubbing provider cost as measured Cartesia credits × this × FX. Default: the Startup plan's
+    // dubbing provider cost as measured Cartesia credits × this. Default: the Startup plan's
     // $49 / 1,250,000 credits.
     decimal CartesiaUsdPerCredit = ProviderUsageConstants.DefaultCartesiaUsdPerCredit,
     // Where FxRateUsdVnd comes from (Stripe by default), as of when, and whether it is stale.
@@ -87,12 +86,12 @@ public record PricingConfigDto(
 /// <summary>
 /// <c>PUT /usages/pricing-config</c>.
 ///
-/// WT-690: <see cref="CreditValueVnd"/> and <see cref="MinimumPricePerCreditVnd"/> are no longer
+/// WT-690: <see cref="CreditValueUsd"/> and <see cref="MinimumPricePerCreditUsd"/> are no longer
 /// knobs in the admin UI — Stripe owns pricing — but they are NOT dead config, so the stored values
-/// stay and so does this write path. <c>credit_value_vnd</c> prices every credit top-up
+/// stay and so does this write path. <c>credit_value_usd</c> prices every credit top-up
 /// (<c>PaymentAppService</c> turns the credit count into the Stripe amount with it) and feeds the
-/// rate-card preview; <c>minimum_price_per_credit_vnd</c> is the floor <c>PlanService</c> and
-/// <c>SubscriptionService</c> validate plan and contract prices against. Both are therefore
+/// rate-card preview; <c>minimum_price_per_credit_usd</c> is the floor <c>PlanService</c> and
+/// <c>SubscriptionService</c> validate USD plan and contract prices against. Both are therefore
 /// optional here: null keeps the stored value, so a client that no longer shows them cannot reset
 /// money-critical economics by leaving them out. Changing either is a migration now.
 /// </summary>
@@ -101,9 +100,8 @@ public record UpdatePricingConfigRequest(
     // explicit manual override (same as PUT /admin/billing/fx/override); the same value is a no-op, so a
     // client echoing the whole form back cannot switch Stripe off by accident.
     decimal? FxRateUsdVnd,
-    decimal? CreditValueVnd,
-    decimal? MinimumPricePerCreditVnd,
-    decimal MinimumContractPriceVnd,
+    decimal? CreditValueUsd,
+    decimal? MinimumPricePerCreditUsd,
     decimal MinimumContractPriceUsd,
     decimal SalesUsageWeight,
     decimal SalesMembersWeight,

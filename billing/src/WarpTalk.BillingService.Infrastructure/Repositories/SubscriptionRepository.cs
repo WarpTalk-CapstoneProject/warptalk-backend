@@ -51,7 +51,7 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
                 s.Plan.BillingCycle,
                 s.Plan.Price,
                 s.Plan.Currency,
-                s.ContractPriceVnd,
+                s.ContractPriceUsd,
                 s.CreditsRemaining,
                 s.CreditsUsedThisCycle,
                 s.CurrentPeriodStart,
@@ -85,7 +85,7 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
                 s.Plan.BillingCycle,
                 s.Plan.Price,
                 s.Plan.Currency,
-                s.ContractPriceVnd,
+                s.ContractPriceUsd,
                 s.CreditsRemaining,
                 s.CreditsUsedThisCycle,
                 s.CurrentPeriodStart,
@@ -299,7 +299,7 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             s.WorkspaceId,
             s.CreatedAt,
             s.TrialEndsAt,
-            Start = s.ContractPriceVnd != null
+            Start = s.ContractPriceUsd != null
                 ? (DateTime?)s.CreatedAt
                 : payments
                     .Where(p => p.SubscriptionId == s.Id && p.Status == PaymentConstants.PaymentStatuses.Paid)

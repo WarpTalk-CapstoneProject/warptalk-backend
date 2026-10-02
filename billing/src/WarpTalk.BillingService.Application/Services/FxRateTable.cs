@@ -108,8 +108,8 @@ public sealed class FxRateTable
         => new(day, row.Rate, row.Source, row.RateDate, basis, DateTime.SpecifyKind(row.FetchedAt, DateTimeKind.Utc));
 
     /// <summary>
-    /// What a figure converted with these rates should say: "USD converted at 25,990 VND/USD (Stripe FX
-    /// quote, 2026-09-24)" for one rate, "USD converted at each day's rate (25,950–26,010 VND/USD; Stripe
+    /// What a figure converted with these rates should say: "VND converted at 25,990 VND/USD (Stripe FX
+    /// quote, 2026-09-24)" for one rate, "VND converted at each day's rate (25,950–26,010 VND/USD; Stripe
     /// FX quote, Stripe charge conversion)" for several, plus how many days had to borrow another day's
     /// rate. Null when nothing was converted.
     /// </summary>
@@ -125,12 +125,12 @@ public sealed class FxRateTable
         {
             var only = list[0];
             var when = only.RateDate is { } date ? ", " + date.ToString("yyyy-MM-dd", Invariant) : string.Empty;
-            head = string.Create(Invariant, $"USD converted at {rates[0]:N0} VND/USD ({SourceLabel(only.Source)}{when})");
+            head = string.Create(Invariant, $"VND converted at {rates[0]:N0} VND/USD ({SourceLabel(only.Source)}{when})");
         }
         else
         {
             head = string.Create(Invariant,
-                $"USD converted at each day's rate ({rates.Min():N0}–{rates.Max():N0} VND/USD; {string.Join(", ", sources)})");
+                $"VND converted at each day's rate ({rates.Min():N0}–{rates.Max():N0} VND/USD; {string.Join(", ", sources)})");
         }
 
         var borrowed = list

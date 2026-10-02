@@ -115,12 +115,12 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
 
             var consumption = await _unitOfWork.CreditTransactionRepository.GetWorkspaceConsumptionTotalsAsync(
                 workspaceId, from, to, ct);
-            var aiCost = AiProviderCost(consumption, fx);
+            var aiCost = AiProviderCost(consumption);
             aiCost = aiCost with { Note = JoinNotes(aiCost.Note, consumption.Transactions > 0 ? WorkspaceAiCostNote : null) };
             var margin = GrossMargin(period, aiCost, consumption);
 
             var outstanding = await _unitOfWork.InvoiceRepository.GetOutstandingForWorkspaceAsync(workspaceId, ct);
-            var outstandingTotal = ToVnd(outstanding.Select(i => new MoneyPart(i.Currency, i.Total, 1)), fx);
+            var outstandingTotal = ToUsd(outstanding.Select(i => new MoneyPart(i.Currency, i.Total, 1)), fx);
             var overdue = outstanding.Where(i => i.DueAt is { } due && due < now).ToList();
             var oldestOverdue = overdue.Select(i => i.DueAt!.Value).DefaultIfEmpty().Min();
 
@@ -145,7 +145,7 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
                     overdue.Count,
                     new AdminWorkspaceMoneyDto(
                         outstanding.Count == 0 ? 0m : outstandingTotal.Amount,
-                        Vnd,
+                        Usd,
                         ConversionNote(outstandingTotal, fx)),
                     outstanding.Where(i => i.DueAt is { } due && due >= now).Select(i => i.DueAt).Min(),
                     overdue.Count == 0 ? null : (int)Math.Floor((now - oldestOverdue).TotalDays)),
@@ -790,7 +790,7 @@ public sealed class AdminWorkspaceBillingService : IAdminWorkspaceBillingService
     private static AdminCreditTransactionDto ToLedgerDto(CreditTransaction tx) => new(
         tx.Id, tx.CreatedAt, tx.Type, tx.Description, tx.ReferenceId, tx.ReferenceType, tx.Amount, tx.BalanceAfter, tx.Currency, tx.Status);
 
-    private static AdminWorkspaceMoneyDto Money(MetricSide side) => new(side.Value, Vnd, side.Note);
+    private static AdminWorkspaceMoneyDto Money(MetricSide side) => new(side.Value, Usd, side.Note);
 
     private async Task<decimal?> ReadFxAsync(CancellationToken ct)
     {

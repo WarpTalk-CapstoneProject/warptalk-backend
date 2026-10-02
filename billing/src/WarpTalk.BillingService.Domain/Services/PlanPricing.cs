@@ -37,7 +37,7 @@ public static class PlanPricing
 
     /// <summary>Stripe's lower-case currency code for the plan ("vnd", "usd").</summary>
     public static string StripeCurrency(Plan plan) =>
-        string.IsNullOrWhiteSpace(plan.Currency) ? PaymentConstants.Currencies.Vnd : plan.Currency.Trim().ToLowerInvariant();
+        string.IsNullOrWhiteSpace(plan.Currency) ? PaymentConstants.Currencies.Usd : plan.Currency.Trim().ToLowerInvariant();
 
     /// <summary>Key of the recurring price in <see cref="Plan.StripePriceIds"/>: <c>monthly_vnd</c>, <c>yearly_usd</c>.</summary>
     public static string PriceKey(string? billingCycle, string currency) =>

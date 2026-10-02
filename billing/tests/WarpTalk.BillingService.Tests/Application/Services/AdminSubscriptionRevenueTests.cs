@@ -25,7 +25,7 @@ public class AdminSubscriptionRevenueTests
         decimal planPrice = 100m,
         string currency = "VND",
         string cycle = "monthly",
-        decimal? contractPriceVnd = null,
+        decimal? contractPriceUsd = null,
         string status = "active",
         DateTime? trialEndsAt = null,
         DateTime? cancelledAt = null,
@@ -41,7 +41,7 @@ public class AdminSubscriptionRevenueTests
             cycle,
             planPrice,
             currency,
-            contractPriceVnd,
+            contractPriceUsd,
             CreditsRemaining: 100,
             CreditsUsedThisCycle: 0,
             CurrentPeriodStart: Now.AddDays(-10),
@@ -78,25 +78,25 @@ public class AdminSubscriptionRevenueTests
     public void A_contract_price_overrides_the_plan_price()
     {
         AdminSubscriptionRevenue.MonthlyAmount(
-            Row(planPrice: 29m, currency: "USD", contractPriceVnd: 1_900_000m)).Amount
-            .Should().Be(1_900_000m);
+            Row(planPrice: 1_900_000m, currency: "VND", contractPriceUsd: 72m)).Amount
+            .Should().Be(72m);
     }
 
     [Fact]
-    public void A_contract_price_is_always_reported_in_VND()
+    public void A_contract_price_is_always_reported_in_USD()
     {
         // Its NAME states its currency. Reading the plan's currency for a contract price would
-        // relabel 1,900,000 VND as 1,900,000 USD on any USD-priced plan.
+        // relabel 72 USD as 72 VND on any VND-priced plan.
         AdminSubscriptionRevenue.MonthlyAmount(
-            Row(planPrice: 29m, currency: "USD", contractPriceVnd: 1_900_000m)).Currency
-            .Should().Be("VND");
+            Row(planPrice: 1_900_000m, currency: "VND", contractPriceUsd: 72m)).Currency
+            .Should().Be("USD");
     }
 
     [Fact]
     public void A_yearly_contract_price_is_still_divided_by_twelve()
     {
         AdminSubscriptionRevenue.MonthlyAmount(
-            Row(cycle: "yearly", contractPriceVnd: 24_000_000m)).Amount
+            Row(cycle: "yearly", contractPriceUsd: 24_000_000m)).Amount
             .Should().Be(2_000_000m);
     }
 

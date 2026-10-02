@@ -64,7 +64,7 @@ public class UsageService : IUsageService
             var rateResult = await _rateCardResolver.ResolveRateCardAsync(
                 settlementRequest.ChargeType,
                 settlementRequest.Unit,
-                PaymentConstants.Currencies.VndAccounting,
+                PaymentConstants.Currencies.UsdAccounting,
                 null,
                 null,
                 cancellationToken);

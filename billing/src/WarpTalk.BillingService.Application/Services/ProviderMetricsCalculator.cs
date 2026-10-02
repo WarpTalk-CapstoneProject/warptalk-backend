@@ -42,7 +42,8 @@ public sealed record ProviderInputs(
 ///   LiveKit  — estimated participant minutes from translation-room (see its MediaUsageCalculator).
 ///   Stripe   — payments that went through Stripe (paid and failed).
 ///
-/// COST (USD, then VND at the USD→VND rate of each hour's UTC day, FxRateTable):
+/// COST (USD, the accounting currency — providers bill in it, so only a VND Stripe fee is converted,
+/// at the USD→VND rate of its hour's UTC day, FxRateTable):
 ///   OpenAI   — Σ usage quantity × provider_unit_cost of the rate card each consume row settled on,
 ///              only where the card has one (TRANSLATION does not): the covered share is stated.
 ///   Cartesia — measured credits × cartesia_usd_per_credit on measured days; the rate-card estimate on
@@ -50,7 +51,8 @@ public sealed record ProviderInputs(
 ///              dubbing cost: this page is what Cartesia charged, not what dubbing cost.
 ///   LiveKit  — participant minutes × livekit_usd_per_participant_minute, only when that price is set.
 ///   Stripe   — the fee Stripe kept on each paid payment (its balance transaction, read by
-///              StripeFeeSyncWorker), in the settlement currency and converted through the FX table.
+///              StripeFeeSyncWorker), in the settlement currency; a VND fee is converted to USD through the
+///              FX table, and with no rate for its day the cost is unknown rather than short.
 ///
 /// CALLS (OpenAI, Cartesia, Stripe) — what our own calls saw (provider_call_stats: the AI workers'
 /// OpenAI/Cartesia calls, billing's Stripe calls). A declined card (Stripe 402 card_error) is Stripe
@@ -94,7 +96,6 @@ public static class ProviderMetricsCalculator
         public const string Credits = "credits";
         public const string ProviderCredits = "providerCredits";
         public const string Usd = "usd";
-        public const string Vnd = "vnd";
         public const string Percent = "percent";
         public const string Ms = "ms";
         public const string Minutes = "minutes";
@@ -105,7 +106,6 @@ public static class ProviderMetricsCalculator
         public const string Usage = "usage";
         public const string BilledCredits = "billedCredits";
         public const string CostUsd = "costUsd";
-        public const string CostVnd = "costVnd";
         public const string Calls = "calls";
         public const string Failures = "failures";
         public const string ErrorRate = "errorRate";
@@ -114,7 +114,7 @@ public static class ProviderMetricsCalculator
         public const string RoomMinutes = "roomMinutes";
         public const string Recordings = "recordings";
         public const string FailedPayments = "failedPayments";
-        public const string VolumeVnd = "volumeVnd";
+        public const string VolumeUsd = "volumeUsd";
     }
 
     /// <summary>The failure classes of provider_call_stats, in the order the page lists them.</summary>
@@ -145,7 +145,7 @@ public static class ProviderMetricsCalculator
         public int Recordings;
         public int Payments;
         public int FailedPayments;
-        public decimal VolumeVnd;
+        public decimal VolumeUsd;
         public bool VolumeMissingRate;
         public long Declined;
         public long Webhooks;
@@ -295,8 +295,8 @@ public static class ProviderMetricsCalculator
             }
 
             atom.Payments++;
-            var vnd = ToVnd(payment.Currency, payment.Total, payment.At, input.Fx);
-            if (vnd is { } value) atom.VolumeVnd += value;
+            var usd = ToUsd(payment.Currency, payment.Total, payment.At, input.Fx);
+            if (usd is { } value) atom.VolumeUsd += value;
             else atom.VolumeMissingRate = true;
         }
 
@@ -308,12 +308,12 @@ public static class ProviderMetricsCalculator
         if (count > 0) atom.FailuresByClass[failureClass] = atom.FailuresByClass.GetValueOrDefault(failureClass) + count;
     }
 
-    private static decimal? ToVnd(string currency, decimal amount, DateTime at, FxRateTable fx)
+    private static decimal? ToUsd(string currency, decimal amount, DateTime at, FxRateTable fx)
     {
         var code = (currency ?? string.Empty).Trim().ToUpperInvariant();
-        if (code == FxRateConstants.Vnd) return amount;
-        if (code != FxRateConstants.Usd) return null;
-        return fx.Resolve(at).Rate is { } rate ? amount * rate : null;
+        if (code == FxRateConstants.Usd) return amount;
+        if (code != FxRateConstants.Vnd) return null;
+        return fx.Resolve(at).Rate is > 0 and { } rate ? amount / rate : null;
     }
 
     // ── one window ────────────────────────────────────────────────────────────────────────────
@@ -323,7 +323,6 @@ public static class ProviderMetricsCalculator
         decimal? Usage,
         decimal? BilledCredits,
         decimal? CostUsd,
-        decimal? CostVnd,
         long? Calls,
         long? Failures,
         long? ClientErrors,
@@ -336,7 +335,7 @@ public static class ProviderMetricsCalculator
         decimal? RoomMinutes,
         int? Recordings,
         int? FailedPayments,
-        decimal? VolumeVnd,
+        decimal? VolumeUsd,
         decimal LedgerCredits,
         decimal LedgerCoveredCredits,
         int MeasuredHours,
@@ -351,8 +350,8 @@ public static class ProviderMetricsCalculator
 
     public static WindowFigures Window(ProviderInputs input, IReadOnlyDictionary<DateTime, Atom> atoms, DateTime start, DateTime end)
     {
-        decimal ledgerCredits = 0, covered = 0, providerCredits = 0, costUsd = 0, costVnd = 0;
-        bool anyProviderCredits = false, anyCalls = false, anyMedia = false, vndMissing = false, volumeMissing = false;
+        decimal ledgerCredits = 0, covered = 0, providerCredits = 0, costUsd = 0;
+        bool anyProviderCredits = false, anyCalls = false, anyMedia = false, feeRateMissing = false, volumeMissing = false;
         long ok = 0, clientErrors = 0;
         var failures = new Dictionary<string, long>(StringComparer.Ordinal);
         var latency = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -394,21 +393,17 @@ public static class ProviderMetricsCalculator
 
             if (input.Provider == ProviderCatalog.Stripe)
             {
-                // Fees are kept in the settlement currency: each side converts through the day's rate.
-                var rate = input.Fx.Resolve(hour).Rate;
-                if (atom.FeeVnd != 0 && rate is null) vndMissing = true;
-                costUsd += atom.FeeUsd + (atom.FeeVnd != 0 && rate is { } toUsd ? atom.FeeVnd / toUsd : 0m);
-                if (atom.FeeUsd != 0 && rate is null) vndMissing = true;
-                costVnd += atom.FeeVnd + (rate is { } toVnd ? atom.FeeUsd * toVnd : 0m);
+                // Fees are kept in the settlement currency; a VND fee converts through its day's rate.
+                costUsd += atom.FeeUsd;
+                if (atom.FeeVnd != 0)
+                {
+                    if (input.Fx.Resolve(hour).Rate is > 0 and { } rate) costUsd += atom.FeeVnd / rate;
+                    else feeRateMissing = true;
+                }
             }
             else
             {
                 costUsd += hourCost;
-                if (hourCost != 0)
-                {
-                    if (input.Fx.Resolve(hour).Rate is { } rate) costVnd += hourCost * rate;
-                    else vndMissing = true;
-                }
             }
 
             declined += atom.Declined;
@@ -443,7 +438,7 @@ public static class ProviderMetricsCalculator
 
             payments += atom.Payments;
             failedPayments += atom.FailedPayments;
-            volume += atom.VolumeVnd;
+            volume += atom.VolumeUsd;
             volumeMissing |= atom.VolumeMissingRate;
         }
 
@@ -466,7 +461,7 @@ public static class ProviderMetricsCalculator
             ProviderCatalog.OpenAi or ProviderCatalog.Cartesia => Math.Round(costUsd, 6),
             ProviderCatalog.LiveKit => anyMedia && input.LiveKitUsdPerParticipantMinute is not null ? Math.Round(costUsd, 6) : null,
             // No paid payment: nothing to pay fees on (0). Paid payments and not one fee read: unknown.
-            ProviderCatalog.Stripe => payments == 0 ? 0m : feesRead == 0 ? null : Math.Round(costUsd, 6),
+            ProviderCatalog.Stripe => payments == 0 ? 0m : feesRead == 0 || feeRateMissing ? null : Math.Round(costUsd, 6),
             _ => null,
         };
 
@@ -475,7 +470,6 @@ public static class ProviderMetricsCalculator
             usage,
             input.Provider is ProviderCatalog.OpenAi or ProviderCatalog.Cartesia ? ledgerCredits : null,
             cost,
-            cost is null || vndMissing ? null : Math.Round(costVnd, 0),
             hasCallMetrics && anyCalls ? succeeded + failed + clientErrors : null,
             hasCallMetrics && anyCalls ? failed : null,
             hasCallMetrics && anyCalls ? clientErrors : null,
@@ -488,7 +482,7 @@ public static class ProviderMetricsCalculator
             input.Provider == ProviderCatalog.LiveKit && anyMedia ? Math.Round(roomMinutes, 1) : null,
             input.Provider == ProviderCatalog.LiveKit && anyMedia ? recordings : null,
             input.Provider == ProviderCatalog.Stripe ? failedPayments : null,
-            input.Provider == ProviderCatalog.Stripe && !(volumeMissing && volume == 0) ? Math.Round(volume, 0) : null,
+            input.Provider == ProviderCatalog.Stripe && !(volumeMissing && volume == 0) ? Math.Round(volume, 2) : null,
             ledgerCredits,
             covered,
             measured,
@@ -705,25 +699,25 @@ public static class ProviderMetricsCalculator
     {
         ProviderCatalog.OpenAi =>
         [
-            (Metrics.Usage, Units.Credits), (Metrics.CostUsd, Units.Usd), (Metrics.CostVnd, Units.Vnd),
+            (Metrics.Usage, Units.Credits), (Metrics.CostUsd, Units.Usd),
             (Metrics.Calls, Units.Count), (Metrics.Failures, Units.Count), (Metrics.ErrorRate, Units.Percent),
             (Metrics.P50, Units.Ms), (Metrics.P95, Units.Ms),
         ],
         ProviderCatalog.Cartesia =>
         [
             (Metrics.Usage, Units.ProviderCredits), (Metrics.BilledCredits, Units.Credits), (Metrics.CostUsd, Units.Usd),
-            (Metrics.CostVnd, Units.Vnd), (Metrics.Calls, Units.Count), (Metrics.Failures, Units.Count),
+            (Metrics.Calls, Units.Count), (Metrics.Failures, Units.Count),
             (Metrics.ErrorRate, Units.Percent), (Metrics.P50, Units.Ms), (Metrics.P95, Units.Ms),
         ],
         ProviderCatalog.LiveKit =>
         [
             (Metrics.Usage, Units.Minutes), (Metrics.RoomMinutes, Units.Minutes), (Metrics.Recordings, Units.Count),
-            (Metrics.CostUsd, Units.Usd), (Metrics.CostVnd, Units.Vnd),
+            (Metrics.CostUsd, Units.Usd),
         ],
         ProviderCatalog.Stripe =>
         [
-            (Metrics.Usage, Units.Count), (Metrics.FailedPayments, Units.Count), (Metrics.VolumeVnd, Units.Vnd),
-            (Metrics.CostUsd, Units.Usd), (Metrics.CostVnd, Units.Vnd), (Metrics.Calls, Units.Count),
+            (Metrics.Usage, Units.Count), (Metrics.FailedPayments, Units.Count), (Metrics.VolumeUsd, Units.Usd),
+            (Metrics.CostUsd, Units.Usd), (Metrics.Calls, Units.Count),
             (Metrics.Failures, Units.Count), (Metrics.ErrorRate, Units.Percent), (Metrics.P50, Units.Ms), (Metrics.P95, Units.Ms),
         ],
         _ => [],
@@ -734,7 +728,6 @@ public static class ProviderMetricsCalculator
         Metrics.Usage => figures.Usage,
         Metrics.BilledCredits => figures.BilledCredits,
         Metrics.CostUsd => figures.CostUsd,
-        Metrics.CostVnd => figures.CostVnd,
         Metrics.Calls => figures.Calls,
         Metrics.Failures => figures.Failures,
         Metrics.ErrorRate => figures.ErrorRate,
@@ -743,7 +736,7 @@ public static class ProviderMetricsCalculator
         Metrics.RoomMinutes => figures.RoomMinutes,
         Metrics.Recordings => figures.Recordings,
         Metrics.FailedPayments => figures.FailedPayments,
-        Metrics.VolumeVnd => figures.VolumeVnd,
+        Metrics.VolumeUsd => figures.VolumeUsd,
         _ => null,
     };
 
@@ -752,7 +745,7 @@ public static class ProviderMetricsCalculator
     {
         switch (metric)
         {
-            case Metrics.CostUsd or Metrics.CostVnd:
+            case Metrics.CostUsd:
                 switch (input.Provider)
                 {
                     case ProviderCatalog.Stripe when total.PaidPayments > 0 && total.FeesRead == 0:
@@ -761,7 +754,7 @@ public static class ProviderMetricsCalculator
                         return string.Create(Invariant,
                             $"fees read for {total.FeesRead} of {total.PaidPayments} paid payments (balance transactions){(total.FeeOtherCurrency ? "; fees settled in a currency other than USD/VND are left out" : "")}");
                     case ProviderCatalog.Stripe:
-                        return "the fee Stripe kept on each paid payment (balance transaction), converted at the day's USD→VND rate";
+                        return "the fee Stripe kept on each paid payment (balance transaction); a VND fee is converted at its day's USD→VND rate";
                     case ProviderCatalog.LiveKit when input.LiveKitUsdPerParticipantMinute is null:
                         return "no LiveKit price is configured (billing_pricing_config livekit_usd_per_participant_minute)";
                     case ProviderCatalog.LiveKit when input.Media is null:
@@ -774,9 +767,9 @@ public static class ProviderMetricsCalculator
                             $"measured from Cartesia's usage API where synced; estimated from rate cards for {total.EstimatedHours} hour(s) it does not cover");
                 }
 
-                if (metric == Metrics.CostVnd && total.CostUsd is not null && total.CostVnd is null)
+                if (input.Provider == ProviderCatalog.Stripe && total.CostUsd is null && total.PaidPayments > 0)
                 {
-                    return "no USD→VND rate is recorded or configured";
+                    return "some Stripe fees were settled in VND on a day with no USD→VND rate recorded or configured";
                 }
 
                 return null;
@@ -808,8 +801,8 @@ public static class ProviderMetricsCalculator
                 if (metric is Metrics.P50 or Metrics.P95 && input.Provider == ProviderCatalog.Cartesia)
                     return "dubbing latency is time to first audio over the websocket";
                 return null;
-            case Metrics.VolumeVnd when total.VolumeVnd is null:
-                return "payments in a currency with no rate to VND";
+            case Metrics.VolumeUsd when total.VolumeUsd is null:
+                return "payments in a currency with no rate to USD";
             default:
                 return null;
         }

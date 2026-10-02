@@ -9,7 +9,7 @@ namespace WarpTalk.BillingService.Infrastructure.Workers;
 
 /// <summary>
 /// Records Stripe's USD→VND rate once per UTC day (and the rates of recently converted VND charges),
-/// so every VND report converts a day at that day's rate. See <see cref="IFxRateService.RefreshAsync"/>.
+/// so every USD report converts a VND amount at its own day's rate. See <see cref="IFxRateService.RefreshAsync"/>.
 ///
 /// Every <c>Billing:Fx:CheckIntervalMinutes</c> (default 60) one replica — a Redis lease — asks whether
 /// today already has a Stripe quote; only when it does not does it call Stripe. So a failed day is

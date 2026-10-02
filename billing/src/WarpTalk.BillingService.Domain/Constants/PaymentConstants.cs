@@ -108,6 +108,14 @@ public static class PaymentConstants
         public const string Usd = "usd";
         public const string Vnd = "vnd";
         public const string VndAccounting = "VND";
+
+        /// <summary>
+        /// The accounting currency: every report, credit value, price floor and contract price is in
+        /// it, and it is what a plan or expense gets when nobody states one. Was VND until the owner
+        /// moved the whole system to USD (2 Oct 2026). VND remains a currency things can be SOLD in
+        /// and historical payments were taken in; reports convert those at the day's Stripe rate.
+        /// </summary>
+        public const string UsdAccounting = "USD";
     }
 
     public static class StripeMetadata

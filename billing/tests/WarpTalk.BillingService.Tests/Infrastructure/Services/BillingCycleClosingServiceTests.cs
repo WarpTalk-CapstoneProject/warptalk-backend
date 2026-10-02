@@ -245,13 +245,13 @@ public class BillingCycleClosingServiceTests
     // ── Currency follows the amount source ──────────────────────────────────────────────────
 
     [Fact]
-    public async Task CloseDueCyclesAsync_Should_Invoice_Contract_Price_In_Vnd_On_A_Usd_Plan()
+    public async Task CloseDueCyclesAsync_Should_Invoice_Contract_Price_In_Usd_On_A_Vnd_Plan()
     {
         var now = new DateTime(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
-        var plan = UsdPlan();
+        var plan = VndPlan();
         var subscription = DueSubscription(plan, now);
-        subscription.ContractPriceVnd = 1_900_000m;
-        subscription.OveragePricePerCreditOverride = 4m;
+        subscription.ContractPriceUsd = 72m;
+        subscription.OveragePricePerCreditOverride = 0.0002m;
         subscription.OverageCreditsThisCycle = 1_000;
 
         var harness = new Harness(subscription, now);
@@ -259,11 +259,11 @@ public class BillingCycleClosingServiceTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be(1);
-        harness.Invoice!.Currency.Should().Be(PaymentConstants.Currencies.VndAccounting);
-        harness.Payment!.Currency.Should().Be(PaymentConstants.Currencies.VndAccounting);
-        harness.Invoice.Subtotal.Should().Be(1_904_000m);
-        harness.Invoice.Total.Should().Be(2_094_400m);
-        harness.Payment.TotalAmount.Should().Be(2_094_400m);
+        harness.Invoice!.Currency.Should().Be(PaymentConstants.Currencies.UsdAccounting);
+        harness.Payment!.Currency.Should().Be(PaymentConstants.Currencies.UsdAccounting);
+        harness.Invoice.Subtotal.Should().Be(72.2m);
+        harness.Invoice.Total.Should().Be(79.42m);
+        harness.Payment.TotalAmount.Should().Be(79.42m);
     }
 
     [Fact]
@@ -286,10 +286,10 @@ public class BillingCycleClosingServiceTests
     public async Task CloseDueCyclesAsync_Should_Refuse_A_Cycle_That_Would_Add_Vnd_To_Usd_And_Still_Close_The_Rest()
     {
         var now = new DateTime(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
-        var usdPlan = UsdPlan();
-        var mixed = DueSubscription(usdPlan, now);
-        mixed.ContractPriceVnd = 1_900_000m;        // VND contract price
-        mixed.OverageCreditsThisCycle = 500;        // ...but the overage rate is the plan's USD one
+        var vndPlan = VndPlan();
+        var mixed = DueSubscription(vndPlan, now);
+        mixed.ContractPriceUsd = 72m;               // USD contract price
+        mixed.OverageCreditsThisCycle = 500;        // ...but the overage rate is the plan's VND one
         var mixedPeriodEnd = mixed.CurrentPeriodEnd;
         var healthy = DueSubscription(UsdPlan(), now);
 
@@ -305,28 +305,28 @@ public class BillingCycleClosingServiceTests
     }
 
     [Fact]
-    public async Task CloseDueCyclesAsync_Should_Not_Treat_An_Unused_Usd_Overage_Rate_As_A_Second_Currency()
+    public async Task CloseDueCyclesAsync_Should_Not_Treat_An_Unused_Vnd_Overage_Rate_As_A_Second_Currency()
     {
         var now = new DateTime(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
-        var subscription = DueSubscription(UsdPlan(), now);
-        subscription.ContractPriceVnd = 1_900_000m;
+        var subscription = DueSubscription(VndPlan(), now);
+        subscription.ContractPriceUsd = 72m;
         subscription.OverageCreditsThisCycle = 0;
 
         var harness = new Harness(subscription, now);
         var result = await harness.Service.CloseDueCyclesAsync(now, TimeSpan.FromDays(2), CancellationToken.None);
 
         result.Value.Should().Be(1);
-        harness.Invoice!.Currency.Should().Be(PaymentConstants.Currencies.VndAccounting);
-        harness.Invoice.Subtotal.Should().Be(1_900_000m);
+        harness.Invoice!.Currency.Should().Be(PaymentConstants.Currencies.UsdAccounting);
+        harness.Invoice.Subtotal.Should().Be(72m);
     }
 
     [Fact]
     public async Task CloseWorkspaceCycleAsync_Should_Fail_With_Conflict_On_Mixed_Currencies_And_Restore_The_Period()
     {
         var now = new DateTime(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
-        var subscription = DueSubscription(UsdPlan(), now);
+        var subscription = DueSubscription(VndPlan(), now);
         subscription.CurrentPeriodEnd = now.AddDays(20);
-        subscription.OveragePricePerCreditOverride = 4m;  // VND overage rate on a USD base price
+        subscription.OveragePricePerCreditOverride = 0.0002m;  // USD overage rate on a VND base price
         subscription.OverageCreditsThisCycle = 10;
 
         var harness = new Harness(subscription, now);
@@ -364,6 +364,19 @@ public class BillingCycleClosingServiceTests
             CultureInfo.CurrentCulture = original;
         }
     }
+
+    private static Plan VndPlan() => new()
+    {
+        Id = Guid.NewGuid(),
+        Name = "Business (VND)",
+        Price = 1_000_000m,
+        Currency = "vnd",
+        CreditsPerCycle = 10_000,
+        RolloverCapCredits = 0,
+        OveragePricePerCredit = 4m,
+        InvoiceTermsDays = 15,
+        BillingCycle = SubscriptionConstants.BillingCycles.Monthly
+    };
 
     private static Plan UsdPlan() => new()
     {

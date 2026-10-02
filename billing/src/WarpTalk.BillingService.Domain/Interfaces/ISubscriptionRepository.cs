@@ -47,7 +47,7 @@ public sealed record AdminSubscriptionRow(
     string BillingCycle,
     decimal PlanPrice,
     string PlanCurrency,
-    decimal? ContractPriceVnd,
+    decimal? ContractPriceUsd,
     int CreditsRemaining,
     int CreditsUsedThisCycle,
     DateTime CurrentPeriodStart,

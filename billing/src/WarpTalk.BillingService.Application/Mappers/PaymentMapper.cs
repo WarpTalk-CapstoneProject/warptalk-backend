@@ -91,7 +91,7 @@ public static class PaymentMapper
             Amount = request.Subtotal,
             TaxAmount = request.Tax,
             TotalAmount = request.Total,
-            // The charge's currency, not the plan's: a contract price is VND on any plan.
+            // The charge's currency, not the plan's: a contract price is USD on any plan.
             Currency = request.Currency,
             PaymentMethod = PaymentConstants.PaymentMethods.Invoice,
             Provider = PaymentConstants.Providers.InternalInvoice,

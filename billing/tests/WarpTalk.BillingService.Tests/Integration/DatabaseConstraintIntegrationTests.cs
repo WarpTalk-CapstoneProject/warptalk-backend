@@ -22,24 +22,29 @@ public class DatabaseConstraintIntegrationTests : BaseIntegrationTest
         _db = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
     }
 
+    /// <summary>
+    /// The database no longer holds a price floor of its own. subscriptions_price_floor_chk hard-coded
+    /// 2.60 VND per credit, a copy of a configurable value; when USD became the accounting currency the
+    /// migration dropped it rather than freeze a USD number that would drift the same way. The floor is
+    /// SubscriptionService's, read from billing_pricing_config (see SubscriptionServiceTests).
+    /// </summary>
     [DockerFact]
-    public async Task PriceFloorConstraint_ShouldReject_WhenPricePerCreditIsBelow260()
+    public async Task PriceFloor_IsNotADatabaseConstraint_AfterTheUsdMigration()
     {
-        // Arrange
         var plan = new Plan
         {
             Id = Guid.NewGuid(),
             Name = "Enterprise Test",
             Slug = $"ent-{Guid.NewGuid()}",
             Tier = SubscriptionConstants.Tiers.Enterprise,
-            Price = 1900000m,
+            Price = 72m,
             CreditsPerCycle = 700000,
             BillingCycle = "monthly"
         };
         _db.Plans.Add(plan);
         await _db.SaveChangesAsync();
 
-        var sub = new Subscription
+        _db.Subscriptions.Add(new Subscription
         {
             Id = Guid.NewGuid(),
             UserId = Guid.NewGuid(),
@@ -47,16 +52,12 @@ public class DatabaseConstraintIntegrationTests : BaseIntegrationTest
             PlanId = plan.Id,
             Status = "active",
             CreditsRemaining = 1000,
-            // 2.5 VND per credit < 2.60
-            ContractPriceVnd = 250000m,
+            // $0.00001 per credit: below any sane floor, and still the service's call, not the table's.
+            ContractPriceUsd = 1m,
             CreditsPerCycleOverride = 100000
-        };
-        _db.Subscriptions.Add(sub);
+        });
 
-        // Act & Assert
-        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => _db.SaveChangesAsync());
-        exception.InnerException.Should().NotBeNull();
-        exception.InnerException!.Message.Should().Contain("subscriptions_price_floor_chk");
+        await _db.SaveChangesAsync();
     }
 
     [DockerFact]
@@ -85,7 +86,7 @@ public class DatabaseConstraintIntegrationTests : BaseIntegrationTest
             Status = "active",
             CreditsRemaining = 1000,
             // Exactly at the configured price floor
-            ContractPriceVnd = 260000m,
+            ContractPriceUsd = 260000m,
             CreditsPerCycleOverride = 100000
         };
         _db.Subscriptions.Add(sub);
@@ -150,7 +151,7 @@ public class DatabaseConstraintIntegrationTests : BaseIntegrationTest
             PlanId = plan.Id,
             Status = "active",
             CreditsRemaining = 1000,
-            ContractPriceVnd = 5200m,
+            ContractPriceUsd = 5200m,
             CreditsPerCycleOverride = 2000,
             OverageCapCreditsOverride = 200,
             OveragePricePerCreditOverride = 4m,
@@ -177,7 +178,7 @@ public class DatabaseConstraintIntegrationTests : BaseIntegrationTest
         await connection.OpenAsync();
 
         await using var cmdWith = connection.CreateCommand();
-        cmdWith.CommandText = "SELECT credits_per_cycle, contract_price_vnd, overage_cap_credits, overage_price_per_credit, invoice_terms_days FROM subscription.resolve_contract_terms(@id)";
+        cmdWith.CommandText = "SELECT credits_per_cycle, contract_price_usd, overage_cap_credits, overage_price_per_credit, invoice_terms_days FROM subscription.resolve_contract_terms(@id)";
         var pWith = cmdWith.CreateParameter();
         pWith.ParameterName = "id";
         pWith.Value = subWithOverrides.Id;
@@ -201,7 +202,7 @@ public class DatabaseConstraintIntegrationTests : BaseIntegrationTest
 
         // Act - Without overrides
         await using var cmdWithout = connection.CreateCommand();
-        cmdWithout.CommandText = "SELECT credits_per_cycle, contract_price_vnd, overage_cap_credits, overage_price_per_credit, invoice_terms_days FROM subscription.resolve_contract_terms(@id)";
+        cmdWithout.CommandText = "SELECT credits_per_cycle, contract_price_usd, overage_cap_credits, overage_price_per_credit, invoice_terms_days FROM subscription.resolve_contract_terms(@id)";
         var pWithout = cmdWithout.CreateParameter();
         pWithout.ParameterName = "id";
         pWithout.Value = subWithoutOverrides.Id;

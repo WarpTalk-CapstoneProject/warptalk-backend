@@ -173,12 +173,12 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         var pnl = result.Value!;
         AdminInsightMetric P(string id) => pnl.Metrics.Single(m => m.Id == id);
 
-        P("revenue").Value.Should().Be(4_150_000m);
-        P("aiProviderCost").Value.Should().Be(30_000m);
-        P("grossMargin").Value.Should().Be(4_120_000m);
+        P("revenue").Value.Should().Be(166m);
+        P("aiProviderCost").Value.Should().Be(1.2m);
+        P("grossMargin").Value.Should().Be(164.8m);
         P("creditsConsumed").Value.Should().Be(61_450m);
         P("activeWorkspaces").Value.Should().Be(3, "W1 and W2 consumed, W8 paid");
-        P("arpa").Value.Should().Be(1_383_333m);
+        P("arpa").Value.Should().Be(55.33m);
         pnl.Days.Should().HaveCount(30);
         pnl.Days.Sum(d => d.Credits).Should().Be(61_450);
         pnl.Months.Select(m => m.Key).Should().EndWith("2026-09");
@@ -204,17 +204,18 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         var dto = await SeptemberAsync();
 
         var revenue = M(dto, "revenue");
-        revenue.Value.Should().Be(4_150_000m);
-        revenue.Previous.Should().Be(300_000m);
+        // Reported in USD: the VND payments convert at 25,000 VND/USD, the 20 USD one is native.
+        revenue.Value.Should().Be(166m);
+        revenue.Previous.Should().Be(12m);
         revenue.Unit.Should().Be("money");
-        revenue.Note.Should().Contain("includes 20.00 USD converted at 25,000 VND/USD")
+        revenue.Note.Should().Contain("includes 3,650,000 VND converted at 25,000 VND/USD")
             .And.Contain("1 Stripe subscription invoice(s) counted once");
 
         M(dto, "payments").Value.Should().Be(5);
         M(dto, "payments").Previous.Should().Be(1);
         M(dto, "failedPayments").Should().BeEquivalentTo(new { Value = 1m, Previous = 0m, HigherIsBetter = false });
-        M(dto, "revenuePerPayment").Value.Should().Be(830_000m);
-        M(dto, "revenuePerPayment").Previous.Should().Be(300_000m);
+        M(dto, "revenuePerPayment").Value.Should().Be(33.2m);
+        M(dto, "revenuePerPayment").Previous.Should().Be(12m);
     }
 
     [DockerFact]
@@ -241,17 +242,16 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         M(dto, "overageCredits").Value.Should().Be(60_150m);
 
         var cost = M(dto, "aiProviderCost");
-        cost.Value.Should().Be(30_000m);
+        cost.Value.Should().Be(1.2m);
         cost.Previous.Should().Be(0m);
         cost.HigherIsBetter.Should().BeFalse();
         // The partial figure names what it leaves out: tx6 (no usage row) and the costless dubbing
         // card are TRANSLATION / AUDIO_DUBBING_STANDARD; tx3 has no charge type, so its usage type.
         cost.Note.Should().Be(
             "covers 1.8% of consumed credits (2 of 5 transactions have a provider cost); "
-            + "no provider cost for TRANSLATION (97.6%), AUDIO_DUBBING_STANDARD (0.5%), STT (0.1%); "
-            + "USD converted at 25,000 VND/USD");
+            + "no provider cost for TRANSLATION (97.6%), AUDIO_DUBBING_STANDARD (0.5%), STT (0.1%)");
 
-        M(dto, "grossMargin").Value.Should().Be(4_120_000m);
+        M(dto, "grossMargin").Value.Should().Be(164.8m);
         M(dto, "grossMargin").Note.Should().Be(
             "AI cost covers only 1.8% of consumed credits (no provider cost for TRANSLATION (97.6%), "
             + "AUDIO_DUBBING_STANDARD (0.5%), STT (0.1%)), so this margin is overstated");
@@ -263,17 +263,17 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         var dto = await SeptemberAsync();
 
         dto.RevenueByDay.Should().HaveCount(30);
-        dto.RevenueByDay.Single(d => d.Date == "2026-09-05").Revenue.Should().Be(1_000_000m);
-        dto.RevenueByDay.Single(d => d.Date == "2026-09-16").Revenue.Should().Be(500_000m);
+        dto.RevenueByDay.Single(d => d.Date == "2026-09-05").Revenue.Should().Be(40m);
+        dto.RevenueByDay.Single(d => d.Date == "2026-09-16").Revenue.Should().Be(20m);
         dto.RevenueByDay.Sum(d => d.Revenue).Should().Be(M(dto, "revenue").Value);
 
         dto.RevenueByMonth.Should().Equal(
             new AdminRevenueByMonthDto("2026-04", 0m),
             new AdminRevenueByMonthDto("2026-05", 0m),
             new AdminRevenueByMonthDto("2026-06", 0m),
-            new AdminRevenueByMonthDto("2026-07", 300_000m),
-            new AdminRevenueByMonthDto("2026-08", 300_000m),
-            new AdminRevenueByMonthDto("2026-09", 4_150_000m));
+            new AdminRevenueByMonthDto("2026-07", 12m),
+            new AdminRevenueByMonthDto("2026-08", 12m),
+            new AdminRevenueByMonthDto("2026-09", 166m));
 
         dto.CreditsByService.Should().Equal(
             new AdminCreditsByServiceDto("TRANSLATION", 61_100),
@@ -290,23 +290,24 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         var result = await _service.GetInsightsAsync(new AdminInsightsQuery { From = Utc(9, 5), To = Utc(9, 6), Tz = "UTC" });
 
         result.Value!.PreviousRange.Should().Be(new AdminInsightRange(Utc(9, 4), Utc(9, 5)));
-        M(result.Value, "revenue").Value.Should().Be(1_000_000m);
+        M(result.Value, "revenue").Value.Should().Be(40m);
         M(result.Value, "revenue").Previous.Should().Be(0m);
         M(result.Value, "revenuePerPayment").Previous.Should().BeNull();
     }
 
     [DockerFact]
-    public async Task MissingFxRate_NullsCostAndExcludesUsd()
+    public async Task MissingFxRate_ExcludesVnd_ButNotTheUsdProviderCost()
     {
         await _context.BillingPricingConfigs.Where(c => c.Key == "fx_rate_usd_vnd").ExecuteDeleteAsync();
 
         var dto = await SeptemberAsync();
 
-        M(dto, "revenue").Value.Should().Be(3_650_000m);
-        M(dto, "revenue").Note.Should().Contain("excludes 1 USD rows (no fx_rate_usd_vnd configured)");
-        M(dto, "aiProviderCost").Value.Should().BeNull();
-        M(dto, "grossMargin").Value.Should().BeNull();
-        M(dto, "grossMargin").Note.Should().Be("AI provider cost is unavailable");
+        // Only the USD payment can be counted without a rate; the VND ones are named, not guessed.
+        M(dto, "revenue").Value.Should().Be(20m);
+        M(dto, "revenue").Note.Should().Contain("VND rows (no fx_rate_usd_vnd configured)");
+        // Providers bill in USD, the accounting currency: a missing VND rate cannot hide their cost.
+        M(dto, "aiProviderCost").Value.Should().Be(1.2m);
+        M(dto, "grossMargin").Value.Should().Be(18.8m);
     }
 
     [DockerFact]
@@ -326,14 +327,14 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         var s = result.Value!;
 
         s.GeneratedAt.Should().Be(Now);
-        s.RevenueToday.Should().Be(150_000m);
-        s.RevenueTodayNote.Should().BeNull();
-        s.RevenueYesterday.Should().Be(500_000m);
-        s.RevenueYesterdayNote.Should().Contain("includes 20.00 USD converted");
+        s.RevenueToday.Should().Be(6m);
+        s.RevenueTodayNote.Should().Contain("includes 150,000 VND converted");
+        s.RevenueYesterday.Should().Be(20m);
+        s.RevenueYesterdayNote.Should().BeNull("yesterday's only payment was in USD");
 
-        // S1 500,000 + S2 2,000,000 + S7 12,000,000/12 + S8 20 USD × 25,000.
-        s.Mrr.Should().Be(4_000_000m);
-        s.MrrNote.Should().Contain("20.00 USD");
+        // S1 500,000 VND ÷ 25,000 + S2's 80 USD contract + S7's 480 USD contract / 12 + S8 20 USD.
+        s.Mrr.Should().Be(160m);
+        s.MrrNote.Should().Contain("500,000 VND converted");
         s.ActiveSubscriptions.Should().Be(4);
         s.ActiveByCycle.Should().Be(new AdminActiveByCycleDto(3, 1, 0));
 
@@ -347,7 +348,7 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         s.ActiveWorkspaces.Should().Be(5);
         s.PlatformCreditBalance.Should().Be(1_000 + 2_000 + 3_000 + 7_000 + 8_000);
 
-        s.OutstandingInvoices.Should().Be(new AdminOutstandingInvoicesDto(2, 1_990_000m, null, 1, 12, $"ws-{_w8.ToString()[..4]}"));
+        s.OutstandingInvoices.Should().Be(new AdminOutstandingInvoicesDto(2, 79.6m, "includes 1,990,000 VND converted at 25,000 VND/USD (billing_pricing_config.fx_rate_usd_vnd)", 1, 12, $"ws-{_w8.ToString()[..4]}"));
         s.OpenSalesLeads.Should().Be(2);
 
         s.SubscriptionsByPlan.Should().BeEquivalentTo(new[]
@@ -394,12 +395,12 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         await AddPaidAsync(70_000m, "VND", Utc(9, 16, 18), "cs_vn_night");
 
         var vietnam = (await _service.GetSnapshotAsync(null)).Value!;
-        vietnam.RevenueToday.Should().Be(150_000m + 70_000m);
-        vietnam.RevenueYesterday.Should().Be(500_000m);
+        vietnam.RevenueToday.Should().Be(6m + 2.8m);
+        vietnam.RevenueYesterday.Should().Be(20m);
 
         var utc = (await _service.GetSnapshotAsync("UTC")).Value!;
-        utc.RevenueToday.Should().Be(150_000m);
-        utc.RevenueYesterday.Should().Be(500_000m + 70_000m);
+        utc.RevenueToday.Should().Be(6m);
+        utc.RevenueYesterday.Should().Be(20m + 2.8m);
     }
 
     [DockerFact]
@@ -409,8 +410,8 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
 
         var s = (await _service.GetSnapshotAsync("Asia/Ho_Chi_Minh")).Value!;
 
-        s.RevenueToday.Should().Be(150_000m);
-        s.RevenueTodayNote.Should().Be("excludes 1 EUR rows");
+        s.RevenueToday.Should().Be(6m);
+        s.RevenueTodayNote.Should().Contain("excludes 1 EUR rows");
     }
 
     [DockerFact]
@@ -434,13 +435,13 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
 
         dto.PreviousRange.Should().Be(new AdminInsightRange(Utc(7, 31, 17), Utc(8, 31, 17)));
         dto.RevenueByDay.Should().HaveCount(30);
-        dto.RevenueByDay[0].Should().Be(new AdminRevenueByDayDto("2026-09-01", 70_000m));
+        dto.RevenueByDay[0].Should().Be(new AdminRevenueByDayDto("2026-09-01", 2.8m));
         dto.RevenueByDay[^1].Date.Should().Be("2026-09-30");
-        M(dto, "revenue").Value.Should().Be(4_150_000m + 70_000m);
-        M(dto, "revenue").Previous.Should().Be(300_000m);
+        M(dto, "revenue").Value.Should().Be(166m + 2.8m);
+        M(dto, "revenue").Previous.Should().Be(12m);
         dto.RevenueByMonth.Select(m => m.Month).Should().Equal("2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09");
-        dto.RevenueByMonth.Single(m => m.Month == "2026-09").Revenue.Should().Be(4_150_000m + 70_000m);
-        dto.RevenueByMonth.Single(m => m.Month == "2026-08").Revenue.Should().Be(300_000m);
+        dto.RevenueByMonth.Single(m => m.Month == "2026-09").Revenue.Should().Be(166m + 2.8m);
+        dto.RevenueByMonth.Single(m => m.Month == "2026-08").Revenue.Should().Be(12m);
         dto.RevenueByDayNote.Should().BeNull();
     }
 
@@ -501,12 +502,12 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
 
         _context.Subscriptions.AddRange(
             NewSub(_s1, _w1, _monthly, created: Utc(8, 1), periodEnd: Utc(9, 20), credits: 1_000),
-            NewSub(_s2, _w2, _monthly, created: Utc(9, 3), periodEnd: Utc(10, 3), credits: 2_000, contract: 2_000_000m),
+            NewSub(_s2, _w2, _monthly, created: Utc(9, 3), periodEnd: Utc(10, 3), credits: 2_000, contract: 80m),
             NewSub(_s3, _w3, _monthly, created: Utc(9, 4), periodEnd: Utc(9, 18), credits: 3_000, trialEndsAt: Utc(9, 18), autoRenew: false),
             NewSub(_s4, _w4, _monthly, created: Utc(7, 1), periodEnd: Utc(9, 10), status: "cancelled", isActive: false, autoRenew: false),
             NewSub(_s5, _w5, _monthly, created: Utc(7, 1), periodEnd: Utc(9, 25), status: "cancelled", autoRenew: false),
             NewSub(_s6, _w6, _monthly, created: Utc(7, 1), periodEnd: Utc(10, 1), status: "cancelled", isActive: false, cancelledAt: Utc(9, 12)),
-            NewSub(_s7, _w6, _yearly, created: Utc(9, 12, 0, 10), periodEnd: Utc(9, 12).AddYears(1), credits: 7_000, contract: 12_000_000m),
+            NewSub(_s7, _w6, _yearly, created: Utc(9, 12, 0, 10), periodEnd: Utc(9, 12).AddYears(1), credits: 7_000, contract: 480m),
             NewSub(_s8, _w8, _usdPlan, created: Utc(6, 1), periodEnd: Utc(9, 30), credits: 8_000,
                 serviceState: "suspended", suspendedReason: "invoice_overdue"));
 
@@ -579,7 +580,7 @@ public sealed class AdminBillingInsightsServiceTests : IAsyncLifetime
         string serviceState = "healthy", string? suspendedReason = null) => new()
     {
         Id = id, UserId = _user, WorkspaceId = workspaceId, PlanId = planId, Status = status, IsActive = isActive,
-        AutoRenew = autoRenew, ContractPriceVnd = contract, TrialEndsAt = trialEndsAt, CancelledAt = cancelledAt,
+        AutoRenew = autoRenew, ContractPriceUsd = contract, TrialEndsAt = trialEndsAt, CancelledAt = cancelledAt,
         CreditsRemaining = credits, CurrentPeriodStart = created, CurrentPeriodEnd = periodEnd,
         ServiceState = serviceState, SuspendedReason = suspendedReason,
         // updated_at deliberately "now": settlement bumps it on every charge, so nothing may date by it.

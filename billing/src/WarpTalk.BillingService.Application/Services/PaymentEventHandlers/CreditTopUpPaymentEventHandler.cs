@@ -24,7 +24,7 @@ namespace WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
 ///
 /// HOW MANY CREDITS
 ///   From the Stripe session metadata, written at checkout creation from a SERVER-side price
-///   (PaymentAppService reads credit_value_vnd out of billing_pricing_config). Deriving it here
+///   (PaymentAppService reads credit_value_usd out of billing_pricing_config). Deriving it here
 ///   from Amount ÷ rate would make the count depend on a rate that may have changed between
 ///   checkout and completion, and would silently re-price a payment the customer already
 ///   authorised at a quoted number.
