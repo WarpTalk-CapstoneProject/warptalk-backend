@@ -104,7 +104,7 @@ public static class ApiMessageConstants
         public const string PlanTierRequired = "Tier is required.";
         public const string PlanTierMaxLength = "Tier must not exceed 20 characters.";
         public const string PlanCurrencyRequired = "Currency is required.";
-        public const string PlanCurrencyInvalid = "Currency must be 'USD' or 'VND'.";
+        public const string PlanCurrencyInvalid = "Plans are priced in USD. Only a plan already sold in VND may keep VND.";
         public const string PlanBillingCycleRequired = "Billing cycle is required.";
         public const string PlanBillingCycleInvalid = "Billing cycle must be 'monthly', 'semiannual', or 'yearly'.";
         public const string PlanMinPrice = "Price for {0} must be at least {1} due to Stripe payment constraints.";

@@ -121,6 +121,34 @@ public class PublishedPlanEditTests
     }
 
     [Fact]
+    public async Task UpdatePlan_AVndPlanMayKeepVnd_WhenEdited()
+    {
+        // A plan sold in VND before USD became the accounting currency: its subscribers' Stripe
+        // prices are VND, so an unrelated edit must not be refused for its currency.
+        var stored = LivePlan();
+        stored.Currency = "VND";
+        stored.Price = 1_900_000m;
+        GivenStoredPlan(stored, hasSubscribers: true);
+
+        var result = await _planService.UpdatePlanAsync(
+            PlanId, SameAsStored(price: 1_900_000m, sortOrder: 3) with { Currency = "VND" });
+
+        result.ErrorCode.Should().NotBe(ErrorCodes.ValidationError, result.Error);
+    }
+
+    [Fact]
+    public async Task UpdatePlan_AUsdPlanCannotMoveToVnd()
+    {
+        GivenStoredPlan(LivePlan(), hasSubscribers: false);
+
+        var result = await _planService.UpdatePlanAsync(
+            PlanId, SameAsStored(price: 1_900_000m) with { Currency = "VND" });
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanCurrencyInvalid);
+    }
+
+    [Fact]
     public async Task UpdatePlan_RefusesAPriceChange_OnAPublishedPlan()
     {
         GivenStoredPlan(LivePlan(), hasSubscribers: false);

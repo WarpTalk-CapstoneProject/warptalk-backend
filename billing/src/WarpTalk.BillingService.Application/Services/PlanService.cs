@@ -187,7 +187,7 @@ public class PlanService : IPlanService
                 return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
 
             var pricingConfig = await GetPricingConfigAsync(cancellationToken);
-            var validationResult = ValidatePlanRequest(request, pricingConfig);
+            var validationResult = ValidatePlanRequest(request, pricingConfig, existingCurrency: plan.Currency);
             if (!validationResult.IsSuccess)
                 return validationResult;
 
@@ -314,12 +314,21 @@ public class PlanService : IPlanService
         return result.IsSuccess ? result.Value : null;
     }
 
-    private static Result<PlanDto> ValidatePlanRequest(PlanRequest request, PricingConfigDto? pricingConfig = null)
+    /// <param name="existingCurrency">
+    /// The stored plan's currency when this is an edit; null for a new plan. USD is the accounting
+    /// currency (2 Oct 2026) and every NEW plan is priced in it. A plan already sold in VND may keep
+    /// VND on edit (its subscribers' Stripe prices are VND) or move to USD, but nothing moves into VND.
+    /// </param>
+    private static Result<PlanDto> ValidatePlanRequest(
+        PlanRequest request, PricingConfigDto? pricingConfig = null, string? existingCurrency = null)
     {
         var currency = request.Currency?.Trim() ?? "";
         var cycle = request.BillingCycle?.ToLowerInvariant().Trim();
-        var isInvalidCurrency = !string.Equals(currency, PaymentConstants.Currencies.Usd, System.StringComparison.OrdinalIgnoreCase) &&
-                                !string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase);
+        var isUsd = string.Equals(currency, PaymentConstants.Currencies.Usd, System.StringComparison.OrdinalIgnoreCase);
+        var keepsItsVndCurrency = existingCurrency is not null &&
+                                  string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase) &&
+                                  string.Equals(existingCurrency.Trim(), currency, System.StringComparison.OrdinalIgnoreCase);
+        var isInvalidCurrency = !isUsd && !keepsItsVndCurrency;
         // A VND plan's minimum is Stripe's own floor for a VND charge; the configurable minimum and the
         // per-credit floor are USD, the accounting currency, so they judge USD plans.
         var minPrice = string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase)
