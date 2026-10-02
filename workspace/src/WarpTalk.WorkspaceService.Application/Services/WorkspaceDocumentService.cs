@@ -664,11 +664,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     participantsCache,
                     ct);
 
-                if (accessResult.IsSuccess)
+                // Which version this caller gets. For anything that is not restricted this is
+                // the evaluator's answer and nothing more; for a restricted document a member is
+                // listed only when there is a masked copy for them to open.
+                var version = await DecideListedVersionAsync(
+                    userId, workspaceId, doc, member, roleName, docPolicies, roomCache, participantsCache, accessResult, ct);
+
+                if (version != DocumentContentVersion.None)
                 {
-                    var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, doc.Id);
+                    var isOriginal = version == DocumentContentVersion.Original;
                     approvedByDocument.TryGetValue(doc.Id, out var approvedBy);
-                    allowedDtos.Add(doc.ToDto(downloadUrl, approvedBy));
+                    allowedDtos.Add(doc.ToDto(
+                            isOriginal ? _urlProvider.GetDocumentDownloadUrl(workspaceId, doc.Id) : null,
+                            approvedBy)
+                        with
+                        {
+                            ContentAccess = version.ToWireValue(),
+                            MaskedVersionAvailable = !isOriginal
+                        });
                 }
             }
 
@@ -698,20 +711,33 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             }
 
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
-            if (!accessResult.IsSuccess)
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+
+            // A refusal stands as it always has — unless the document is restricted, in which
+            // case the caller may still be owed its MASKED copy and the decision below settles it.
+            var mayHaveMaskedVersion = document != null
+                && document.WorkspaceId == workspaceId
+                && document.DeletedAt == null
+                && document.IsRestricted();
+            if (!accessResult.IsSuccess && !mayHaveMaskedVersion)
             {
                 return Result.Failure<WorkspaceDocumentDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
             }
 
-            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null)
             {
                 return Result.Failure<WorkspaceDocumentDto>("Document not found.", ErrorCodes.NotFound);
             }
 
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.View, accessResult, ct);
+            if (!DocumentContentAccessDecision.CanOpenDocument(content))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.GetDocumentDetails, logger: _logger, ct: ct);
 
-            var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
             var approvalAudit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
                 a => a.DocumentId == documentId &&
                      a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument,
@@ -723,7 +749,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // would add a second audit query per row.
             var rejectionReason = await GetLatestRejectionReasonAsync(documentId, ct);
 
-            return Result.Success(document.ToDto(downloadUrl, approvalAudit?.ActorId, rejectionReason));
+            return Result.Success(await ToDetailDtoAsync(document, content, approvalAudit?.ActorId, rejectionReason, ct));
         }
         catch (Exception ex)
         {
@@ -1791,6 +1817,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<DocumentDownloadStreamDto>("Document not found.", ErrorCodes.NotFound);
             }
 
+            // THE ORIGINAL BYTES. A restricted document's original goes to Owner/Admin and the
+            // uploader; everybody else is on the masked copy or on nothing, whatever policy let
+            // them through the evaluator above. Same function the detail route answers from.
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.Download, accessResult, ct);
+            if (DocumentContentAccessDecision.Decide(content) != DocumentContentVersion.Original)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.AccessDeniedOriginalContent, ErrorCodes.Forbidden);
+            }
+
             var stream = await _storage.GetDecryptedStreamAsync(document, ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadDocument, logger: _logger, ct: ct);
@@ -1802,6 +1837,310 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while downloading document. DocumentId: {DocumentId}", documentId);
             return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<DocumentDownloadStreamDto>> DownloadMaskedDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            // Download, not View: this route is also what the page's preview reads, exactly as
+            // the original download is for an original — so a DENY on `download` closes both.
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, ct);
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(accessResult.Error ?? WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.Forbidden);
+            }
+
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.Download, accessResult, ct);
+            if (DocumentContentAccessDecision.Decide(content) == DocumentContentVersion.None)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
+            if (!DocumentContentAccessDecision.CanReadMaskedVersion(content))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.MaskedVersionNotFound, ErrorCodes.NotFound);
+            }
+
+            var stream = await _storage.GetMaskedFileStreamAsync(document, ct);
+            if (stream == null)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.MaskedVersionNotFound, ErrorCodes.NotFound);
+            }
+
+            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadMaskedDocument, logger: _logger, ct: ct);
+
+            return Result.Success(new DocumentDownloadStreamDto(
+                stream,
+                WorkspaceDocumentHelper.GetSafeContentType(document.FileExtension),
+                WorkspaceDocumentHelper.MaskedDownloadFileName(document)));
+        }
+        catch (Exception ex)
+        {
+            // Including a masked copy that fails its integrity check. The answer is an error —
+            // there is no path from here to the original.
+            _logger.LogError(ex, "Error occurred while downloading the masked copy. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<WorkspaceDocumentDto>> RescanMaskedVersionAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var (document, isOwnerOrAdmin, _, failure) = await LoadForVisibilityChangeAsync(workspaceId, documentId, userId, ct);
+            if (failure != null)
+            {
+                return failure;
+            }
+
+            if (!isOwnerOrAdmin)
+            {
+                return Result.Failure<WorkspaceDocumentDto>("Forbidden. Only a workspace Owner or Admin can re-scan a document.", ErrorCodes.Forbidden);
+            }
+
+            if (!document!.IsRestricted())
+            {
+                return Result.Failure<WorkspaceDocumentDto>("Only a restricted document has a masked version.", ErrorCodes.ValidationError);
+            }
+
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
+            var state = await ReadMaskedVersionStateAsync(document, await SafeMaskedFileExistsAsync(document, ct), ct);
+
+            // Already asked and not answered yet: one scan is enough.
+            if (state.Status != WorkspaceDocumentMaskedVersionStatuses.Pending)
+            {
+                // The REQUEST is the audit row — the guardrail looks for it when the event below
+                // arrives, because a restricted document is otherwise skipped. So unlike every
+                // other audit write it is not allowed to fail quietly, and it is saved together
+                // with the outbox row: either both exist or neither does.
+                await _unitOfWork.WorkspaceDocumentAuditRepository.AddAsync(
+                    WorkspaceDocumentMapper.ToAuditEntity(
+                        documentId,
+                        workspaceId,
+                        userId,
+                        WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanRequested),
+                    ct);
+
+                // The same event an upload publishes. No second pipeline.
+                await _eventPublisher.PublishDocumentUploadedAsync(
+                    document.Id,
+                    workspaceId,
+                    document.StorageKey,
+                    document.FileName,
+                    document.FileExtension,
+                    userId,
+                    document.ConfidentialityLevel,
+                    ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.View, accessResult, ct);
+            return Result.Success(await ToDetailDtoAsync(document, content, null, null, ct));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while requesting a masked-copy re-scan. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Looks up everything <see cref="DocumentContentAccessDecision"/> needs for one caller and
+    /// one document. For a document that is not restricted this is the evaluator's answer and no
+    /// further I/O.
+    /// </summary>
+    private async Task<DocumentContentAccessInput> ResolveContentAccessAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        string permission,
+        Result? access,
+        CancellationToken ct)
+    {
+        var granted = access?.IsSuccess == true;
+        if (!document.IsRestricted())
+        {
+            return new DocumentContentAccessInput(false, false, false, granted, granted, false, false);
+        }
+
+        var isUploader = document.OwnerId == userId || document.UploadedBy == userId;
+        var isOwnerOrAdmin = false;
+        var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+        if (member != null)
+        {
+            isOwnerOrAdmin = (await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct)).IsOwnerOrAdmin();
+        }
+
+        var maskedExists = await SafeMaskedFileExistsAsync(document, ct);
+
+        var grantedIgnoringRestriction = granted;
+        if (!granted && !isOwnerOrAdmin && !isUploader)
+        {
+            var ignoring = await _accessEvaluator.EvaluateAccessIgnoringRestrictionAsync(userId, workspaceId, document.Id, permission, ct);
+            grantedIgnoringRestriction = ignoring?.IsSuccess == true;
+        }
+
+        var restrictedByPii = maskedExists
+            || (!isOwnerOrAdmin && !isUploader && await WasRestrictedByPiiAsync(document.Id, ct));
+
+        return new DocumentContentAccessInput(
+            isOwnerOrAdmin, isUploader, true, granted, grantedIgnoringRestriction, maskedExists, restrictedByPii);
+    }
+
+    /// <summary>The list's version of the same decision, with the member and role it already loaded.</summary>
+    private async Task<DocumentContentVersion> DecideListedVersionAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        WorkspaceMember member,
+        string roleName,
+        IEnumerable<WorkspaceDocumentAccessPolicy> policies,
+        Dictionary<Guid, TranslationRoomDto?>? roomCache,
+        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache,
+        Result? access,
+        CancellationToken ct)
+    {
+        var granted = access?.IsSuccess == true;
+        if (!document.IsRestricted())
+        {
+            return granted ? DocumentContentVersion.Original : DocumentContentVersion.None;
+        }
+
+        var isUploader = document.OwnerId == userId || document.UploadedBy == userId;
+        var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+        if (isOwnerOrAdmin || isUploader)
+        {
+            return DocumentContentAccessDecision.Decide(
+                new DocumentContentAccessInput(isOwnerOrAdmin, isUploader, true, granted, granted, false, false));
+        }
+
+        var grantedIgnoringRestriction = granted;
+        if (!granted)
+        {
+            var ignoring = await _accessEvaluator.EvaluateAccessIgnoringRestrictionAsync(
+                userId, workspaceId, document, WorkspaceDocumentPermissions.View, member, roleName, policies, roomCache, participantsCache, ct);
+            grantedIgnoringRestriction = ignoring?.IsSuccess == true;
+        }
+
+        if (!grantedIgnoringRestriction)
+        {
+            return DocumentContentVersion.None;
+        }
+
+        var maskedExists = await SafeMaskedFileExistsAsync(document, ct);
+        var restrictedByPii = maskedExists || (granted && await WasRestrictedByPiiAsync(document.Id, ct));
+
+        return DocumentContentAccessDecision.Decide(
+            new DocumentContentAccessInput(false, false, true, granted, grantedIgnoringRestriction, maskedExists, restrictedByPii));
+    }
+
+    /// <summary>
+    /// Is there a masked copy? A store that cannot say is treated as "no": a member then gets
+    /// nothing, which is the safe side of not knowing.
+    /// </summary>
+    private async Task<bool> SafeMaskedFileExistsAsync(WorkspaceDocument document, CancellationToken ct)
+    {
+        try
+        {
+            return await _storage.MaskedFileExistsAsync(document, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Could not check for the masked copy of document {DocumentId}.", document.Id);
+            return false;
+        }
+    }
+
+    /// <summary>Did the last security scan restrict this document for personal details, and not for a banned keyword?</summary>
+    private async Task<bool> WasRestrictedByPiiAsync(Guid documentId, CancellationToken ct)
+    {
+        var scan = await _unitOfWork.WorkspaceDocumentAuditRepository.GetLatestActionAsync(
+            documentId, WorkspaceDocumentConstants.AuditActions.SecurityScanCompleted, ct);
+        return WorkspaceDocumentMapper.ReadScanOutcome(scan?.Metadata).RestrictedByPii;
+    }
+
+    /// <summary>
+    /// Why the document does or does not have a masked copy, from the audit trail. Storage
+    /// decides whether one exists; this only explains it.
+    /// </summary>
+    private async Task<(bool RestrictedByPii, string Status)> ReadMaskedVersionStateAsync(
+        WorkspaceDocument document,
+        bool maskedExists,
+        CancellationToken ct)
+    {
+        var audits = _unitOfWork.WorkspaceDocumentAuditRepository;
+        var scan = await audits.GetLatestActionAsync(document.Id, WorkspaceDocumentConstants.AuditActions.SecurityScanCompleted, ct);
+        var requested = await audits.GetLatestActionAsync(document.Id, WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanRequested, ct);
+        var failed = await audits.GetLatestActionAsync(document.Id, WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanFailed, ct);
+
+        var outcome = WorkspaceDocumentMapper.ReadScanOutcome(scan?.Metadata);
+        var restrictedByPii = maskedExists || outcome.RestrictedByPii;
+
+        if (requested != null
+            && (scan == null || scan.ActionAt < requested.ActionAt)
+            && (failed == null || failed.ActionAt < requested.ActionAt))
+        {
+            return (restrictedByPii, WorkspaceDocumentMaskedVersionStatuses.Pending);
+        }
+
+        if (maskedExists)
+        {
+            return (restrictedByPii, WorkspaceDocumentMaskedVersionStatuses.Available);
+        }
+
+        if (failed != null && (scan == null || scan.ActionAt < failed.ActionAt))
+        {
+            return (restrictedByPii, WorkspaceDocumentMaskedVersionStatuses.Error);
+        }
+
+        // "available" on record with no file in storage is a copy that has since gone.
+        var recorded = outcome.MaskedVersion;
+        var status = string.IsNullOrWhiteSpace(recorded) || recorded == WorkspaceDocumentMaskedVersionStatuses.Available
+            ? WorkspaceDocumentMaskedVersionStatuses.NotGenerated
+            : recorded;
+        return (restrictedByPii, status);
+    }
+
+    /// <summary>The detail DTO, told which version this caller gets and what there is to offer them.</summary>
+    private async Task<WorkspaceDocumentDto> ToDetailDtoAsync(
+        WorkspaceDocument document,
+        DocumentContentAccessInput content,
+        Guid? approvedBy,
+        string? rejectionReason,
+        CancellationToken ct)
+    {
+        var version = DocumentContentAccessDecision.Decide(content);
+        var dto = document.ToDto(
+            version == DocumentContentVersion.Original
+                ? _urlProvider.GetDocumentDownloadUrl(document.WorkspaceId, document.Id)
+                : null,
+            approvedBy,
+            rejectionReason);
+
+        if (!document.IsRestricted())
+        {
+            return dto;
+        }
+
+        var state = await ReadMaskedVersionStateAsync(document, content.MaskedVersionExists, ct);
+        return dto with
+        {
+            ContentAccess = version.ToWireValue(),
+            MaskedVersionAvailable = DocumentContentAccessDecision.CanReadMaskedVersion(content),
+            MaskedVersionStatus = state.Status,
+            CanRescanMaskedVersion = content.IsOwnerOrAdmin
+        };
     }
 
     public async Task<Result> DeleteDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
@@ -2314,6 +2653,16 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // Checked AFTER the ACL on purpose: someone who may not see the document at all gets
             // the same answer as before, and only a caller who can see it learns why WarpBot
             // cannot use it.
+            // The extracted text is written before the scan runs, so it is the ORIGINAL text.
+            // IsIndexEligible below already refuses every restricted document; this says the same
+            // thing through the content decision, so the rule "no original for a masked viewer"
+            // does not depend on that gate staying the way it is.
+            var contentAccess = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.View, accessResult, ct);
+            if (DocumentContentAccessDecision.Decide(contentAccess) != DocumentContentVersion.Original)
+            {
+                return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.AccessDeniedOriginalContent, ErrorCodes.Forbidden);
+            }
+
             if (!document.IsIndexEligible())
             {
                 return Result.Failure<ExtractedTextDto>(

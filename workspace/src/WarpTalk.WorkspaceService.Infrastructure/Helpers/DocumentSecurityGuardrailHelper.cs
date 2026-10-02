@@ -20,6 +20,37 @@ public static class DocumentSecurityGuardrailHelper
     public static bool HasBasicIndexEligibility(WorkspaceDocument document)
         => document.IsIndexEligible();
 
+    /// <summary>
+    /// Has an Owner/Admin asked for this document's masked copy to be produced, with no scan
+    /// having answered since?
+    /// </summary>
+    /// <remarks>
+    /// The request is an audit row rather than a field on the event, so the ingestion event's
+    /// contract is untouched and the request survives a consumer restart: it stays pending until
+    /// a scan (or a recorded failure) is newer than it.
+    /// </remarks>
+    public static async Task<bool> HasPendingMaskedVersionRescanAsync(
+        IUnitOfWork unitOfWork,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var audits = unitOfWork.WorkspaceDocumentAuditRepository;
+        var requested = await audits.GetLatestActionAsync(
+            documentId, WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanRequested, ct);
+        if (requested is null)
+        {
+            return false;
+        }
+
+        var scanned = await audits.GetLatestActionAsync(
+            documentId, WorkspaceDocumentConstants.AuditActions.SecurityScanCompleted, ct);
+        var failed = await audits.GetLatestActionAsync(
+            documentId, WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanFailed, ct);
+
+        return (scanned is null || scanned.ActionAt < requested.ActionAt)
+            && (failed is null || failed.ActionAt < requested.ActionAt);
+    }
+
     public static async Task MarkSkippedAsync(
         WorkspaceDocument document,
         IUnitOfWork unitOfWork,

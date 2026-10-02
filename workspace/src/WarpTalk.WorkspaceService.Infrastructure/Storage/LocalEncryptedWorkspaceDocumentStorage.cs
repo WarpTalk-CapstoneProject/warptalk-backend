@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared.Configuration;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
@@ -209,6 +210,58 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
         }
     }
 
+    public Task SaveMaskedFileAsync(WorkspaceDocument document, Stream contentStream, CancellationToken ct = default)
+        => SaveDocumentContentAsync(CreateMaskedFileDocument(document), contentStream, ct);
+
+    public async Task<Stream?> GetMaskedFileStreamAsync(WorkspaceDocument document, CancellationToken ct = default)
+    {
+        var masked = CreateMaskedFileDocument(document);
+        if (!FileExists(masked.StorageKey))
+        {
+            return null;
+        }
+
+        // Anything other than "not there" propagates: a copy that fails its HMAC is not a reason
+        // to serve something else.
+        return await GetDecryptedStreamAsync(masked, ct);
+    }
+
+    public Task<bool> MaskedFileExistsAsync(WorkspaceDocument document, CancellationToken ct = default)
+        => Task.FromResult(
+            !string.IsNullOrEmpty(document.StorageKey)
+            && FileExists(WorkspaceDocumentHelper.MaskedFileStorageKey(document)));
+
+    public Task DeleteMaskedFileAsync(WorkspaceDocument document, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(document.StorageKey))
+        {
+            return Task.CompletedTask;
+        }
+
+        var fullPath = GetFullPath(WorkspaceDocumentHelper.MaskedFileStorageKey(document));
+        if (File.Exists(fullPath))
+        {
+            File.Delete(fullPath);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static WorkspaceDocument CreateMaskedFileDocument(WorkspaceDocument document)
+    {
+        if (string.IsNullOrEmpty(document.StorageKey))
+        {
+            throw new ArgumentException("StorageKey is null or empty.", nameof(document));
+        }
+
+        return new WorkspaceDocument
+        {
+            Id = document.Id,
+            WorkspaceId = document.WorkspaceId,
+            StorageKey = WorkspaceDocumentHelper.MaskedFileStorageKey(document)
+        };
+    }
+
     public Task DeleteDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(document.StorageKey))
@@ -223,6 +276,22 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
             if (File.Exists(fullPath))
             {
                 File.Delete(fullPath);
+            }
+
+            // The derived copies go with the file they were derived from. The masked copy
+            // matters most: left behind, it would be a readable version of a blob that no
+            // longer exists.
+            foreach (var derivedKey in new[]
+                     {
+                         document.StorageKey + "_extracted.txt",
+                         WorkspaceDocumentHelper.MaskedFileStorageKey(document)
+                     })
+            {
+                var derivedPath = GetFullPath(derivedKey);
+                if (File.Exists(derivedPath))
+                {
+                    File.Delete(derivedPath);
+                }
             }
         }
         catch (Exception ex)

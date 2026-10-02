@@ -160,6 +160,45 @@ public static class WorkspaceDocumentHelper
     public static bool HasPendingRevision(WorkspaceDocument document) =>
         !string.IsNullOrWhiteSpace(document.PendingStorageKey);
 
+    /// <summary>
+    /// Where the PII-masked copy of a document's current file lives: next to the original, as
+    /// <c>{StorageKey}_masked{extension}</c>.
+    /// </summary>
+    /// <remarks>
+    /// Derived from StorageKey and nothing else, so the copy belongs to one FILE rather than to a
+    /// document row: a new revision gets a new StorageKey and therefore starts with no masked
+    /// copy, instead of inheriting one that describes bytes it no longer has.
+    /// </remarks>
+    public static string MaskedFileStorageKey(WorkspaceDocument document) =>
+        $"{document.StorageKey}_masked{NormalizeExtension(System.IO.Path.GetExtension(document.StorageKey))}";
+
+    /// <summary>
+    /// The name a masked copy downloads as: <c>{Name} (masked){extension}</c>, in the format the
+    /// document was uploaded in.
+    /// </summary>
+    public static string MaskedDownloadFileName(WorkspaceDocument document)
+    {
+        var extension = NormalizeExtension(document.FileExtension);
+        var name = string.IsNullOrWhiteSpace(document.Name) ? document.FileName : document.Name;
+        name = (name ?? string.Empty).Trim();
+        if (extension.Length > 0 && name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[..^extension.Length].TrimEnd();
+        }
+
+        foreach (var invalid in new[] { '\\', '/', ':', '*', '?', '"', '<', '>', '|', '\r', '\n' })
+        {
+            name = name.Replace(invalid, '_');
+        }
+
+        if (name.Length == 0)
+        {
+            name = "document";
+        }
+
+        return $"{name} (masked){extension}";
+    }
+
     public static string NormalizeExtension(string? fileExtension)
     {
         if (string.IsNullOrWhiteSpace(fileExtension))

@@ -211,6 +211,8 @@ public static class WorkspaceConstants
         public const string AccessDeniedPendingIngestion = "Access denied. Document ingestion is pending.";
         public const string AccessDeniedByPolicy = "Access denied by policy (DENY).";
         public const string AccessDeniedSensitive = "Access denied. Sensitive document.";
+        public const string AccessDeniedOriginalContent = "Access denied. Only the masked version of this document is available to you.";
+        public const string MaskedVersionNotFound = "This document has no masked version.";
         public const string AccessDeniedDefault = "Access denied. Default action blocks access.";
         public const string AccessDeniedPrivate = "Access denied. This document is private.";
         public const string DocumentNotAiEligible = "This document is not available to WarpBot. It is pending approval, rejected, private, restricted, or AI use is turned off for it.";

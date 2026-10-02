@@ -6,6 +6,7 @@ using Amazon.S3.Util;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared.Configuration;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
@@ -139,6 +140,9 @@ public sealed class S3EncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStor
         {
             await _s3.DeleteObjectAsync(_bucket, document.StorageKey, ct);
             await _s3.DeleteObjectAsync(_bucket, ExtractedTextKey(document), ct);
+            // The masked copy goes with the file it was derived from: left behind, it would be a
+            // readable version of a blob that no longer exists.
+            await _s3.DeleteObjectAsync(_bucket, WorkspaceDocumentHelper.MaskedFileStorageKey(document), ct);
         }
         catch (Exception ex)
         {
@@ -148,6 +152,75 @@ public sealed class S3EncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStor
                 document.Id);
         }
     }
+
+    public Task SaveMaskedFileAsync(
+        WorkspaceDocument document,
+        Stream contentStream,
+        CancellationToken ct = default)
+    {
+        EnsureStorageKey(document);
+        return SaveDocumentContentAsync(CreateMaskedFileDocument(document), contentStream, ct);
+    }
+
+    public async Task<Stream?> GetMaskedFileStreamAsync(
+        WorkspaceDocument document,
+        CancellationToken ct = default)
+    {
+        EnsureStorageKey(document);
+
+        // Existence is asked first so that "there is no masked copy" stays a quiet null, and
+        // everything else — a payload that fails its HMAC, a store that is down — propagates.
+        // Neither is a reason to serve something else.
+        if (!await MaskedFileExistsAsync(document, ct))
+        {
+            return null;
+        }
+
+        return await GetDecryptedStreamAsync(CreateMaskedFileDocument(document), ct);
+    }
+
+    public async Task<bool> MaskedFileExistsAsync(
+        WorkspaceDocument document,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(document.StorageKey))
+        {
+            return false;
+        }
+
+        try
+        {
+            await _s3.GetObjectMetadataAsync(
+                _bucket,
+                WorkspaceDocumentHelper.MaskedFileStorageKey(document),
+                ct);
+            return true;
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    public async Task DeleteMaskedFileAsync(
+        WorkspaceDocument document,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(document.StorageKey))
+        {
+            return;
+        }
+
+        await _s3.DeleteObjectAsync(_bucket, WorkspaceDocumentHelper.MaskedFileStorageKey(document), ct);
+    }
+
+    private static WorkspaceDocument CreateMaskedFileDocument(WorkspaceDocument document) =>
+        new()
+        {
+            Id = document.Id,
+            WorkspaceId = document.WorkspaceId,
+            StorageKey = WorkspaceDocumentHelper.MaskedFileStorageKey(document)
+        };
 
     private async Task<MemoryStream> EncryptAsync(
         Guid workspaceId,
