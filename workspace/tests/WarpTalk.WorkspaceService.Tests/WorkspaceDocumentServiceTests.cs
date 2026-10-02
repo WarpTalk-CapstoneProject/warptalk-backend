@@ -1236,9 +1236,53 @@ public class WorkspaceDocumentServiceTests
         _workspaceDocumentRepository.GetByIdAsync(document.Id, Arg.Any<CancellationToken>()).Returns(document);
         _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.View, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
+        // WT-929: the read asks `ai_retrieval` for this caller as well. Granted by default here so
+        // each test below withdraws exactly the one thing it is about.
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.AiRetrieval, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
         _storage.GetExtractedTextAsync(document, Arg.Any<CancellationToken>())
             .Returns("{\"FullText\": \"Mat ma Omega 99\"}");
         return document;
+    }
+
+    // ---- WT-929: the caller's own `ai_retrieval` answer, not only the document's eligibility --
+    //
+    // An owner who denies AI retrieval to a member (or to the Member role) removes the document
+    // from that person's semantic search, because the ai-retrievable list asks the evaluator.
+    // This read asked only `view`, so an @document mention handed WarpBot the full text anyway.
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldRefuse_WhenAiRetrievalIsDeniedForTheCaller()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        // Public, AI switched on, viewable by this caller: everything the old gate looked at says yes.
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.@public.ToString());
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, document.Id, WorkspaceDocumentPermissions.AiRetrieval, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure(WorkspaceConstants.Errors.AccessDeniedByPolicy));
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode, result.ErrorCode);
+        Assert.Null(result.Value);
+        // Refused before the text is ever loaded, not loaded and then withheld.
+        await _storage.DidNotReceiveWithAnyArgs().GetExtractedTextAsync(default!, default);
+        await _storage.DidNotReceiveWithAnyArgs().GetDecryptedStreamAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task GetExtractedTextAsync_ShouldAskTheSamePermissionAsTheAiRetrievableList()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangeExtractedTextRead(workspaceId, userId, WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, document.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        await _accessEvaluator.Received(1).EvaluateAccessAsync(
+            userId, workspaceId, document.Id, WorkspaceDocumentPermissions.AiRetrieval, Arg.Any<CancellationToken>());
     }
 
     [Theory]
