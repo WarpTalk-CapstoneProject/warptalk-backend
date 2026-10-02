@@ -199,6 +199,54 @@ public class WorkspaceDocumentsController : ControllerBase
     }
 
     /// <summary>
+    /// The PII-masked copy of a restricted document, in the format it was uploaded in
+    /// (`{Name} (masked).docx`). This is what a member is given in place of the original, and
+    /// what the document page previews for them; Owner/Admin and the uploader may read it too.
+    /// 403 when the caller has no version of the document, 404 when no masked copy exists.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{documentId:guid}/masked/download")]
+    public async Task<IActionResult> DownloadMaskedDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.DownloadMaskedDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        if (!result.IsSuccess || result.Value == null)
+        {
+            return ToActionResult(result);
+        }
+
+        var dto = result.Value;
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        // The same URL serves a different file after a re-scan, and none once the copy is gone.
+        Response.Headers["Cache-Control"] = "no-store";
+        return File(dto.Stream, dto.ContentType, dto.FileName);
+    }
+
+    /// <summary>
+    /// Owner/Admin: run the security scan again on a restricted document so that its masked copy
+    /// is produced. Returns the document with `maskedVersionStatus: pending`; the result arrives
+    /// through the usual document lifecycle event.
+    /// </summary>
+    [Authorize]
+    [HttpPost("{documentId:guid}/masked/rescan")]
+    public async Task<IActionResult> RescanMaskedVersion(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _documentService.RescanMaskedVersionAsync(workspaceId, documentId, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
     /// WT-854 — the corrected file awaiting review for a published document, so a reviewer can
     /// read what they are approving. `download` keeps serving the approved file to everyone else.
     /// Owner/Admin or the uploader only; 404 when nothing is pending.

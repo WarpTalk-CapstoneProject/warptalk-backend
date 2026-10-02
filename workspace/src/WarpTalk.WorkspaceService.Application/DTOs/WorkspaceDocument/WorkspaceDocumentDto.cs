@@ -52,7 +52,35 @@ public record WorkspaceDocumentDto(
     /// WT-854 — a corrected file waiting for review, or null. Everything above still describes
     /// the APPROVED file, which is what readers, downloads and the AI index use.
     /// </summary>
-    WorkspaceDocumentPendingRevisionDto? PendingRevision = null
+    WorkspaceDocumentPendingRevisionDto? PendingRevision = null,
+    /// <summary>
+    /// Which version of the content THIS caller gets: `original`, `masked` or `none`.
+    /// </summary>
+    /// <remarks>
+    /// `masked` is the PII-masked copy of a restricted document — the same format with personal
+    /// details replaced by markers — and is all an ordinary member is given. The original
+    /// download answers 403 for that caller and <see cref="DownloadUrl"/> is null. `none` is a
+    /// document the caller may see listed but has no readable version of yet.
+    /// Decided by DocumentContentAccessDecision, the same function the download routes ask.
+    /// </remarks>
+    string ContentAccess = "original",
+    /// <summary>
+    /// A masked copy exists AND this caller may read it, at GET documents/{id}/masked/download.
+    /// True for a member whose content is the masked copy, and for Owner/Admin and the uploader,
+    /// who get it alongside the original so they can see what members see.
+    /// </summary>
+    bool MaskedVersionAvailable = false,
+    /// <summary>
+    /// Why the document does or does not have a masked copy — a value of
+    /// WorkspaceDocumentMaskedVersionStatuses — or null for a document that is not restricted.
+    /// Detail route only.
+    /// </summary>
+    string? MaskedVersionStatus = null,
+    /// <summary>
+    /// Whether this caller may ask for the security scan to be run again to produce the masked
+    /// copy: Owner/Admin, on a restricted document. Detail route only.
+    /// </summary>
+    bool CanRescanMaskedVersion = false
 );
 
 /// <summary>

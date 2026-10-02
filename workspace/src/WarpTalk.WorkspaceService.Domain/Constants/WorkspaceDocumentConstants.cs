@@ -189,6 +189,20 @@ public static class WorkspaceDocumentConstants
         /// <summary>A private document was published again (or resubmitted for approval).</summary>
         public const string PublishDocument = "PublishDocument";
         public const string SecurityScanCompleted = "SecurityScanCompleted";
+
+        /// <summary>
+        /// An Owner/Admin asked for a restricted document to be scanned again so that its masked
+        /// copy is produced. Stays "pending" until a SecurityScanCompleted or a
+        /// MaskedVersionRescanFailed row is newer than it.
+        /// </summary>
+        public const string MaskedVersionRescanRequested = "MaskedVersionRescanRequested";
+
+        /// <summary>That re-scan did not complete. Kept apart from SecurityScanCompleted so a
+        /// failed attempt does not overwrite what the last real scan found.</summary>
+        public const string MaskedVersionRescanFailed = "MaskedVersionRescanFailed";
+
+        /// <summary>Someone downloaded or previewed the masked copy.</summary>
+        public const string DownloadMaskedDocument = "DownloadMaskedDocument";
         public const string EmbeddingIndexed = "EmbeddingIndexed";
         public const string EmbeddingFailed = "EmbeddingFailed";
         public const string EmbeddingBlocked = "EmbeddingBlocked";
