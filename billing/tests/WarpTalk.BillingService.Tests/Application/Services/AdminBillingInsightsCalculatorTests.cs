@@ -15,40 +15,48 @@ public class AdminBillingInsightsCalculatorTests
     // ── Currency ─────────────────────────────────────────────────────────────
 
     [Fact]
-    public void ToVnd_ConvertsUsdAtTheConfiguredRate()
+    public void ToUsd_ConvertsVndAtTheConfiguredRate()
     {
-        var total = ToVnd([new MoneyPart("vnd", 1_000_000m, 3), new MoneyPart("USD", 20m, 1)], Fx);
+        var total = ToUsd([new MoneyPart("vnd", 1_000_000m, 3), new MoneyPart("USD", 20m, 1)], Fx);
 
-        total.Amount.Should().Be(1_500_000m);
+        total.Amount.Should().Be(60m);
         total.IncludedRows.Should().Be(4);
-        total.ConvertedUsd.Should().Be(20m);
+        total.ConvertedVnd.Should().Be(1_000_000m);
         ConversionNote(total, Fx).Should().Be(
-            "includes 20.00 USD converted at 25,000 VND/USD (billing_pricing_config.fx_rate_usd_vnd)");
+            "includes 1,000,000 VND converted at 25,000 VND/USD (billing_pricing_config.fx_rate_usd_vnd)");
     }
 
     [Fact]
-    public void ToVnd_WithoutARateExcludesUsdAndSaysSo()
+    public void ToUsd_WithoutARateExcludesVndAndSaysSo()
     {
-        var total = ToVnd([new MoneyPart("VND", 100m, 1), new MoneyPart("usd", 20m, 2)], null);
+        var total = ToUsd([new MoneyPart("USD", 100m, 1), new MoneyPart("vnd", 20_000m, 2)], null);
 
         total.Amount.Should().Be(100m);
         total.ExcludedRows.Should().Be(2);
-        ConversionNote(total, null).Should().Be("excludes 2 USD rows (no fx_rate_usd_vnd configured)");
+        ConversionNote(total, null).Should().Be("excludes 2 VND rows (no fx_rate_usd_vnd configured)");
     }
 
     [Fact]
-    public void ToVnd_NothingConvertibleIsNullNotZero()
+    public void ToUsd_RoundsTheTotalToCents()
     {
-        var total = ToVnd([new MoneyPart("EUR", 10m, 1)], Fx);
+        // 30,000 VND at 26,000 VND/USD is 1.1538… USD: rounded once on the total, never per row.
+        ToUsd([new MoneyPart("VND", 10_000m, 1), new MoneyPart("VND", 10_000m, 1), new MoneyPart("VND", 10_000m, 1)], 26_000m)
+            .Amount.Should().Be(1.15m);
+    }
+
+    [Fact]
+    public void ToUsd_NothingConvertibleIsNullNotZero()
+    {
+        var total = ToUsd([new MoneyPart("EUR", 10m, 1)], Fx);
 
         total.Amount.Should().BeNull();
         ConversionNote(total, Fx).Should().Be("excludes 1 EUR rows");
     }
 
     [Fact]
-    public void ToVnd_NoRowsIsATrueZero()
+    public void ToUsd_NoRowsIsATrueZero()
     {
-        ToVnd([], Fx).Amount.Should().Be(0m);
+        ToUsd([], Fx).Amount.Should().Be(0m);
     }
 
     // ── Revenue family ───────────────────────────────────────────────────────
@@ -56,11 +64,11 @@ public class AdminBillingInsightsCalculatorTests
     [Fact]
     public void Revenue_NotesTheStripeDuplicatesItCountedOnce()
     {
-        var (side, total) = Revenue([new PaymentCurrencyTotal("VND", 4, 4_000_000m)], 1, Fx);
+        var (side, total) = Revenue([new PaymentCurrencyTotal("USD", 4, 400m)], 1, Fx);
 
-        side.Value.Should().Be(4_000_000m);
+        side.Value.Should().Be(400m);
         side.Note.Should().Be("1 Stripe subscription invoice(s) counted once with their checkout");
-        RevenuePerPayment(side, total).Value.Should().Be(1_000_000m);
+        RevenuePerPayment(side, total).Value.Should().Be(100m);
     }
 
     [Fact]
@@ -77,39 +85,37 @@ public class AdminBillingInsightsCalculatorTests
     // ── AI provider cost and margin ──────────────────────────────────────────
 
     [Fact]
-    public void AiProviderCost_ConvertsTheCoveredRowsAndReportsCoverage()
+    public void AiProviderCost_IsTheCoveredRowsInUsdAndReportsCoverage()
     {
         var consumption = new ConsumptionTotals(1450, 3, 150, 1100, 2, 1.2m);
 
-        var cost = AiProviderCost(consumption, Fx);
+        var cost = AiProviderCost(consumption);
 
-        cost.Value.Should().Be(30_000m);
+        cost.Value.Should().Be(1.2m);
         cost.Note.Should().Be(
-            "covers 75.9% of consumed credits (2 of 3 transactions have a provider cost); USD converted at 25,000 VND/USD");
+            "covers 75.9% of consumed credits (2 of 3 transactions have a provider cost)");
     }
 
     [Fact]
     public void AiProviderCost_WithNoCoveredRowsIsNull()
     {
-        var cost = AiProviderCost(new ConsumptionTotals(500, 4, 0, 0, 0, 0m), Fx);
+        var cost = AiProviderCost(new ConsumptionTotals(500, 4, 0, 0, 0, 0m));
 
         cost.Value.Should().BeNull();
         cost.Note.Should().Contain("none of the 4 consume transaction(s)");
     }
 
     [Fact]
-    public void AiProviderCost_WithoutFxIsNull()
+    public void AiProviderCost_NeedsNoExchangeRate()
     {
-        var cost = AiProviderCost(new ConsumptionTotals(500, 4, 0, 500, 4, 2m), null);
-
-        cost.Value.Should().BeNull();
-        cost.Note.Should().Contain("no fx_rate_usd_vnd");
+        // Providers bill in USD and USD is the accounting currency: a missing VND rate cannot hide it.
+        AiProviderCost(new ConsumptionTotals(500, 4, 0, 500, 4, 2m)).Value.Should().Be(2m);
     }
 
     [Fact]
     public void AiProviderCost_WithNoUsageIsATrueZero()
     {
-        AiProviderCost(new ConsumptionTotals(0, 0, 0, 0, 0, 0m), null).Should().Be(new MetricSide(0m, null));
+        AiProviderCost(new ConsumptionTotals(0, 0, 0, 0, 0, 0m)).Should().Be(new MetricSide(0m, null));
     }
 
     [Fact]
@@ -120,8 +126,8 @@ public class AdminBillingInsightsCalculatorTests
         GrossMargin(new MetricSide(null, "x"), new MetricSide(1m, null), consumption).Value.Should().BeNull();
         GrossMargin(new MetricSide(1m, null), new MetricSide(null, "x"), consumption).Value.Should().BeNull();
 
-        var margin = GrossMargin(new MetricSide(100_000m, null), new MetricSide(25_000m, null), consumption);
-        margin.Value.Should().Be(75_000m);
+        var margin = GrossMargin(new MetricSide(100m, null), new MetricSide(25m, null), consumption);
+        margin.Value.Should().Be(75m);
         margin.Note.Should().Be("AI cost covers only 50% of consumed credits, so this margin is overstated");
     }
 
@@ -136,9 +142,9 @@ public class AdminBillingInsightsCalculatorTests
             new ChargeTypeCoverage("STT", 1, 0),
         ]);
 
-        AiProviderCost(consumption, Fx).Note.Should().Be(
+        AiProviderCost(consumption).Note.Should().Be(
             "covers 70% of consumed credits (30 of 40 transactions have a provider cost); "
-            + "no provider cost for TRANSLATION (30%), UNKNOWN (<0.1%), STT (<0.1%); USD converted at 25,000 VND/USD");
+            + "no provider cost for TRANSLATION (30%), UNKNOWN (<0.1%), STT (<0.1%)");
     }
 
     [Fact]
@@ -150,19 +156,19 @@ public class AdminBillingInsightsCalculatorTests
             new ChargeTypeCoverage("AUDIO_DUBBING_STANDARD", 33, 33),
         ]);
 
-        var cost = AiProviderCost(consumption, Fx);
+        var cost = AiProviderCost(consumption);
 
-        cost.Value.Should().Be(2_695m);
-        cost.Note.Should().Be("covers 100% of consumed credits (3 of 3 transactions have a provider cost); USD converted at 25,000 VND/USD");
+        cost.Value.Should().Be(0.11m);
+        cost.Note.Should().Be("covers 100% of consumed credits (3 of 3 transactions have a provider cost)");
         UncoveredChargeTypes(consumption).Should().BeNull();
-        GrossMargin(new MetricSide(10_000m, null), cost, consumption).Should().Be(new MetricSide(7_305m, null));
+        GrossMargin(new MetricSide(10m, null), cost, consumption).Should().Be(new MetricSide(9.89m, null));
     }
 
     [Fact]
     public void AiProviderCost_WithNoCoveredRows_NamesWhatIsMissing()
     {
         var cost = AiProviderCost(
-            new ConsumptionTotals(500, 4, 0, 0, 0, 0m, [new ChargeTypeCoverage("TRANSLATION", 500, 0)]), Fx);
+            new ConsumptionTotals(500, 4, 0, 0, 0, 0m, [new ChargeTypeCoverage("TRANSLATION", 500, 0)]));
 
         cost.Value.Should().BeNull();
         cost.Note.Should().Be(
@@ -224,7 +230,7 @@ public class AdminBillingInsightsCalculatorTests
 
         rows.Should().Equal(
             new AdminRevenueByDayDto("2026-09-01", 0m),
-            new AdminRevenueByDayDto("2026-09-02", 1_250_000m),
+            new AdminRevenueByDayDto("2026-09-02", 50m),
             new AdminRevenueByDayDto("2026-09-03", 0m));
         note.Should().BeNull("a converted currency is not an exclusion");
     }
@@ -237,8 +243,8 @@ public class AdminBillingInsightsCalculatorTests
 
         var (rows, _) = RevenueByDay(days,
         [
-            new PaidAmountRow(new DateTime(2026, 9, 1, 16, 59, 59, DateTimeKind.Utc), "VND", 100m), // 23:59:59 on 1 Sep
-            new PaidAmountRow(Utc(9, 1, 17), "VND", 200m),                                          // 00:00 on 2 Sep
+            new PaidAmountRow(new DateTime(2026, 9, 1, 16, 59, 59, DateTimeKind.Utc), "USD", 100m), // 23:59:59 on 1 Sep
+            new PaidAmountRow(Utc(9, 1, 17), "USD", 200m),                                          // 00:00 on 2 Sep
         ], Fx);
 
         rows.Should().Equal(new AdminRevenueByDayDto("2026-09-01", 100m), new AdminRevenueByDayDto("2026-09-02", 200m));
@@ -250,7 +256,7 @@ public class AdminBillingInsightsCalculatorTests
         var days = AdminComparisonRange.DaysOf(Utc(9, 1), Utc(9, 3), TimeZoneInfo.Utc);
 
         var (rows, note) = RevenueByDay(days,
-            [new PaidAmountRow(Utc(9, 1, 5), "EUR", 10m), new PaidAmountRow(Utc(9, 2, 5), "VND", 5m), new PaidAmountRow(Utc(9, 2, 6), "EUR", 1m)], Fx);
+            [new PaidAmountRow(Utc(9, 1, 5), "EUR", 10m), new PaidAmountRow(Utc(9, 2, 5), "USD", 5m), new PaidAmountRow(Utc(9, 2, 6), "EUR", 1m)], Fx);
 
         rows.Should().Equal(new AdminRevenueByDayDto("2026-09-01", null), new AdminRevenueByDayDto("2026-09-02", 5m));
         note.Should().Be("excludes 2 EUR rows");
@@ -264,7 +270,7 @@ public class AdminBillingInsightsCalculatorTests
 
         RevenueMonthWindow(to, TimeZoneInfo.Utc).Should().Be(new AdminInsightRange(Utc(4, 1), Utc(10, 1)));
 
-        var (months, note) = RevenueByMonth(to, TimeZoneInfo.Utc, [new PaidAmountRow(Utc(7, 1), "VND", 300m)], Fx);
+        var (months, note) = RevenueByMonth(to, TimeZoneInfo.Utc, [new PaidAmountRow(Utc(7, 1), "USD", 300m)], Fx);
         months.Select(m => m.Month).Should().Equal("2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09");
         months.Single(m => m.Month == "2026-07").Revenue.Should().Be(300m);
         note.Should().BeNull();
@@ -279,7 +285,7 @@ public class AdminBillingInsightsCalculatorTests
         RevenueMonthWindow(to, Vietnam).Should().Be(new AdminInsightRange(Utc(3, 31, 17), Utc(9, 30, 17)));
 
         // 31 Aug 18:00Z is 1 Sep 01:00 in Vietnam: September's revenue, not August's.
-        var (months, _) = RevenueByMonth(to, Vietnam, [new PaidAmountRow(Utc(8, 31, 18), "VND", 300m)], Fx);
+        var (months, _) = RevenueByMonth(to, Vietnam, [new PaidAmountRow(Utc(8, 31, 18), "USD", 300m)], Fx);
         months.Single(m => m.Month == "2026-09").Revenue.Should().Be(300m);
         months.Single(m => m.Month == "2026-08").Revenue.Should().Be(0m);
     }
@@ -287,10 +293,10 @@ public class AdminBillingInsightsCalculatorTests
     [Fact]
     public void RevenueBetween_NotesWhatItConvertedAndWhatItLeftOut()
     {
-        PaidAmountRow[] payments = [new(Utc(9, 1, 1), "EUR", 10m), new(Utc(9, 1, 2), "USD", 2m)];
+        PaidAmountRow[] payments = [new(Utc(9, 1, 1), "EUR", 10m), new(Utc(9, 1, 2), "VND", 50_000m)];
 
         RevenueBetween(payments, Utc(9, 1), Utc(9, 2), Fx).Should().Be(
-            (50_000m, "includes 2.00 USD converted at 25,000 VND/USD (billing_pricing_config.fx_rate_usd_vnd); excludes 1 EUR rows"));
+            (2m, "includes 50,000 VND converted at 25,000 VND/USD (billing_pricing_config.fx_rate_usd_vnd); excludes 1 EUR rows"));
         RevenueBetween([payments[0]], Utc(9, 1), Utc(9, 2), Fx).Should().Be(((decimal?)null, "excludes 1 EUR rows"));
         RevenueBetween([], Utc(9, 1), Utc(9, 2), Fx).Should().Be((0m, (string?)null));
     }

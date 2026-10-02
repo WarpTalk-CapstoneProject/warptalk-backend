@@ -163,7 +163,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             // Subscriptions right now. The same row set and rules as the subscriptions page summary.
             var active = await _unitOfWork.SubscriptionRepository.GetActiveForRevenueAsync(ct);
             var recurring = active.Where(row => AdminSubscriptionRevenue.IsRecurring(row, now)).ToList();
-            var mrr = ToVnd(
+            var mrr = ToUsd(
                 AdminSubscriptionRevenue.MonthlyRecurring(recurring).Select(m => new MoneyPart(m.Currency, m.Amount, 1)),
                 fx);
 
@@ -172,7 +172,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             var flows = await _unitOfWork.SubscriptionRepository.GetSubscriptionFlowCountsAsync(monthStart, now, now, ct);
 
             var outstandingRows = await _unitOfWork.InvoiceRepository.GetOutstandingAsync(ct);
-            var outstandingTotal = ToVnd(outstandingRows.Select(i => new MoneyPart(i.Currency, i.Total, 1)), fx);
+            var outstandingTotal = ToUsd(outstandingRows.Select(i => new MoneyPart(i.Currency, i.Total, 1)), fx);
             var pastDueInvoices = outstandingRows.Where(i => i.DueAt is { } due && due < now).ToList();
             var oldestPastDue = pastDueInvoices.OrderBy(i => i.DueAt).FirstOrDefault();
 
@@ -349,7 +349,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             period.ActiveWorkspaces,
             period.Arpa.Value,
             fx.Resolve(rateAt).Rate,
-            period.Providers.Select(p => new AdminProviderPeriodDto(p.Provider, p.Credits, p.CostUsd, p.CostVnd)).ToList());
+            period.Providers.Select(p => new AdminProviderPeriodDto(p.Provider, p.Credits, p.CostUsd)).ToList());
 
     private static AdminProviderCostDto ProviderRow(ProviderFigures provider)
     {
@@ -368,7 +368,6 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
             provider.CoveredCredits,
             coverage,
             provider.CostUsd,
-            provider.CostVnd,
             provider.MeasuredUsd,
             provider.Services
                 .Select(s => new AdminProviderServiceDto(s.ChargeType, AiProviderCatalog.ServiceOf(s.ChargeType), s.Credits, s.CoveredCredits, s.CostUsd))
@@ -394,15 +393,13 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                     ? labels.TryGetValue(id, out var label) ? label : ("unknown", "Unknown plan")
                     : (UnattributedPlanSlug, "Not attributable to a plan");
                 var coverage = plan.Credits <= 0 ? 100m : Math.Round(plan.CoveredCredits * 100m / plan.Credits, 1, MidpointRounding.AwayFromZero);
-                var revenue = new AdminBillingInsightsCalculator.MetricSide(plan.RevenueVnd, plan.RevenueVnd is null ? "payments in a currency with no rate to VND" : null);
+                var revenue = new AdminBillingInsightsCalculator.MetricSide(plan.RevenueUsd, plan.RevenueUsd is null ? "payments in a currency with no rate to USD" : null);
 
                 AdminBillingInsightsCalculator.MetricSide cost;
                 if (plan.Credits > 0 && plan.CoveredCredits == 0 && plan.CostUsd == 0)
                     cost = AdminBillingInsightsCalculator.MetricSide.Unavailable("none of its credits has a provider cost");
-                else if (plan.CostVnd is null)
-                    cost = AdminBillingInsightsCalculator.MetricSide.Unavailable("no USD→VND rate");
                 else
-                    cost = new(plan.CostVnd, coverage < 100m
+                    cost = new(AdminBillingInsightsCalculator.RoundUsd(plan.CostUsd), coverage < 100m
                         ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"AI cost covers {coverage:0.#}% of its credits, so the margin is overstated")
                         : null);
 
@@ -411,7 +408,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
                 var arpa = ProfitAndLossCalculator.Arpa(revenue, plan.ActiveWorkspaces);
                 var note = string.Join("; ", new[] { revenue.Note, cost.Note }.Where(n => n is not null));
                 return new AdminPlanMarginDto(
-                    plan.PlanId, slug, name, plan.RevenueVnd, plan.Credits, cost.Value, margin.Value, percent.Value,
+                    plan.PlanId, slug, name, plan.RevenueUsd, plan.Credits, cost.Value, margin.Value, percent.Value,
                     plan.ActiveWorkspaces, arpa.Value, coverage, note.Length == 0 ? null : note);
             })
             .OrderByDescending(plan => plan.Revenue ?? 0m)
@@ -477,7 +474,7 @@ public sealed class AdminBillingInsightsService : IAdminBillingInsightsService
         consumption = CartesiaDubbingCost.Apply(consumption, dubbing);
 
         var (revenue, revenueTotal) = Revenue(paid, duplicates, fx);
-        var aiCost = AiProviderCost(consumption, fx, dubbing, sync.FilteredToApiKey);
+        var aiCost = AiProviderCost(consumption, dubbing, sync.FilteredToApiKey);
 
         return new PeriodMetrics(
             revenue,

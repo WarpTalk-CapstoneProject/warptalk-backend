@@ -320,15 +320,17 @@ public class PlanService : IPlanService
         var cycle = request.BillingCycle?.ToLowerInvariant().Trim();
         var isInvalidCurrency = !string.Equals(currency, PaymentConstants.Currencies.Usd, System.StringComparison.OrdinalIgnoreCase) &&
                                 !string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase);
+        // A VND plan's minimum is Stripe's own floor for a VND charge; the configurable minimum and the
+        // per-credit floor are USD, the accounting currency, so they judge USD plans.
         var minPrice = string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase)
-            ? pricingConfig?.MinimumContractPriceVnd ?? SubscriptionConstants.PlanDefaults.MinimumVndPlanPrice
+            ? SubscriptionConstants.PlanDefaults.MinimumVndPlanPrice
             : pricingConfig?.MinimumContractPriceUsd ?? SubscriptionConstants.PlanDefaults.MinimumUsdPlanPrice;
-        var minimumPricePerCreditVnd = pricingConfig?.MinimumPricePerCreditVnd ?? SubscriptionConstants.PlanDefaults.PriceFloorPerCredit;
+        var minimumPricePerCreditUsd = pricingConfig?.MinimumPricePerCreditUsd ?? SubscriptionConstants.PlanDefaults.PriceFloorPerCreditUsd;
         var hasCommittedCredits = request.CreditsPerCycle > 0;
-        var isVndPlan = string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase);
-        var isBelowPriceFloor = isVndPlan &&
+        var isUsdPlan = string.Equals(currency, PaymentConstants.Currencies.Usd, System.StringComparison.OrdinalIgnoreCase);
+        var isBelowPriceFloor = isUsdPlan &&
                                 hasCommittedCredits &&
-                                request.Price / request.CreditsPerCycle < minimumPricePerCreditVnd;
+                                request.Price / request.CreditsPerCycle < minimumPricePerCreditUsd;
         var isOverageCapAboveCommitment = hasCommittedCredits &&
                                           request.OverageCapCredits > request.CreditsPerCycle;
         var isLowBalanceAtOrAboveCommitment = hasCommittedCredits &&

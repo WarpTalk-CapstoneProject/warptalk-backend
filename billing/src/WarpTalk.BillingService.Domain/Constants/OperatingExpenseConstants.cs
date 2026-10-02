@@ -29,7 +29,7 @@ public static class OperatingExpenseConstants
         public const string Vnd = FxRateConstants.Vnd;
         public const string Usd = FxRateConstants.Usd;
 
-        public static readonly IReadOnlyList<string> All = [Vnd, Usd];
+        public static readonly IReadOnlyList<string> All = [Usd, Vnd];
     }
 
     /// <summary>Free text is allowed; these are what the form offers.</summary>

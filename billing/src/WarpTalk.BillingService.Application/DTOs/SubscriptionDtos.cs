@@ -26,13 +26,16 @@ public record SubscriptionDto(
     DateTime? CancelledAt,
     string? WorkspaceName = null,
     int? CreditsPerCycleOverride = null,
-    decimal? ContractPriceVnd = null,
+    decimal? ContractPriceUsd = null,
     int? OverageCapCreditsOverride = null,
     decimal? OveragePricePerCreditOverride = null,
     int? InvoiceTermsDaysOverride = null,
     string? BillingContactEmail = null,
     int EffectiveCreditsPerCycle = 0,
-    decimal EffectiveContractPriceVnd = 0,
+    // What one cycle costs and in what: the negotiated USD price when there is one, otherwise the
+    // plan's own price in the plan's own currency. Never a price in one currency labelled as another.
+    decimal EffectiveContractPrice = 0,
+    string EffectiveContractCurrency = PaymentConstants.Currencies.UsdAccounting,
     int EffectiveOverageCapCredits = 0,
     decimal EffectiveOveragePricePerCredit = 0,
     int EffectiveInvoiceTermsDays = 0,
@@ -73,7 +76,7 @@ public record AdminChangeSubscriptionPlanRequest(Guid PlanId);
 
 public record UpdateSubscriptionContractTermsRequest(
     int? CreditsPerCycleOverride = null,
-    decimal? ContractPriceVnd = null,
+    decimal? ContractPriceUsd = null,
     int? OverageCapCreditsOverride = null,
     decimal? OveragePricePerCreditOverride = null,
     int? InvoiceTermsDaysOverride = null,

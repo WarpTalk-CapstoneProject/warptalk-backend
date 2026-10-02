@@ -17,7 +17,7 @@ public sealed class RateCardIdentityContractTests
             null,
             null,
             1m,
-            "VND",
+            "USD",
             0.1m,
             2m,
             true);
@@ -36,7 +36,7 @@ public sealed class RateCardIdentityContractTests
             null,
             null,
             1.643750m,
-            "VND",
+            "USD",
             0.0001000000m,
             2.5m,
             true);

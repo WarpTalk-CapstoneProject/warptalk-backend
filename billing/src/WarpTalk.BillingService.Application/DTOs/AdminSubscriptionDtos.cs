@@ -79,8 +79,8 @@ public record AdminSubscriptionSummaryDto(
 /// The revenue headline.
 ///
 /// <paramref name="MonthlyRecurring"/> is a LIST, one entry per currency, and never a single
-/// number: the platform prices in VND and in USD, and the only exchange rate available is a seed
-/// constant nobody maintains. A split figure is legible; a converted one is confidently wrong.
+/// number: a plan may be priced in USD or in VND, and a run rate has no "day" whose exchange rate it
+/// should be read at. A split figure is legible; a converted one would only look exact.
 /// </summary>
 public record AdminSubscriptionSummaryTotalsDto(
     IReadOnlyList<AdminMoney> MonthlyRecurring,

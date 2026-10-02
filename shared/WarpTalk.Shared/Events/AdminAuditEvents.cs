@@ -45,7 +45,7 @@ public static class AdminAuditEntityTypes
     public const string AuditLog = "audit_log";
     /// <summary>A payment recorded by hand against a subscription (bank transfer, offline).</summary>
     public const string Payment = "payment";
-    /// <summary>The USD→VND rate VND reports convert with (billing <c>fx_rates</c> + its config keys).</summary>
+    /// <summary>The USD→VND rate USD reports convert VND amounts with (billing <c>fx_rates</c> + its config keys).</summary>
     public const string FxRate = "fx_rate";
     /// <summary>A platform staff member (G10). Entity id = the staff member's USER id.</summary>
     public const string StaffMember = "staff_member";

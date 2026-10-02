@@ -81,12 +81,12 @@ public class BillingAggregationWorkerTests
             t.PricingRateCardId == gpt41RateId &&
             t.UnitPriceSnapshot == 0.131500m &&
             t.ChargeType == "AI_ASSISTANT" &&
-            t.Currency == PaymentConstants.Currencies.VndAccounting);
+            t.Currency == PaymentConstants.Currencies.UsdAccounting);
         settlementRequests.Should().Contain(t =>
             t.PricingRateCardId == gpt5RateId &&
             t.UnitPriceSnapshot == 0.025000m &&
             t.ChargeType == "AI_ASSISTANT" &&
-            t.Currency == PaymentConstants.Currencies.VndAccounting);
+            t.Currency == PaymentConstants.Currencies.UsdAccounting);
     }
 
     [Fact]

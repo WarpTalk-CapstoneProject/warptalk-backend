@@ -41,7 +41,7 @@ public sealed class AdminExpensesController : ControllerBase
 
     // ── Expenses ──────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Every expense dated in [from, to] (default: the last 12 months), with VND totals.</summary>
+    /// <summary>Every expense dated in [from, to] (default: the last 12 months), with USD totals.</summary>
     [HttpGet]
     [RequirePermission(AdminPermissions.FinanceRead)]
     public async Task<IActionResult> GetExpenses([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
@@ -138,7 +138,7 @@ public sealed class AdminExpensesController : ControllerBase
     public async Task<IActionResult> GetBudgets([FromQuery] string? from, [FromQuery] string? to, CancellationToken ct)
         => ToActionResult(await _expenses.GetBudgetsAsync(from, to, ct));
 
-    /// <summary>Sets or clears (amountVnd null) budget cells.</summary>
+    /// <summary>Sets or clears (amountUsd null) budget cells.</summary>
     [HttpPut("budgets")]
     [RequirePermission(AdminPermissions.FinanceManage)]
     [AdminAudited(AdminAuditExpenseActions.BudgetsSet, AdminAuditEntityTypes.ExpenseBudget, typeof(ExpenseBudget), Aggregate = true)]

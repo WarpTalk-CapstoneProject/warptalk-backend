@@ -53,7 +53,6 @@ public sealed class ProviderMetricsCalculatorTests
 
         figures.Usage.Should().Be(400, "OpenAI usage is the WarpTalk credits of OpenAI-served charge types");
         figures.CostUsd.Should().Be(0.5m);
-        figures.CostVnd.Should().Be(12_500m);
         Coverage(figures).Should().Be(25m);
         NoteOf(input, figures, Metrics.CostUsd).Should().Contain("covers 25% of OpenAI credits");
     }
@@ -171,7 +170,7 @@ public sealed class ProviderMetricsCalculatorTests
 
         figures.Usage.Should().Be(2);
         figures.FailedPayments.Should().Be(1);
-        figures.VolumeVnd.Should().Be(750_000m);
+        figures.VolumeUsd.Should().Be(30m, "500,000 VND at 25,000 plus 10 USD");
         figures.CostUsd.Should().BeNull();
         NoteOf(input, figures, Metrics.CostUsd).Should().Contain("none has been read");
     }
@@ -269,7 +268,7 @@ public sealed class ProviderMetricsCalculatorTests
     {
         MetricsOf(ProviderCatalog.OpenAi).Select(m => m.Key).Should().Contain([Metrics.Calls, Metrics.ErrorRate, Metrics.P95]);
         MetricsOf(ProviderCatalog.LiveKit).Select(m => m.Key).Should().NotContain(Metrics.Calls);
-        MetricsOf(ProviderCatalog.Stripe).Select(m => m.Key).Should().Contain(Metrics.VolumeVnd);
+        MetricsOf(ProviderCatalog.Stripe).Select(m => m.Key).Should().Contain(Metrics.VolumeUsd);
         ProviderCatalog.All.Select(p => p.Key).Should().Equal(ProviderCatalog.OpenAi, ProviderCatalog.Cartesia, ProviderCatalog.LiveKit, ProviderCatalog.Stripe);
     }
 }

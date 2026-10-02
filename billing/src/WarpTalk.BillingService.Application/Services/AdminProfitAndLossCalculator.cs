@@ -23,19 +23,17 @@ public sealed record ProviderFigures(
     long Credits,
     long CoveredCredits,
     decimal CostUsd,
-    decimal? CostVnd,
     decimal MeasuredUsd,
     IReadOnlyList<(string ChargeType, long Credits, long CoveredCredits, decimal CostUsd)> Services);
 
 /// <summary>A plan inside one window. <see cref="PlanId"/> null = not attributable to a plan.</summary>
 public sealed record PlanFigures(
     Guid? PlanId,
-    decimal? RevenueVnd,
+    decimal? RevenueUsd,
     int Payments,
     long Credits,
     long CoveredCredits,
     decimal CostUsd,
-    decimal? CostVnd,
     int ActiveWorkspaces);
 
 /// <summary>One window's profit and loss.</summary>
@@ -65,7 +63,9 @@ public sealed record PeriodPnl(
 /// Profit and loss for the admin Insights page: revenue, AI provider cost, gross margin, margin %, ARPA,
 /// per provider and per plan, over any window. Pure: no clock, no I/O; tested on plain values.
 ///
-/// REVENUE is the counted paid payments (see IPaymentRepository), VND as is, USD at the USD→VND rate of
+/// Everything is in USD, the accounting currency.
+///
+/// REVENUE is the counted paid payments (see IPaymentRepository), USD as is, VND at the USD→VND rate of
 /// the UTC day it was paid, any other currency excluded and named.
 ///
 /// AI PROVIDER COST follows the rules of the Insights aiProviderCost metric, at half-hour grain:
@@ -77,7 +77,7 @@ public sealed record PeriodPnl(
 ///     as covered;
 ///   - anything else (TRANSLATION has no provider price) is uncovered: left out of the cost, and the
 ///     share it represents is stated, so the margin is flagged as overstated;
-///   - every USD amount is converted at the rate of its own UTC day.
+///   - providers bill in USD, so no cost is converted.
 ///
 /// ACTIVE WORKSPACES are those that paid OR consumed credits in the window; ARPA = revenue ÷ them.
 /// </summary>
@@ -108,13 +108,13 @@ public static class ProfitAndLossCalculator
                 ActiveSet(activeByPlan, payment.PlanId).Add(paidBy);
             }
 
-            var amount = ToVnd(payment.Currency, payment.Total, payment.At, input.Fx, fxUsed);
+            var amount = ToUsd(payment.Currency, payment.Total, payment.At, input.Fx, fxUsed);
             var plan = revenueByPlan.GetValueOrDefault(Key(payment.PlanId));
-            if (amount is { } vnd)
+            if (amount is { } usd)
             {
-                revenue += vnd;
+                revenue += usd;
                 included++;
-                revenueByPlan[Key(payment.PlanId)] = (plan.Amount + vnd, plan.Included + 1, plan.Excluded);
+                revenueByPlan[Key(payment.PlanId)] = (plan.Amount + usd, plan.Included + 1, plan.Excluded);
             }
             else
             {
@@ -128,8 +128,8 @@ public static class ProfitAndLossCalculator
             ? AdminBillingInsightsCalculator.MetricSide.Unavailable(
                 $"every payment was in a currency that cannot be converted ({string.Join("/", excludedCurrencies)})")
             : new AdminBillingInsightsCalculator.MetricSide(
-                AdminBillingInsightsCalculator.RoundVnd(revenue),
-                excluded == 0 ? null : string.Create(Invariant, $"excludes {excluded} {string.Join("/", excludedCurrencies)} payment(s) with no rate to VND"));
+                AdminBillingInsightsCalculator.RoundUsd(revenue),
+                excluded == 0 ? null : string.Create(Invariant, $"excludes {excluded} {string.Join("/", excludedCurrencies)} payment(s) with no rate to USD"));
 
         foreach (var row in input.WorkspaceSlots)
         {
@@ -165,26 +165,23 @@ public static class ProfitAndLossCalculator
                 usd = row.CoveredCredits > 0 || row.CoveredTransactions > 0 ? row.CostUsd : 0m;
             }
 
-            decimal? vnd = usd == 0 ? 0m : UsdToVnd(usd, row.SlotStart, input.Fx, fxUsed);
-            cost.Add(row.Provider, row.ChargeType, row.PlanId, row.Credits, covered, usd, vnd, measuredUsd: 0);
+            cost.Add(row.Provider, row.ChargeType, row.PlanId, row.Credits, covered, usd);
         }
 
         foreach (var (day, share) in measured)
         {
             if (share.Usd <= 0) continue;
-            var vnd = UsdToVnd(share.Usd, day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), input.Fx, fxUsed);
             var byPlan = measuredShares.GetValueOrDefault(day);
             var total = byPlan?.Values.Sum() ?? 0;
             if (byPlan is null || total <= 0)
             {
-                cost.AddMeasured(AiProviderCatalog.Cartesia, null, share.Usd, vnd);
+                cost.AddMeasured(AiProviderCatalog.Cartesia, null, share.Usd);
                 continue;
             }
 
             foreach (var (plan, credits) in byPlan)
             {
-                var part = share.Usd * credits / total;
-                cost.AddMeasured(AiProviderCatalog.Cartesia, Unkey(plan), part, vnd is null ? null : vnd.Value * credits / total);
+                cost.AddMeasured(AiProviderCatalog.Cartesia, Unkey(plan), share.Usd * credits / total);
             }
         }
 
@@ -200,12 +197,11 @@ public static class ProfitAndLossCalculator
                 var planCost = cost.Plan(Unkey(plan));
                 return new PlanFigures(
                     Unkey(plan),
-                    rev.Included == 0 && rev.Excluded > 0 ? null : AdminBillingInsightsCalculator.RoundVnd(rev.Amount),
+                    rev.Included == 0 && rev.Excluded > 0 ? null : AdminBillingInsightsCalculator.RoundUsd(rev.Amount),
                     rev.Included + rev.Excluded,
                     planCost.Credits,
                     planCost.CoveredCredits,
-                    planCost.Usd,
-                    planCost.Vnd,
+                    Math.Round(planCost.Usd, 6, MidpointRounding.AwayFromZero),
                     activeByPlan.TryGetValue(plan, out var set) ? set.Count : 0);
             })
             .ToList();
@@ -242,8 +238,6 @@ public static class ProfitAndLossCalculator
                 + (uncovered is null ? string.Empty : $" ({uncovered})"));
         }
 
-        if (cost.VndMissing) return AdminBillingInsightsCalculator.MetricSide.Unavailable("provider cost is in USD and no USD→VND rate is recorded or configured");
-
         var notes = new List<string>();
         if (coverage < 100m)
         {
@@ -256,7 +250,7 @@ public static class ProfitAndLossCalculator
             notes.Add(string.Create(Invariant, $"dubbing measured from Cartesia usage on {measuredDays} UTC day{(measuredDays == 1 ? "" : "s")}, estimated from rate cards on the rest"));
         }
 
-        return new(AdminBillingInsightsCalculator.RoundVnd(cost.Vnd), notes.Count == 0 ? null : string.Join("; ", notes));
+        return new(AdminBillingInsightsCalculator.RoundUsd(cost.Usd), notes.Count == 0 ? null : string.Join("; ", notes));
     }
 
     /// <summary>revenue − AI cost; flagged as overstated when the cost does not cover every credit.</summary>
@@ -296,7 +290,7 @@ public static class ProfitAndLossCalculator
         if (revenue.Value is null) return AdminBillingInsightsCalculator.MetricSide.Unavailable("revenue is unavailable");
         if (activeWorkspaces == 0) return AdminBillingInsightsCalculator.MetricSide.Unavailable("no workspace paid or used credits in the period");
         return new(
-            AdminBillingInsightsCalculator.RoundVnd(revenue.Value.Value / activeWorkspaces),
+            AdminBillingInsightsCalculator.RoundUsd(revenue.Value.Value / activeWorkspaces),
             string.Create(Invariant, $"revenue ÷ {activeWorkspaces} workspace{(activeWorkspaces == 1 ? "" : "s")} that paid or used credits"));
     }
 
@@ -334,20 +328,15 @@ public static class ProfitAndLossCalculator
 
     // ── currency ────────────────────────────────────────────────────────────
 
-    private static decimal? ToVnd(string currency, decimal amount, DateTime at, FxRateTable fx, List<FxRateResolution> used)
+    private static decimal? ToUsd(string currency, decimal amount, DateTime at, FxRateTable fx, List<FxRateResolution> used)
     {
         var code = (currency ?? string.Empty).Trim().ToUpperInvariant();
-        if (code == Vnd) return amount;
-        if (code != Usd) return null;
-        return UsdToVnd(amount, at, fx, used);
-    }
-
-    private static decimal? UsdToVnd(decimal usd, DateTime at, FxRateTable fx, List<FxRateResolution> used)
-    {
+        if (code == Usd) return amount;
+        if (code != Vnd) return null;
         var rate = fx.Resolve(at);
-        if (rate.Rate is not { } value) return null;
+        if (rate.Rate is not { } value || value <= 0) return null;
         used.Add(rate);
-        return usd * value;
+        return amount / value;
     }
 
     private static HashSet<Guid> ActiveSet(Dictionary<Guid, HashSet<Guid>> byPlan, Guid? plan)
@@ -368,24 +357,20 @@ public static class ProfitAndLossCalculator
         public long Credits { get; private set; }
         public long CoveredCredits { get; private set; }
         public decimal Usd { get; private set; }
-        public decimal Vnd { get; private set; }
         public decimal MeasuredUsd { get; private set; }
-        public bool VndMissing { get; private set; }
 
         public IEnumerable<Guid> PlanIds => _plans.Keys;
 
-        public void Add(string provider, string chargeType, Guid? plan, long credits, long covered, decimal usd, decimal? vnd, decimal measuredUsd)
+        public void Add(string provider, string chargeType, Guid? plan, long credits, long covered, decimal usd)
         {
             Credits += credits;
             CoveredCredits += covered;
             Usd += usd;
-            if (vnd is { } v) Vnd += v; else VndMissing = true;
 
             var p = Provider(provider);
             p.Credits += credits;
             p.Covered += covered;
             p.Usd += usd;
-            if (vnd is { } pv) p.Vnd += pv; else p.VndMissing = true;
             var service = p.Services.GetValueOrDefault(chargeType);
             p.Services[chargeType] = (service.Credits + credits, service.Covered + covered, service.Usd + usd);
 
@@ -396,24 +381,20 @@ public static class ProfitAndLossCalculator
             planSum.Credits += credits;
             planSum.CoveredCredits += covered;
             planSum.Usd += usd;
-            if (vnd is { } planVnd) planSum.VndValue += planVnd; else planSum.VndMissing = true;
         }
 
-        public void AddMeasured(string provider, Guid? plan, decimal usd, decimal? vnd)
+        public void AddMeasured(string provider, Guid? plan, decimal usd)
         {
             Usd += usd;
             MeasuredUsd += usd;
-            if (vnd is { } v) Vnd += v; else VndMissing = true;
 
             var p = Provider(provider);
             p.Usd += usd;
             p.Measured += usd;
-            if (vnd is { } pv) p.Vnd += pv; else p.VndMissing = true;
 
             var planSum = Plan(plan);
             planSum.Usd += usd;
             planSum.Measured += usd;
-            if (vnd is { } planVnd) planSum.VndValue += planVnd; else planSum.VndMissing = true;
         }
 
         public PlanSum Plan(Guid? plan) => _plans.TryGetValue(Key(plan), out var sum) ? sum : _plans[Key(plan)] = new PlanSum();
@@ -434,7 +415,6 @@ public static class ProfitAndLossCalculator
                     pair.Value.Credits,
                     pair.Value.Covered,
                     Math.Round(pair.Value.Usd, 6, MidpointRounding.AwayFromZero),
-                    pair.Value.VndMissing ? null : AdminBillingInsightsCalculator.RoundVnd(pair.Value.Vnd),
                     Math.Round(pair.Value.Measured, 6, MidpointRounding.AwayFromZero),
                     pair.Value.Services
                         .Select(service => (service.Key, service.Value.Credits, service.Value.Covered, Math.Round(service.Value.Usd, 6, MidpointRounding.AwayFromZero)))
@@ -450,9 +430,7 @@ public static class ProfitAndLossCalculator
             public long Credits;
             public long Covered;
             public decimal Usd;
-            public decimal Vnd;
             public decimal Measured;
-            public bool VndMissing;
             public readonly Dictionary<string, (long Credits, long Covered, decimal Usd)> Services = new(StringComparer.Ordinal);
         }
     }
@@ -463,9 +441,5 @@ public static class ProfitAndLossCalculator
         public long CoveredCredits;
         public decimal Usd;
         public decimal Measured;
-        public decimal VndValue;
-        public bool VndMissing;
-
-        public decimal? Vnd => VndMissing ? null : AdminBillingInsightsCalculator.RoundVnd(VndValue);
     }
 }

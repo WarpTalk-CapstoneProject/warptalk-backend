@@ -6,8 +6,8 @@ namespace WarpTalk.BillingService.Application.DTOs;
 
 // Admin Insights, profit and loss (2026-09-24). camelCase on the wire; these names ARE the contract.
 //
-// Money is VND unless the name says Usd. Every USD amount is converted at the USD→VND rate of its own
-// UTC day (subscription.fx_rates: Stripe's, or an admin override), never at one rate for a whole period.
+// Money is USD, the accounting currency. A VND payment is converted at the USD→VND rate of its own UTC
+// day (subscription.fx_rates: Stripe's, or an admin override), never at one rate for a whole period.
 // The null + note rule holds throughout: a figure that cannot be computed honestly is null with a note,
 // and 0 only ever means "counted, and there was none".
 
@@ -38,7 +38,7 @@ public sealed record AdminProfitAndLossDto(
 
 /// <summary>
 /// One local day (<c>yyyy-MM-dd</c>) or month (<c>yyyy-MM</c>). <paramref name="AiCost"/> is null when
-/// usage in it had no reconstructable provider cost or no USD→VND rate; <paramref name="MarginPercent"/>
+/// usage in it had no reconstructable provider cost; <paramref name="MarginPercent"/>
 /// is null when revenue is null or 0. <paramref name="FxRate"/> is the USD→VND rate of the day (for a
 /// month: of its last day with data).
 /// </summary>
@@ -56,8 +56,8 @@ public sealed record AdminPnlPeriodDto(
     decimal? FxRate,
     IReadOnlyList<AdminProviderPeriodDto> Providers);
 
-/// <summary>A provider's consumption and cost inside one period. <paramref name="CostVnd"/> is null without a rate.</summary>
-public sealed record AdminProviderPeriodDto(string Provider, long Credits, decimal CostUsd, decimal? CostVnd);
+/// <summary>A provider's consumption and cost (USD) inside one period.</summary>
+public sealed record AdminProviderPeriodDto(string Provider, long Credits, decimal CostUsd);
 
 /// <summary>
 /// One AI provider over the window. <paramref name="Credits"/> are WarpTalk credits consumed by usage it
@@ -71,7 +71,6 @@ public sealed record AdminProviderCostDto(
     long CoveredCredits,
     decimal CoveragePercent,
     decimal CostUsd,
-    decimal? CostVnd,
     decimal MeasuredUsd,
     IReadOnlyList<AdminProviderServiceDto> Services,
     string? Note);

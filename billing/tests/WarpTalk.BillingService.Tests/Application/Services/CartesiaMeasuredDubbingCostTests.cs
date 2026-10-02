@@ -20,7 +20,7 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 /// Dubbing provider cost from MEASURED Cartesia credits (subscription.provider_usage_daily), read back
 /// through admin Insights from real PostgreSQL (Testcontainers — needs Docker).
 ///
-/// WarpTalk consume rows (September, FX 25,000 VND/USD), on the CRD cards as the #425 migration costs
+/// WarpTalk consume rows (September, reported in USD), on the CRD cards as the #425 migration costs
 /// them — rate-card estimate 0.1078 USD:
 ///   Sep 2  dub   120 s standard  30 credits  0.0588 USD
 ///   Sep 3  clone  60 s clone     40 credits  0.0441 USD
@@ -96,10 +96,10 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
         var dto = await PeriodAsync(Utc(9, 1), Utc(10, 1), "UTC");
 
         var cost = M(dto, "aiProviderCost");
-        cost.Value.Should().Be(2_450m, "2,500 Cartesia dubbing credits × $0.0000392 × 25,000 — not the 2,695 VND rate-card estimate");
+        cost.Value.Should().Be(0.10m, "2,500 Cartesia dubbing credits × $0.0000392 = $0.098 — not the $0.1078 rate-card estimate");
         cost.Note.Should().Be(
             "covers 100% of consumed credits (3 of 3 transactions have a provider cost); "
-            + "dubbing measured from Cartesia usage: 2,500 credits × $0.0000392 over 30 UTC days; USD converted at 25,000 VND/USD");
+            + "dubbing measured from Cartesia usage: 2,500 credits × $0.0000392 over 30 UTC days");
         M(dto, "grossMargin").Note.Should().BeNull();
 
         dto.AiProviderCostBasis.Should().BeEquivalentTo(new AdminAiProviderCostBasisDto(
@@ -116,7 +116,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
 
         var dto = await PeriodAsync(Utc(9, 1), Utc(10, 1), "UTC");
 
-        M(dto, "aiProviderCost").Value.Should().Be(1_250m, "2,500 × $0.00002 = 0.05 USD");
+        M(dto, "aiProviderCost").Value.Should().Be(0.05m, "2,500 × $0.00002 = 0.05 USD");
         dto.AiProviderCostBasis!.CartesiaUsdPerCredit.Should().Be(0.00002m);
     }
 
@@ -130,12 +130,11 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
 
         // 900 measured credits × 0.0000392 = 0.03528 USD, + 0.0588 USD estimated = 0.09408 USD.
         var cost = M(dto, "aiProviderCost");
-        cost.Value.Should().Be(2_352m);
+        cost.Value.Should().Be(0.09m);
         cost.Note.Should().Be(
             "covers 100% of consumed credits (3 of 3 transactions have a provider cost); "
             + "dubbing measured from Cartesia usage: 900 credits × $0.0000392 over 28 of 30 UTC days; "
-            + "estimated from rate cards (12.5 characters/s) on the other 2 days with no synced Cartesia usage; "
-            + "USD converted at 25,000 VND/USD");
+            + "estimated from rate cards (12.5 characters/s) on the other 2 days with no synced Cartesia usage");
         dto.AiProviderCostBasis!.Basis.Should().Be("mixed");
         dto.AiProviderCostBasis.MeasuredDays.Should().Be(28);
         dto.AiProviderCostBasis.EstimatedDays.Should().Be(2);
@@ -148,7 +147,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
 
         var dto = await PeriodAsync(Utc(9, 1), Utc(10, 1), "UTC");
 
-        M(dto, "aiProviderCost").Value.Should().Be(2_695m, "the #425 per-second rate-card estimate");
+        M(dto, "aiProviderCost").Value.Should().Be(0.11m, "the #425 per-second rate-card estimate");
         M(dto, "aiProviderCost").Note.Should().Contain(
             "dubbing estimated from rate cards (12.5 characters/s): no Cartesia usage synced for the period");
         dto.AiProviderCostBasis.Should().BeEquivalentTo(new AdminAiProviderCostBasisDto(
@@ -167,7 +166,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
 
         // 2,400 × 7/24 = 700, + 2,500, + 240 × 17/24 = 170 → 3,370 credits = 0.132104 USD.
         var cost = M(dto, "aiProviderCost");
-        cost.Value.Should().Be(3_303m);
+        cost.Value.Should().Be(0.13m);
         cost.Note.Should().Contain("dubbing measured from Cartesia usage: 3,370 credits × $0.0000392 over 31 UTC days");
         cost.Note.Should().Contain("Cartesia reports UTC days, so 2 days at the edges of the period are pro-rated by hours");
     }
@@ -182,7 +181,7 @@ public sealed class CartesiaMeasuredDubbingCostTests : IAsyncLifetime
         var dto = await PeriodAsync(Utc(9, 1), Utc(10, 1), "UTC");
 
         // 900 measured + Sep 2's 0.0588 USD estimate.
-        M(dto, "aiProviderCost").Value.Should().Be(2_352m);
+        M(dto, "aiProviderCost").Value.Should().Be(0.09m);
         dto.AiProviderCostBasis!.EstimatedDays.Should().Be(1);
     }
 

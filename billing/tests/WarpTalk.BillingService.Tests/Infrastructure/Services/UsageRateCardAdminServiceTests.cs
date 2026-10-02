@@ -31,7 +31,7 @@ public class UsageRateCardAdminServiceTests
             null,
             null,
             unitPrice,
-            "VND",
+            "USD",
             providerUnitCostUsd,
             markupMultiplier,
             true);
@@ -56,9 +56,8 @@ public class UsageRateCardAdminServiceTests
     private static UpdatePricingConfigRequest ValidPricingConfig() =>
         new(
             FxRateUsdVnd: 25_000m,
-            CreditValueVnd: 260m,
-            MinimumPricePerCreditVnd: 260m,
-            MinimumContractPriceVnd: 1_000_000m,
+            CreditValueUsd: 0.0001m,
+            MinimumPricePerCreditUsd: 0.00008m,
             MinimumContractPriceUsd: 40m,
             SalesUsageWeight: 0.4m,
             SalesMembersWeight: 0.3m,
@@ -108,7 +107,7 @@ public class UsageRateCardAdminServiceTests
     {
         var (service, repository, calls) = CreateService();
         var request = new UpsertUsageRateCardRequest(
-            chargeType, unit, provider, model, null, null, 1m, "VND", 0.1m, 2m, true);
+            chargeType, unit, provider, model, null, null, 1m, "USD", 0.1m, 2m, true);
 
         var result = await service.UpsertRateCardAsync(request);
 
@@ -142,7 +141,7 @@ public class UsageRateCardAdminServiceTests
     {
         var (service, repository, calls) = CreateService();
         var request = new UpsertUsageRateCardRequest(
-            "BOGUS_TEST_NOT_SEEDED", "unit", "test", "test-model", null, null, 1m, "VND", 0.1m, 2m, true);
+            "BOGUS_TEST_NOT_SEEDED", "unit", "test", "test-model", null, null, 1m, "USD", 0.1m, 2m, true);
 
         var result = await service.UpsertRateCardAsync(request);
 
@@ -274,7 +273,7 @@ public class UsageRateCardAdminServiceTests
     public async Task UpdatePricingConfigAsync_NonPositiveCreditValue_IsRejectedBeforeOpeningATransaction()
     {
         var (service, repository, calls) = CreateService();
-        var request = ValidPricingConfig() with { CreditValueVnd = 0m };
+        var request = ValidPricingConfig() with { CreditValueUsd = 0m };
 
         var result = await service.UpdatePricingConfigAsync(request);
 
@@ -343,12 +342,12 @@ public class UsageRateCardAdminServiceTests
         var result = await service.UpdatePricingConfigAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value!.CreditValueVnd.Should().Be(request.CreditValueVnd);
+        result.Value!.CreditValueUsd.Should().Be(request.CreditValueUsd);
         result.Value.FxRateUsdVnd.Should().Be(request.FxRateUsdVnd);
 
         // Every configured key is written, each exactly once, inside a single transaction. The
         // request left the Cartesia price out, so it is not written — and not reset — but echoed.
-        writtenKeys.Should().HaveCount(12).And.OnlyHaveUniqueItems().And.NotContain("cartesia_usd_per_credit");
+        writtenKeys.Should().HaveCount(11).And.OnlyHaveUniqueItems().And.NotContain("cartesia_usd_per_credit");
         result.Value.CartesiaUsdPerCredit.Should().Be(0.00003m);
         calls.Should().Equal("begin", "commit");
     }
@@ -369,11 +368,11 @@ public class UsageRateCardAdminServiceTests
             .Callback<string, decimal, CancellationToken>((key, value, _) => written[key] = value)
             .Returns(Task.CompletedTask);
         repository
-            .Setup(r => r.ReadPricingConfigValueAsync("credit_value_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(312m);
+            .Setup(r => r.ReadPricingConfigValueAsync("credit_value_usd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.00012m);
         repository
-            .Setup(r => r.ReadPricingConfigValueAsync("minimum_price_per_credit_vnd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(2.6m);
+            .Setup(r => r.ReadPricingConfigValueAsync("minimum_price_per_credit_usd", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.0001m);
         repository
             .Setup(r => r.ReadPricingConfigValueAsync("cartesia_usd_per_credit", It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(0.00003m);
@@ -383,13 +382,13 @@ public class UsageRateCardAdminServiceTests
             .ReturnsAsync(26_300m);
 
         var result = await service.UpdatePricingConfigAsync(
-            ValidPricingConfig() with { CreditValueVnd = null, MinimumPricePerCreditVnd = null });
+            ValidPricingConfig() with { CreditValueUsd = null, MinimumPricePerCreditUsd = null });
 
         result.IsSuccess.Should().BeTrue();
-        written.Should().NotContainKey("credit_value_vnd").And.NotContainKey("minimum_price_per_credit_vnd");
-        written.Should().HaveCount(10);
-        result.Value!.CreditValueVnd.Should().Be(312m);
-        result.Value.MinimumPricePerCreditVnd.Should().Be(2.6m);
+        written.Should().NotContainKey("credit_value_usd").And.NotContainKey("minimum_price_per_credit_usd");
+        written.Should().HaveCount(9);
+        result.Value!.CreditValueUsd.Should().Be(0.00012m);
+        result.Value.MinimumPricePerCreditUsd.Should().Be(0.0001m);
         calls.Should().Equal("begin", "commit");
     }
 
@@ -398,7 +397,7 @@ public class UsageRateCardAdminServiceTests
     {
         var (service, _, calls) = CreateService();
 
-        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { MinimumPricePerCreditVnd = 0m });
+        var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { MinimumPricePerCreditUsd = 0m });
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
@@ -422,7 +421,7 @@ public class UsageRateCardAdminServiceTests
         var result = await service.UpdatePricingConfigAsync(ValidPricingConfig() with { CartesiaUsdPerCredit = 0.0000392m });
 
         result.IsSuccess.Should().BeTrue();
-        written.Should().HaveCount(13);
+        written.Should().HaveCount(12);
         written["cartesia_usd_per_credit"].Should().Be(0.0000392m);
         result.Value!.CartesiaUsdPerCredit.Should().Be(0.0000392m);
     }
@@ -526,11 +525,11 @@ public class UsageRateCardAdminServiceTests
         var result = await service.GetPricingConfigAsync();
 
         result.IsSuccess.Should().BeTrue();
-        requestedDefaults.Should().HaveCount(13);
+        requestedDefaults.Should().HaveCount(12);
 
         var config = result.Value!;
         config.FxRateUsdVnd.Should().BePositive();
-        config.CreditValueVnd.Should().BePositive();
+        config.CreditValueUsd.Should().BePositive();
         config.Formula.Should().NotBeNullOrWhiteSpace();
         config.ResolverKey.Should().NotBeNullOrWhiteSpace();
         // No row yet: the Startup plan's $49 / 1,250,000 credits.
@@ -677,7 +676,7 @@ public class UsageRateCardAdminServiceTests
     }
 
     [Theory]
-    [InlineData("VND", true, "Only credit-unit (CRD) cards")]
+    [InlineData("USD", true, "Only credit-unit (CRD) cards")]
     [InlineData("CRD", false, "retired")]
     public async Task SetProviderCostAsync_RefusedCard_RollsBackWithTheReason(string currency, bool active, string reason)
     {
@@ -729,15 +728,14 @@ public class UsageRateCardAdminServiceTests
             .Setup(r => r.ReadPricingConfigValueAsync(
                 It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .Returns<string, decimal, CancellationToken>((key, _, _) => Task.FromResult(
-                key == "fx_rate_usd_vnd" ? 26_300m : 4m));
+                key == "fx_rate_usd_vnd" ? 26_300m : 0.0001520913m));
 
         var result = await service.PreviewRateCardAsync(
             new RateCardPreviewRequest(ProviderUnitCostUsd: 0.0001000000m, MarkupMultiplier: 2.5m));
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.UnitPriceCredits.Should().Be(1.643750m);
-        result.Value.FxRateUsdVnd.Should().Be(26_300m);
-        result.Value.CreditValueVnd.Should().Be(4m);
+        result.Value.CreditValueUsd.Should().Be(0.0001520913m);
         result.Value.Formula.Should().NotBeNullOrWhiteSpace();
 
         // A preview must never write, so it must never open a transaction either.
@@ -753,14 +751,13 @@ public class UsageRateCardAdminServiceTests
             ProviderUnitCostUsd: 0.0001000000m,
             MarkupMultiplier: 2.5m,
             Quantity: 1m,
-            FxRateUsdVnd: 26_300m,
-            CreditValueVnd: 4m));
+            CreditValueUsd: 0.0001520913m));
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.UnitPriceCredits.Should().Be(1.643750m);
 
-        // Both economics values were supplied, so nothing needs loading — this is what lets
-        // an admin preview a proposed FX/credit-value change before saving it.
+        // The credit value was supplied, so nothing needs loading — this is what lets an admin
+        // preview a proposed credit-value change before saving it.
         repository.Verify(
             r => r.ReadPricingConfigValueAsync(
                 It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()),
@@ -776,8 +773,7 @@ public class UsageRateCardAdminServiceTests
             ProviderUnitCostUsd: 0.01m,
             MarkupMultiplier: 2.5m,
             Quantity: 1m,
-            FxRateUsdVnd: 26_300m,
-            CreditValueVnd: 0m));
+            CreditValueUsd: 0m));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.ValidationError);

@@ -111,7 +111,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         var invoiceTermsDays = subscription.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays;
 
         // The currency follows the amounts it labels (see BillingCycleCharge): a contract price is
-        // VND whatever the plan is priced in.
+        // USD whatever the plan is priced in.
         var resolution = BillingCycleCharge.Resolve(subscription, plan);
         if (resolution.Charge is not { } charge)
         {

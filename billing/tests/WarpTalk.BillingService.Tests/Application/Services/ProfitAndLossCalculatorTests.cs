@@ -7,8 +7,8 @@ using WarpTalk.BillingService.Domain.Interfaces;
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 /// <summary>
-/// Profit and loss on plain values: revenue minus AI provider cost, each USD amount at its own day's
-/// rate, measured Cartesia cost allocated to plans, uncovered usage named instead of priced at 0.
+/// Profit and loss on plain values, in USD: revenue minus AI provider cost, each VND payment at its own
+/// day's rate, measured Cartesia cost allocated to plans, uncovered usage named instead of priced at 0.
 /// </summary>
 public sealed class ProfitAndLossCalculatorTests
 {
@@ -47,31 +47,31 @@ public sealed class ProfitAndLossCalculatorTests
         var input = Inputs(
             slots:
             [
-                // STT with a provider cost: 2 USD on 5 Sep (rate 25,000) and 1 USD on 12 Sep (rate 26,000).
+                // STT with a provider cost: 2 USD on 5 Sep and 1 USD on 12 Sep. USD needs no rate.
                 Slot(Utc(9, 5, 3), "STT", "openai", Team, 1_000, 1_000, 2m),
                 Slot(Utc(9, 12, 3), "STT", "openai", Pro, 500, 500, 1m),
             ],
             payments:
             [
-                new PaidAmountRow(Utc(9, 5), "VND", 1_000_000m, W1, Team),
-                new PaidAmountRow(Utc(9, 12), "USD", 20m, W2, Pro),   // at 12 Sep's 26,000 → 520,000
+                new PaidAmountRow(Utc(9, 5), "VND", 1_000_000m, W1, Team),   // at 5 Sep's 25,000 → 40 USD
+                new PaidAmountRow(Utc(9, 12), "USD", 20m, W2, Pro),
             ],
             workspaces: [new WorkspaceSlotRow(Utc(9, 5, 3), W1, Team, 1_000), new WorkspaceSlotRow(Utc(9, 12, 3), W3, Pro, 500)]);
 
         var period = ProfitAndLossCalculator.Compute(input, Utc(9, 1), Utc(9, 20));
 
-        period.Revenue.Value.Should().Be(1_520_000m);
-        period.AiCost.Value.Should().Be(2m * 25_000m + 1m * 26_000m, "each USD amount converts at the rate of its own day");
+        period.Revenue.Value.Should().Be(60m, "the VND payment converts at the rate of its own day");
+        period.AiCost.Value.Should().Be(3m, "providers bill in USD: no rate is involved");
         period.AiCostUsd.Should().Be(3m);
-        period.GrossMargin.Value.Should().Be(1_520_000m - 76_000m);
+        period.GrossMargin.Value.Should().Be(57m);
         period.GrossMarginPercent.Value.Should().Be(95.0m);
         period.ActiveWorkspaces.Should().Be(3, "W1 paid and used, W2 paid, W3 used");
-        period.Arpa.Value.Should().Be(506_667m);
+        period.Arpa.Value.Should().Be(20m);
 
         var team = period.Plans.Single(p => p.PlanId == Team);
-        team.RevenueVnd.Should().Be(1_000_000m);
-        team.CostVnd.Should().Be(50_000m);
-        period.FxUsed.Select(r => r.Rate).Distinct().Should().BeEquivalentTo(new decimal?[] { 25_000m, 26_000m });
+        team.RevenueUsd.Should().Be(40m);
+        team.CostUsd.Should().Be(2m);
+        period.FxUsed.Select(r => r.Rate).Distinct().Should().BeEquivalentTo(new decimal?[] { 25_000m }, "only the VND payment needed a rate");
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public sealed class ProfitAndLossCalculatorTests
         var period = ProfitAndLossCalculator.Compute(input, Utc(9, 1), Utc(9, 20));
 
         period.CoveragePercent.Should().Be(25m);
-        period.AiCost.Value.Should().Be(25_000m);
+        period.AiCost.Value.Should().Be(1m);
         period.AiCost.Note.Should().Contain("covers 25% of consumed credits").And.Contain("TRANSLATION (75%)");
         period.GrossMargin.Note.Should().Contain("overstated");
         var openAi = period.Providers.Single(p => p.Provider == "openai");
@@ -144,7 +144,7 @@ public sealed class ProfitAndLossCalculatorTests
         var period = ProfitAndLossCalculator.Compute(input, Utc(9, 1), Utc(9, 20));
 
         period.AiCostUsd.Should().Be(40m);
-        period.AiCost.Value.Should().Be(40m * 26_000m);
+        period.AiCost.Value.Should().Be(40m);
         period.MeasuredDays.Should().Be(1);
         period.Plans.Single(p => p.PlanId == Team).CostUsd.Should().Be(30m);
         period.Plans.Single(p => p.PlanId == Pro).CostUsd.Should().Be(10m);

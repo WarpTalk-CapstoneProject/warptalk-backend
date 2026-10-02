@@ -67,7 +67,7 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("price");
             entity.Property(e => e.Currency)
                 .HasMaxLength(3)
-                .HasDefaultValue(PaymentConstants.Currencies.VndAccounting)
+                .HasDefaultValue(PaymentConstants.Currencies.UsdAccounting)
                 .HasColumnName("currency");
             entity.Property(e => e.BillingCycle)
                 .HasMaxLength(20)
@@ -79,7 +79,7 @@ public partial class BillingDbContext : DbContext
                 .HasDefaultValue(0)
                 .HasColumnName("overage_cap_credits");
             entity.Property(e => e.OveragePricePerCredit)
-                .HasPrecision(12, 4)
+                .HasPrecision(18, 10)
                 .HasDefaultValue(SubscriptionConstants.PlanDefaults.OveragePricePerCredit)
                 .HasColumnName("overage_price_per_credit");
             entity.Property(e => e.LowBalanceThresholdCredits)
@@ -190,12 +190,12 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.CancelledAt).HasColumnName("cancelled_at");
             entity.Property(e => e.TrialEndsAt).HasColumnName("trial_ends_at");
             entity.Property(e => e.CreditsPerCycleOverride).HasColumnName("credits_per_cycle_override");
-            entity.Property(e => e.ContractPriceVnd)
+            entity.Property(e => e.ContractPriceUsd)
                 .HasPrecision(14, 2)
-                .HasColumnName("contract_price_vnd");
+                .HasColumnName("contract_price_usd");
             entity.Property(e => e.OverageCapCreditsOverride).HasColumnName("overage_cap_credits_override");
             entity.Property(e => e.OveragePricePerCreditOverride)
-                .HasPrecision(12, 4)
+                .HasPrecision(18, 10)
                 .HasColumnName("overage_price_per_credit_override");
             entity.Property(e => e.InvoiceTermsDaysOverride).HasColumnName("invoice_terms_days_override");
             entity.Property(e => e.BillingContactEmail)
@@ -317,7 +317,7 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.ReversalOfTransactionId).HasColumnName("reversal_of_transaction_id");
             entity.Property(e => e.Currency)
                 .HasMaxLength(3)
-                .HasDefaultValue(PaymentConstants.Currencies.VndAccounting)
+                .HasDefaultValue(PaymentConstants.Currencies.UsdAccounting)
                 .HasColumnName("currency");
             entity.Property(e => e.IdempotencyKey)
                 .HasMaxLength(255)
@@ -437,7 +437,7 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("total_amount");
             entity.Property(e => e.Currency)
                 .HasMaxLength(3)
-                .HasDefaultValue(PaymentConstants.Currencies.VndAccounting)
+                .HasDefaultValue(PaymentConstants.Currencies.UsdAccounting)
                 .HasColumnName("currency");
             entity.Property(e => e.PaymentMethod)
                 .HasMaxLength(30)
@@ -543,7 +543,7 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("total");
             entity.Property(e => e.Currency)
                 .HasMaxLength(3)
-                .HasDefaultValue(PaymentConstants.Currencies.VndAccounting)
+                .HasDefaultValue(PaymentConstants.Currencies.UsdAccounting)
                 .HasColumnName("currency");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)

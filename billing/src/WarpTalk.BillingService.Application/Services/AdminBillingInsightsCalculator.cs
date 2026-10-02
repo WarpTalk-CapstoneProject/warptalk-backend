@@ -19,9 +19,9 @@ namespace WarpTalk.BillingService.Application.Services;
 /// </summary>
 public static class AdminBillingInsightsCalculator
 {
-    public const string FxRateConfigKey = "fx_rate_usd_vnd";
+    public const string FxRateConfigKey = FxRateConstants.RateConfigKey;
     public const string Vnd = PaymentConstants.Currencies.VndAccounting;
-    public const string Usd = "USD";
+    public const string Usd = PaymentConstants.Currencies.UsdAccounting;
 
     /// <summary>Months in revenueByMonth, ending with the month of <c>to</c>.</summary>
     public const int RevenueMonths = 6;
@@ -38,14 +38,14 @@ public static class AdminBillingInsightsCalculator
     public readonly record struct MoneyPart(string Currency, decimal Amount, int Rows);
 
     /// <summary>
-    /// The VND total of some money parts. <see cref="IncludedRows"/> counts the rows that made it
+    /// The USD total of some money parts. <see cref="IncludedRows"/> counts the rows that made it
     /// into <see cref="Amount"/>; <see cref="Amount"/> is null when rows existed and none could be
     /// converted.
     /// </summary>
-    public sealed record VndTotal(
+    public sealed record UsdTotal(
         decimal? Amount,
         int IncludedRows,
-        decimal ConvertedUsd,
+        decimal ConvertedVnd,
         int ConvertedRows,
         int ExcludedRows,
         IReadOnlyList<string> ExcludedCurrencies);
@@ -53,28 +53,28 @@ public static class AdminBillingInsightsCalculator
     // ── Currency ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Sums money into VND. VND passes through; USD is converted at the admin-editable
-    /// <c>billing_pricing_config.fx_rate_usd_vnd</c> when it is set; anything else — or USD with
-    /// no rate — is excluded and reported, never guessed.
+    /// Sums money into USD, the accounting currency. USD passes through; VND (historical payments, a
+    /// VND-priced sale) is converted at the USD→VND rate — Stripe's, by default — when there is one;
+    /// anything else, or VND with no rate, is excluded and reported, never guessed.
     /// </summary>
-    public static VndTotal ToVnd(IEnumerable<MoneyPart> parts, decimal? fxUsdVnd)
+    public static UsdTotal ToUsd(IEnumerable<MoneyPart> parts, decimal? fxUsdVnd)
     {
-        decimal amount = 0, convertedUsd = 0;
+        decimal amount = 0, convertedVnd = 0;
         int included = 0, converted = 0, excluded = 0;
         var excludedCurrencies = new SortedSet<string>(StringComparer.Ordinal);
 
         foreach (var part in parts)
         {
             var currency = (part.Currency ?? string.Empty).Trim().ToUpperInvariant();
-            if (currency == Vnd)
+            if (currency == Usd)
             {
                 amount += part.Amount;
                 included += part.Rows;
             }
-            else if (currency == Usd && fxUsdVnd is > 0)
+            else if (currency == Vnd && fxUsdVnd is > 0)
             {
-                amount += part.Amount * fxUsdVnd.Value;
-                convertedUsd += part.Amount;
+                amount += part.Amount / fxUsdVnd.Value;
+                convertedVnd += part.Amount;
                 converted += part.Rows;
                 included += part.Rows;
             }
@@ -86,30 +86,31 @@ public static class AdminBillingInsightsCalculator
         }
 
         var hasOnlyExcluded = included == 0 && excluded > 0;
-        return new VndTotal(
-            hasOnlyExcluded ? null : RoundVnd(amount),
+        return new UsdTotal(
+            hasOnlyExcluded ? null : RoundUsd(amount),
             included,
-            convertedUsd,
+            convertedVnd,
             converted,
             excluded,
             excludedCurrencies.ToList());
     }
 
-    public static decimal RoundVnd(decimal amount) => Math.Round(amount, 0, MidpointRounding.AwayFromZero);
+    /// <summary>Cents. Rounded once, on a total — never per row and then summed.</summary>
+    public static decimal RoundUsd(decimal amount) => Math.Round(amount, 2, MidpointRounding.AwayFromZero);
 
-    /// <summary>"includes 180.00 USD converted at 26,300 VND/USD; excludes 2 EUR rows". Null when nothing needed saying.</summary>
-    public static string? ConversionNote(VndTotal total, decimal? fxUsdVnd)
+    /// <summary>"includes 4,734,000 VND converted at 26,300 VND/USD; excludes 2 EUR rows". Null when nothing needed saying.</summary>
+    public static string? ConversionNote(UsdTotal total, decimal? fxUsdVnd)
     {
         var parts = new List<string>();
         if (total.ConvertedRows > 0 && fxUsdVnd is { } fx)
         {
             parts.Add(string.Create(Invariant,
-                $"includes {total.ConvertedUsd:N2} USD converted at {fx:N0} VND/USD (billing_pricing_config.{FxRateConfigKey})"));
+                $"includes {total.ConvertedVnd:N0} VND converted at {fx:N0} VND/USD (billing_pricing_config.{FxRateConfigKey})"));
         }
 
         if (total.ExcludedRows > 0)
         {
-            var reason = total.ExcludedCurrencies.Contains(Usd) && fxUsdVnd is not > 0
+            var reason = total.ExcludedCurrencies.Contains(Vnd) && fxUsdVnd is not > 0
                 ? $" (no {FxRateConfigKey} configured)"
                 : string.Empty;
             parts.Add(string.Create(Invariant,
@@ -133,11 +134,11 @@ public static class AdminBillingInsightsCalculator
         return new AdminInsightMetric(id, current.Value, previous.Value, unit, higherIsBetter, note);
     }
 
-    /// <summary>revenue = Σ counted paid payments' total, in VND. See IPaymentRepository for "counted".</summary>
-    public static (MetricSide Side, VndTotal Total) Revenue(
+    /// <summary>revenue = Σ counted paid payments' total, in USD. See IPaymentRepository for "counted".</summary>
+    public static (MetricSide Side, UsdTotal Total) Revenue(
         IReadOnlyList<PaymentCurrencyTotal> paid, int stripeDuplicatesExcluded, decimal? fxUsdVnd)
     {
-        var total = ToVnd(paid.Select(p => new MoneyPart(p.Currency, p.Total, p.Payments)), fxUsdVnd);
+        var total = ToUsd(paid.Select(p => new MoneyPart(p.Currency, p.Total, p.Payments)), fxUsdVnd);
         var notes = new List<string>();
         if (ConversionNote(total, fxUsdVnd) is { } conversion) notes.Add(conversion);
         if (stripeDuplicatesExcluded > 0)
@@ -166,7 +167,8 @@ public static class AdminBillingInsightsCalculator
 
     /// <summary>
     /// aiProviderCost = Σ usage quantity × rate card provider_unit_cost (USD) over consume rows whose
-    /// settled rate card carries a provider cost in the usage record's unit, converted to VND.
+    /// settled rate card carries a provider cost in the usage record's unit. Providers bill in USD and
+    /// USD is the accounting currency, so no exchange rate is involved.
     /// A partial figure says how much of the usage it covers and names the charge types it leaves out.
     ///
     /// With <paramref name="dubbing"/>, <paramref name="consumption"/> must already be
@@ -174,19 +176,14 @@ public static class AdminBillingInsightsCalculator
     /// measured Cartesia credits on every synced UTC day, and the note says which days were measured
     /// and which estimated. Measured Cartesia usage with no WarpTalk charge at all is still a cost.
     /// </summary>
-    public static MetricSide AiProviderCost(ConsumptionTotals consumption, decimal? fxUsdVnd, MeasuredDubbing? dubbing = null, bool filteredToApiKey = true)
+    public static MetricSide AiProviderCost(ConsumptionTotals consumption, MeasuredDubbing? dubbing = null, bool filteredToApiKey = true)
     {
         var dubbingNote = dubbing is null ? null : CartesiaDubbingCost.Note(dubbing, filteredToApiKey);
 
         if (consumption.Transactions == 0)
         {
             if (dubbing is not { MeasuredUsd: > 0 }) return new MetricSide(0m, null);
-            if (fxUsdVnd is not > 0)
-                return MetricSide.Unavailable($"provider cost is in USD and no {FxRateConfigKey} is configured");
-            return new MetricSide(
-                RoundVnd(dubbing.MeasuredUsd * fxUsdVnd.Value),
-                string.Join("; ", new[] { dubbingNote, string.Create(Invariant, $"USD converted at {fxUsdVnd.Value:N0} VND/USD") }
-                    .Where(part => part is not null)));
+            return new MetricSide(RoundUsd(dubbing.MeasuredUsd), dubbingNote);
         }
 
         var uncovered = UncoveredChargeTypes(consumption);
@@ -198,11 +195,6 @@ public static class AdminBillingInsightsCalculator
                 + (dubbingNote is null ? string.Empty : $"; {dubbingNote}"));
         }
 
-        if (fxUsdVnd is not > 0)
-        {
-            return MetricSide.Unavailable($"provider cost is in USD and no {FxRateConfigKey} is configured");
-        }
-
         var coverage = Coverage(consumption);
         var notes = new List<string>
         {
@@ -211,8 +203,7 @@ public static class AdminBillingInsightsCalculator
         };
         if (uncovered is not null) notes.Add(uncovered);
         if (dubbingNote is not null) notes.Add(dubbingNote);
-        notes.Add(string.Create(Invariant, $"USD converted at {fxUsdVnd.Value:N0} VND/USD"));
-        return new MetricSide(RoundVnd(consumption.ProviderCostUsd * fxUsdVnd.Value), string.Join("; ", notes));
+        return new MetricSide(RoundUsd(consumption.ProviderCostUsd), string.Join("; ", notes));
     }
 
     /// <summary>Share of consumed credits with a reconstructable provider cost, 0–100. 100 when nothing was consumed.</summary>
@@ -266,11 +257,11 @@ public static class AdminBillingInsightsCalculator
     }
 
     /// <summary>revenuePerPayment = revenue / the payments that make up revenue; null when there are none.</summary>
-    public static MetricSide RevenuePerPayment(MetricSide revenue, VndTotal revenueTotal)
+    public static MetricSide RevenuePerPayment(MetricSide revenue, UsdTotal revenueTotal)
     {
         if (revenue.Value is null) return MetricSide.Unavailable("revenue is unavailable");
         if (revenueTotal.IncludedRows == 0) return MetricSide.Unavailable("no paid payments in range");
-        return new MetricSide(RoundVnd(revenue.Value.Value / revenueTotal.IncludedRows), null);
+        return new MetricSide(RoundUsd(revenue.Value.Value / revenueTotal.IncludedRows), null);
     }
 
     /// <summary>cancelled / active at month start × 100, 2 decimals; null when nothing was active.</summary>
@@ -283,7 +274,7 @@ public static class AdminBillingInsightsCalculator
 
     /// <summary>
     /// Every local day of the window (<c>AdminComparisonRange.DaysOf</c> in the request's tz), zero-filled,
-    /// in VND. A payment belongs to the local day it was paid on. A day whose every payment was in an
+    /// in USD. A payment belongs to the local day it was paid on. A day whose every payment was in an
     /// unconvertible currency is null, not 0; the note (null when nothing was left out) says what the
     /// series excludes.
     /// </summary>
@@ -302,9 +293,9 @@ public static class AdminBillingInsightsCalculator
         }
 
         var rows = days
-            .Select((day, i) => new AdminRevenueByDayDto(day.Key, ToVnd(buckets[i] ?? [], fxUsdVnd).Amount))
+            .Select((day, i) => new AdminRevenueByDayDto(day.Key, ToUsd(buckets[i] ?? [], fxUsdVnd).Amount))
             .ToList();
-        return (rows, ExclusionNote(ToVnd(counted, fxUsdVnd), fxUsdVnd));
+        return (rows, ExclusionNote(ToUsd(counted, fxUsdVnd), fxUsdVnd));
     }
 
     /// <summary>
@@ -341,18 +332,18 @@ public static class AdminBillingInsightsCalculator
                     .Select(p => new MoneyPart(p.Currency, p.Total, 1))
                     .ToList();
                 counted.AddRange(parts);
-                return new AdminRevenueByMonthDto(month.Month.ToString("yyyy-MM", Invariant), ToVnd(parts, fxUsdVnd).Amount);
+                return new AdminRevenueByMonthDto(month.Month.ToString("yyyy-MM", Invariant), ToUsd(parts, fxUsdVnd).Amount);
             })
             .ToList();
 
-        return (rows, ExclusionNote(ToVnd(counted, fxUsdVnd), fxUsdVnd));
+        return (rows, ExclusionNote(ToUsd(counted, fxUsdVnd), fxUsdVnd));
     }
 
-    /// <summary>A day's revenue in VND with its conversion note — revenueToday / revenueYesterday.</summary>
+    /// <summary>A day's revenue in USD with its conversion note — revenueToday / revenueYesterday.</summary>
     public static (decimal? Amount, string? Note) RevenueBetween(
         IReadOnlyList<PaidAmountRow> payments, DateTime from, DateTime to, decimal? fxUsdVnd)
     {
-        var total = ToVnd(
+        var total = ToUsd(
             payments.Where(p => p.At >= from && p.At < to).Select(p => new MoneyPart(p.Currency, p.Total, 1)),
             fxUsdVnd);
         return (total.Amount, ConversionNote(total, fxUsdVnd));
@@ -367,10 +358,10 @@ public static class AdminBillingInsightsCalculator
     }
 
     /// <summary>Only the "excludes N … rows" half of <see cref="ConversionNote"/> — what a chart left out.</summary>
-    public static string? ExclusionNote(VndTotal total, decimal? fxUsdVnd)
+    public static string? ExclusionNote(UsdTotal total, decimal? fxUsdVnd)
         => total.ExcludedRows == 0
             ? null
-            : ConversionNote(total with { ConvertedRows = 0, ConvertedUsd = 0 }, fxUsdVnd);
+            : ConversionNote(total with { ConvertedRows = 0, ConvertedVnd = 0 }, fxUsdVnd);
 
     // ── Snapshot helpers ─────────────────────────────────────────────────────
 

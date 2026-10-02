@@ -152,7 +152,7 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
                 // prev >= 0 → max(0, credits - prev); prev < 0 → credits. With
                 // prev = balance_after - amount, both reduce to max(0, -after) - max(0, -prev).
                 Overage = Math.Max(0, -t.BalanceAfter) - Math.Max(0, t.Amount - t.BalanceAfter),
-                // The card the row was settled on — CRD or VND alike — must carry a cost in the
+                // The card the row was settled on — CRD or USD alike — must carry a cost in the
                 // unit the usage was metered in. A card with no unit predates Phase 2 and is
                 // taken at its word.
                 Covered = u != null && r != null && r.ProviderUnitCost != null && (r.Unit == null || r.Unit == u.Unit),

@@ -207,9 +207,8 @@ public class PlanServiceCreatePlanTests
 
     private static PricingConfigDto CreatePricingConfig() => new(
         FxRateUsdVnd: 26300m,
-        CreditValueVnd: 4m,
-        MinimumPricePerCreditVnd: 2.60m,
-        MinimumContractPriceVnd: 15000m,
+        CreditValueUsd: 0.0001520913m,
+        MinimumPricePerCreditUsd: 0.0000988593m,
         MinimumContractPriceUsd: ConfiguredMinimumUsdPrice,
         SalesUsageWeight: 0.45m,
         SalesMembersWeight: 0.15m,
