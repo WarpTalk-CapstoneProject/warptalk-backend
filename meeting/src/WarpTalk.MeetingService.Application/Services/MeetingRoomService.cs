@@ -109,44 +109,8 @@ public class MeetingRoomService : IMeetingRoomService
         await _unitOfWork.BeginTransactionAsync();
         try
         {
-            // 2. Provision / Get Meeting Room
-            var meetingRoom = await _unitOfWork.MeetingRoomRepository
-                .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
-
-            if (meetingRoom == null)
-            {
-                meetingRoom = new MeetingRoom
-                {
-                    TranslationRoomId = translationRoomId,
-                    ProviderRoomName = translationRoomId.ToString(),
-                    Status = roomDetails.Status
-                };
-                await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
-                await _unitOfWork.SaveChangesAsync();
-
-                // Notify WorkspaceService to capture Context Snapshot
-                await PublishMeetingStartedAsync(
-                    translationRoomId,
-                    roomDetails.WorkspaceId,
-                    roomDetails.Title,
-                    roomDetails.Description);
-            }
-            else if (meetingRoom.Status != roomDetails.Status)
-            {
-                meetingRoom.Status = roomDetails.Status;
-                _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-                await _unitOfWork.SaveChangesAsync();
-
-                // If it transitions to IN_PROGRESS, might want to trigger too if not done
-                if (meetingRoom.Status == "IN_PROGRESS")
-                {
-                    await PublishMeetingStartedAsync(
-                        translationRoomId,
-                        roomDetails.WorkspaceId,
-                        roomDetails.Title,
-                        roomDetails.Description);
-                }
-            }
+            // 2. Provision / Get Meeting Room (shared with GenerateBridgeTokenAsync — WT-916)
+            var meetingRoom = await EnsureMeetingRoomAsync(translationRoomId, roomDetails);
 
             // 3. Enforce Authorization (RtcSessionRevocation, Expiration & Dynamic Workspace)
             bool isHost = roomDetails.HostId == userIdString;
@@ -463,12 +427,49 @@ public class MeetingRoomService : IMeetingRoomService
                 "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
 
-        // The LiveKit room name is the translation room id everywhere in this service (see
-        // JoinMeetingAsync's ProviderRoomName when it provisions). Read the row when it exists so
-        // a room provisioned under a different name still bridges to the right place.
-        var meetingRoom = await _unitOfWork.MeetingRoomRepository
-            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
-        var providerRoomName = meetingRoom?.ProviderRoomName ?? translationRoomId.ToString();
+        // WT-916 (B20): PROVISION THE ROW HERE, NOT ONLY ON JOIN.
+        //
+        // This used to only READ the meeting_rooms row ("when it exists") and fall back to the
+        // translation room id for the LiveKit room name. But the far side enters LiveKit through
+        // this token, so whenever the capturer's web window had not joined yet — join in flight,
+        // failed, or never made — the room had live audio in LiveKit and no row behind it. Every
+        // thing keyed on that row then failed quietly: SetRecordingAsync answered 404 "Meeting
+        // room not found" to the default bridge recording, the LiveKit webhooks and egress
+        // completion (looked up by provider_room_name) found nothing to update, and the
+        // MeetingStarted context snapshot was never published. The web papered over it by waiting
+        // for its own join first; the server has to be right without that.
+        //
+        // Placed AFTER every refusal above on purpose: a non-bridge room, a caller who is not the
+        // capturer and an ended room must leave no trace — no row, no MeetingStarted. The row is
+        // created by the same helper the join path uses, under the same provisioning lock, so a
+        // join racing this call ends up on the same row instead of a second one.
+        //
+        // Its own short transaction: the provisioning lock is transaction-scoped, and a
+        // MeetingStarted publish that throws must roll the new row back exactly as it does on
+        // join — otherwise the row would survive without its snapshot, and the next caller would
+        // find the row and never publish one.
+        MeetingRoom meetingRoom;
+        await _unitOfWork.BeginTransactionAsync();
+        try
+        {
+            meetingRoom = await EnsureMeetingRoomAsync(translationRoomId, room);
+            await _unitOfWork.CommitTransactionAsync();
+        }
+        catch (Exception ex)
+        {
+            await _unitOfWork.RollbackTransactionAsync();
+            _logger.LogError(ex, "Could not provision the meeting room for bridge room {RoomId}", translationRoomId);
+            // Fails the token, the same way the same fault fails a join: a bridge whose audio
+            // reaches a room with no row is the exact state this change exists to remove.
+            return Result.Failure<BridgeTokenResponse>(
+                "Could not prepare this meeting for the external call. Please try again.",
+                ErrorCodes.InternalServerError);
+        }
+
+        // The LiveKit room name comes from the row (the translation room id for every row this
+        // service provisions), so a room provisioned under a different name still bridges to the
+        // right place.
+        var providerRoomName = meetingRoom.ProviderRoomName;
 
         var identity = ExternalBridgeConstants.ParticipantUserId.ToString();
         var tokenResult = _tokenService.GenerateToken(
@@ -556,6 +557,96 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Success<bool>(true);
+    }
+
+    /// <summary>
+    /// WT-916 (B20). Returns the meeting_rooms row for <paramref name="translationRoomId"/>,
+    /// creating it (and publishing MeetingStarted for the context snapshot) when there is none, and
+    /// otherwise syncing its status from <paramref name="roomDetails"/> — the provisioning that used
+    /// to live inline in JoinMeetingAsync, unchanged, now shared with GenerateBridgeTokenAsync.
+    ///
+    /// THE CALLER MUST HOLD A TRANSACTION (BeginTransactionAsync) and owns its commit/rollback:
+    /// the provisioning lock below lasts exactly as long as that transaction, and a
+    /// MeetingStarted publish that throws relies on the caller's rollback to take the new row with
+    /// it, so the next caller creates it again and publishes then.
+    ///
+    /// RACE: meeting_rooms has no unique index on translation_room_id (the DbContext stays raw
+    /// scaffold, and adding one needs a migration that first dedupes production), so "read, none,
+    /// insert" from two callers at once would make two rows. Join and bridge token do arrive
+    /// together — the capturer's desktop and web window start at the same moment. So a caller that
+    /// finds no row takes a transaction-scoped advisory lock and READS AGAIN before inserting: the
+    /// second caller blocks until the first commits, then sees its row. The fast path (row already
+    /// there) takes no lock, so ordinary joins never queue behind each other.
+    ///
+    /// Residual risk, stated rather than hidden: the lock only serialises callers that go through
+    /// this helper. Rows created any other way (none today) or duplicates that already exist are
+    /// not prevented; the post-insert check below logs them so they are seen, and only a unique
+    /// index can rule them out.
+    /// </summary>
+    private async Task<MeetingRoom> EnsureMeetingRoomAsync(
+        Guid translationRoomId,
+        Shared.Protos.GetTranslationRoomResponse roomDetails)
+    {
+        var repository = _unitOfWork.MeetingRoomRepository;
+        var meetingRoom = await repository.FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+
+        if (meetingRoom == null)
+        {
+            await repository.AcquireProvisioningLockAsync(translationRoomId);
+
+            // Read committed: this statement runs after the lock was granted, so it sees a row
+            // committed by whoever held the lock before us.
+            meetingRoom = await repository.FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        }
+
+        if (meetingRoom == null)
+        {
+            meetingRoom = new MeetingRoom
+            {
+                TranslationRoomId = translationRoomId,
+                ProviderRoomName = translationRoomId.ToString(),
+                Status = roomDetails.Status
+            };
+            await repository.AddAsync(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+
+            // Re-read after the save. Under the lock this finds exactly our row; more than one
+            // means a duplicate the lock could not see (see "Residual risk" above). Logged, not
+            // repaired: picking a row to delete here could delete the one holding a live egress.
+            var rows = await repository.FindAsync(r => r.TranslationRoomId == translationRoomId);
+            if (rows.Count > 1)
+            {
+                _logger.LogError(
+                    "Translation room {RoomId} has {Count} meeting_rooms rows after provisioning; recording and webhook state may be split between them",
+                    translationRoomId,
+                    rows.Count);
+            }
+
+            // Notify WorkspaceService to capture Context Snapshot
+            await PublishMeetingStartedAsync(
+                translationRoomId,
+                roomDetails.WorkspaceId,
+                roomDetails.Title,
+                roomDetails.Description);
+        }
+        else if (meetingRoom.Status != roomDetails.Status)
+        {
+            meetingRoom.Status = roomDetails.Status;
+            repository.Update(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+
+            // If it transitions to IN_PROGRESS, might want to trigger too if not done
+            if (meetingRoom.Status == "IN_PROGRESS")
+            {
+                await PublishMeetingStartedAsync(
+                    translationRoomId,
+                    roomDetails.WorkspaceId,
+                    roomDetails.Title,
+                    roomDetails.Description);
+            }
+        }
+
+        return meetingRoom;
     }
 
     private async Task PublishMeetingStartedAsync(

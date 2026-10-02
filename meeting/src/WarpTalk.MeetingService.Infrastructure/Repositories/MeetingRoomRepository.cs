@@ -48,5 +48,20 @@ public class MeetingRoomRepository : GenericRepository<MeetingRoom>, IMeetingRoo
         return false;
     }
 
+    public async Task AcquireProvisioningLockAsync(Guid translationRoomId, CancellationToken ct = default)
+    {
+        // Same mechanism translation-room uses to serialise Start Translation
+        // (TranslationRoomSessionRepository.AcquireSessionStartLockAsync): a Postgres advisory lock
+        // scoped to the transaction, keyed by hashtextextended of the room. The key is PREFIXED
+        // because advisory locks are per database, not per schema: if both services share one
+        // database, an unprefixed room id would make a meeting-row provision wait on that room's
+        // Start Translation and vice versa, for no reason either side could see.
+        await _context.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT pg_advisory_xact_lock(hashtextextended({ProvisioningLockPrefix + translationRoomId.ToString()}, 0));",
+            ct);
+    }
+
+    private const string ProvisioningLockPrefix = "meeting_room_provision:";
+
     private const string FinishedStatus = "FINISHED";
 }

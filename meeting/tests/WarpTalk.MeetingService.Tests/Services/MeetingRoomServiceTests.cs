@@ -1669,6 +1669,8 @@ public class MeetingRoomServiceTests
     // so the tests that matter most are the two REFUSALS. A regression that widens either gate
     // would not break any of the happy-path assertions.
 
+    private static readonly Guid BridgeWorkspaceId = Guid.NewGuid();
+
     private void SetupBridgeRoom(Guid translationRoomId, string hostId, string roomType, string status = "IN_PROGRESS", string capturerUserId = "")
     {
         _grpcServiceMock
@@ -1679,6 +1681,9 @@ public class MeetingRoomServiceTests
                 Status = status,
                 TranslationRoomType = roomType,
                 BridgeCapturerUserId = capturerUserId,
+                // WT-916: the bridge token now provisions the row and publishes MeetingStarted,
+                // which needs a real workspace id exactly as the join path always has.
+                WorkspaceId = BridgeWorkspaceId.ToString(),
             }));
         _tokenServiceMock
             .Setup(t => t.GenerateToken(
@@ -1691,7 +1696,7 @@ public class MeetingRoomServiceTests
     {
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType);
 
         var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
@@ -1713,7 +1718,7 @@ public class MeetingRoomServiceTests
     public async Task GenerateBridgeTokenAsync_RefusesANonHost_EvenInABridgeRoom()
     {
         var translationRoomId = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType);
 
         var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, Guid.NewGuid());
@@ -1732,7 +1737,7 @@ public class MeetingRoomServiceTests
     {
         var translationRoomId = Guid.NewGuid();
         var capturer = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
 
         var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
@@ -1747,7 +1752,7 @@ public class MeetingRoomServiceTests
         // Two stand-in publishers would double the far side: only the capturer may mint.
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType, capturerUserId: Guid.NewGuid().ToString());
 
         var member = await _sut.GenerateBridgeTokenAsync(translationRoomId, Guid.NewGuid());
@@ -1766,7 +1771,7 @@ public class MeetingRoomServiceTests
         // capturerUserId "" = a room from before bridge claim (or an older server): the host rule.
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, hostId.ToString(), ExternalBridgeConstants.RoomType, capturerUserId: "");
 
         Assert.True((await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId)).IsSuccess);
@@ -1778,7 +1783,7 @@ public class MeetingRoomServiceTests
     {
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, hostId.ToString(), "EVENT");
 
         var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
@@ -1798,12 +1803,203 @@ public class MeetingRoomServiceTests
         // absence of the field must read as "no" rather than as "unknown, allow".
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        SetupMeetingRoomRepository(_unitOfWorkMock, null);
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
         SetupBridgeRoom(translationRoomId, hostId.ToString(), string.Empty);
 
         var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, hostId);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    // ---- WT-916 (B20): the bridge token provisions the meeting_rooms row ----------------------
+    //
+    // The far side enters LiveKit through the bridge token, so a room whose capturer's web window
+    // had not joined yet had audio in LiveKit and no row: recording 404'd, webhooks and egress
+    // completion found nothing, and no MeetingStarted snapshot went out. These tests run against a
+    // stateful repository so "exactly one row" is a count, not an assumption about call order.
+
+    /// <summary>A meeting_rooms table in a list: FirstOrDefault/Find/Add behave like the real thing.</summary>
+    private static (Mock<IMeetingRoomRepository> Repo, List<MeetingRoom> Rows) SetupStatefulMeetingRoomRepository(
+        Mock<IUnitOfWork> unitOfWorkMock,
+        params MeetingRoom[] existing)
+    {
+        var rows = new List<MeetingRoom>(existing);
+        var repo = new Mock<IMeetingRoomRepository>();
+        repo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<MeetingRoom, bool>> predicate, string _, CancellationToken _) =>
+                rows.FirstOrDefault(predicate.Compile()));
+        repo.Setup(r => r.FindAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<MeetingRoom, bool>> predicate, string _, CancellationToken _) =>
+                (IReadOnlyList<MeetingRoom>)rows.Where(predicate.Compile()).ToList());
+        repo.Setup(r => r.AddAsync(It.IsAny<MeetingRoom>(), It.IsAny<CancellationToken>()))
+            .Callback((MeetingRoom room, CancellationToken _) =>
+            {
+                if (room.Id == Guid.Empty)
+                    room.Id = Guid.NewGuid();
+                rows.Add(room);
+            })
+            .Returns(Task.CompletedTask);
+        unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(repo.Object);
+        return (repo, rows);
+    }
+
+    private void VerifyMeetingStartedPublished(Times times)
+        => _redisServiceMock.Verify(
+            r => r.PublishEventAsync(MeetingEventTypes.Started, It.IsAny<object>()),
+            times);
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_WithNoMeetingRoomRow_CreatesExactlyOneRow_AndPublishesMeetingStartedOnce()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var (repo, rows) = SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
+
+        Assert.True(result.IsSuccess);
+        var row = Assert.Single(rows);
+        Assert.Equal(translationRoomId, row.TranslationRoomId);
+        Assert.Equal(translationRoomId.ToString(), row.ProviderRoomName);
+        Assert.Equal("IN_PROGRESS", row.Status);
+        Assert.Equal(row.ProviderRoomName, result.Value!.ProviderRoomName);
+        VerifyMeetingStartedPublished(Times.Once());
+        // Created under the provisioning lock, inside a transaction that was committed.
+        repo.Verify(r => r.AcquireProvisioningLockAsync(translationRoomId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_ReusesAnExistingRow_WithoutTheLockOrASecondMeetingStarted()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var existing = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = "provisioned-under-another-name",
+            Status = "IN_PROGRESS"
+        };
+        var (repo, rows) = SetupStatefulMeetingRoomRepository(_unitOfWorkMock, existing);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
+
+        Assert.True(result.IsSuccess);
+        Assert.Same(existing, Assert.Single(rows));
+        Assert.Equal("provisioned-under-another-name", result.Value!.ProviderRoomName);
+        VerifyMeetingStartedPublished(Times.Never());
+        repo.Verify(r => r.AddAsync(It.IsAny<MeetingRoom>(), It.IsAny<CancellationToken>()), Times.Never);
+        repo.Verify(r => r.AcquireProvisioningLockAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_FindsTheRowARacingJoinCommitted_WhileItWaitedForTheLock()
+    {
+        // The race this change has to survive: no row on the first read, but by the time the lock
+        // is granted the join that held it has committed one. The re-read must find it.
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var (repo, rows) = SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
+        var committedByJoin = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS"
+        };
+        repo.Setup(r => r.AcquireProvisioningLockAsync(translationRoomId, It.IsAny<CancellationToken>()))
+            .Callback(() => rows.Add(committedByJoin))
+            .Returns(Task.CompletedTask);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
+
+        Assert.True(result.IsSuccess);
+        Assert.Same(committedByJoin, Assert.Single(rows));
+        repo.Verify(r => r.AddAsync(It.IsAny<MeetingRoom>(), It.IsAny<CancellationToken>()), Times.Never);
+        VerifyMeetingStartedPublished(Times.Never());
+    }
+
+    [Theory]
+    [InlineData("not-capturer")]
+    [InlineData("ended")]
+    [InlineData("not-bridge")]
+    public async Task GenerateBridgeTokenAsync_RefusedCallers_CreateNoRow_AndPublishNothing(string refusal)
+    {
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var (repo, rows) = SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
+        SetupBridgeRoom(
+            translationRoomId,
+            Guid.NewGuid().ToString(),
+            refusal == "not-bridge" ? "EVENT" : ExternalBridgeConstants.RoomType,
+            status: refusal == "ended" ? "ENDED" : "IN_PROGRESS",
+            capturerUserId: capturer.ToString());
+        var caller = refusal == "not-capturer" ? Guid.NewGuid() : capturer;
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, caller);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(refusal == "ended" ? ErrorCodes.InvalidState : ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Empty(rows);
+        repo.Verify(r => r.AddAsync(It.IsAny<MeetingRoom>(), It.IsAny<CancellationToken>()), Times.Never);
+        repo.Verify(r => r.AcquireProvisioningLockAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+        VerifyMeetingStartedPublished(Times.Never());
+    }
+
+    [Fact]
+    public async Task GenerateBridgeTokenAsync_FailsAndRollsBack_WhenMeetingStartedCannotBePublished()
+    {
+        // Same contract as join: a row without its snapshot would make the next caller find the
+        // row and never publish one, so the provisioning transaction is rolled back and the token
+        // is not issued.
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
+        SetupBridgeRoom(translationRoomId, Guid.NewGuid().ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
+        _redisServiceMock
+            .Setup(r => r.PublishEventAsync(MeetingEventTypes.Started, It.IsAny<object>()))
+            .ReturnsAsync(Result.Failure("redis down"));
+
+        var result = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InternalServerError, result.ErrorCode);
+        _unitOfWorkMock.Verify(u => u.RollbackTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _tokenServiceMock.Verify(t => t.GenerateToken(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task JoinMeetingAsync_AfterTheBridgeToken_ReusesTheRowItProvisioned()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var (repo, rows) = SetupStatefulMeetingRoomRepository(_unitOfWorkMock);
+        // The capturer is the host here, so the join takes the host path (no lobby, no invite).
+        SetupBridgeRoom(translationRoomId, capturer.ToString(), ExternalBridgeConstants.RoomType, capturerUserId: capturer.ToString());
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        SetupMeetingParticipant(_unitOfWorkMock, null);
+
+        var bridge = await _sut.GenerateBridgeTokenAsync(translationRoomId, capturer);
+        var join = await _sut.JoinMeetingAsync(translationRoomId, capturer, "Capturer");
+
+        Assert.True(bridge.IsSuccess);
+        Assert.True(join.IsSuccess, join.Error);
+        var row = Assert.Single(rows);
+        Assert.Equal(row.ProviderRoomName, join.Value!.ProviderRoomName);
+        Assert.Equal(capturer, row.ActiveHostId);
+        repo.Verify(r => r.AddAsync(It.IsAny<MeetingRoom>(), It.IsAny<CancellationToken>()), Times.Once);
+        VerifyMeetingStartedPublished(Times.Once());
     }
 }
