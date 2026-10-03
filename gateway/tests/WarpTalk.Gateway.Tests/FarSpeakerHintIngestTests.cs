@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using StackExchange.Redis;
@@ -205,6 +206,42 @@ public sealed class FarSpeakerHintIngestTests
     }
 
     private static Func<CancellationToken, Task<bool>> Allow(bool allowed) => _ => Task.FromResult(allowed);
+
+    private sealed class ListLogger : ILogger<FarSpeakerHintIngest>
+    {
+        public readonly List<(LogLevel Level, string Message)> Lines = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Lines.Add((logLevel, formatter(state, exception)));
+    }
+
+    [Fact]
+    public async Task Ingest_LogsEntriesWrittenPerRoom_FirstAtOnceThenAboutOncePerMinute_WithoutNames()
+    {
+        // Bug B3: the next test call must show whether the capturer's names got past the gateway.
+        var (_, db, time) = CreateIngest();
+        var redis = new Mock<IConnectionMultiplexer>();
+        redis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(db.Object);
+        var logger = new ListLogger();
+        var sut = new FarSpeakerHintIngest(redis.Object, logger, time);
+
+        await sut.IngestAsync(RoomId, "capturer", [Hint("Lan Pham", ServerNow - 1_000, ServerNow - 500)], ServerNow, Allow(true));
+        var written = logger.Lines.Where(l => l.Message.Contains("hint entries")).ToList();
+        Assert.Single(written);
+        Assert.Equal(LogLevel.Information, written[0].Level);
+        Assert.Contains("wrote 2 hint entries from 1 hints in 1 calls", written[0].Message);
+        Assert.DoesNotContain("Lan", written[0].Message);
+
+        time.NowMs += 10_000;
+        await sut.IngestAsync(RoomId, "capturer", [Hint("Minh", time.NowMs - 1_000, time.NowMs - 500)], time.NowMs, Allow(true));
+        Assert.Single(logger.Lines, l => l.Message.Contains("hint entries"));
+
+        time.NowMs += 60_000;
+        await sut.IngestAsync(RoomId, "capturer", [Hint("Minh", time.NowMs - 1_000, time.NowMs - 500)], time.NowMs, Allow(true));
+        var last = logger.Lines.Last(l => l.Message.Contains("hint entries"));
+        Assert.Contains("wrote 4 hint entries from 2 hints in 2 calls", last.Message);
+    }
 
     [Fact]
     public async Task Ingest_WritesTheAiContract_WithApproximateMaxLenAndTtl()
