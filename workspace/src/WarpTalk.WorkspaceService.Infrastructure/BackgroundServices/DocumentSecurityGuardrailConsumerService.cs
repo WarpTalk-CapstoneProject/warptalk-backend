@@ -269,6 +269,34 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             // 2. Read Document Content (Physical storage read + decryption)
             var (originalFile, content) = await ReadAndExtractAsync(storage, textExtractor, document, ct);
 
+            // Unreadable text is neither stored as the document's text, scanned, nor embedded:
+            // a PII scan over operator soup answers "clean" about a file nobody read, and the
+            // embedder would index it. Not restricted either — this is a fault, not a finding.
+            if (ExtractedTextQuality.LooksUnreadable(content.FullText))
+            {
+                _logger.LogWarning(
+                    "Extracted text of document {DocumentId} ({Extension}) is unreadable; not scanning or indexing.",
+                    document.Id,
+                    document.FileExtension);
+                document.AiEligible = false;
+                document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+                document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.ExtractionUnreadable;
+                document.UpdatedAt = DateTime.UtcNow;
+                unitOfWork.WorkspaceDocumentRepository.Update(document);
+                await unitOfWork.SaveChangesAsync(ct);
+                await lifecyclePublisher.PublishDocumentDeletedAsync(document.Id, document.WorkspaceId, ct);
+                await lifecyclePublisher.PublishDocumentLifecycleAsync(
+                    document.Id,
+                    document.WorkspaceId,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Failed,
+                    document.UpdatedAt,
+                    document.UploadedBy,
+                    ct);
+                return true;
+            }
+
             // 2.5 Save the extracted structured content serialized as JSON on disk
             var jsonContent = JsonSerializer.Serialize(content);
             await storage.SaveExtractedTextAsync(document, jsonContent, ct);
