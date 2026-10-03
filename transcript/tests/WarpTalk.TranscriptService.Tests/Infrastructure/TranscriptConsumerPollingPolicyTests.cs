@@ -23,7 +23,7 @@ public class TranscriptConsumerPollingPolicyTests
     public void InputStreams_UseGlobalStreamsInsteadOfScanningPerRoomKeys()
     {
         Assert.Equal(
-            ["stt:results", "translate:results", "translate:backfill_results", "tts:results", "transcript:clean"],
+            ["stt:results", "translate:results", "translate:backfill_results", "tts:results", "transcript:clean", "stt:far_speaker_late"],
             TranscriptConsumerPollingPolicy.InputStreams);
     }
 
@@ -43,6 +43,8 @@ public class TranscriptConsumerPollingPolicyTests
     [InlineData("translate:backfill_results", TranscriptResultStreamKind.Translation)]
     [InlineData("tts:results", TranscriptResultStreamKind.Tts)]
     [InlineData("transcript:clean", TranscriptResultStreamKind.CleanSentence)]
+    [InlineData("stt:far_speaker_late", TranscriptResultStreamKind.FarSpeakerLate)]
+    [InlineData("stt:far_speaker_late:legacy-room", TranscriptResultStreamKind.Unknown)]
     [InlineData("stt:results:legacy-room", TranscriptResultStreamKind.Unknown)]
     public void Classify_RecognizesOnlyCanonicalGlobalStreams(
         string stream,

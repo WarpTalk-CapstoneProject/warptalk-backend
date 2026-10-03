@@ -17,6 +17,8 @@ namespace WarpTalk.Gateway.Services;
 ///   - stt:results:{translationRoomId}     → TranscriptSegmentReceived (original transcript,
 ///                                           plus WT-716 tier-1 cleanText/cleanFlags)
 ///   - transcript:clean                    → TranscriptCleanSentenceReceived (WT-716 tier 2)
+///   - stt:far_speaker_late                → TranscriptSegmentSpeakerNamed (a bridge stand-in line's
+///                                           name, a second after the line itself)
 ///   - tts:results:{translationRoomId}     → TranslatedAudioReceived (translated + cloned voice) 
 ///   - ai_assistant:results:{translationRoomId} → AiAssistantResult (summaries, action items)
 ///                                              → AiSuggestionReceived when type="suggestion"
@@ -88,6 +90,7 @@ public sealed class AiResultConsumerService : BackgroundService
         "tts:results",
         "voice:clone:state",
         "ai_assistant:results",
+        WarpTalk.Shared.FarSpeakerNames.LateNameStream,
     ];
 
     // Everything here is a live broadcast: a caption or a summary minutes old is worthless to the
@@ -144,6 +147,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 ConsumeAiAssistantResultsAsync(stoppingToken),
                 ConsumeCleanSentencesAsync(stoppingToken),
                 ConsumeVoiceCloneStateAsync(stoppingToken),
+                ConsumeFarSpeakerLateNamesAsync(stoppingToken),
                 HousekeepConsumerGroupsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
@@ -548,6 +552,129 @@ public sealed class AiResultConsumerService : BackgroundService
             RedisStreamService.GetField(entry, "far_speaker_name"),
             WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
             minConfidence);
+    }
+
+    // ── Late far-side names → TranscriptSegmentSpeakerNamed ──
+
+    /// <summary>
+    /// Relays a bridge stand-in line's LATE name to the room: the line already went out as "Google
+    /// Meet participants" on TranscriptSegmentReceived, and stt_worker has since become sure who on
+    /// the Meet side said it. See <see cref="WarpTalk.Shared.FarSpeakerNames.LateNameStream"/> for
+    /// why the name can trail its line, and why it rides a stream of its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Stateless, like every relay here. The client applies the event to the line with the same
+    /// segment id only while that line still reads the fallback, so a duplicate (a redelivery, a
+    /// second replica) renames nothing twice, and an id the client never saw is ignored.
+    /// </para>
+    /// <para>
+    /// The same gate as the line itself: the confidence is checked again against
+    /// <see cref="_farSpeakerMinConfidence"/>, the threshold <see cref="TryResolveStandInSpeakerName"/>
+    /// applies to stt:results. stt_worker only sends at or above ITS 0.6, but this deployment may be
+    /// configured stricter, and a late entry must not show a name the line itself would have hidden.
+    /// TranscriptService reads the same stream in its own group and applies the same check to the
+    /// saved row, so a reload agrees with what the room saw.
+    /// </para>
+    /// <para>
+    /// No ordering against the stt:results loop is attempted. The two loops (and two replicas) can
+    /// race, and the late entry could in principle overtake its own line; the client then ignores
+    /// it, and the saved row — which TranscriptService names regardless — carries the name on the
+    /// next load. The producer publishes ≥ 1 s after the line, so in practice the line is long out.
+    /// </para>
+    /// <para>
+    /// Never logs the name: a Meet participant's name is personal data from somebody else's meeting.
+    /// </para>
+    /// </remarks>
+    private async Task ConsumeFarSpeakerLateNamesAsync(CancellationToken ct)
+    {
+        var streamKey = "stt:far_speaker_late";
+
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
+
+        _logger.LogDebug("Consuming late far-side speaker names: {StreamKey}", streamKey);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var entries = await _streamService.ConsumeAsync(
+                    streamKey, ConsumerGroupName, _consumerName, count: 10, blockMs: 2000);
+
+                foreach (var entry in entries)
+                {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    var named = TryReadLateSpeakerName(entry, _farSpeakerMinConfidence);
+
+                    // Acknowledged either way, like every loop here: an entry with no room, no
+                    // segment id or no showable name can never become deliverable, and leaving it
+                    // pending would only feed WarpTalkAiPendingStuck. A name under this
+                    // deployment's threshold lands here too, on purpose — it is not to be shown.
+                    if (string.IsNullOrEmpty(translationRoomId) || named is null)
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
+
+                    await _hubContext.Clients
+                        .Group($"translationRoom:{translationRoomId}")
+                        .SendAsync("TranscriptSegmentSpeakerNamed", named, ct);
+
+                    _logger.LogDebug(
+                        "Relayed a late far-side name for segment {SegmentId} in room {RoomId}",
+                        named.SegmentId, translationRoomId);
+
+                    await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
+                _logger.LogError(ex, "Error consuming late far-side speaker names");
+                await Task.Delay(1000, ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One <c>stt:far_speaker_late</c> entry as a client payload, or <c>null</c> when it must not be
+    /// shown: no parsable <c>segment_id</c>, no name, a confidence that is absent, unparsable or under
+    /// <paramref name="minConfidence"/>, or a <c>speaker_id</c> that names somebody other than the
+    /// bridge stand-in. Pure and static, like <see cref="TryResolveStandInSpeakerName"/>.
+    /// </summary>
+    /// <remarks>
+    /// The wire contract carries no <c>speaker_id</c> — stt_worker only publishes late names for
+    /// stand-in segments. When a producer does add one and it is anybody else, the entry is refused:
+    /// a real participant's line is named by who they are, never by a Meet caption.
+    /// </remarks>
+    public static TranscriptSegmentSpeakerNamedDto? TryReadLateSpeakerName(StreamEntry entry, double minConfidence)
+    {
+        if (!Guid.TryParse(RedisStreamService.GetField(entry, "segment_id"), out var segmentId)
+            || segmentId == Guid.Empty)
+        {
+            return null;
+        }
+
+        var speakerId = RedisStreamService.GetField(entry, "speaker_id");
+        if (!string.IsNullOrWhiteSpace(speakerId)
+            && (!Guid.TryParse(speakerId, out var speaker)
+                || speaker != WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId))
+        {
+            return null;
+        }
+
+        var name = WarpTalk.Shared.FarSpeakerNames.TryResolveConfident(
+            RedisStreamService.GetField(entry, "far_speaker_name"),
+            WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
+            minConfidence);
+
+        return name is null ? null : new TranscriptSegmentSpeakerNamedDto(segmentId, name);
     }
 
     /// <summary>

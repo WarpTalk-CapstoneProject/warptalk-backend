@@ -52,6 +52,21 @@ public record TranscriptCleanSentenceDto(
     string Source,
     int Revision);
 
+/// <summary>
+/// A bridge stand-in line that went out as "Google Meet participants" now has a name, broadcast as
+/// "TranscriptSegmentSpeakerNamed" (<c>{ segmentId, speakerName }</c> on the wire). Relayed from
+/// <c>stt:far_speaker_late</c> — see <see cref="WarpTalk.Shared.FarSpeakerNames.LateNameStream"/>
+/// for why the name can arrive a second after its line.
+///
+/// The client sets the name on the line whose <see cref="TranscriptSegmentDto.SegmentId"/> matches,
+/// and only when that line still carries the fallback: an unknown id is ignored, and a real name is
+/// never replaced. Older clients ignore the event, so their line simply keeps the fallback until a
+/// reload reads the saved row, which TranscriptService names from the same stream.
+/// </summary>
+public record TranscriptSegmentSpeakerNamedDto(
+    Guid SegmentId,
+    string SpeakerName);
+
 public record ChatMessageDto(
     Guid MessageId,
     Guid SenderId,

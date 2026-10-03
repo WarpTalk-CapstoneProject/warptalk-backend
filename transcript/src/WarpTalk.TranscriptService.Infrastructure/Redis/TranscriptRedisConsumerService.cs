@@ -143,6 +143,7 @@ public class TranscriptRedisConsumerService : BackgroundService
             TranscriptResultStreamKind.Translation => ProcessTranslateMessageAsync(stream, message, cancellationToken),
             TranscriptResultStreamKind.Tts => ProcessTtsMessageAsync(stream, message, cancellationToken),
             TranscriptResultStreamKind.CleanSentence => ProcessCleanSentenceMessageAsync(stream, message, cancellationToken),
+            TranscriptResultStreamKind.FarSpeakerLate => ProcessFarSpeakerLateMessageAsync(stream, message, cancellationToken),
             _ => Task.FromResult(true)
         };
 
@@ -1111,6 +1112,134 @@ public class TranscriptRedisConsumerService : BackgroundService
     /// WT-716: whether a sentence made only of unstored segments is the product of a transcript
     /// pause rather than a persistence race. See <see cref="ProcessCleanSentenceMessageAsync"/>.
     /// </summary>
+    /// <summary>
+    /// Puts a LATE far-side name on the saved row of a bridge stand-in line that was written as
+    /// "Google Meet participants" - the record-side half of what the Gateway relays live as
+    /// TranscriptSegmentSpeakerNamed. See <see cref="WarpTalk.Shared.FarSpeakerNames.LateNameStream"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// FILLS A GAP, NEVER OVERWRITES. Only a stand-in row that still reads the fallback and that the
+    /// post-meeting relabel or the host has not attributed takes the name
+    /// (<see cref="TranscriptConsumerPollingPolicy.DecideFarSpeakerLate"/>); the UPDATE repeats that
+    /// guard (<see cref="IUnitOfWork.NameStandInSegmentLateAsync"/>), so the answer cannot go stale
+    /// between the read and the write. A redelivery finds the row named and changes nothing. A row is
+    /// never created here: a late name is about a line, and a line comes from stt:results only.
+    /// </para>
+    /// <para>
+    /// THE SAME THRESHOLD AS THE LINE. The name must pass <see cref="FarSpeakerMinConfidence"/>, the
+    /// rule the row was written under and the Gateway checks for the live event, so the saved
+    /// transcript never shows a name the room did not see. Under it, the entry is acked with no
+    /// change: the row already reads the fallback, which is the right answer for a name not sure
+    /// enough to show.
+    /// </para>
+    /// <para>
+    /// THE ENTRY MAY ARRIVE BEFORE ITS ROW. stt:results is read ten at a time and a failed row write
+    /// is retried a minute later, so the row can be missing when its late name is read. That returns
+    /// false - the same answer ProcessTranslateMessageAsync gives a translation that outran its
+    /// segment: the entry stays pending, RecoverStaleMessagesAsync claims it again once it has been
+    /// idle for <see cref="TranscriptConsumerPollingPolicy.PendingClaimIdle"/>, and after
+    /// <see cref="TranscriptConsumerPollingPolicy.MaxDeliveryAttempts"/> it is dead-lettered with its
+    /// payload, never dropped silently. The lines that are never written on purpose are acked
+    /// instead, as on the translation path: an ephemeral room (WT-587) and a segment skipped by
+    /// Pause Transcript (WT-605). The common case needs no retry at all - the producer publishes
+    /// at least a second after the line, and this stream is read after stt:results in every pass.
+    /// </para>
+    /// <para>
+    /// Logs ids and outcomes only, never the name: a Meet participant's name is personal data from
+    /// somebody else's meeting.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> ProcessFarSpeakerLateMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
+    {
+        var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
+
+        if (!TranscriptConsumerPollingPolicy.TryParseFarSpeakerLate(streamKey, values, out var late))
+        {
+            _logger.LogWarning("Invalid late far-side name data in message {MessageId} on {Stream}", message.Id, streamKey);
+            return false; // Bounded retry, then dead-letter with the original payload
+        }
+
+        var name = WarpTalk.Shared.FarSpeakerNames.TryResolveConfident(late.Name, late.Confidence, FarSpeakerMinConfidence);
+        if (name is null)
+        {
+            _logger.LogDebug(
+                "Late far-side name for segment {SegmentId} in room {RoomId} is under the display threshold; row left as is",
+                late.SegmentId, late.RoomId);
+            return true;
+        }
+
+        // WT-587: an ephemeral room wrote no rows, so there is nothing to name - and retrying for one
+        // would dead-letter every late name of such a meeting.
+        if (!await ShouldPersistRoomAsync(late.RoomId, cancellationToken))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            var row = await unitOfWork.TranscriptSegments.GetByIdAsync(late.SegmentId, cancellationToken);
+            var decision = TranscriptConsumerPollingPolicy.DecideFarSpeakerLate(row);
+            switch (decision)
+            {
+                case FarSpeakerLateDecision.RowNotStoredYet:
+                    // WT-605: spoken while the transcript was paused, so deliberately never written.
+                    if (await WasSegmentSkippedForPauseAsync(late.RoomId, late.SegmentId, cancellationToken))
+                    {
+                        return true;
+                    }
+
+                    _logger.LogInformation(
+                        "Segment {SegmentId} in room {RoomId} is not stored yet; its late far-side name stays pending for a retry",
+                        late.SegmentId, late.RoomId);
+                    return false;
+
+                case FarSpeakerLateDecision.Apply:
+                    var changed = await unitOfWork.NameStandInSegmentLateAsync(
+                        late.SegmentId,
+                        WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId,
+                        name,
+                        late.Source,
+                        late.Confidence!.Value,
+                        LateNameUnnamedSpeakerNames,
+                        TranscriptConsumerPollingPolicy.SourcesALateNameNeverOverrides,
+                        cancellationToken);
+
+                    // Not changed means the row was named, corrected or relabelled between the read
+                    // and the guarded write - the newer answer stands, and that is a success.
+                    _logger.LogInformation(
+                        "Late far-side name for segment {SegmentId} in room {RoomId}: {Outcome}",
+                        late.SegmentId, late.RoomId, changed ? "applied" : "row changed meanwhile, left as is");
+                    return true;
+
+                default:
+                    _logger.LogDebug(
+                        "Late far-side name for segment {SegmentId} in room {RoomId} not applied: {Decision}",
+                        late.SegmentId, late.RoomId, decision);
+                    return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error applying a late far-side name to segment {SegmentId}", late.SegmentId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The speaker names a stand-in row may carry and still count as unnamed, for the guarded UPDATE:
+    /// the non-blank values <see cref="TranscriptConsumerPollingPolicy.IsUnnamedStandInName"/> accepts
+    /// (blank is matched in SQL).
+    /// </summary>
+    private static readonly IReadOnlyList<string> LateNameUnnamedSpeakerNames =
+    [
+        WarpTalk.Shared.FarSpeakerNames.Fallback,
+        WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId.ToString(),
+    ];
+
     private async Task<bool> AreSegmentsPauseSkippedAsync(CleanSentenceMessage sentence, CancellationToken ct)
     {
         if (await IsRoomTranscriptPausedAsync(sentence.RoomId, ct))
