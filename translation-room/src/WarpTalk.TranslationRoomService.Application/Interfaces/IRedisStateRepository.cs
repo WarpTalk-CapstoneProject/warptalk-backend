@@ -14,6 +14,12 @@ public interface IRedisStateRepository
     Task<string?> HashGetAsync(string key, string field);
 
     /// <summary>
+    /// HDEL: remove one <paramref name="field"/> from the hash and say whether it was there.
+    /// Removing a field that is already gone is not an error, so a withdrawal can be repeated.
+    /// </summary>
+    Task<bool> HashDeleteAsync(string key, string field);
+
+    /// <summary>
     /// HSETNX: write <paramref name="field"/> only if the hash does not hold it yet, and say whether
     /// we did. For seeding a value somebody else may already have set more recently — a read
     /// followed by a write would overwrite a change landing between the two.

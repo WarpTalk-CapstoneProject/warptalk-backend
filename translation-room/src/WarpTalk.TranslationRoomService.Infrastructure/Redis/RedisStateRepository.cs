@@ -57,6 +57,11 @@ public class RedisStateRepository : IRedisStateRepository
         return value.HasValue ? value.ToString() : null;
     }
 
+    public async Task<bool> HashDeleteAsync(string key, string field)
+    {
+        return await GetDb().HashDeleteAsync(key, field);
+    }
+
     public async Task<bool> WaitForSignalAsync(string channel, TimeSpan timeout, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
