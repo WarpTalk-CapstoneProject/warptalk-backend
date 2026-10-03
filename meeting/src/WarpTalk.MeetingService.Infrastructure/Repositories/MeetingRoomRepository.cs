@@ -61,6 +61,11 @@ public class MeetingRoomRepository : GenericRepository<MeetingRoom>, IMeetingRoo
             ct);
     }
 
+    public Task<int> MarkRecordingStopRequestedAsync(Guid meetingRoomId, string egressId, DateTime updatedAtUtc, CancellationToken ct = default) =>
+        _dbSet
+            .Where(r => r.Id == meetingRoomId && r.ActiveEgressId == egressId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(r => r.UpdatedAt, updatedAtUtc), ct);
+
     private const string ProvisioningLockPrefix = "meeting_room_provision:";
 
     private const string FinishedStatus = "FINISHED";

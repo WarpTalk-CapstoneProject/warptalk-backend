@@ -150,7 +150,40 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
         if (!answer.IsSuccess)
             return Result.Failure<IReadOnlyList<LiveKitRoomParticipant>>(answer.Error!, answer.ErrorCode);
 
-        return Result.Success(ReadParticipants(answer.Value ?? string.Empty));
+        // A body that is not the JSON we expect is a failure, never "nobody is there": the caller
+        // stops a recording on an empty answer.
+        try
+        {
+            return Result.Success(ReadParticipants(answer.Value ?? string.Empty));
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            _logger.LogError(ex, "LiveKit ListParticipants for room {RoomName} answered a body that could not be read.", roomName);
+            return Result.Failure<IReadOnlyList<LiveKitRoomParticipant>>(
+                "LiveKit ListParticipants answered an unreadable body.",
+                "LIVEKIT_ROOM_COMMAND_FAILED");
+        }
+    }
+
+    /// <summary>
+    /// Whether a Twirp error body carries <c>"code": "not_found"</c>. Only that, with a 404, means
+    /// "LiveKit has no such room". A 404 from anything else — a proxy, a wrong path, a misrouted
+    /// host — is a failure: read as an empty room it would stop a running recording.
+    /// </summary>
+    public static bool IsTwirpNotFound(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && ReadString(document.RootElement, "code") is { } code
+                && string.Equals(code, "not_found", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static readonly string[] ParticipantKinds = ["STANDARD", "INGRESS", "EGRESS", "SIP", "AGENT"];
@@ -159,6 +192,7 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
     /// <summary>
     /// Public for the tests. Reads the identity, kind and state of every entry, accepting the enum
     /// as its name or its ordinal — the same two spellings ReadMicrophoneTrackSids has to accept.
+    /// Throws JsonException on a malformed body (ListParticipantsAsync turns that into a failure).
     /// </summary>
     public static IReadOnlyList<LiveKitRoomParticipant> ReadParticipants(string listJson)
     {
@@ -215,7 +249,7 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             var body = await response.Content.ReadAsStringAsync(ct);
             if (response.IsSuccessStatusCode)
                 return Result.Success(body);
-            if (notFoundIsEmpty && response.StatusCode == HttpStatusCode.NotFound)
+            if (notFoundIsEmpty && response.StatusCode == HttpStatusCode.NotFound && IsTwirpNotFound(body))
                 return Result.Success(string.Empty);
 
             _logger.LogError(

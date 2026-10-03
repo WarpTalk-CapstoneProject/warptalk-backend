@@ -436,7 +436,10 @@ public class MeetingRoomServiceTests
         Assert.False(result.Value!.Recording);
         Assert.Null(result.Value.EgressId);
         Assert.Equal("egress-123", meetingRoom.ActiveEgressId);
-        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        // Only the stop time is written, as one conditional UPDATE of that column — never the whole
+        // row, which a background caller could hold a stale copy of.
+        roomRepoMock.Verify(r => r.MarkRecordingStopRequestedAsync(meetingRoom.Id, "egress-123", It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        roomRepoMock.Verify(r => r.Update(It.IsAny<MeetingRoom>()), Times.Never);
     }
 
     /// <summary>

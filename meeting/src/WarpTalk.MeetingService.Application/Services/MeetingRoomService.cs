@@ -92,7 +92,7 @@ public class MeetingRoomService : IMeetingRoomService
         // EXPIRED belongs with these (WT-714): a booking nobody attended is now moved there by the
         // booking sweep instead of sitting in SCHEDULED, and a terminal status that still let
         // people in would be a room the translation service considers over accepting joins.
-        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED" || roomDetails.Status == "EXPIRED")
+        if (TranslationRoomStatuses.IsEnded(roomDetails.Status))
         {
             return Result.Failure<JoinMeetingResponse>("This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
@@ -421,7 +421,7 @@ public class MeetingRoomService : IMeetingRoomService
                 "Only the participant capturing the external call may connect it to this meeting.", ErrorCodes.Forbidden);
         }
 
-        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED")
+        if (TranslationRoomStatuses.IsEnded(room.Status))
         {
             return Result.Failure<BridgeTokenResponse>(
                 "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
@@ -1298,7 +1298,9 @@ public class MeetingRoomService : IMeetingRoomService
             if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
                 return Result.Failure<RecordingStateDto>("No recording is currently in progress.", ErrorCodes.InvalidState);
 
-            var stopped = await StopActiveRecordingAsync(translationRoomId, meetingRoom);
+            // tolerateAutoStopMarker: a press that lands while (or just after) the bridge auto-stop
+            // stopped this egress is answered "stopped", not 500 — see StopActiveRecordingAsync.
+            var stopped = await StopActiveRecordingAsync(translationRoomId, meetingRoom, tolerateAutoStopMarker: true);
             if (!stopped.IsSuccess)
                 return Result.Failure<RecordingStateDto>(stopped.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
 
@@ -1317,10 +1319,15 @@ public class MeetingRoomService : IMeetingRoomService
     /// so finalization (egress_ended → EgressCompletion → recording artifact, billing) cannot tell
     /// them apart and cannot drift.
     /// </summary>
-    private async Task<Result> StopActiveRecordingAsync(Guid translationRoomId, MeetingRoom meetingRoom, CancellationToken ct = default)
+    private async Task<Result> StopActiveRecordingAsync(
+        Guid translationRoomId,
+        MeetingRoom meetingRoom,
+        CancellationToken ct = default,
+        bool tolerateAutoStopMarker = false)
     {
-        var stopResult = await _egressService.StopEgressAsync(meetingRoom.ActiveEgressId!, ct);
-        if (!stopResult.IsSuccess)
+        var egressId = meetingRoom.ActiveEgressId!;
+        var stopResult = await _egressService.StopEgressAsync(egressId, ct);
+        if (!stopResult.IsSuccess && !await IsAlreadyStoppedAsync(egressId, tolerateAutoStopMarker, ct))
             return Result.Failure(stopResult.Error ?? "Failed to stop recording.", stopResult.ErrorCode);
 
         // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
@@ -1358,13 +1365,85 @@ public class MeetingRoomService : IMeetingRoomService
         // UpdatedAt is moved by hand because nothing else moves it: EgressReconciliationService
         // measures its UnknownEgressGrace from this timestamp, and the stop is the honest
         // origin for "we have been waiting for this completion since…".
-        meetingRoom.UpdatedAt = DateTime.UtcNow;
-        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-        await _unitOfWork.SaveChangesAsync(ct);
+        //
+        // ONLY THAT COLUMN, as one conditional UPDATE (MarkRecordingStopRequestedAsync), never
+        // Update(row): the bridge auto-stop holds a copy of the row read in a background scope, and
+        // marking the whole row modified would write its stale ActiveHostId/IsLocked/Status back.
+        //
+        // FROM HERE ON NOTHING MAY TURN INTO A FAILURE. LiveKit has stopped capturing; answering
+        // 500 (or throwing out of the worker) would tell the host the recording is still running
+        // when it is not, and they would press Stop into "no recording". A failed write costs only
+        // the sweep's grace origin; a failed broadcast only a stale indicator until the next join.
+        var now = DateTime.UtcNow;
+        meetingRoom.UpdatedAt = now;
+        try
+        {
+            await _unitOfWork.MeetingRoomRepository.MarkRecordingStopRequestedAsync(meetingRoom.Id, egressId, now, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Recording {EgressId} of room {RoomId} was stopped, but its stop time could not be saved.",
+                egressId, translationRoomId);
+        }
 
-        await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+        try
+        {
+            var published = await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+            if (!published.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "Recording {EgressId} of room {RoomId} was stopped, but RecordingStateChanged could not be published: {Error}",
+                    egressId, translationRoomId, published.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Recording {EgressId} of room {RoomId} was stopped, but RecordingStateChanged could not be published.",
+                egressId, translationRoomId);
+        }
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// After LiveKit refused StopEgress: is the recording in fact already stopped? True when LiveKit
+    /// reports the egress ENDING or finished (or no longer knows it) — the bridge auto-stop, or
+    /// LiveKit closing the room, got there first — or, for a manual press, when the auto-stop marker
+    /// for this egress is held: the auto-stop is stopping it right now. Anything else is a real
+    /// failure and the recording is assumed to be running.
+    /// </summary>
+    private async Task<bool> IsAlreadyStoppedAsync(string egressId, bool checkAutoStopMarker, CancellationToken ct)
+    {
+        try
+        {
+            var egress = await _egressService.GetEgressAsync(egressId, ct);
+            if (egress.IsSuccess && (egress.Value is not { } info || !EgressStatuses.IsCapturing(info)))
+            {
+                _logger.LogInformation("StopEgress for {EgressId} was refused because it is already stopped; treating it as stopped.", egressId);
+                return true;
+            }
+
+            if (checkAutoStopMarker && _locks is not null)
+            {
+                var probe = await _locks.TryAcquireAsync(BridgeRecordingEndMarkerResource(egressId), TimeSpan.FromSeconds(5), ct);
+                if (probe is null)
+                {
+                    _logger.LogInformation("StopEgress for {EgressId} was refused while the bridge auto-stop holds it; treating it as stopped.", egressId);
+                    return true;
+                }
+
+                // Nobody holds it: we only looked. Give it straight back.
+                await probe.DisposeAsync();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not tell whether egress {EgressId} is already stopped.", egressId);
+        }
+
+        return false;
     }
 
     /// <summary>How long the "this egress was auto-stopped" marker is kept: well past any finalization.</summary>
@@ -1440,13 +1519,9 @@ public class MeetingRoomService : IMeetingRoomService
             // Grace from the LATEST departure in the room, not only this one: somebody who left two
             // seconds after the person this check is about gets their own full grace to come back.
             var lastDeparture = request.DepartedAtUtc;
-            var departed = await _unitOfWork.RtcStreamParticipantRepository
-                .FindAsync(p => p.MeetingRoomId == meetingRoom.Id && p.LeftAt != null, "", ct);
-            foreach (var participant in departed)
-            {
-                if (participant.LeftAt is { } leftAt && leftAt > lastDeparture)
-                    lastDeparture = leftAt;
-            }
+            var latestLeftAt = await _unitOfWork.RtcStreamParticipantRepository.GetLatestDepartureAsync(meetingRoom.Id, ct);
+            if (latestLeftAt is { } leftAt && leftAt > lastDeparture)
+                lastDeparture = leftAt;
 
             var quietFor = utcNow - lastDeparture;
             if (quietFor < grace)

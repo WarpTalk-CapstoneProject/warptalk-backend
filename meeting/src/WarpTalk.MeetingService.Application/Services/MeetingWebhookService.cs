@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Enums;
@@ -178,6 +179,13 @@ public class MeetingWebhookService : IMeetingWebhookService
             }
 
             await _unitOfWork.SaveChangesAsync();
+
+            // Only AFTER the save. The watcher re-reads the room in its own scope; handed over
+            // before, it could read the row as it was before this webhook (ActiveHostId still set,
+            // LeftAt still null) and act on that.
+            if (_pendingRecordingDeparture is { } departure)
+                HandOverRecordingDeparture(departure);
+
             return Result.Success<bool>(true);
         }
         catch (Exception ex)
@@ -207,13 +215,6 @@ public class MeetingWebhookService : IMeetingWebhookService
     }
 
     /// <summary>
-    /// Identities of our own LiveKit participants: the ingress bot ("AIBot_{room}") and the TTS
-    /// interpreters ("ai-interpreter-*"). Same list as livekit_ingress_worker's
-    /// _AI_BOT_IDENTITY_PREFIXES. The ingress bot's own join must not summon the ingress bot.
-    /// </summary>
-    private static readonly string[] BotIdentityPrefixes = ["AIBot_", "ai-interpreter-"];
-
-    /// <summary>
     /// WT-923: tell the ingress worker a person is in the room, so its bot is connected and
     /// subscribed before that person's first sentence instead of after it.
     ///
@@ -231,7 +232,9 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(identity))
             return;
-        if (BotIdentityPrefixes.Any(prefix => identity.StartsWith(prefix, StringComparison.Ordinal)))
+        // Our own participants (LiveKitParticipantIdentities): the ingress bot's own join must not
+        // summon the ingress bot.
+        if (LiveKitParticipantIdentities.IsBot(identity))
             return;
 
         var envelope = DomainEventEnvelope.Create(
@@ -293,8 +296,14 @@ public class MeetingWebhookService : IMeetingWebhookService
             room.ActiveHostId = null;
         }
 
-        NotifyRecordingRoomDeparture(root, room, identity);
+        _pendingRecordingDeparture = RecordingRoomDeparture(root, room, identity);
     }
+
+    /// <summary>
+    /// Set by participant_left, handed to the watcher by ProcessWebhookAsync once the departure is
+    /// saved. The service is scoped to one webhook request, so this never carries across requests.
+    /// </summary>
+    private BridgeRecordingEndRequest? _pendingRecordingDeparture;
 
     /// <summary>
     /// A person left a room that is being recorded: it may be the end of a Google Meet bridge
@@ -302,14 +311,12 @@ public class MeetingWebhookService : IMeetingWebhookService
     /// nothing at the end of the file). The decision — bridge or not, anyone left, grace for a
     /// reload — is made off this request by the watcher (BridgeRecordingEndPolicy), so the webhook
     /// stays as fast as it was. Our own bots and the egress recorder leaving decide nothing.
-    ///
-    /// Never throws: the participant's departure is already recorded, and a 500 here would only
-    /// make LiveKit retry a webhook whose real work succeeded.
+    /// Returns the departure to hand over after the save, or null.
     /// </summary>
-    private void NotifyRecordingRoomDeparture(JsonElement root, MeetingRoom room, string? identity)
+    private BridgeRecordingEndRequest? RecordingRoomDeparture(JsonElement root, MeetingRoom room, string? identity)
     {
         if (_bridgeRecordingEndWatcher is null || string.IsNullOrEmpty(room.ActiveEgressId))
-            return;
+            return null;
 
         string? kind = null;
         if (root.GetProperty("participant").TryGetProperty("kind", out var kindProperty))
@@ -330,16 +337,24 @@ public class MeetingWebhookService : IMeetingWebhookService
         }
 
         if (!BridgeRecordingEndPolicy.IsPerson(identity, kind))
-            return;
+            return null;
 
+        return new BridgeRecordingEndRequest(room.ProviderRoomName, room.ActiveEgressId, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Never throws: the participant's departure is already recorded, and a 500 here would only
+    /// make LiveKit retry a webhook whose real work succeeded.
+    /// </summary>
+    private void HandOverRecordingDeparture(BridgeRecordingEndRequest departure)
+    {
         try
         {
-            _bridgeRecordingEndWatcher.NotifyParticipantLeft(
-                new DTOs.BridgeRecordingEndRequest(room.ProviderRoomName, room.ActiveEgressId, DateTime.UtcNow));
+            _bridgeRecordingEndWatcher?.NotifyParticipantLeft(departure);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not hand the departure from {RoomName} to the bridge recording watcher.", room.ProviderRoomName);
+            _logger.LogWarning(ex, "Could not hand the departure from {RoomName} to the bridge recording watcher.", departure.ProviderRoomName);
         }
     }
 

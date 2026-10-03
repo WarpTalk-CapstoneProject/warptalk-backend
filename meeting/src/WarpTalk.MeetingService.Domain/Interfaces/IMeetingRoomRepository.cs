@@ -43,4 +43,15 @@ public interface IMeetingRoomRepository : IGenericRepository<MeetingRoom>
     /// re-reads after the first has committed and finds the row instead of adding another.
     /// </summary>
     Task AcquireProvisioningLockAsync(Guid translationRoomId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Records that the room's recording <paramref name="egressId"/> was asked to stop: moves
+    /// <c>updated_at</c> (EgressReconciliationService measures its UnknownEgressGrace from it) as one
+    /// conditional UPDATE of that column alone, only while the room still holds that egress.
+    ///
+    /// Not <c>Update(row)</c>: the bridge-recording auto-stop runs in a background scope whose copy of
+    /// the row can be seconds old, and marking every column modified would write its stale
+    /// ActiveHostId, IsLocked, Status… back over whatever changed meanwhile. Returns rows changed.
+    /// </summary>
+    Task<int> MarkRecordingStopRequestedAsync(Guid meetingRoomId, string egressId, DateTime updatedAtUtc, CancellationToken ct = default);
 }

@@ -47,23 +47,10 @@ public static class BridgeRecordingEndPolicy
     public static readonly TimeSpan MinGrace = TimeSpan.FromSeconds(3);
     public static readonly TimeSpan MaxGrace = TimeSpan.FromSeconds(60);
 
-    /// <summary>
-    /// Identities that are ours, not a person's: the ingress bot, the TTS interpreters (the same list
-    /// as MeetingWebhookService's BotIdentityPrefixes), and LiveKit's own egress recorder ("EG_…").
-    /// None of them keeps a meeting alive — the recorder above all, which is the participant this
-    /// whole check exists to stop.
-    /// </summary>
-    private static readonly string[] NonPersonIdentityPrefixes = ["AIBot_", "ai-interpreter-", "EG_"];
-
     /// <summary>LiveKit participant kinds that are machinery, not people (SIP callers ARE people).</summary>
     private static readonly HashSet<string> NonPersonKinds = new(StringComparer.OrdinalIgnoreCase)
     {
         "INGRESS", "EGRESS", "AGENT",
-    };
-
-    private static readonly HashSet<string> EndedRoomStatuses = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "ENDED", "FINISHED", "CANCELLED", "EXPIRED",
     };
 
     /// <summary>
@@ -83,49 +70,38 @@ public static class BridgeRecordingEndPolicy
     /// <summary>The identity/kind half of <see cref="CountsAsPresence"/>, also used on the webhook's leaver.</summary>
     public static bool IsPerson(string? identity, string? kind)
     {
+        // Ours, not a person's: the ingress bot, the TTS interpreters and LiveKit's egress recorder
+        // ("EG_…") — the recorder above all, which is the participant this whole check exists to stop.
         if (string.IsNullOrWhiteSpace(identity))
             return false;
-        if (NonPersonIdentityPrefixes.Any(prefix => identity.StartsWith(prefix, StringComparison.Ordinal)))
+        if (LiveKitParticipantIdentities.IsBot(identity)
+            || identity.StartsWith(LiveKitParticipantIdentities.EgressIdentityPrefix, StringComparison.Ordinal))
             return false;
         return kind is null || !NonPersonKinds.Contains(kind);
     }
 
     /// <summary>A translation-room status after which nobody can rejoin.</summary>
-    public static bool IsEndedRoomStatus(string? status) =>
-        !string.IsNullOrWhiteSpace(status) && EndedRoomStatuses.Contains(status);
+    public static bool IsEndedRoomStatus(string? status) => TranslationRoomStatuses.IsEnded(status);
 
     /// <summary>
     /// Whether LiveKit's EgressInfo says the egress is still capturing (STARTING or ACTIVE). ENDING
     /// means somebody already stopped it — the Stop button, or LiveKit closing the room — and a
     /// second StopEgress would only be refused. Enum name or ordinal, as EgressReconciliationService.
     /// </summary>
-    public static bool IsEgressCapturing(JsonElement egressInfo)
-    {
-        if (!egressInfo.TryGetProperty("status", out var status))
-            return true; // proto3 omits the zero value: no status is EGRESS_STARTING.
-
-        if (status.ValueKind == JsonValueKind.String)
-        {
-            var name = status.GetString();
-            return string.Equals(name, "EGRESS_STARTING", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "EGRESS_ACTIVE", StringComparison.OrdinalIgnoreCase);
-        }
-
-        return status.ValueKind == JsonValueKind.Number
-            && status.TryGetInt32(out var ordinal)
-            && ordinal is 0 or 1;
-    }
+    public static bool IsEgressCapturing(JsonElement egressInfo) => EgressStatuses.IsCapturing(egressInfo);
 
     /// <summary>A configured grace in seconds, clamped to [<see cref="MinGrace"/>, <see cref="MaxGrace"/>].</summary>
     public static TimeSpan GraceFromSeconds(string? configured)
     {
+        // NaN and ±Infinity parse fine and would make TimeSpan.FromSeconds throw at startup (the
+        // worker reads this in its constructor), as would a value past TimeSpan's range — so the
+        // number is checked and clamped BEFORE it becomes a TimeSpan.
         if (!double.TryParse(configured, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+                System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+            || !double.IsFinite(seconds))
             return DefaultGrace;
 
-        var grace = TimeSpan.FromSeconds(seconds);
-        if (grace < MinGrace) return MinGrace;
-        if (grace > MaxGrace) return MaxGrace;
-        return grace;
+        var clamped = Math.Clamp(seconds, MinGrace.TotalSeconds, MaxGrace.TotalSeconds);
+        return TimeSpan.FromSeconds(clamped);
     }
 }
