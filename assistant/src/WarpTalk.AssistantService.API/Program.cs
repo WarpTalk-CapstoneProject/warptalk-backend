@@ -330,7 +330,11 @@ try
     builder.Services.AddWarpTalkServiceHealthChecks<AssistantDbContext>(
         "assistant-database");
 
-    builder.Services.AddControllers();
+    // Tool schemas are bounded where they are read (ToolSchemaDepth), but MVC's default of 32 left
+    // five levels of catalog wrapping as the whole margin; one deep provider schema turned a 200
+    // into a body cut off mid-write. 64 is System.Text.Json's own default.
+    builder.Services.AddControllers()
+        .AddJsonOptions(options => options.JsonSerializerOptions.MaxDepth = 64);
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(options =>
     {
