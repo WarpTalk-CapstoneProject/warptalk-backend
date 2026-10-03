@@ -10,6 +10,18 @@ public record ParticipantInfoDto(
     bool IsMuted,
     DateTime JoinedAt);
 
+/// <summary>
+/// The words of a turn that is still being spoken (the live caption). A preview: never stored,
+/// never translated, and replaced by the TranscriptSegmentReceived line for the same speaker.
+/// <c>ItemId</c> identifies the turn, so a client can tell an update from a new turn.
+/// </summary>
+public record TranscriptInterimDto(
+    Guid SpeakerId,
+    string SpeakerName,
+    string ItemId,
+    string Text,
+    string Language);
+
 public record TranscriptSegmentDto(
     Guid SegmentId,
     Guid SpeakerId,

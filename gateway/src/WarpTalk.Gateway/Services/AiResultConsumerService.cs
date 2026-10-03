@@ -5,7 +5,9 @@ using System.Text.RegularExpressions;
 using Grpc.Core;
 using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
+using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.Gateway.Services;
 
@@ -41,6 +43,16 @@ public sealed class AiResultConsumerService : BackgroundService
     private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceClient;
     private readonly WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient _roomClient;
     private readonly ILogger<AiResultConsumerService> _logger;
+    // Live text arrives on pub/sub, which every replica receives; only the relay leader forwards
+    // it. Both are optional so a test that does not exercise live text need not supply them.
+    private readonly IPubSubLeadership? _relayLeadership;
+    private readonly IConnectionMultiplexer? _redis;
+
+    // How long a caption-carrying loop waits after finding its stream empty. RedisStreamService
+    // cannot block (StackExchange.Redis has no XREADGROUP BLOCK on a shared connection), so this IS
+    // the delivery latency floor for those loops: it was 200ms, half of which every caption paid on
+    // average. Measured 4 Oct 2026 as part of the caption budget. The other loops keep 200ms.
+    private static readonly TimeSpan CaptionPollDelay = TimeSpan.FromMilliseconds(25);
 
     private const string ConsumerGroupName = "gateway-consumers";
     private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
@@ -118,8 +130,12 @@ public sealed class AiResultConsumerService : BackgroundService
         WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
         WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
         ILogger<AiResultConsumerService> logger,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null,
+        IPubSubLeadership? relayLeadership = null,
+        IConnectionMultiplexer? redis = null)
     {
+        _relayLeadership = relayLeadership;
+        _redis = redis;
         _farSpeakerMinConfidence = WarpTalk.Shared.FarSpeakerNames.NormalizeMinConfidence(
             configuration?.GetValue<double?>(WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey));
         _streamService = streamService;
@@ -148,6 +164,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 ConsumeCleanSentencesAsync(stoppingToken),
                 ConsumeVoiceCloneStateAsync(stoppingToken),
                 ConsumeFarSpeakerLateNamesAsync(stoppingToken),
+                RelayInterimTranscriptsAsync(stoppingToken),
                 HousekeepConsumerGroupsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
@@ -517,7 +534,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 }
 
                 if (entries.Length == 0)
-                    await Task.Delay(200, ct);
+                    await Task.Delay(CaptionPollDelay, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -552,6 +569,103 @@ public sealed class AiResultConsumerService : BackgroundService
             RedisStreamService.GetField(entry, "far_speaker_name"),
             WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
             minConfidence);
+    }
+
+    // ── Live text → TranscriptInterimReceived ─────────────────
+
+    /// <summary>
+    /// Relays stt_worker's live text — the words of a turn still being spoken — to the room.
+    ///
+    /// Measured 4 Oct 2026: a short sentence reached the caption ~2.5s after the speaker stopped,
+    /// because nothing was shown until the turn closed. The model already had the words ~1s behind
+    /// the speaker. This forwards them as they come; the TranscriptSegmentReceived line for the same
+    /// speaker replaces them.
+    ///
+    /// Masked under the same profanity switch as the final line, or the filter would be off for the
+    /// second or two before every line. Pub/sub reaches every replica, so only the relay leader
+    /// sends. Not a required relay subscription on purpose: a failure here must cost live text, not
+    /// every other realtime event the leader carries.
+    /// </summary>
+    private async Task RelayInterimTranscriptsAsync(CancellationToken ct)
+    {
+        if (_redis is null || _relayLeadership is null)
+            return;
+
+        var subscriber = _redis.GetSubscriber();
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await subscriber.SubscribeAsync(
+                    RedisChannel.Literal(RealtimeConstants.RedisChannels.SttInterim),
+                    (_channel, message) => _ = RelayInterimAsync(message, ct));
+                _logger.LogInformation("Relaying live text from '{Channel}'.", RealtimeConstants.RedisChannels.SttInterim);
+                return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Could not subscribe to live text; retrying in {RetryDelay}.", retryDelay);
+                await Task.Delay(retryDelay, ct);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+    }
+
+    private async Task RelayInterimAsync(RedisValue message, CancellationToken ct)
+    {
+        try
+        {
+            if (_relayLeadership is null || !_relayLeadership.ShouldHandle || message.IsNullOrEmpty)
+                return;
+
+            var interim = TryReadInterim(message.ToString());
+            if (interim is null)
+                return;
+
+            var (roomId, speakerId, itemId, text, language) = interim.Value;
+            if (await IsProfanityFilterEnabledAsync(roomId, ct))
+                text = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(text);
+
+            var dto = new TranscriptInterimDto(
+                SpeakerId: Guid.TryParse(speakerId, out var spk) ? spk : Guid.Empty,
+                SpeakerName: await ResolveSpeakerNameAsync(roomId, speakerId),
+                ItemId: itemId,
+                Text: text,
+                Language: language);
+
+            await _hubContext.Clients
+                .Group($"translationRoom:{roomId}")
+                .SendAsync("TranscriptInterimReceived", dto, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // A dropped preview is replaced by the final line moments later.
+            _logger.LogDebug(ex, "Live text relay failed.");
+        }
+    }
+
+    /// <summary>Parses one stt:interim message, or null when it is not one this relay can route.</summary>
+    public static (string RoomId, string SpeakerId, string ItemId, string Text, string Language)? TryReadInterim(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            string Read(string name) =>
+                root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                    ? value.GetString() ?? ""
+                    : "";
+            var roomId = Read("meeting_id");
+            var text = Read("text");
+            if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(text))
+                return null;
+            return (roomId, Read("speaker_id"), Read("item_id"), text, Read("language"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     // ── Late far-side names → TranscriptSegmentSpeakerNamed ──
@@ -780,7 +894,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 }
 
                 if (entries.Length == 0)
-                    await Task.Delay(200, ct);
+                    await Task.Delay(CaptionPollDelay, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -939,7 +1053,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 }
 
                 if (entries.Length == 0)
-                    await Task.Delay(200, ct);
+                    await Task.Delay(CaptionPollDelay, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
