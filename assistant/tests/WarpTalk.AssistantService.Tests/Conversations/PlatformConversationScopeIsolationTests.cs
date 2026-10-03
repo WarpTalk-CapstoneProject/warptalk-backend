@@ -183,4 +183,86 @@ public class PlatformConversationScopeIsolationTests
             db.Model.FindEntityType(typeof(AssistantConversation))!.GetTableName(),
             db.Model.FindEntityType(typeof(PlatformConversation))!.GetTableName());
     }
+
+    // ---- Stop (3 Oct 2026): WarpBot's Stop button ------------------------------------------------
+
+    private (Guid ConversationId, Guid ReplyId) WorkspaceReply(string status, Guid? owner = null)
+    {
+        var conversation = new AssistantConversation
+        {
+            Id = Guid.NewGuid(), UserId = owner ?? _userId, WorkspaceId = _workspaceId, Title = "t",
+            CreatedAt = DateTime.UtcNow, LastMessageAt = DateTime.UtcNow,
+        };
+        var reply = new AssistantMessage
+        {
+            Id = Guid.NewGuid(), ConversationId = conversation.Id, WorkspaceId = _workspaceId,
+            Role = "assistant", Content = "", Status = status, CreatedAt = DateTime.UtcNow,
+        };
+        _workspaceConversations.Add(conversation);
+        _workspaceMessages.Add(reply);
+        return (conversation.Id, reply.Id);
+    }
+
+    private (Guid ConversationId, Guid ReplyId) PlatformReply(string status)
+    {
+        var conversation = new PlatformConversation
+        {
+            Id = Guid.NewGuid(), UserId = _userId, Title = "t",
+            CreatedAt = DateTime.UtcNow, LastMessageAt = DateTime.UtcNow,
+        };
+        var reply = new PlatformMessage
+        {
+            Id = Guid.NewGuid(), ConversationId = conversation.Id,
+            Role = "assistant", Content = "", Status = status, CreatedAt = DateTime.UtcNow,
+        };
+        _platformConversations.Add(conversation);
+        _platformMessages.Add(reply);
+        return (conversation.Id, reply.Id);
+    }
+
+    [Fact]
+    public async Task Stop_SignalsTheWorker_ForAReplyStillBeingWritten()
+    {
+        var (conversationId, replyId) = WorkspaceReply("pending");
+
+        var result = await _workspaceService.StopReplyAsync(conversationId, replyId, _userId);
+
+        Assert.True(result.IsSuccess);
+        await _publisher.Received(1).RequestStopAsync(replyId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Stop_IsANoOpSuccess_OnceTheReplyFinished()
+    {
+        var (conversationId, replyId) = WorkspaceReply("completed");
+
+        var result = await _workspaceService.StopReplyAsync(conversationId, replyId, _userId);
+
+        Assert.True(result.IsSuccess);
+        await _publisher.DidNotReceive().RequestStopAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Stop_RefusesSomeoneElsesConversation_AndAReplyFromAnotherConversation()
+    {
+        var (theirs, theirReply) = WorkspaceReply("pending", owner: Guid.NewGuid());
+        var (mine, _) = WorkspaceReply("pending");
+
+        Assert.Equal("NOT_FOUND", (await _workspaceService.StopReplyAsync(theirs, theirReply, _userId)).ErrorCode);
+        Assert.Equal("NOT_FOUND", (await _workspaceService.StopReplyAsync(mine, theirReply, _userId)).ErrorCode);
+        await _publisher.DidNotReceive().RequestStopAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Stop_InTheAdminPortal_SignalsThePlatformReply_AndNeitherScopeReachesTheOther()
+    {
+        var (platformConversation, platformReply) = PlatformReply("pending");
+        var (workspaceConversation, workspaceReply) = WorkspaceReply("pending");
+
+        Assert.True((await _platformService.StopReplyAsync(platformConversation, platformReply, _userId)).IsSuccess);
+        Assert.False((await _workspaceService.StopReplyAsync(platformConversation, platformReply, _userId)).IsSuccess);
+        Assert.False((await _platformService.StopReplyAsync(workspaceConversation, workspaceReply, _userId)).IsSuccess);
+        await _publisher.Received(1).RequestStopAsync(platformReply, Arg.Any<CancellationToken>());
+        await _publisher.DidNotReceive().RequestStopAsync(workspaceReply, Arg.Any<CancellationToken>());
+    }
 }

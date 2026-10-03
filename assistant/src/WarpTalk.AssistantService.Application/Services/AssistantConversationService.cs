@@ -216,6 +216,24 @@ public class AssistantConversationService : IAssistantConversationService
         return Result.Success();
     }
 
+    public async Task<Result> StopReplyAsync(Guid conversationId, Guid messageId, Guid userId, CancellationToken ct = default)
+    {
+        // The caller's own conversation, and a reply in it - the same not-found for both, so the
+        // endpoint does not tell anyone which message ids exist.
+        var conversation = await _unitOfWork.AssistantConversationRepository.GetByIdAsync(conversationId, ct);
+        if (conversation == null || conversation.UserId != userId)
+            return Result.Failure("Conversation not found.", "NOT_FOUND");
+
+        var message = await _unitOfWork.AssistantMessageRepository.GetByIdAsync(messageId, ct);
+        if (message == null || message.ConversationId != conversationId || message.Role != "assistant")
+            return Result.Failure("Message not found.", "NOT_FOUND");
+
+        if (message.Status == "pending")
+            await _chatRequestPublisher.RequestStopAsync(messageId, ct);
+
+        return Result.Success();
+    }
+
     public async Task<Result> AuthorizeConversationAccessAsync(Guid conversationId, Guid userId, CancellationToken ct = default)
     {
         var conversation = await _unitOfWork.AssistantConversationRepository.GetByIdAsync(conversationId, ct);
