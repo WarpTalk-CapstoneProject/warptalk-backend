@@ -179,8 +179,34 @@ public class MeetingWebhookService : IMeetingWebhookService
         }
         catch (Exception ex)
         {
+            // Logged here because nothing else does: the controller turns this into a bare 500 and
+            // LiveKit only retries it. track_published threw on every single webhook from May to
+            // October 2026 (see TrackType) and meeting-service never printed a line about it.
+            _logger.LogError(ex, "LiveKit webhook {EventType} failed and will be retried by LiveKit.", eventType);
             return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// "audio" or "video" for a LiveKit webhook's TrackInfo.
+    ///
+    /// LiveKit sends <c>track.type</c> (TrackType), never a <c>kind</c> field, and serialises it with
+    /// protobuf JSON — which OMITS a field holding its default value. TrackType.AUDIO is 0, so an
+    /// audio track arrives with no <c>type</c> at all. This handler read <c>track.kind</c> with
+    /// GetProperty, which threw on every track_published: <c>meeting.meeting_tracks</c> had zero rows
+    /// on production (3 Oct 2026), and every such webhook was a 500 LiveKit kept retrying.
+    /// </summary>
+    public static string TrackType(JsonElement track)
+    {
+        if (!track.TryGetProperty("type", out var type)) return "audio";
+        return type.ValueKind switch
+        {
+            JsonValueKind.String => string.Equals(type.GetString(), "VIDEO", StringComparison.OrdinalIgnoreCase) ? "video"
+                : string.Equals(type.GetString(), "DATA", StringComparison.OrdinalIgnoreCase) ? "data"
+                : "audio",
+            JsonValueKind.Number => type.GetInt32() switch { 1 => "video", 2 => "data", _ => "audio" },
+            _ => "audio",
+        };
     }
 
     private async Task HandleParticipantJoined(JsonElement root)
@@ -313,10 +339,23 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         var identity = root.GetProperty("participant").GetProperty("identity").GetString();
         var trackId = root.GetProperty("track").GetProperty("sid").GetString();
-        var kind = root.GetProperty("track").GetProperty("kind").GetString();
+        var kind = TrackType(root.GetProperty("track"));
+        var roomName = root.TryGetProperty("room", out var roomElement)
+            && roomElement.TryGetProperty("name", out var nameElement)
+                ? nameElement.GetString()
+                : null;
+
+        // The participant row of THIS room. Matching on identity alone picked whichever of a
+        // user's rows the database returned first — one per meeting they have ever joined — so a
+        // track would have been filed under an old meeting. (Moot until the TrackType fix above:
+        // nothing ever got this far.)
+        var room = string.IsNullOrWhiteSpace(roomName)
+            ? null
+            : await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
+        if (room == null) return;
 
         var participant = await _unitOfWork.RtcStreamParticipantRepository
-            .FirstOrDefaultAsync(p => p.ProviderIdentity == identity);
+            .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.ProviderIdentity == identity);
 
         if (participant == null) return;
 
@@ -342,7 +381,6 @@ public class MeetingWebhookService : IMeetingWebhookService
         // Publish to Redis Pub/Sub for Transcript Worker to start
         if (kind == "audio")
         {
-            var roomName = root.GetProperty("room").GetProperty("name").GetString();
             if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(trackId))
                 throw new InvalidOperationException("Audio track webhook is missing room name or track id");
 
