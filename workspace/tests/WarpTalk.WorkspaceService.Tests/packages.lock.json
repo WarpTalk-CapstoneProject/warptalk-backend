@@ -806,6 +806,11 @@
           "OpenTelemetry.Api": "[1.17.0, 2.0.0)"
         }
       },
+      "PdfPig": {
+        "type": "Transitive",
+        "resolved": "0.1.16",
+        "contentHash": "qQcbsNMYVY+K5ELptax2S8thNMk0+rSQq3H/KdYj3LLcko8yTCz8y5KIvsKxIyAuTN0ZYNnfsZkM+0EvxTwHVA=="
+      },
       "RabbitMQ.Client": {
         "type": "Transitive",
         "resolved": "7.1.2",
@@ -994,6 +999,7 @@
           "MassTransit": "[8.5.1, )",
           "Microsoft.Extensions.Caching.StackExchangeRedis": "[10.0.5, )",
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.1, )",
+          "PdfPig": "[0.1.16, )",
           "StackExchange.Redis": "[3.0.17, )",
           "WarpTalk.Shared": "[1.0.0, )",
           "WarpTalk.WorkspaceService.Application": "[1.0.0, )",
