@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Enums;
@@ -21,14 +22,17 @@ public class MeetingWebhookService : IMeetingWebhookService
     private readonly IEgressCompletion _egressCompletion;
     private readonly string _apiSecret;
     private readonly ILogger<MeetingWebhookService> _logger;
+    private readonly IBridgeRecordingEndWatcher? _bridgeRecordingEndWatcher;
 
     public MeetingWebhookService(
         IUnitOfWork unitOfWork,
         IRedisService redisService,
         IEgressCompletion egressCompletion,
         IConfiguration config,
-        ILogger<MeetingWebhookService> logger)
+        ILogger<MeetingWebhookService> logger,
+        IBridgeRecordingEndWatcher? bridgeRecordingEndWatcher = null)
     {
+        _bridgeRecordingEndWatcher = bridgeRecordingEndWatcher;
         _unitOfWork = unitOfWork;
         _redisService = redisService;
         _egressCompletion = egressCompletion;
@@ -134,6 +138,10 @@ public class MeetingWebhookService : IMeetingWebhookService
 
         var eventType = eventProperty.GetString();
 
+        // Per event: a departure left over from an earlier event on this instance (one that failed
+        // before its save) must never be handed over on the back of this one.
+        _pendingRecordingDeparture = null;
+
         try
         {
             switch (eventType)
@@ -175,6 +183,16 @@ public class MeetingWebhookService : IMeetingWebhookService
             }
 
             await _unitOfWork.SaveChangesAsync();
+
+            // Only AFTER the save. The watcher re-reads the room in its own scope; handed over
+            // before, it could read the row as it was before this webhook (ActiveHostId still set,
+            // LeftAt still null) and act on that.
+            if (_pendingRecordingDeparture is { } departure)
+            {
+                _pendingRecordingDeparture = null;
+                HandOverRecordingDeparture(departure);
+            }
+
             return Result.Success<bool>(true);
         }
         catch (Exception ex)
@@ -230,13 +248,6 @@ public class MeetingWebhookService : IMeetingWebhookService
     }
 
     /// <summary>
-    /// Identities of our own LiveKit participants: the ingress bot ("AIBot_{room}") and the TTS
-    /// interpreters ("ai-interpreter-*"). Same list as livekit_ingress_worker's
-    /// _AI_BOT_IDENTITY_PREFIXES. The ingress bot's own join must not summon the ingress bot.
-    /// </summary>
-    private static readonly string[] BotIdentityPrefixes = ["AIBot_", "ai-interpreter-"];
-
-    /// <summary>
     /// WT-923: tell the ingress worker a person is in the room, so its bot is connected and
     /// subscribed before that person's first sentence instead of after it.
     ///
@@ -254,7 +265,9 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(identity))
             return;
-        if (BotIdentityPrefixes.Any(prefix => identity.StartsWith(prefix, StringComparison.Ordinal)))
+        // Our own participants (LiveKitParticipantIdentities): the ingress bot's own join must not
+        // summon the ingress bot.
+        if (LiveKitParticipantIdentities.IsBot(identity))
             return;
 
         var envelope = DomainEventEnvelope.Create(
@@ -314,6 +327,67 @@ public class MeetingWebhookService : IMeetingWebhookService
         if (room.ActiveHostId.ToString() == identity)
         {
             room.ActiveHostId = null;
+        }
+
+        _pendingRecordingDeparture = RecordingRoomDeparture(root, room, identity);
+    }
+
+    /// <summary>
+    /// Set by participant_left, handed to the watcher by ProcessWebhookAsync once the departure is
+    /// saved. The service is scoped to one webhook request, so this never carries across requests.
+    /// </summary>
+    private BridgeRecordingEndRequest? _pendingRecordingDeparture;
+
+    /// <summary>
+    /// A person left a room that is being recorded: it may be the end of a Google Meet bridge
+    /// session, whose recording otherwise runs on into LiveKit's own empty-room timeout (~20 s of
+    /// nothing at the end of the file). The decision — bridge or not, anyone left, grace for a
+    /// reload — is made off this request by the watcher (BridgeRecordingEndPolicy), so the webhook
+    /// stays as fast as it was. Our own bots and the egress recorder leaving decide nothing.
+    /// Returns the departure to hand over after the save, or null.
+    /// </summary>
+    private BridgeRecordingEndRequest? RecordingRoomDeparture(JsonElement root, MeetingRoom room, string? identity)
+    {
+        if (_bridgeRecordingEndWatcher is null || string.IsNullOrEmpty(room.ActiveEgressId))
+            return null;
+
+        string? kind = null;
+        if (root.GetProperty("participant").TryGetProperty("kind", out var kindProperty))
+        {
+            kind = kindProperty.ValueKind switch
+            {
+                JsonValueKind.String => kindProperty.GetString(),
+                // STANDARD=0, INGRESS=1, EGRESS=2, SIP=3, AGENT=4 — only the machinery matters here.
+                JsonValueKind.Number when kindProperty.TryGetInt32(out var ordinal) => ordinal switch
+                {
+                    1 => "INGRESS",
+                    2 => "EGRESS",
+                    4 => "AGENT",
+                    _ => null,
+                },
+                _ => null,
+            };
+        }
+
+        if (!BridgeRecordingEndPolicy.IsPerson(identity, kind))
+            return null;
+
+        return new BridgeRecordingEndRequest(room.ProviderRoomName, room.ActiveEgressId, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Never throws: the participant's departure is already recorded, and a 500 here would only
+    /// make LiveKit retry a webhook whose real work succeeded.
+    /// </summary>
+    private void HandOverRecordingDeparture(BridgeRecordingEndRequest departure)
+    {
+        try
+        {
+            _bridgeRecordingEndWatcher?.NotifyParticipantLeft(departure);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not hand the departure from {RoomName} to the bridge recording watcher.", departure.ProviderRoomName);
         }
     }
 

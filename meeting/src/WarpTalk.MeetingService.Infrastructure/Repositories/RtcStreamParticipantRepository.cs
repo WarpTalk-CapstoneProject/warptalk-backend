@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.MeetingService.Infrastructure.Data;
@@ -9,4 +10,10 @@ public class RtcStreamParticipantRepository : GenericRepository<RtcStreamPartici
     public RtcStreamParticipantRepository(MeetingDbContext context) : base(context)
     {
     }
+
+    public Task<DateTime?> GetLatestDepartureAsync(Guid meetingRoomId, CancellationToken ct = default) =>
+        _dbSet
+            .AsNoTracking()
+            .Where(p => p.MeetingRoomId == meetingRoomId && p.LeftAt != null)
+            .MaxAsync(p => p.LeftAt, ct);
 }

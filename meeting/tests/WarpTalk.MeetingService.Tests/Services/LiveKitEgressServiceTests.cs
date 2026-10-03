@@ -144,6 +144,45 @@ public class LiveKitEgressServiceTests
         Assert.False(result.IsSuccess);
     }
 
+    [Fact]
+    public async Task GetEgressAsync_StaysLenient_AnyBare404IsStillUnknownForTheSweep()
+    {
+        var handler = new StubHttpMessageHandler(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("<html>404 Not Found</html>") }));
+
+        var result = await BuildService(handler).GetEgressAsync("EG_x");
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "<html>404 Not Found</html>")]
+    [InlineData(HttpStatusCode.NotFound, "")]
+    [InlineData(HttpStatusCode.NotFound, "{\"code\":\"bad_route\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"code\":\"not_found\"}")]
+    public async Task GetEgressStrictAsync_OnlyLiveKitsOwnNotFoundIsUnknown_AnythingElseFails(HttpStatusCode status, string body)
+    {
+        var handler = new StubHttpMessageHandler(_ => Task.FromResult(
+            new HttpResponseMessage(status) { Content = new StringContent(body) }));
+
+        var result = await BuildService(handler).GetEgressStrictAsync("EG_x");
+
+        Assert.False(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task GetEgressStrictAsync_GenuineTwirpNotFound_IsUnknown()
+    {
+        var handler = new StubHttpMessageHandler(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("""{"code":"not_found","msg":"object cannot be found"}""") }));
+
+        var result = await BuildService(handler).GetEgressStrictAsync("EG_x");
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value);
+    }
+
     private static LiveKitEgressService BuildService(StubHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),

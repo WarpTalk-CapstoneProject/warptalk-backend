@@ -25,6 +25,15 @@ public interface IMeetingRoomService
     // WT-06: recording via LiveKit Egress.
     Task<Result<RecordingStateDto>> SetRecordingAsync(Guid translationRoomId, Guid callerUserId, string action);
 
+    // A Google Meet bridge recording stops when the bridge session ends (the room empties past a
+    // short grace, or translation-room has ended it) instead of running into LiveKit's own
+    // empty-room timeout. Same stop path as SetRecordingAsync "stop". Native rooms: always Ignored.
+    Task<BridgeRecordingEndCheck> StopRecordingIfBridgeEndedAsync(
+        BridgeRecordingEndRequest request,
+        DateTime utcNow,
+        TimeSpan grace,
+        CancellationToken ct = default);
+
     // WT-08: authoritative host-fallback election, triggered by the Gateway hub's
     // OnDisconnectedAsync (via the "translationRoom:participant-offline" Redis pub/sub
     // event it already publishes unconditionally on a full disconnect). Idempotent —
