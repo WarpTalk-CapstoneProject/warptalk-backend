@@ -18,6 +18,7 @@ using WarpTalk.WorkspaceService.Application.Services;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
+using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 using Xunit;
@@ -87,7 +88,24 @@ public class WorkspaceDocumentServiceTests
                 IsActive = true
             });
 
-        _documentService = new WorkspaceDocumentService(
+        // A scanner that finds nothing unless a test says otherwise, so tests about other things
+        // are not accidentally asserting the fail-closed branch of the edited-text scan.
+        _securityScanner.ScanAsync(
+                Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<bool>(), Arg.Any<List<string>?>(), Arg.Any<CancellationToken>())
+            .Returns(call => new DocumentSecurityScanResult(false, false, false, call.ArgAt<string>(0)));
+        _policyResolver.ResolvePolicySettingsAsync(
+                Arg.Any<IUnitOfWork>(), Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>())
+            .Returns(new ResolvedPolicySettings(true, false, new List<string>(), true));
+
+        _documentService = CreateService(_securityScanner, _policyResolver);
+    }
+
+    private readonly IDocumentSecurityScanner _securityScanner = Substitute.For<IDocumentSecurityScanner>();
+    private readonly IAiPolicyResolver _policyResolver = Substitute.For<IAiPolicyResolver>();
+
+    private WorkspaceDocumentService CreateService(
+        IDocumentSecurityScanner? scanner, IAiPolicyResolver? resolver) =>
+        new(
             _unitOfWork,
             _accessEvaluator,
             _eventPublisher,
@@ -97,9 +115,10 @@ public class WorkspaceDocumentServiceTests
             _storage,
             Substitute.For<IDocumentTextExtractor>(),
             _chunkWriter,
-            Substitute.For<ILogger<WorkspaceDocumentService>>()
-        );
-    }
+            Substitute.For<ILogger<WorkspaceDocumentService>>(),
+            null,
+            scanner,
+            resolver);
 
     private void StubRoleName(Guid roleId, string roleName)
     {
@@ -847,6 +866,126 @@ public class WorkspaceDocumentServiceTests
             Arg.Any<WorkspaceDocument>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _eventPublisher.DidNotReceiveWithAnyArgs()
             .PublishEmbeddingIndexRequestAsync(default, default, default!, default, default);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task UpdateExtractedTextAsync_ShouldRestrictAndPurge_WhenTheEditedTextFailsTheScan(
+        bool pii, bool dlp)
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var document = ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        _securityScanner.ScanAsync(
+                Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<bool>(), Arg.Any<List<string>?>(), Arg.Any<CancellationToken>())
+            .Returns(new DocumentSecurityScanResult(true, pii, dlp, "[REDACTED]"));
+
+        var result = await _documentService.UpdateExtractedTextAsync(
+            workspaceId, documentId, "text that carries something it should not", userId);
+
+        // The edit is saved (the owner may fix it), but it never reaches the index, and the
+        // document is labelled the way an upload that failed the same scan would be.
+        Assert.True(result.IsSuccess);
+        Assert.True(document.IsRestricted());
+        Assert.False(document.AiEligible);
+        await _eventPublisher.DidNotReceiveWithAnyArgs()
+            .PublishEmbeddingIndexRequestAsync(default, default, default!, default, default);
+        await _eventPublisher.Received(1).PublishDocumentDeletedAsync(
+            documentId, workspaceId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateExtractedTextAsync_ShouldNotReindex_WhenTheScanCannotRun()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+        _securityScanner.ScanAsync(
+                Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<bool>(), Arg.Any<List<string>?>(), Arg.Any<CancellationToken>())
+            .Returns<DocumentSecurityScanResult>(_ => throw new TimeoutException("worker down"));
+
+        var result = await _documentService.UpdateExtractedTextAsync(
+            workspaceId, documentId, "revised text", userId);
+
+        Assert.True(result.IsSuccess);
+        await _eventPublisher.DidNotReceiveWithAnyArgs()
+            .PublishEmbeddingIndexRequestAsync(default, default, default!, default, default);
+    }
+
+    [Fact]
+    public async Task UpdateExtractedTextAsync_ShouldNotReindex_WhenNoScannerIsWired()
+    {
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        ArrangePatchableDocument(
+            workspaceId, documentId, userId,
+            WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            WorkspaceDocumentStatus.@public.ToString());
+
+        var result = await CreateService(null, null).UpdateExtractedTextAsync(
+            workspaceId, documentId, "revised text", userId);
+
+        Assert.True(result.IsSuccess);
+        await _eventPublisher.DidNotReceiveWithAnyArgs()
+            .PublishEmbeddingIndexRequestAsync(default, default, default!, default, default);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldArriveRestricted_WhenTheSameBytesWereAlreadyFlagged()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+        // A restricted twin exists (live or soft-deleted — the predicate does not filter on it).
+        _workspaceDocumentRepository.AnyAsync(
+                Arg.Any<Expression<Func<WorkspaceDocument, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        WorkspaceDocument? stored = null;
+        await _workspaceDocumentRepository.AddAsync(
+            Arg.Do<WorkspaceDocument>(d => stored = d), Arg.Any<CancellationToken>());
+
+        var result = await _documentService.UploadDocumentAsync(
+            workspaceId,
+            new UploadDocumentApiRequest("Doc", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, file),
+            userId);
+
+        // The request asked for public_internal; the bytes were already found restricted here.
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(stored);
+        Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, stored!.ConfidentialityLevel);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldKeepTheRequestedLevel_WhenNoTwinWasFlagged()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var (_, _, file) = ArrangeAdminUpload(workspaceId, userId, Guid.NewGuid());
+        _workspaceDocumentRepository.AnyAsync(
+                Arg.Any<Expression<Func<WorkspaceDocument, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        WorkspaceDocument? stored = null;
+        await _workspaceDocumentRepository.AddAsync(
+            Arg.Do<WorkspaceDocument>(d => stored = d), Arg.Any<CancellationToken>());
+
+        await _documentService.UploadDocumentAsync(
+            workspaceId,
+            new UploadDocumentApiRequest("Doc", "upload", null, WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, file),
+            userId);
+
+        Assert.Equal(WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel, stored!.ConfidentialityLevel);
     }
 
     [Fact]
