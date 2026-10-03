@@ -59,7 +59,9 @@ public record StripePaymentCreationRequest(
     string? Currency,
     string ProviderTransactionId,
     string Status,
-    string? FailureReason
+    string? FailureReason,
+    /// <summary>VAT on top of <see cref="Amount"/>, which is net. Stored apart, never as revenue.</summary>
+    decimal TaxAmount = 0
 );
 
 public record StripeInvoiceCreationRequest(
@@ -67,7 +69,9 @@ public record StripeInvoiceCreationRequest(
     Guid UserId,
     decimal Amount,
     string? Currency,
-    string? PdfUrl
+    string? PdfUrl,
+    /// <summary>VAT on top of <see cref="Amount"/>, which is the invoice subtotal.</summary>
+    decimal TaxAmount = 0
 );
 
 public record BillingCyclePaymentCreationRequest(

@@ -39,4 +39,9 @@ public interface IStripeSdkClient
     // Admin Providers page: the fee Stripe kept on a payment (StripeFeeSyncWorker). Read-only.
     Task<StripeList<Charge>> ListChargesAsync(ChargeListOptions options, CancellationToken cancellationToken = default);
     Task<StripeList<InvoicePayment>> ListInvoicePaymentsAsync(InvoicePaymentListOptions options, CancellationToken cancellationToken = default);
+
+    // VAT (3 Oct 2026): the exclusive tax rate attached to checkout lines. A Stripe TaxRate's
+    // percentage is immutable, so a new rate is created rather than an old one edited.
+    Task<StripeList<TaxRate>> ListTaxRatesAsync(TaxRateListOptions options, CancellationToken cancellationToken = default);
+    Task<TaxRate> CreateTaxRateAsync(TaxRateCreateOptions options, CancellationToken cancellationToken = default);
 }

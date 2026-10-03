@@ -87,7 +87,13 @@ public record StripePaymentEventRequest(
     /// <summary>WT-878, plan checkouts: the period total the session was priced at (pre-coupon); 0 = unknown.</summary>
     decimal ExpectedAmount = 0,
     /// <summary>WT-878, plan checkouts: the currency the session was priced in; empty = unknown.</summary>
-    string ExpectedCurrency = ""
+    string ExpectedCurrency = "",
+    /// <summary>
+    /// VAT Stripe added on top (3 Oct 2026). <see cref="Amount"/> is the NET amount, before VAT, so
+    /// every check and report that compares it with a price — the underpaid guard, a coupon's
+    /// discount, revenue — keeps comparing like with like. Amount + TaxAmount is what was charged.
+    /// </summary>
+    decimal TaxAmount = 0
 );
 
 public record CheckoutSessionDto(
@@ -101,5 +107,13 @@ public record CheckoutSessionDto(
     /// <summary>G11: the subscription a subscription-mode session created (add-on checkouts).</summary>
     string? SubscriptionId = null,
     /// <summary>#466: the Stripe Customer the session created or used.</summary>
-    string? CustomerId = null
+    string? CustomerId = null,
+    /// <summary>VAT within <see cref="AmountTotal"/>, minor units (total_details.amount_tax).</summary>
+    long? AmountTax = null
 );
+
+/// <summary>
+/// The VAT a buyer pays on top of a plan, pack or add-on price. <c>PricesIncludeVat</c> is false by
+/// owner decision (3 Oct 2026) and is sent so a client never has to assume it.
+/// </summary>
+public record PlanTaxDto(decimal VatPercent, bool PricesIncludeVat);

@@ -18,11 +18,39 @@ public class StripePaymentService : IStripePaymentService
 {
     private readonly IConfiguration _configuration;
     private readonly IStripeSdkClient _stripeSdkClient;
+    private readonly IStripeVatTaxRates? _vatTaxRates;
 
-    public StripePaymentService(IConfiguration configuration, IStripeSdkClient stripeSdkClient)
+    public StripePaymentService(
+        IConfiguration configuration,
+        IStripeSdkClient stripeSdkClient,
+        IStripeVatTaxRates? vatTaxRates = null)
     {
         _configuration = configuration;
         _stripeSdkClient = stripeSdkClient;
+        _vatTaxRates = vatTaxRates;
+    }
+
+    /// <summary>
+    /// VAT on top of every line this session sells (owner decision, 3 Oct 2026; see
+    /// <see cref="StripeVatTaxRates"/>). Not on an invoice payment: that settles a document already
+    /// issued with its own total, and charging more than it states would make the two disagree.
+    /// A failure to resolve the rate fails the checkout — selling without the tax is the outcome
+    /// this must not have.
+    /// </summary>
+    private async Task ApplyVatAsync(
+        IEnumerable<SessionLineItemOptions> lines,
+        string paymentType,
+        CancellationToken cancellationToken)
+    {
+        if (_vatTaxRates is null || paymentType == PaymentConstants.PaymentTypes.InvoicePayment) return;
+
+        var taxRateId = await _vatTaxRates.ResolveTaxRateIdAsync(cancellationToken);
+        if (taxRateId is null) return;
+
+        foreach (var line in lines)
+        {
+            line.TaxRates = new List<string> { taxRateId };
+        }
     }
 
     public async Task<Result<string>> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request, CancellationToken cancellationToken = default)
@@ -138,6 +166,7 @@ public class StripePaymentService : IStripePaymentService
                 options.PaymentIntentData = new SessionPaymentIntentDataOptions { Metadata = metadata };
             }
 
+            await ApplyVatAsync(options.LineItems, request.PaymentType, cancellationToken);
             Session session = await _stripeSdkClient.CreateCheckoutSessionAsync(options, cancellationToken);
 
             return Result.Success(session.Url);
@@ -238,6 +267,7 @@ public class StripePaymentService : IStripePaymentService
                 options.PaymentIntentData = new SessionPaymentIntentDataOptions { Metadata = metadata };
             }
 
+            await ApplyVatAsync(options.LineItems, request.PaymentType, cancellationToken);
             var session = await _stripeSdkClient.CreateCheckoutSessionAsync(options, cancellationToken);
             return Result.Success(session.Url);
         }
@@ -496,7 +526,8 @@ public class StripePaymentService : IStripePaymentService
                 session.Status,
                 session.PaymentIntentId,
                 session.SubscriptionId,
-                session.CustomerId
+                session.CustomerId,
+                session.TotalDetails?.AmountTax
             ));
         }
         catch (Exception ex)

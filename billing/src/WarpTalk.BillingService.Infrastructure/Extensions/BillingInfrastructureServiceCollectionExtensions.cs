@@ -99,6 +99,8 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IUsageRateCardResolverService, UsageRateCardResolverService>();
         services.AddScoped<IUsageSettlementRepository, UsageSettlementRepository>();
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
+        // VAT on Stripe checkout lines (owner decision, 3 Oct 2026). See StripeVatTaxRates.
+        services.AddScoped<IStripeVatTaxRates, StripeVatTaxRates>();
         // G11: pushes credit packs, add-ons and coupons to Stripe Products/Prices/Coupons (admin only).
         services.AddScoped<IStripeCatalogSync, StripeCatalogSyncService>();
         // #466: recurring plan billing (auto-renew = a Stripe Subscription).
