@@ -87,6 +87,8 @@ public class ParticipantLanguageProcessor : IParticipantLanguageProcessor
 
             // Null means "this hub call did not carry that language", not "blank the column".
             // SetSpeakLanguage and SetListenLanguage are separate calls and each publishes one field.
+            var previousSpeak = participant.SpeakLanguage;
+            var previousListen = participant.ListenLanguage;
             var changed = false;
             if (normalizedSpeak != null && !string.Equals(participant.SpeakLanguage, normalizedSpeak, StringComparison.OrdinalIgnoreCase))
             {
@@ -120,6 +122,14 @@ public class ParticipantLanguageProcessor : IParticipantLanguageProcessor
                 _logger.LogError(
                     "Persisted the language change for user {UserId} in room {RoomId} but could not regenerate routes: {Error}",
                     userId, roomId, regenerated.Error);
+
+                // Put the row back before failing. The consumer retries this event (and the DLQ
+                // replays it) by calling this method again — and with the new language already
+                // saved, that call found "nothing changed" above and returned success without ever
+                // regenerating, so a failed regeneration was retried into a silent no-op and the
+                // mesh kept the old languages for the rest of the meeting. Restored, the retry
+                // sees the change again and does the whole job.
+                await RestoreAsync(participant, previousSpeak, previousListen, ct);
                 return Result.Failure(regenerated.Error ?? AudioRouteConstants.ErrorUnexpected, regenerated.ErrorCode);
             }
 
@@ -133,6 +143,28 @@ public class ParticipantLanguageProcessor : IParticipantLanguageProcessor
         {
             _logger.LogError(ex, "Error applying language change for user {UserId} in room {RoomId}", userId, roomId);
             return Result.Failure(AudioRouteConstants.ErrorInternalProcessingEvent, ErrorCodes.InternalServerError);
+        }
+    }
+
+    private async Task RestoreAsync(
+        Domain.Entities.TranslationRoomParticipant participant,
+        string previousSpeak,
+        string previousListen,
+        CancellationToken ct)
+    {
+        try
+        {
+            participant.SpeakLanguage = previousSpeak;
+            participant.ListenLanguage = previousListen;
+            participant.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.TranslationRoomParticipantRepository.Update(participant);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Could not restore the previous languages of participant {ParticipantId} after a failed route regeneration; a retry of this change will find nothing to do",
+                participant.Id);
         }
     }
 

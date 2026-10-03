@@ -212,7 +212,36 @@ public sealed class FarSpeakerHintIngest
             return (FarSpeakerHintOutcome.Accepted, 0);
         }
 
+        LogWritten(translationRoomId, room, hints.Count, entries.Count, nowMs);
         return (FarSpeakerHintOutcome.Accepted, entries.Count);
+    }
+
+    /// <summary>
+    /// Bug B3 observability: how many hint entries reached the AI's stream for a room — the first
+    /// write at once, then a total about once a minute — so a test call shows whether the capturer's
+    /// names got past this hop. Counts only, never names.
+    /// </summary>
+    private void LogWritten(Guid translationRoomId, RoomState room, int hints, int written, long nowMs)
+    {
+        long calls, totalHints, totalEntries;
+        lock (room.Gate)
+        {
+            room.CallsSinceLog++;
+            room.HintsSinceLog += hints;
+            room.EntriesSinceLog += written;
+            if (room.LastWrittenLogMs != long.MinValue
+                && nowMs - room.LastWrittenLogMs < (long)LogThrottle.TotalMilliseconds)
+            {
+                return;
+            }
+            room.LastWrittenLogMs = nowMs;
+            (calls, totalHints, totalEntries) = (room.CallsSinceLog, room.HintsSinceLog, room.EntriesSinceLog);
+            room.CallsSinceLog = room.HintsSinceLog = room.EntriesSinceLog = 0;
+        }
+        _logger.LogInformation(
+            "FarSpeakerHints: room {RoomId} wrote {Entries} hint entries from {Hints} hints in {Calls} calls "
+            + "since the last report.",
+            translationRoomId, totalEntries, totalHints, calls);
     }
 
     private async Task WriteAsync(Guid translationRoomId, List<FarSpeakerHintEntry> entries)
@@ -432,6 +461,10 @@ public sealed class FarSpeakerHintIngest
         public long LastTouchedMs;
         public long LastRefusalLogMs = long.MinValue;
         public long LastRateLimitLogMs = long.MinValue;
+        public long LastWrittenLogMs = long.MinValue;
+        public long CallsSinceLog;
+        public long HintsSinceLog;
+        public long EntriesSinceLog;
         private long _windowStartMs;
         private int _callsInWindow;
 
