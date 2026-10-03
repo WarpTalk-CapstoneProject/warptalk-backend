@@ -21,14 +21,17 @@ public class MeetingWebhookService : IMeetingWebhookService
     private readonly IEgressCompletion _egressCompletion;
     private readonly string _apiSecret;
     private readonly ILogger<MeetingWebhookService> _logger;
+    private readonly IBridgeRecordingEndWatcher? _bridgeRecordingEndWatcher;
 
     public MeetingWebhookService(
         IUnitOfWork unitOfWork,
         IRedisService redisService,
         IEgressCompletion egressCompletion,
         IConfiguration config,
-        ILogger<MeetingWebhookService> logger)
+        ILogger<MeetingWebhookService> logger,
+        IBridgeRecordingEndWatcher? bridgeRecordingEndWatcher = null)
     {
+        _bridgeRecordingEndWatcher = bridgeRecordingEndWatcher;
         _unitOfWork = unitOfWork;
         _redisService = redisService;
         _egressCompletion = egressCompletion;
@@ -288,6 +291,55 @@ public class MeetingWebhookService : IMeetingWebhookService
         if (room.ActiveHostId.ToString() == identity)
         {
             room.ActiveHostId = null;
+        }
+
+        NotifyRecordingRoomDeparture(root, room, identity);
+    }
+
+    /// <summary>
+    /// A person left a room that is being recorded: it may be the end of a Google Meet bridge
+    /// session, whose recording otherwise runs on into LiveKit's own empty-room timeout (~20 s of
+    /// nothing at the end of the file). The decision — bridge or not, anyone left, grace for a
+    /// reload — is made off this request by the watcher (BridgeRecordingEndPolicy), so the webhook
+    /// stays as fast as it was. Our own bots and the egress recorder leaving decide nothing.
+    ///
+    /// Never throws: the participant's departure is already recorded, and a 500 here would only
+    /// make LiveKit retry a webhook whose real work succeeded.
+    /// </summary>
+    private void NotifyRecordingRoomDeparture(JsonElement root, MeetingRoom room, string? identity)
+    {
+        if (_bridgeRecordingEndWatcher is null || string.IsNullOrEmpty(room.ActiveEgressId))
+            return;
+
+        string? kind = null;
+        if (root.GetProperty("participant").TryGetProperty("kind", out var kindProperty))
+        {
+            kind = kindProperty.ValueKind switch
+            {
+                JsonValueKind.String => kindProperty.GetString(),
+                // STANDARD=0, INGRESS=1, EGRESS=2, SIP=3, AGENT=4 — only the machinery matters here.
+                JsonValueKind.Number when kindProperty.TryGetInt32(out var ordinal) => ordinal switch
+                {
+                    1 => "INGRESS",
+                    2 => "EGRESS",
+                    4 => "AGENT",
+                    _ => null,
+                },
+                _ => null,
+            };
+        }
+
+        if (!BridgeRecordingEndPolicy.IsPerson(identity, kind))
+            return;
+
+        try
+        {
+            _bridgeRecordingEndWatcher.NotifyParticipantLeft(
+                new DTOs.BridgeRecordingEndRequest(room.ProviderRoomName, room.ActiveEgressId, DateTime.UtcNow));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not hand the departure from {RoomName} to the bridge recording watcher.", room.ProviderRoomName);
         }
     }
 

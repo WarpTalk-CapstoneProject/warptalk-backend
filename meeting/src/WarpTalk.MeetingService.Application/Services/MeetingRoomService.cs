@@ -1298,50 +1298,9 @@ public class MeetingRoomService : IMeetingRoomService
             if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
                 return Result.Failure<RecordingStateDto>("No recording is currently in progress.", ErrorCodes.InvalidState);
 
-            var stopResult = await _egressService.StopEgressAsync(meetingRoom.ActiveEgressId);
-            if (!stopResult.IsSuccess)
-                return Result.Failure<RecordingStateDto>(stopResult.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
-
-            // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
-            // THAT HAS NOT LANDED YET.
-            //
-            // StopEgress only asks LiveKit to stop; the file is still being finalised and uploaded
-            // for seconds to minutes afterwards, and the recording does not exist for us until the
-            // egress_ended webhook (or the sweep) turns it into an artifact. Nulling the column
-            // here threw away the only durable record that we are owed one:
-            //   - EgressCompletion can still match the room by ProviderRoomName, so a webhook that
-            //     ARRIVES is fine (that is the other half of WT-644), but
-            //   - EgressReconciliationService scans `ActiveEgressId != null`, so a webhook that is
-            //     LOST — the exact failure WT-371 #8 built the sweep for, when the LiveKit project
-            //     had no webhook configured at all — could never be recovered. The meeting simply
-            //     ended with no recording and nothing anywhere said so.
-            //
-            // So the column now means "an egress this room owns that has not been completed", and
-            // it is cleared by whoever completes it: EgressCompletion on the webhook (seconds), or
-            // the sweep on its next tick (two minutes) when the webhook never comes. A terminal
-            // FAILED/ABORTED egress clears it too — EgressCompletion clears before it checks for a
-            // file — so a failed recording cannot strand the room either.
-            //
-            // TWO KNOWN AND ACCEPTED CONSEQUENCES, both lasting only until the completion lands —
-            // seconds on the healthy path, at most one sweep tick when the webhook is lost:
-            //  1. JoinMeetingResponse.Recording is derived from this column, so somebody joining
-            //     in that window is told the meeting is being recorded when capture has in fact
-            //     ended. An over-warning in the safe direction.
-            //  2. The "start" branch above refuses while the column is set, so a host who stops
-            //     and immediately restarts is told "Recording is already in progress." — which is
-            //     nearly true (the previous file is still being finalised) and self-clears.
-            // Making either exact needs a second column to separate "still capturing" from "still
-            // owed an artifact", and that is a migration this fix deliberately avoids. The
-            // recording existing at all is worth more than the precision of a transient label.
-            //
-            // UpdatedAt is moved by hand because nothing else moves it: EgressReconciliationService
-            // measures its UnknownEgressGrace from this timestamp, and the stop is the honest
-            // origin for "we have been waiting for this completion since…".
-            meetingRoom.UpdatedAt = DateTime.UtcNow;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
-
-            await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+            var stopped = await StopActiveRecordingAsync(translationRoomId, meetingRoom);
+            if (!stopped.IsSuccess)
+                return Result.Failure<RecordingStateDto>(stopped.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
 
             // Reported as stopped regardless: capture HAS ended, which is what the person who
             // pressed the button asked about. The retained id is bookkeeping they have no use for
@@ -1350,6 +1309,209 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Failure<RecordingStateDto>("Action must be 'start' or 'stop'.", ErrorCodes.ValidationError);
+    }
+
+    /// <summary>
+    /// The ONE way a running recording is stopped — the Stop button (SetRecordingAsync "stop") and
+    /// the end of a bridge session (<see cref="StopRecordingIfBridgeEndedAsync"/>) both come here,
+    /// so finalization (egress_ended → EgressCompletion → recording artifact, billing) cannot tell
+    /// them apart and cannot drift.
+    /// </summary>
+    private async Task<Result> StopActiveRecordingAsync(Guid translationRoomId, MeetingRoom meetingRoom, CancellationToken ct = default)
+    {
+        var stopResult = await _egressService.StopEgressAsync(meetingRoom.ActiveEgressId!, ct);
+        if (!stopResult.IsSuccess)
+            return Result.Failure(stopResult.Error ?? "Failed to stop recording.", stopResult.ErrorCode);
+
+        // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
+        // THAT HAS NOT LANDED YET.
+        //
+        // StopEgress only asks LiveKit to stop; the file is still being finalised and uploaded
+        // for seconds to minutes afterwards, and the recording does not exist for us until the
+        // egress_ended webhook (or the sweep) turns it into an artifact. Nulling the column
+        // here threw away the only durable record that we are owed one:
+        //   - EgressCompletion can still match the room by ProviderRoomName, so a webhook that
+        //     ARRIVES is fine (that is the other half of WT-644), but
+        //   - EgressReconciliationService scans `ActiveEgressId != null`, so a webhook that is
+        //     LOST — the exact failure WT-371 #8 built the sweep for, when the LiveKit project
+        //     had no webhook configured at all — could never be recovered. The meeting simply
+        //     ended with no recording and nothing anywhere said so.
+        //
+        // So the column now means "an egress this room owns that has not been completed", and
+        // it is cleared by whoever completes it: EgressCompletion on the webhook (seconds), or
+        // the sweep on its next tick (two minutes) when the webhook never comes. A terminal
+        // FAILED/ABORTED egress clears it too — EgressCompletion clears before it checks for a
+        // file — so a failed recording cannot strand the room either.
+        //
+        // TWO KNOWN AND ACCEPTED CONSEQUENCES, both lasting only until the completion lands —
+        // seconds on the healthy path, at most one sweep tick when the webhook is lost:
+        //  1. JoinMeetingResponse.Recording is derived from this column, so somebody joining
+        //     in that window is told the meeting is being recorded when capture has in fact
+        //     ended. An over-warning in the safe direction.
+        //  2. The "start" branch above refuses while the column is set, so a host who stops
+        //     and immediately restarts is told "Recording is already in progress." — which is
+        //     nearly true (the previous file is still being finalised) and self-clears.
+        // Making either exact needs a second column to separate "still capturing" from "still
+        // owed an artifact", and that is a migration this fix deliberately avoids. The
+        // recording existing at all is worth more than the precision of a transient label.
+        //
+        // UpdatedAt is moved by hand because nothing else moves it: EgressReconciliationService
+        // measures its UnknownEgressGrace from this timestamp, and the stop is the honest
+        // origin for "we have been waiting for this completion since…".
+        meetingRoom.UpdatedAt = DateTime.UtcNow;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+
+        return Result.Success();
+    }
+
+    /// <summary>How long the "this egress was auto-stopped" marker is kept: well past any finalization.</summary>
+    private static readonly TimeSpan BridgeRecordingEndMarkerTtl = TimeSpan.FromMinutes(10);
+
+    public static string BridgeRecordingEndMarkerResource(string egressId) =>
+        $"meeting:recording-bridge-end:{egressId}";
+
+    /// <summary>
+    /// Stops the recording of a Google Meet bridge room once its bridge session has ended — see
+    /// <see cref="BridgeRecordingEndPolicy"/> for the bug, the signal and the grace. Called after a
+    /// participant left a room that was being recorded (MeetingWebhookService → BridgeRecordingEndWorker),
+    /// first at once and again whenever the answer is <see cref="BridgeRecordingEndOutcome.AwaitingGrace"/>.
+    ///
+    /// Every doubt resolves to "leave it running": a lookup that fails, a room type that cannot be
+    /// learned, a LiveKit that cannot list the room. Leaving it running costs exactly today's
+    /// behaviour — LiveKit closes the empty room after its departure timeout and the egress ends
+    /// with it — whereas a wrong stop loses the rest of somebody's call.
+    ///
+    /// NATIVE ROOMS ARE NEVER TOUCHED: the type is checked before anything else is asked.
+    /// </summary>
+    public async Task<BridgeRecordingEndCheck> StopRecordingIfBridgeEndedAsync(
+        BridgeRecordingEndRequest request,
+        DateTime utcNow,
+        TimeSpan grace,
+        CancellationToken ct = default)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.ProviderRoomName == request.ProviderRoomName, "", ct);
+        if (meetingRoom == null)
+            return BridgeRecordingEndCheck.Ignored("no meeting room");
+
+        // Only the egress that was running when the participant left. Stopped by hand since, or
+        // stopped and restarted: that is somebody else's decision, and this one is stale.
+        if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
+            || !string.Equals(meetingRoom.ActiveEgressId, request.EgressId, StringComparison.Ordinal))
+            return BridgeRecordingEndCheck.Ignored("not the recording that was running");
+
+        // The TYPE never changes after creation, so the 24 h projection answers it and a native room
+        // costs no gRPC call at all. The STATUS does change, so a bridge room is read fresh.
+        var cached = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(
+            $"meeting:room:v2:{meetingRoom.TranslationRoomId}");
+        if (cached?.Value is { } projection && !ExternalBridgeConstants.IsBridgeRoomType(projection.TranslationRoomType))
+            return BridgeRecordingEndCheck.Ignored("not a bridge room");
+
+        var details = await _grpcService.GetRoomDetailsAsync(meetingRoom.TranslationRoomId);
+        if (!details.IsSuccess || details.Value == null)
+        {
+            _logger.LogWarning(
+                "Could not read room {RoomId} to decide whether its bridge recording should stop: {Error}. Leaving it running.",
+                meetingRoom.TranslationRoomId, details.Error);
+            return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "room details unavailable");
+        }
+
+        if (!ExternalBridgeConstants.IsBridgeRoomType(details.Value.TranslationRoomType))
+            return BridgeRecordingEndCheck.Ignored("not a bridge room");
+
+        var roomEnded = BridgeRecordingEndPolicy.IsEndedRoomStatus(details.Value.Status);
+        if (!roomEnded)
+        {
+            var listed = await _roomAdminService.ListParticipantsAsync(meetingRoom.ProviderRoomName, ct);
+            if (!listed.IsSuccess || listed.Value == null)
+            {
+                _logger.LogWarning(
+                    "Could not list LiveKit room {RoomName} to decide whether its bridge recording should stop: {Error}. Leaving it running.",
+                    meetingRoom.ProviderRoomName, listed.Error);
+                return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "participants unavailable");
+            }
+
+            if (listed.Value.Any(BridgeRecordingEndPolicy.CountsAsPresence))
+                return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Occupied, "somebody is still in the room");
+
+            // Grace from the LATEST departure in the room, not only this one: somebody who left two
+            // seconds after the person this check is about gets their own full grace to come back.
+            var lastDeparture = request.DepartedAtUtc;
+            var departed = await _unitOfWork.RtcStreamParticipantRepository
+                .FindAsync(p => p.MeetingRoomId == meetingRoom.Id && p.LeftAt != null, "", ct);
+            foreach (var participant in departed)
+            {
+                if (participant.LeftAt is { } leftAt && leftAt > lastDeparture)
+                    lastDeparture = leftAt;
+            }
+
+            var quietFor = utcNow - lastDeparture;
+            if (quietFor < grace)
+            {
+                return new BridgeRecordingEndCheck(
+                    BridgeRecordingEndOutcome.AwaitingGrace,
+                    "room is empty; waiting for a reload or rejoin",
+                    grace - quietFor);
+            }
+        }
+
+        // Already stopping (the Stop button, or LiveKit closing the room)? A second StopEgress would
+        // only be refused, and a second RecordingStateChanged would toast everyone again. A failed
+        // lookup is not a reason to keep recording an ended session: try the stop anyway.
+        var egress = await _egressService.GetEgressAsync(request.EgressId, ct);
+        if (egress.IsSuccess)
+        {
+            if (egress.Value is not { } info)
+                return BridgeRecordingEndCheck.Ignored("LiveKit does not know this egress");
+            if (!BridgeRecordingEndPolicy.IsEgressCapturing(info))
+                return BridgeRecordingEndCheck.Ignored("egress is already ending");
+        }
+
+        // Once per egress across replicas: every departure schedules a check, and they can land on
+        // different replicas. The marker is deliberately NOT released on success — it expires on
+        // its own, long after the egress has finished — so a late check finds it and does nothing.
+        IDistributedLease? marker = null;
+        if (_locks is not null)
+        {
+            try
+            {
+                marker = await _locks.TryAcquireAsync(
+                    BridgeRecordingEndMarkerResource(request.EgressId), BridgeRecordingEndMarkerTtl, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not take the bridge-recording-end marker for egress {EgressId}. Leaving it running.", request.EgressId);
+                return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "marker unavailable");
+            }
+
+            if (marker is null)
+                return BridgeRecordingEndCheck.Ignored("already being stopped");
+        }
+
+        var stopped = await StopActiveRecordingAsync(meetingRoom.TranslationRoomId, meetingRoom, ct);
+        if (!stopped.IsSuccess)
+        {
+            // Give the marker back so the next departure (or the next grace check) can try again.
+            if (marker is not null)
+                await marker.DisposeAsync();
+            _logger.LogWarning(
+                "Bridge session of room {RoomId} ended but its recording {EgressId} could not be stopped: {Error}. "
+                + "LiveKit will end it when it closes the room.",
+                meetingRoom.TranslationRoomId, request.EgressId, stopped.Error);
+            return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "stop failed");
+        }
+
+        _logger.LogInformation(
+            "Stopped recording {EgressId} of bridge room {RoomId}: {Reason}.",
+            request.EgressId,
+            meetingRoom.TranslationRoomId,
+            roomEnded ? "the room has ended" : "nobody is left in the room after the grace period");
+        return new BridgeRecordingEndCheck(
+            BridgeRecordingEndOutcome.Stopped,
+            roomEnded ? "room ended" : "room empty past grace");
     }
 
     /// <summary>

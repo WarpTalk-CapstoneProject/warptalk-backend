@@ -23,4 +23,21 @@ public interface ILiveKitRoomAdminService
     Task<Result<bool>> DeleteRoomAsync(
         string roomName,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Who LiveKit says is in the room RIGHT NOW (RoomService.ListParticipants) — every
+    /// participant, bots and recorders included; the caller decides who counts. A room LiveKit
+    /// no longer has is an empty list, not a failure: "nobody is there" is the true answer.
+    /// </summary>
+    Task<Result<IReadOnlyList<LiveKitRoomParticipant>>> ListParticipantsAsync(
+        string roomName,
+        CancellationToken ct = default);
 }
+
+/// <summary>
+/// One entry of LiveKit's ListParticipants. <see cref="Kind"/> and <see cref="State"/> are the
+/// proto enum NAMES (STANDARD/INGRESS/EGRESS/SIP/AGENT, JOINING/JOINED/ACTIVE/DISCONNECTED) —
+/// normalised from the ordinal when LiveKit sends a number, null when it sent nothing (proto3
+/// omits the zero value, so a missing kind is STANDARD and a missing state is JOINING).
+/// </summary>
+public sealed record LiveKitRoomParticipant(string Identity, string? Kind, string? State);

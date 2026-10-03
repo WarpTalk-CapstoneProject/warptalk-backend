@@ -136,11 +136,68 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             ? value.GetString()
             : null;
 
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<LiveKitRoomParticipant>>> ListParticipantsAsync(
+        string roomName,
+        CancellationToken ct = default)
+    {
+        var answer = await SendRoomQueryAsync(
+            "ListParticipants",
+            new { room = roomName },
+            roomName,
+            ct,
+            notFoundIsEmpty: true);
+        if (!answer.IsSuccess)
+            return Result.Failure<IReadOnlyList<LiveKitRoomParticipant>>(answer.Error!, answer.ErrorCode);
+
+        return Result.Success(ReadParticipants(answer.Value ?? string.Empty));
+    }
+
+    private static readonly string[] ParticipantKinds = ["STANDARD", "INGRESS", "EGRESS", "SIP", "AGENT"];
+    private static readonly string[] ParticipantStates = ["JOINING", "JOINED", "ACTIVE", "DISCONNECTED"];
+
+    /// <summary>
+    /// Public for the tests. Reads the identity, kind and state of every entry, accepting the enum
+    /// as its name or its ordinal — the same two spellings ReadMicrophoneTrackSids has to accept.
+    /// </summary>
+    public static IReadOnlyList<LiveKitRoomParticipant> ReadParticipants(string listJson)
+    {
+        var participants = new List<LiveKitRoomParticipant>();
+        if (string.IsNullOrWhiteSpace(listJson)) return participants;
+
+        using var document = JsonDocument.Parse(listJson);
+        if (!document.RootElement.TryGetProperty("participants", out var items) ||
+            items.ValueKind != JsonValueKind.Array)
+            return participants;
+
+        foreach (var item in items.EnumerateArray())
+        {
+            var identity = ReadString(item, "identity");
+            if (string.IsNullOrEmpty(identity)) continue;
+            participants.Add(new LiveKitRoomParticipant(
+                identity,
+                ReadEnum(item, "kind", ParticipantKinds),
+                ReadEnum(item, "state", ParticipantStates)));
+        }
+
+        return participants;
+    }
+
+    private static string? ReadEnum(JsonElement element, string name, string[] names)
+    {
+        if (!element.TryGetProperty(name, out var value)) return null;
+        if (value.ValueKind == JsonValueKind.String) return value.GetString();
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var ordinal))
+            return ordinal >= 0 && ordinal < names.Length ? names[ordinal] : ordinal.ToString();
+        return null;
+    }
+
     private async Task<Result<string>> SendRoomQueryAsync(
         string command,
         object payload,
         string roomName,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool notFoundIsEmpty = false)
     {
         try
         {
@@ -158,6 +215,8 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             var body = await response.Content.ReadAsStringAsync(ct);
             if (response.IsSuccessStatusCode)
                 return Result.Success(body);
+            if (notFoundIsEmpty && response.StatusCode == HttpStatusCode.NotFound)
+                return Result.Success(string.Empty);
 
             _logger.LogError(
                 "LiveKit room query {Command} failed ({Status}): {Body}",
