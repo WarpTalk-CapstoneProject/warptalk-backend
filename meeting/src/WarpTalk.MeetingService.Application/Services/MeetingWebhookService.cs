@@ -138,6 +138,10 @@ public class MeetingWebhookService : IMeetingWebhookService
 
         var eventType = eventProperty.GetString();
 
+        // Per event: a departure left over from an earlier event on this instance (one that failed
+        // before its save) must never be handed over on the back of this one.
+        _pendingRecordingDeparture = null;
+
         try
         {
             switch (eventType)
@@ -184,7 +188,10 @@ public class MeetingWebhookService : IMeetingWebhookService
             // before, it could read the row as it was before this webhook (ActiveHostId still set,
             // LeftAt still null) and act on that.
             if (_pendingRecordingDeparture is { } departure)
+            {
+                _pendingRecordingDeparture = null;
                 HandOverRecordingDeparture(departure);
+            }
 
             return Result.Success<bool>(true);
         }

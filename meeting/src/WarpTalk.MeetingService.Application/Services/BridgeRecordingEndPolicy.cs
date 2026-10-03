@@ -1,4 +1,3 @@
-using System.Text.Json;
 using WarpTalk.MeetingService.Application.Interfaces;
 
 namespace WarpTalk.MeetingService.Application.Services;
@@ -79,16 +78,6 @@ public static class BridgeRecordingEndPolicy
             return false;
         return kind is null || !NonPersonKinds.Contains(kind);
     }
-
-    /// <summary>A translation-room status after which nobody can rejoin.</summary>
-    public static bool IsEndedRoomStatus(string? status) => TranslationRoomStatuses.IsEnded(status);
-
-    /// <summary>
-    /// Whether LiveKit's EgressInfo says the egress is still capturing (STARTING or ACTIVE). ENDING
-    /// means somebody already stopped it — the Stop button, or LiveKit closing the room — and a
-    /// second StopEgress would only be refused. Enum name or ordinal, as EgressReconciliationService.
-    /// </summary>
-    public static bool IsEgressCapturing(JsonElement egressInfo) => EgressStatuses.IsCapturing(egressInfo);
 
     /// <summary>A configured grace in seconds, clamped to [<see cref="MinGrace"/>, <see cref="MaxGrace"/>].</summary>
     public static TimeSpan GraceFromSeconds(string? configured)

@@ -88,7 +88,9 @@ public sealed class EgressReconciliationService : IEgressReconciliation
                     continue;
                 }
 
-                if (!IsTerminal(info)) continue;
+                // COMPLETE/FAILED/ABORTED/LIMIT_REACHED. STARTING, ACTIVE, ENDING mean the recording
+                // is still happening and the room is right to say so.
+                if (!EgressStatuses.IsTerminal(info)) continue;
 
                 var outcome = await _egressCompletion.ApplyAsync(info, ct);
                 finished++;
@@ -128,11 +130,4 @@ public sealed class EgressReconciliationService : IEgressReconciliation
         if (finished > 0) await _unitOfWork.SaveChangesAsync();
         return Result.Success(finished);
     }
-
-    /// <summary>
-    /// LiveKit's terminal EgressStatus values (COMPLETE, FAILED, ABORTED, LIMIT_REACHED). Anything
-    /// else — STARTING, ACTIVE, ENDING — means the recording is still happening and the room is
-    /// right to say so. Name or ordinal: see <see cref="EgressStatuses"/>.
-    /// </summary>
-    private static bool IsTerminal(JsonElement info) => EgressStatuses.IsTerminal(info);
 }

@@ -85,6 +85,8 @@ public sealed class BridgeRecordingEndTests
 
         _locks.Setup(l => l.TryAcquireAsync(It.IsAny<string>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(_marker.Object);
+        _rooms.Setup(r => r.MarkRecordingStopRequestedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
     }
 
     private MeetingRoomService CreateService() => new(
@@ -119,9 +121,19 @@ public sealed class BridgeRecordingEndTests
     private void SetEgressStatus(string status)
     {
         var info = JsonDocument.Parse($"{{\"egressId\":\"egress-1\",\"status\":\"{status}\"}}").RootElement.Clone();
-        _egress.Setup(e => e.GetEgressAsync("egress-1", It.IsAny<CancellationToken>()))
+        _egress.Setup(e => e.GetEgressStrictAsync("egress-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success<JsonElement?>(info));
     }
+
+    private static Result<JsonElement?> EgressInfo(string status) =>
+        Result.Success<JsonElement?>(JsonDocument.Parse($"{{\"egressId\":\"egress-1\",\"status\":\"{status}\"}}").RootElement.Clone());
+
+    private void RefuseStopEgress() =>
+        _egress.Setup(e => e.StopEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<bool>("failed_precondition", "LIVEKIT_EGRESS_STOP_FAILED"));
+
+    private void VerifyMarkerNeverTouchedByManualStop() =>
+        _locks.Verify(l => l.TryAcquireAsync(It.IsAny<string>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Never);
 
     /// <summary>What LiveKit lists in a bridge room nobody is in any more: the recorder and our bot.</summary>
     private static LiveKitRoomParticipant[] OnlyMachinery() =>
@@ -375,27 +387,63 @@ public sealed class BridgeRecordingEndTests
     [InlineData("EGRESS_ENDING")]
     [InlineData("EGRESS_COMPLETE")]
     [InlineData("EGRESS_ABORTED")]
-    public async Task ManualStop_AfterTheAutoStop_LiveKitRefuses_IsStillStopped(string status)
+    public async Task ManualStop_AfterTheAutoStop_LiveKitRefusesBecauseItIsEnding_IsStoppedNot500(string status)
     {
         SetCachedRoom(BridgeRoom());
-        _egress.Setup(e => e.StopEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result.Failure<bool>("failed_precondition", "LIVEKIT_EGRESS_STOP_FAILED"));
+        RefuseStopEgress();
         SetEgressStatus(status);
 
         var result = await CreateService().SetRecordingAsync(_translationRoomId, _hostId, "stop");
 
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.Recording);
+        // Whoever stopped it wrote the stop; this press writes nothing and only repeats the state.
+        _rooms.Verify(r => r.MarkRecordingStopRequestedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Single(_published, p => p.Channel == "warptalk:translation-room:commands");
+        VerifyMarkerNeverTouchedByManualStop();
     }
 
     [Fact]
-    public async Task ManualStop_WhileTheAutoStopHoldsTheMarker_IsStillStopped()
+    public async Task ManualStop_RefusedWhileTheAutoStopHoldsTheMarker_ButLiveKitStillCaptures_Is500()
+    {
+        // Holding the marker only means the auto-stop is TRYING; its StopEgress can fail too.
+        SetCachedRoom(BridgeRoom());
+        RefuseStopEgress();
+        SetEgressStatus("EGRESS_ACTIVE");
+        _locks.Setup(l => l.TryAcquireAsync(It.IsAny<string>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IDistributedLease?)null);
+
+        var result = await CreateService().SetRecordingAsync(_translationRoomId, _hostId, "stop");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InternalServerError, result.ErrorCode);
+        Assert.Empty(_published);
+        VerifyMarkerNeverTouchedByManualStop();
+    }
+
+    [Fact]
+    public async Task ManualStop_Refused_AndTheStatusLookupHitsAProxy404_IsNotReportedStopped()
+    {
+        // GetEgressStrictAsync turns a non-Twirp 404 into a failure; that must read as "still capturing".
+        SetCachedRoom(BridgeRoom());
+        RefuseStopEgress();
+        _egress.Setup(e => e.GetEgressStrictAsync("egress-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<JsonElement?>("LiveKit ListEgress failed: NotFound", "LIVEKIT_EGRESS_LIST_FAILED"));
+
+        var result = await CreateService().SetRecordingAsync(_translationRoomId, _hostId, "stop");
+
+        Assert.False(result.IsSuccess);
+        Assert.Empty(_published);
+        _egress.Verify(e => e.GetEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ManualStop_Refused_LiveKitGenuinelyNoLongerKnowsTheEgress_IsStopped()
     {
         SetCachedRoom(BridgeRoom());
-        _egress.Setup(e => e.StopEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result.Failure<bool>("failed_precondition", "LIVEKIT_EGRESS_STOP_FAILED"));
-        _locks.Setup(l => l.TryAcquireAsync(MeetingRoomService.BridgeRecordingEndMarkerResource("egress-1"), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((IDistributedLease?)null);
+        RefuseStopEgress();
+        _egress.Setup(e => e.GetEgressStrictAsync("egress-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<JsonElement?>(null));
 
         var result = await CreateService().SetRecordingAsync(_translationRoomId, _hostId, "stop");
 
@@ -403,18 +451,83 @@ public sealed class BridgeRecordingEndTests
     }
 
     [Fact]
-    public async Task ManualStop_RealLiveKitFailure_WhileStillCapturing_Is500_AndTheMarkerProbeIsReleased()
+    public async Task ManualStop_Refused_UnknownStatus_IsNotReportedStopped()
     {
         SetCachedRoom(BridgeRoom());
-        _egress.Setup(e => e.StopEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result.Failure<bool>("unavailable", "LIVEKIT_EGRESS_STOP_FAILED"));
+        RefuseStopEgress();
+        SetEgressStatus("EGRESS_SOMETHING_NEW");
 
         var result = await CreateService().SetRecordingAsync(_translationRoomId, _hostId, "stop");
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.InternalServerError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task AutoStop_RefusedBecauseSomebodyElseJustStoppedIt_IsIgnored_WithNoWriteOrBroadcast()
+    {
+        SetLiveKitParticipants(OnlyMachinery());
+        RefuseStopEgress();
+        // Capturing at the pre-check, ENDING by the time StopEgress is refused.
+        _egress.SetupSequence(e => e.GetEgressStrictAsync("egress-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(EgressInfo("EGRESS_ACTIVE"))
+            .ReturnsAsync(EgressInfo("EGRESS_ENDING"));
+
+        var check = await CreateService().StopRecordingIfBridgeEndedAsync(Departure(Now.AddMinutes(-5)), Now, Grace);
+
+        Assert.Equal(BridgeRecordingEndOutcome.Ignored, check.Outcome);
+        Assert.Equal("already stopping", check.Reason);
+        Assert.Empty(_published);
+        _rooms.Verify(r => r.MarkRecordingStopRequestedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AutoStop_RefusedWhileStillCapturing_IsFailed_AndTheMarkerIsGivenBack()
+    {
+        SetLiveKitParticipants(OnlyMachinery());
+        RefuseStopEgress();
+
+        var check = await CreateService().StopRecordingIfBridgeEndedAsync(Departure(Now.AddMinutes(-5)), Now, Grace);
+
+        Assert.Equal(BridgeRecordingEndOutcome.Failed, check.Outcome);
         _marker.Verify(m => m.DisposeAsync(), Times.Once);
         Assert.Empty(_published);
+    }
+
+    [Fact]
+    public async Task StopTimeWriteChangesNoRow_UpdatedAtIsNotPretendedWritten()
+    {
+        SetLiveKitParticipants(OnlyMachinery());
+        _rooms.Setup(r => r.MarkRecordingStopRequestedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+        var before = _room.UpdatedAt;
+
+        var check = await CreateService().StopRecordingIfBridgeEndedAsync(Departure(Now.AddMinutes(-5)), Now, Grace);
+
+        Assert.Equal(BridgeRecordingEndOutcome.Stopped, check.Outcome);
+        Assert.Equal(before, _room.UpdatedAt);
+        Assert.Single(_published);
+    }
+
+    [Fact]
+    public async Task StopTimeWriteCancelled_TheCancellationIsNotSwallowed()
+    {
+        SetLiveKitParticipants(OnlyMachinery());
+        _rooms.Setup(r => r.MarkRecordingStopRequestedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CreateService().StopRecordingIfBridgeEndedAsync(Departure(Now.AddMinutes(-5)), Now, Grace));
+    }
+
+    [Fact]
+    public async Task RoomEndedInAnotherCase_StillStopsAtOnce()
+    {
+        SetRoomDetails(BridgeRoom("ended"));
+        SetLiveKitParticipants(new LiveKitRoomParticipant(_hostId.ToString(), null, "ACTIVE"));
+
+        var check = await CreateService().StopRecordingIfBridgeEndedAsync(Departure(Now), Now, Grace);
+
+        Assert.Equal(BridgeRecordingEndOutcome.Stopped, check.Outcome);
     }
 
     // ── the policy ────────────────────────────────────────────────────────────
@@ -444,7 +557,7 @@ public sealed class BridgeRecordingEndTests
     [InlineData("{\"status\":\"EGRESS_COMPLETE\"}", false)]
     [InlineData("{\"status\":2}", false)]
     public void IsEgressCapturing(string json, bool expected) =>
-        Assert.Equal(expected, BridgeRecordingEndPolicy.IsEgressCapturing(JsonDocument.Parse(json).RootElement));
+        Assert.Equal(expected, EgressStatuses.IsCapturing(JsonDocument.Parse(json).RootElement));
 
     [Theory]
     [InlineData("{\"status\":\"EGRESS_COMPLETE\"}", true)]
@@ -452,6 +565,8 @@ public sealed class BridgeRecordingEndTests
     [InlineData("{\"status\":6}", true)]
     [InlineData("{\"status\":\"EGRESS_ENDING\"}", false)]
     [InlineData("{\"status\":\"SOMETHING_NEW\"}", false)]
+    [InlineData("{\"status\":7}", false)]   // unknown ordinal: not terminal, like an unknown name
+    [InlineData("{\"status\":-1}", false)]
     [InlineData("{}", false)]
     public void EgressStatuses_IsTerminal_MatchesTheReconciliationRule(string json, bool expected) =>
         Assert.Equal(expected, EgressStatuses.IsTerminal(JsonDocument.Parse(json).RootElement));
@@ -463,7 +578,7 @@ public sealed class BridgeRecordingEndTests
     [InlineData("EXPIRED", true)]
     [InlineData("IN_PROGRESS", false)]
     [InlineData("WAITING", false)]
-    [InlineData("ended", false)] // exact, as the join and bridge-token gates always compared
+    [InlineData("ended", true)] // case-insensitive; translation-room only stores upper case
     [InlineData(null, false)]
     public void TranslationRoomStatuses_IsEnded(string? status, bool expected) =>
         Assert.Equal(expected, TranslationRoomStatuses.IsEnded(status));
@@ -551,6 +666,34 @@ public sealed class BridgeRecordingEndTests
 
         Assert.False(result.IsSuccess);
         watcher.Verify(w => w.NotifyParticipantLeft(It.IsAny<BridgeRecordingEndRequest>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ADepartureWhoseSaveFailed_IsNotHandedOverWithTheNextEvent()
+    {
+        var watcher = new Mock<IBridgeRecordingEndWatcher>();
+        var sut = CreateWebhookService(watcher.Object);
+        _unitOfWork.SetupSequence(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("db down"))
+            .ReturnsAsync(1);
+
+        Assert.False((await sut.ProcessWebhookAsync(Left("room-1", "user-42", null))).IsSuccess);
+        var next = JsonDocument.Parse("""{"event":"egress_updated"}""").RootElement.Clone();
+        Assert.True((await sut.ProcessWebhookAsync(next)).IsSuccess);
+
+        watcher.Verify(w => w.NotifyParticipantLeft(It.IsAny<BridgeRecordingEndRequest>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ADepartureIsHandedOverOnce_NotAgainWithTheNextEvent()
+    {
+        var watcher = new Mock<IBridgeRecordingEndWatcher>();
+        var sut = CreateWebhookService(watcher.Object);
+
+        await sut.ProcessWebhookAsync(Left("room-1", "user-42", null));
+        await sut.ProcessWebhookAsync(JsonDocument.Parse("""{"event":"egress_updated"}""").RootElement.Clone());
+
+        watcher.Verify(w => w.NotifyParticipantLeft(It.IsAny<BridgeRecordingEndRequest>()), Times.Once);
     }
 
     private MeetingWebhookService CreateWebhookService(IBridgeRecordingEndWatcher watcher)

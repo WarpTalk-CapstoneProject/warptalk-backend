@@ -1298,11 +1298,21 @@ public class MeetingRoomService : IMeetingRoomService
             if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
                 return Result.Failure<RecordingStateDto>("No recording is currently in progress.", ErrorCodes.InvalidState);
 
-            // tolerateAutoStopMarker: a press that lands while (or just after) the bridge auto-stop
-            // stopped this egress is answered "stopped", not 500 — see StopActiveRecordingAsync.
-            var stopped = await StopActiveRecordingAsync(translationRoomId, meetingRoom, tolerateAutoStopMarker: true);
+            var stopped = await StopActiveRecordingAsync(translationRoomId, meetingRoom);
             if (!stopped.IsSuccess)
                 return Result.Failure<RecordingStateDto>(stopped.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
+
+            if (stopped.Value == RecordingStopOutcome.AlreadyStopping)
+            {
+                // LiveKit refused because the egress is ALREADY ending or over (the bridge auto-stop,
+                // an egress limit, LiveKit closing the room got there first): what the person asked
+                // for holds, so it is not a 500. Nothing is written — whoever stopped it did that.
+                // RecordingStateChanged is sent again, best effort: whether a broadcast for this
+                // egress already went out is not known here, and a repeated "recording: false" is
+                // only a repeated state, whereas a missing one leaves every other window saying
+                // "recording".
+                await TryPublishRecordingStoppedAsync(translationRoomId, meetingRoom.ActiveEgressId!);
+            }
 
             // Reported as stopped regardless: capture HAS ended, which is what the person who
             // pressed the button asked about. The retained id is bookkeeping they have no use for
@@ -1313,22 +1323,38 @@ public class MeetingRoomService : IMeetingRoomService
         return Result.Failure<RecordingStateDto>("Action must be 'start' or 'stop'.", ErrorCodes.ValidationError);
     }
 
+    /// <summary>What <see cref="StopActiveRecordingAsync"/> did.</summary>
+    private enum RecordingStopOutcome
+    {
+        /// <summary>This call stopped the egress, and wrote and broadcast the stop.</summary>
+        Stopped,
+
+        /// <summary>
+        /// LiveKit refused because the egress is already ENDING or over (or LiveKit itself — a Twirp
+        /// not_found — no longer knows it). This call stopped nothing and wrote/broadcast nothing.
+        /// </summary>
+        AlreadyStopping,
+    }
+
     /// <summary>
     /// The ONE way a running recording is stopped — the Stop button (SetRecordingAsync "stop") and
     /// the end of a bridge session (<see cref="StopRecordingIfBridgeEndedAsync"/>) both come here,
     /// so finalization (egress_ended → EgressCompletion → recording artifact, billing) cannot tell
-    /// them apart and cannot drift.
+    /// them apart and cannot drift. Each caller decides what an AlreadyStopping answer means for it.
     /// </summary>
-    private async Task<Result> StopActiveRecordingAsync(
+    private async Task<Result<RecordingStopOutcome>> StopActiveRecordingAsync(
         Guid translationRoomId,
         MeetingRoom meetingRoom,
-        CancellationToken ct = default,
-        bool tolerateAutoStopMarker = false)
+        CancellationToken ct = default)
     {
         var egressId = meetingRoom.ActiveEgressId!;
         var stopResult = await _egressService.StopEgressAsync(egressId, ct);
-        if (!stopResult.IsSuccess && !await IsAlreadyStoppedAsync(egressId, tolerateAutoStopMarker, ct))
-            return Result.Failure(stopResult.Error ?? "Failed to stop recording.", stopResult.ErrorCode);
+        if (!stopResult.IsSuccess)
+        {
+            return await IsAlreadyStoppingAsync(egressId, ct)
+                ? Result.Success(RecordingStopOutcome.AlreadyStopping)
+                : Result.Failure<RecordingStopOutcome>(stopResult.Error ?? "Failed to stop recording.", stopResult.ErrorCode);
+        }
 
         // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
         // THAT HAS NOT LANDED YET.
@@ -1374,19 +1400,39 @@ public class MeetingRoomService : IMeetingRoomService
         // 500 (or throwing out of the worker) would tell the host the recording is still running
         // when it is not, and they would press Stop into "no recording". A failed write costs only
         // the sweep's grace origin; a failed broadcast only a stale indicator until the next join.
+        // A cancellation is not swallowed: it is the host shutting down, not a failed write.
         var now = DateTime.UtcNow;
-        meetingRoom.UpdatedAt = now;
         try
         {
-            await _unitOfWork.MeetingRoomRepository.MarkRecordingStopRequestedAsync(meetingRoom.Id, egressId, now, ct);
+            var written = await _unitOfWork.MeetingRoomRepository.MarkRecordingStopRequestedAsync(meetingRoom.Id, egressId, now, ct);
+            if (written > 0)
+            {
+                meetingRoom.UpdatedAt = now;
+            }
+            else
+            {
+                // The room no longer holds this egress: its completion (webhook or sweep) already
+                // landed and cleared it. Nothing is owed any more, so there is no grace origin to move.
+                _logger.LogInformation(
+                    "Recording {EgressId} of room {RoomId} was stopped, but the room no longer holds it (already completed); stop time not written.",
+                    egressId, translationRoomId);
+            }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex,
                 "Recording {EgressId} of room {RoomId} was stopped, but its stop time could not be saved.",
                 egressId, translationRoomId);
         }
 
+        await TryPublishRecordingStoppedAsync(translationRoomId, egressId);
+
+        return Result.Success(RecordingStopOutcome.Stopped);
+    }
+
+    /// <summary>RecordingStateChanged { Recording = false }, best effort: logged, never thrown.</summary>
+    private async Task TryPublishRecordingStoppedAsync(Guid translationRoomId, string egressId)
+    {
         try
         {
             var published = await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
@@ -1397,45 +1443,42 @@ public class MeetingRoomService : IMeetingRoomService
                     egressId, translationRoomId, published.Error);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex,
                 "Recording {EgressId} of room {RoomId} was stopped, but RecordingStateChanged could not be published.",
                 egressId, translationRoomId);
         }
-
-        return Result.Success();
     }
 
     /// <summary>
-    /// After LiveKit refused StopEgress: is the recording in fact already stopped? True when LiveKit
-    /// reports the egress ENDING or finished (or no longer knows it) — the bridge auto-stop, or
-    /// LiveKit closing the room, got there first — or, for a manual press, when the auto-stop marker
-    /// for this egress is held: the auto-stop is stopping it right now. Anything else is a real
-    /// failure and the recording is assumed to be running.
+    /// After LiveKit refused StopEgress: is the egress already ending or over? Only on LiveKit's own
+    /// word — its record says ENDING/COMPLETE/FAILED/ABORTED/LIMIT_REACHED, or a genuine Twirp
+    /// not_found (GetEgressStrictAsync; a proxy's 404 is a failure there). Everything else — a failed
+    /// lookup, a status still STARTING/ACTIVE, a status this code does not know — is "no": the
+    /// recording must never be reported stopped while LiveKit may still be capturing.
+    ///
+    /// Deliberately NOT "the auto-stop marker is held": that only means the auto-stop is trying, and
+    /// its own StopEgress can fail. And nothing here touches the marker: only the auto-stop takes it.
     /// </summary>
-    private async Task<bool> IsAlreadyStoppedAsync(string egressId, bool checkAutoStopMarker, CancellationToken ct)
+    private async Task<bool> IsAlreadyStoppingAsync(string egressId, CancellationToken ct)
     {
         try
         {
-            var egress = await _egressService.GetEgressAsync(egressId, ct);
-            if (egress.IsSuccess && (egress.Value is not { } info || !EgressStatuses.IsCapturing(info)))
+            var egress = await _egressService.GetEgressStrictAsync(egressId, ct);
+            if (!egress.IsSuccess)
+                return false;
+
+            if (egress.Value is not { } info)
             {
-                _logger.LogInformation("StopEgress for {EgressId} was refused because it is already stopped; treating it as stopped.", egressId);
+                _logger.LogInformation("StopEgress for {EgressId} was refused and LiveKit no longer knows it; treating it as already stopped.", egressId);
                 return true;
             }
 
-            if (checkAutoStopMarker && _locks is not null)
+            if (EgressStatuses.IsEndingOrOver(info))
             {
-                var probe = await _locks.TryAcquireAsync(BridgeRecordingEndMarkerResource(egressId), TimeSpan.FromSeconds(5), ct);
-                if (probe is null)
-                {
-                    _logger.LogInformation("StopEgress for {EgressId} was refused while the bridge auto-stop holds it; treating it as stopped.", egressId);
-                    return true;
-                }
-
-                // Nobody holds it: we only looked. Give it straight back.
-                await probe.DisposeAsync();
+                _logger.LogInformation("StopEgress for {EgressId} was refused because it is already ending or over; treating it as already stopped.", egressId);
+                return true;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1501,7 +1544,7 @@ public class MeetingRoomService : IMeetingRoomService
         if (!ExternalBridgeConstants.IsBridgeRoomType(details.Value.TranslationRoomType))
             return BridgeRecordingEndCheck.Ignored("not a bridge room");
 
-        var roomEnded = BridgeRecordingEndPolicy.IsEndedRoomStatus(details.Value.Status);
+        var roomEnded = TranslationRoomStatuses.IsEnded(details.Value.Status);
         if (!roomEnded)
         {
             var listed = await _roomAdminService.ListParticipantsAsync(meetingRoom.ProviderRoomName, ct);
@@ -1536,12 +1579,12 @@ public class MeetingRoomService : IMeetingRoomService
         // Already stopping (the Stop button, or LiveKit closing the room)? A second StopEgress would
         // only be refused, and a second RecordingStateChanged would toast everyone again. A failed
         // lookup is not a reason to keep recording an ended session: try the stop anyway.
-        var egress = await _egressService.GetEgressAsync(request.EgressId, ct);
+        var egress = await _egressService.GetEgressStrictAsync(request.EgressId, ct);
         if (egress.IsSuccess)
         {
             if (egress.Value is not { } info)
                 return BridgeRecordingEndCheck.Ignored("LiveKit does not know this egress");
-            if (!BridgeRecordingEndPolicy.IsEgressCapturing(info))
+            if (!EgressStatuses.IsCapturing(info))
                 return BridgeRecordingEndCheck.Ignored("egress is already ending");
         }
 
@@ -1567,6 +1610,18 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         var stopped = await StopActiveRecordingAsync(meetingRoom.TranslationRoomId, meetingRoom, ct);
+        if (stopped.IsSuccess && stopped.Value == RecordingStopOutcome.AlreadyStopping)
+        {
+            // Somebody else stopped it between the status check above and our StopEgress (the Stop
+            // button, LiveKit closing the room). We did not stop it, so we claim nothing: no write,
+            // no second RecordingStateChanged, no "Stopped" in the log. The marker stays — there is
+            // nothing left to retry.
+            _logger.LogInformation(
+                "Recording {EgressId} of bridge room {RoomId} was already stopping when the bridge session ended.",
+                request.EgressId, meetingRoom.TranslationRoomId);
+            return BridgeRecordingEndCheck.Ignored("already stopping");
+        }
+
         if (!stopped.IsSuccess)
         {
             // Give the marker back so the next departure (or the next grace check) can try again.

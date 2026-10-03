@@ -20,8 +20,9 @@ public static class EgressStatuses
     ];
 
     /// <summary>
-    /// The status ordinal. A missing status is 0 (STARTING) — proto3 omits the zero value. A name
-    /// or value kind this code does not know is -1, which is neither capturing nor terminal.
+    /// The status ordinal. A missing status is 0 (STARTING) — proto3 omits the zero value. Anything
+    /// this code does not know — an unknown name, an ordinal outside 0..6, another value kind — is
+    /// -1, which is neither capturing nor terminal, the same for both spellings.
     /// </summary>
     public static int Ordinal(JsonElement egressInfo)
     {
@@ -30,16 +31,27 @@ public static class EgressStatuses
 
         if (status.ValueKind == JsonValueKind.String)
         {
-            var index = Array.FindIndex(Names, name => string.Equals(name, status.GetString(), StringComparison.OrdinalIgnoreCase));
-            return index;
+            var name = status.GetString();
+            return Array.FindIndex(Names, known => string.Equals(known, name, StringComparison.OrdinalIgnoreCase));
         }
 
-        return status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var ordinal) ? ordinal : -1;
+        return status.ValueKind == JsonValueKind.Number
+            && status.TryGetInt32(out var ordinal)
+            && ordinal >= 0
+            && ordinal < Names.Length
+                ? ordinal
+                : -1;
     }
 
-    /// <summary>COMPLETE, FAILED, ABORTED, LIMIT_REACHED (or any later ordinal): the egress is over.</summary>
+    /// <summary>COMPLETE, FAILED, ABORTED, LIMIT_REACHED: the egress is over.</summary>
     public static bool IsTerminal(JsonElement egressInfo) => Ordinal(egressInfo) >= 3;
 
     /// <summary>STARTING or ACTIVE: still capturing. ENDING means somebody already stopped it.</summary>
     public static bool IsCapturing(JsonElement egressInfo) => Ordinal(egressInfo) is 0 or 1;
+
+    /// <summary>
+    /// ENDING or terminal: somebody already stopped it, or it is over. An unknown status is neither
+    /// this nor capturing — a caller that must not report a running recording stopped reads it as "no".
+    /// </summary>
+    public static bool IsEndingOrOver(JsonElement egressInfo) => Ordinal(egressInfo) >= 2;
 }

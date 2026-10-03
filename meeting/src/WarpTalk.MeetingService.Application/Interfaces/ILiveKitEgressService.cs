@@ -35,4 +35,14 @@ public interface ILiveKitEgressService
     /// The element is detached from its document, so it stays valid after this returns.
     /// </summary>
     Task<Result<JsonElement?>> GetEgressAsync(string egressId, CancellationToken ct = default);
+
+    /// <summary>
+    /// <see cref="GetEgressAsync"/> with a STRICT "not known": success-with-null only when LiveKit
+    /// itself answers not_found (a 404 carrying a Twirp <c>not_found</c> body) or an empty list. Any
+    /// other 404 — a proxy page, a wrong route — is a failure. For decisions where "unknown" would
+    /// mean "already stopped": a recording must never be reported stopped while LiveKit still
+    /// captures. (GetEgressAsync stays lenient for the reconciliation sweep, which only acts on
+    /// "unknown" after an hour.)
+    /// </summary>
+    Task<Result<JsonElement?>> GetEgressStrictAsync(string egressId, CancellationToken ct = default);
 }

@@ -165,27 +165,6 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
         }
     }
 
-    /// <summary>
-    /// Whether a Twirp error body carries <c>"code": "not_found"</c>. Only that, with a 404, means
-    /// "LiveKit has no such room". A 404 from anything else — a proxy, a wrong path, a misrouted
-    /// host — is a failure: read as an empty room it would stop a running recording.
-    /// </summary>
-    public static bool IsTwirpNotFound(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body)) return false;
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                && ReadString(document.RootElement, "code") is { } code
-                && string.Equals(code, "not_found", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
     private static readonly string[] ParticipantKinds = ["STANDARD", "INGRESS", "EGRESS", "SIP", "AGENT"];
     private static readonly string[] ParticipantStates = ["JOINING", "JOINED", "ACTIVE", "DISCONNECTED"];
 
@@ -249,7 +228,7 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             var body = await response.Content.ReadAsStringAsync(ct);
             if (response.IsSuccessStatusCode)
                 return Result.Success(body);
-            if (notFoundIsEmpty && response.StatusCode == HttpStatusCode.NotFound && IsTwirpNotFound(body))
+            if (notFoundIsEmpty && LiveKitTwirpErrors.IsNotFound(response.StatusCode, body))
                 return Result.Success(string.Empty);
 
             _logger.LogError(
