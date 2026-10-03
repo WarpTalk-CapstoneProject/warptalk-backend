@@ -16,6 +16,13 @@ public sealed class StripeSdkClient : IStripeSdkClient
     private readonly ChargeService _chargeService = new();
     private readonly InvoicePaymentService _invoicePaymentService = new();
     private readonly Stripe.BillingPortal.SessionService _billingPortalSessionService = new();
+    private readonly TaxRateService _taxRateService = new();
+
+    public Task<StripeList<TaxRate>> ListTaxRatesAsync(TaxRateListOptions options, CancellationToken cancellationToken = default)
+        => _taxRateService.ListAsync(options, cancellationToken: cancellationToken);
+
+    public Task<TaxRate> CreateTaxRateAsync(TaxRateCreateOptions options, CancellationToken cancellationToken = default)
+        => _taxRateService.CreateAsync(options, cancellationToken: cancellationToken);
 
     public Task<StripeList<Price>> ListPricesAsync(PriceListOptions options, CancellationToken cancellationToken = default)
         => _priceService.ListAsync(options, cancellationToken: cancellationToken);

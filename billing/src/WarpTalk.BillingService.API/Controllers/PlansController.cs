@@ -33,6 +33,26 @@ public class PlansController : ControllerBase
     }
 
     /// <summary>
+    /// The VAT the pricing pages print next to a price (3 Oct 2026): prices are stored without VAT
+    /// and <see cref="WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.VatPercent"/> is
+    /// added on top at Stripe checkout. Served here, beside the plan list it qualifies and with the
+    /// same anonymous access, so the homepage, the buyer's plan cards and the admin editor print the
+    /// number checkout will actually charge rather than a copy of it.
+    ///
+    /// Placed above `{id}` so ASP.NET does not try to bind "tax" as a Guid.
+    /// </summary>
+    [HttpGet("tax")]
+    public async Task<ActionResult<PlanTaxDto>> GetTax(CancellationToken cancellationToken)
+    {
+        var settings = HttpContext.RequestServices.GetService(typeof(WarpTalk.Shared.PlatformSettings.IPlatformSettings))
+            as WarpTalk.Shared.PlatformSettings.IPlatformSettings;
+        var percent = settings is null
+            ? 10m
+            : await settings.GetDecimalAsync(WarpTalk.Shared.PlatformSettings.PlatformSettingsCatalog.VatPercent, ct: cancellationToken);
+        return Ok(new PlanTaxDto(percent, PricesIncludeVat: false));
+    }
+
+    /// <summary>
     /// BR-74 — the administrator's list, deactivated plans included.
     ///
     /// A separate route rather than a `?includeInactive=true` on the one above, deliberately: a

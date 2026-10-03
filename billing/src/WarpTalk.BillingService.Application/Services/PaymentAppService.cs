@@ -382,7 +382,9 @@ public class PaymentAppService : IPaymentAppService
         if (session.PaymentStatus == PaymentConstants.Payments.StatusPaid)
         {
             bool isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
-            decimal finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
+            // Net of VAT, as the webhook reads it: both paths process the same session and must agree.
+            decimal taxAmount = isZeroDecimal ? (session.AmountTax ?? 0) : ((session.AmountTax ?? 0) / 100m);
+            decimal finalAmount = (isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m)) - taxAmount;
 
             var processResult = await ProcessPaymentEventAsync(new StripePaymentEventRequest(
                 StripeSessionId: session.Id,
@@ -404,7 +406,8 @@ public class PaymentAppService : IPaymentAppService
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var sessionCredits) ? sessionCredits : 0,
                 StripeSubscriptionId: session.SubscriptionId ?? string.Empty,
-                StripeCustomerId: session.CustomerId ?? string.Empty
+                StripeCustomerId: session.CustomerId ?? string.Empty,
+                TaxAmount: taxAmount
             ).WithCatalogMetadata(session.Metadata));
             
             if (!processResult.IsSuccess)
@@ -752,7 +755,8 @@ public class PaymentAppService : IPaymentAppService
                 Currency: context.Request.Currency,
                 ProviderTransactionId: context.ProviderTransactionId,
                 Status: context.ParsedPaymentStatus,
-                FailureReason: context.Request.FailureReason));
+                FailureReason: context.Request.FailureReason,
+                TaxAmount: context.Request.TaxAmount));
 
             payment.Id = context.PaymentId;
             await _unitOfWork.PaymentRepository.AddAsync(payment);
@@ -765,6 +769,13 @@ public class PaymentAppService : IPaymentAppService
         if (context.ParsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
         {
             context.ExistingPayment.PaidAt ??= DateTime.UtcNow;
+            // A row opened before the buyer reached Stripe knew the net price only; the VAT is
+            // known once Stripe has charged it.
+            if (context.Request.TaxAmount > 0)
+            {
+                context.ExistingPayment.TaxAmount = context.Request.TaxAmount;
+                context.ExistingPayment.TotalAmount = context.ExistingPayment.Amount + context.Request.TaxAmount;
+            }
         }
         context.ExistingPayment.UpdatedAt = DateTime.UtcNow;
     }
@@ -794,7 +805,8 @@ public class PaymentAppService : IPaymentAppService
             UserId: context.UserId,
             Amount: context.Request.Amount,
             Currency: context.Request.Currency,
-            PdfUrl: context.Request.InvoicePdf));
+            PdfUrl: context.Request.InvoicePdf,
+            TaxAmount: context.Request.TaxAmount));
 
         await _unitOfWork.InvoiceRepository.AddAsync(invoice);
     }

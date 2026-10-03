@@ -95,7 +95,9 @@ public class StripeWebhookService : IStripeWebhookService
             {
                 if (stripeEvent.Data.Object is Session session)
                 {
-                    var finalAmount = NormalizeStripeAmount(session.AmountTotal ?? 0, session.Currency);
+                    // Net of VAT: what the price checks and revenue compare against. See TaxAmount.
+                    var taxAmount = NormalizeStripeAmount(session.TotalDetails?.AmountTax ?? 0, session.Currency);
+                    var finalAmount = NormalizeStripeAmount(session.AmountTotal ?? 0, session.Currency) - taxAmount;
 
                     var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                          StripeSessionId: session.Id,
@@ -115,7 +117,8 @@ public class StripeWebhookService : IStripeWebhookService
                         // G11: an add-on checkout creates its own Stripe subscription.
                         // #466: so does a plan checkout with auto-renew on; the row is linked to it.
                         StripeSubscriptionId: session.SubscriptionId ?? string.Empty,
-                        StripeCustomerId: session.CustomerId ?? string.Empty
+                        StripeCustomerId: session.CustomerId ?? string.Empty,
+                        TaxAmount: taxAmount
                     ).WithCatalogMetadata(session.Metadata));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -319,7 +322,8 @@ public class StripeWebhookService : IStripeWebhookService
                 subscription, PaymentConstants.PaymentTypes.AddOnRenewal, PaymentConstants.PaymentStatuses.Paid) with
             {
                 PaymentIntentId = invoice.Id,
-                Amount = NormalizeStripeAmount(paid ? invoice.AmountPaid : invoice.AmountDue, invoice.Currency),
+                Amount = NormalizeStripeAmount(paid ? invoice.AmountPaid : invoice.AmountDue, invoice.Currency) - InvoiceTax(invoice),
+                TaxAmount = InvoiceTax(invoice),
                 Currency = invoice.Currency,
                 InvoiceUrl = invoice.HostedInvoiceUrl,
                 InvoicePdf = invoice.InvoicePdf,
@@ -339,7 +343,7 @@ public class StripeWebhookService : IStripeWebhookService
         return await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
             StripeSessionId: string.Empty,
             PaymentIntentId: invoice.Id,
-            Amount: NormalizeStripeAmount(paid ? invoice.AmountPaid : invoice.AmountDue, invoice.Currency),
+            Amount: NormalizeStripeAmount(paid ? invoice.AmountPaid : invoice.AmountDue, invoice.Currency) - InvoiceTax(invoice),
             Currency: invoice.Currency,
             UserIdStr: Meta(PaymentConstants.StripeMetadata.UserId),
             WorkspaceIdStr: Meta(PaymentConstants.StripeMetadata.WorkspaceId),
@@ -355,8 +359,17 @@ public class StripeWebhookService : IStripeWebhookService
             StripeSubscriptionId: subscriptionId,
             PeriodEnd: line?.Period?.End,
             StripeCustomerId: invoice.CustomerId ?? string.Empty,
-            PeriodStart: line?.Period?.Start));
+            PeriodStart: line?.Period?.Start,
+            TaxAmount: InvoiceTax(invoice)));
     }
+
+    /// <summary>
+    /// The VAT on a renewal invoice. The checkout put the exclusive tax rate on the subscription,
+    /// so Stripe adds it to every renewal by itself; this reads it back so the payment row records
+    /// the net amount and the tax apart, exactly as the first payment did.
+    /// </summary>
+    private static decimal InvoiceTax(Invoice invoice) =>
+        NormalizeStripeAmount(invoice.TotalTaxes?.Sum(tax => tax.Amount) ?? 0, invoice.Currency);
 
     /// <summary>#466: customer.subscription.updated / .deleted for a plan subscription.</summary>
     private async Task<Result> ApplySubscriptionChangeAsync(Stripe.Subscription subscription, bool deleted, CancellationToken cancellationToken)
