@@ -30,14 +30,45 @@ public class MeetingChatService : IMeetingChatService
     private readonly IRedisService _redisService;
     private readonly IChatTranslator _chatTranslator;
     private readonly IMeetingChatFileStorage _fileStorage;
+    private readonly ITranslationRoomGrpcService _translationRoomGrpc;
 
-    public MeetingChatService(IUnitOfWork unitOfWork, IMeetingChatNotifier chatNotifier, IRedisService redisService, IChatTranslator chatTranslator, IMeetingChatFileStorage fileStorage)
+    public MeetingChatService(IUnitOfWork unitOfWork, IMeetingChatNotifier chatNotifier, IRedisService redisService, IChatTranslator chatTranslator, IMeetingChatFileStorage fileStorage, ITranslationRoomGrpcService translationRoomGrpc)
     {
         _unitOfWork = unitOfWork;
         _chatNotifier = chatNotifier;
         _redisService = redisService;
         _chatTranslator = chatTranslator;
         _fileStorage = fileStorage;
+        _translationRoomGrpc = translationRoomGrpc;
+    }
+
+    /// <summary>
+    /// The workspace a meeting room belongs to, for stamping a chat message and the WarpBot
+    /// request it may raise.
+    /// </summary>
+    /// <remarks>
+    /// This read `meeting:room:{id}` — the projection's name before WT-428 moved every writer to
+    /// <c>meeting:room:v2:{id}</c>. Nothing has written the old key since, so from 17 Aug 2026
+    /// every meeting-chat message and every @WarpBot request carried <see cref="Guid.Empty"/>:
+    /// the assistant asked workspace-service for workspace 0000… (404), found no documents, no
+    /// meeting history and no MCP plugins, and told the room its tools were broken. Nothing
+    /// errored — an empty Guid is a perfectly valid value to persist.
+    ///
+    /// The cache is the fast path; translation-room is the authority when the projection is
+    /// missing (evicted, expired, or a room nobody has joined through this service yet).
+    /// </remarks>
+    private async Task<Guid> ResolveWorkspaceIdAsync(Guid translationRoomId)
+    {
+        var cachedRoom = await _redisService.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(
+            $"meeting:room:v2:{translationRoomId}");
+        if (cachedRoom?.Value != null && Guid.TryParse(cachedRoom.Value.WorkspaceId, out var cachedId) && cachedId != Guid.Empty)
+            return cachedId;
+
+        var details = await _translationRoomGrpc.GetRoomDetailsAsync(translationRoomId);
+        if (details.IsSuccess && details.Value != null && Guid.TryParse(details.Value.WorkspaceId, out var roomId))
+            return roomId;
+
+        return Guid.Empty;
     }
 
     public async Task<Result<IEnumerable<MeetingChatMessageDto>>> GetRoomMessagesAsync(Guid roomId, Guid userId, CancellationToken ct = default)
@@ -106,12 +137,7 @@ public class MeetingChatService : IMeetingChatService
         if (room.CreatedBy != userId && !isActiveParticipant)
             return Result.Failure<MeetingChatMessageDto>("Not an active participant.", "FORBIDDEN");
 
-        // Resolve WorkspaceId from Redis cache populated by MeetingRoomService on join.
-        var workspaceId = Guid.Empty;
-        var roomCacheKey = $"meeting:room:{roomId}";
-        var cachedRoom = await _redisService.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
-        if (cachedRoom.Value != null && Guid.TryParse(cachedRoom.Value.WorkspaceId, out var wsId))
-            workspaceId = wsId;
+        var workspaceId = await ResolveWorkspaceIdAsync(roomId);
 
         var message = request.ToEntity(room.Id, workspaceId, userId, participant);
 
@@ -362,11 +388,7 @@ public class MeetingChatService : IMeetingChatService
         if (room.CreatedBy != userId && !isActiveParticipant)
             return Result.Failure<MeetingChatMessageDto>("Not an active participant.", "FORBIDDEN");
 
-        var workspaceId = Guid.Empty;
-        var roomCacheKey = $"meeting:room:{roomId}";
-        var cachedRoom = await _redisService.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
-        if (cachedRoom.Value != null && Guid.TryParse(cachedRoom.Value.WorkspaceId, out var wsId))
-            workspaceId = wsId;
+        var workspaceId = await ResolveWorkspaceIdAsync(roomId);
 
         var messageId = Guid.NewGuid();
         var storageKey = $"{room.Id}/{messageId}{extension}";
