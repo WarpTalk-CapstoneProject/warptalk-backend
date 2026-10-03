@@ -464,6 +464,26 @@ public class TranslationRoomHubTests
         Assert.Contains("\"listenLanguage\":\"en\"", payload);
     }
 
+    /// <summary>
+    /// WT-909 wave 2: a room that names two or more Meet-side languages runs the stand-in's STT
+    /// unpinned ("auto"). Changing the primary pick then moves only the dub into Meet.
+    /// </summary>
+    [Fact]
+    public async Task SetExternalMeetingLanguage_KeepsAnUnpinnedFarSideUnpinned_AndMovesOnlyTheDub()
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub(hostAuthority: BridgeHost(true));
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-bridge-host");
+        dbMock
+            .Setup(db => db.HashGetAsync((RedisKey)$"translationRoom:{roomId}:speak_languages", (RedisValue)StandInId, It.IsAny<CommandFlags>()))
+            .ReturnsAsync(new RedisValue("auto"));
+
+        await hub.SetExternalMeetingLanguage(roomId, "ja");
+
+        dbMock.Verify(db => db.HashSetAsync($"translationRoom:{roomId}:speak_languages", StandInId, It.IsAny<RedisValue>(), It.IsAny<When>(), It.IsAny<CommandFlags>()), Times.Never);
+        dbMock.Verify(db => db.HashSetAsync($"translationRoom:{roomId}:languages", StandInId, "ja", When.Always, CommandFlags.None), Times.Once);
+    }
+
     [Fact]
     public async Task SetExternalMeetingLanguage_IsRefused_ForAnyoneTheAuthorityRefuses_AndWritesNothing()
     {

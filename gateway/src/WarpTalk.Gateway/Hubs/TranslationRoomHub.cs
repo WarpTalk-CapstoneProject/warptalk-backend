@@ -733,7 +733,15 @@ public class TranslationRoomHub : Hub
         var groupName = TranslationRoomGroupName(translationRoomId);
 
         var db = _redis.GetDatabase();
-        await db.HashSetAsync($"translationRoom:{translationRoomId}:speak_languages", standInId, normalized);
+        // WT-909 wave 2: "auto" on the stand-in's speak language means the room names two or more
+        // languages for the Meet side (TranslationRoomService.FarSideSpeaksSeveralLanguages), so its
+        // STT runs unpinned. This pick then only moves the dub into Meet; pinning STT to it would
+        // garble everybody there who speaks the other language. A room's languages only grow, so
+        // nothing ever needs to pin it back.
+        var speakKey = $"translationRoom:{translationRoomId}:speak_languages";
+        var current = await db.HashGetAsync(speakKey, standInId);
+        if (!string.Equals(current.ToString(), "auto", StringComparison.OrdinalIgnoreCase))
+            await db.HashSetAsync(speakKey, standInId, normalized);
         await db.HashSetAsync($"translationRoom:{translationRoomId}:languages", standInId, normalized);
 
         await Clients.Group(groupName).SendAsync("ParticipantSpeakLanguageChanged", standInId, normalized);

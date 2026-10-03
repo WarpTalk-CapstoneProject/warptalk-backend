@@ -2567,13 +2567,78 @@ public partial class TranslationRoomService : ITranslationRoomService
                 return;
 
             var standInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
-            await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:speak_languages", standInId, normalized);
+            // Wave 2: the far side's STT is pinned only while the room names ONE language for it.
+            // The dub into Meet (`languages`) is always the stand-in's own language — one cable,
+            // one mix — whatever STT does.
+            var sttLanguage = FarSideSpeaksSeveralLanguages(room) ? UnpinnedSttLanguage : normalized;
+            await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:speak_languages", standInId, sttLanguage);
             await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:languages", standInId, normalized);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             _logger.LogWarning(ex,
                 "Failed to seed the external meeting's language for room {RoomId}; the far side runs unpinned until the host picks it.",
+                room.Id);
+        }
+    }
+
+    /// <summary>STT's free-run hint: what speak_languages holds for a speaker it must not pin.</summary>
+    private const string UnpinnedSttLanguage = "auto";
+
+    /// <summary>
+    /// WT-909 wave 2: does this bridge room say the Meet side speaks more than one language?
+    ///
+    /// The room's declared languages other than the host's are the languages of everybody else in
+    /// the call, and in a bridge room everybody else IS the far side. One of them: the stand-in's
+    /// STT is pinned to it, as since wave 1. Two or more — a host on English with a Vietnamese and a
+    /// Japanese speaker in Meet — and pinning to either one garbles the other; worse, STT drops a
+    /// line whose language the room never declared. So the stand-in runs unpinned ("auto"): the
+    /// pipeline then labels each line from its own script (kana/kanji, Vietnamese diacritics) and,
+    /// with no declaration, learns no latch (stt_worker `_learn_language_evidence` returns early).
+    /// No AI change: "auto" is the value an unregistered speaker already has.
+    /// </summary>
+    public static bool FarSideSpeaksSeveralLanguages(TranslationRoom room)
+    {
+        var host = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
+        return LanguageHelper.ParseTargetLanguages(room.TargetLanguages)
+            .Select(LanguageHelper.NormalizeLanguageCode)
+            .Where(language => language.Length > 0 && language != UnpinnedSttLanguage && language != host)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count() >= 2;
+    }
+
+    /// <summary>
+    /// WT-909 wave 2: after a language was added to a bridge room, unpin the far side's STT once the
+    /// room names two or more languages for it, and republish the route snapshot so STT's
+    /// allow-list (`room_languages` on it) holds the new language before its first line.
+    ///
+    /// Overwrites rather than HSETNX: the pin was set for one language and is wrong now. Never pins
+    /// back — a room's languages only grow. Best-effort, like the seed.
+    /// </summary>
+    private async Task UnpinExternalMeetingSttIfSeveralAsync(TranslationRoom room, Guid hostId, CancellationToken ct)
+    {
+        if (_redisStateRepository is null || !TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            return;
+
+        try
+        {
+            if (FarSideSpeaksSeveralLanguages(room))
+            {
+                var standInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+                await _redisStateRepository.HashSetAsync(
+                    $"translationRoom:{room.Id}:speak_languages",
+                    new Dictionary<string, string> { [standInId] = UnpinnedSttLanguage });
+            }
+
+            // Republishing IS the refresh (see RefreshDubVoiceAsync): the payload re-reads the
+            // room's languages. Without it STT keeps the old allow-list and deletes the new
+            // language's lines until some other change rebuilds the routes.
+            await _audioRouteService.RefreshDubVoiceAsync(room.Id, hostId, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex,
+                "Failed to unpin the external meeting's STT after a language was added to room {RoomId}.",
                 room.Id);
         }
     }
@@ -3429,6 +3494,7 @@ public partial class TranslationRoomService : ITranslationRoomService
             // that never reaches Redis is a language the room accepts and then does not translate.
             await PublishRoomTargetLanguagesAsync(translationRoom, ct, liveTargets);
             await PublishRoomLanguagesChangedAsync(translationRoom, ct);
+            await UnpinExternalMeetingSttIfSeveralAsync(translationRoom, hostId, ct);
 
             _logger.LogInformation(
                 "room_language_added: RoomId={RoomId} HostId={HostId} Language={Language}",
