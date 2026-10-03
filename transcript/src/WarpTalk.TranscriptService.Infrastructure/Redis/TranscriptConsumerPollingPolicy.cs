@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
 using WarpTalk.Shared;
+using WarpTalk.TranscriptService.Domain;
+using WarpTalk.TranscriptService.Domain.Entities;
 
 namespace WarpTalk.TranscriptService.Infrastructure.Redis;
 
@@ -10,7 +12,8 @@ public enum TranscriptResultStreamKind
     Stt,
     Translation,
     Tts,
-    CleanSentence
+    CleanSentence,
+    FarSpeakerLate
 }
 
 /// <summary>
@@ -28,6 +31,44 @@ public sealed record CleanSentenceMessage(
     string[] Flags,
     string Source,
     DateTime? ProducedAt);
+
+/// <summary>
+/// One late far-side name as it arrives on <c>stt:far_speaker_late</c> (see
+/// <see cref="FarSpeakerNames.LateNameStream"/>), parsed but not yet checked against the threshold
+/// or the row. <see cref="Name"/> is trimmed and non-blank; <see cref="Confidence"/> is null when the
+/// producer's value is absent or not a number in 0..1.
+/// </summary>
+public sealed record FarSpeakerLateMessage(
+    Guid RoomId,
+    Guid SegmentId,
+    string Name,
+    string? Source,
+    float? Confidence);
+
+/// <summary>What a late far-side name does to the saved row it names.</summary>
+public enum FarSpeakerLateDecision
+{
+    /// <summary>A stand-in row still reading the fallback: take the late name.</summary>
+    Apply,
+
+    /// <summary>
+    /// No row with that id yet. The late entry can overtake its own row (stt:results is read in
+    /// batches, a failed write is retried a minute later): leave it pending and try again, bounded.
+    /// </summary>
+    RowNotStoredYet,
+
+    /// <summary>The row is a real participant's (or System's). Never named from a Meet caption.</summary>
+    NotStandIn,
+
+    /// <summary>The row already carries a name. A late entry never replaces one.</summary>
+    AlreadyNamed,
+
+    /// <summary>
+    /// The post-meeting relabel (Google's own transcript) or the host has attributed the row. Both
+    /// outrank any live guess, so the late one is ignored even when the row reads the fallback.
+    /// </summary>
+    AttributedAfterMeeting,
+}
 
 public static class TranscriptConsumerPollingPolicy
 {
@@ -53,9 +94,17 @@ public static class TranscriptConsumerPollingPolicy
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> InputStreams { get; } =
-        ["stt:results", "translate:results", "translate:backfill_results", "tts:results", CleanSentenceStream];
+        ["stt:results", "translate:results", "translate:backfill_results", "tts:results", CleanSentenceStream, FarSpeakerLateStream];
 
     public const string CleanSentenceStream = "transcript:clean";
+
+    /// <summary>
+    /// Late far-side names for bridge stand-in rows — <see cref="FarSpeakerNames.LateNameStream"/>.
+    /// LAST in <see cref="InputStreams"/> on purpose: one polling pass reads the streams in order,
+    /// so a pass that picks up both a line on stt:results and its late name writes the row first and
+    /// names it second, rather than taking the retry path for a row that was one stream away.
+    /// </summary>
+    public const string FarSpeakerLateStream = FarSpeakerNames.LateNameStream;
 
     public static TimeSpan DelayAfterPass(int messagesRead) =>
         messagesRead == 0 ? IdleDelay : TimeSpan.Zero;
@@ -68,6 +117,7 @@ public static class TranscriptConsumerPollingPolicy
             "translate:backfill_results" => TranscriptResultStreamKind.Translation,
             "tts:results" => TranscriptResultStreamKind.Tts,
             CleanSentenceStream => TranscriptResultStreamKind.CleanSentence,
+            FarSpeakerLateStream => TranscriptResultStreamKind.FarSpeakerLate,
             _ => TranscriptResultStreamKind.Unknown
         };
 
@@ -186,6 +236,80 @@ public static class TranscriptConsumerPollingPolicy
         IsBridgeStandIn(speakerId)
             ? FarSpeakerNames.ResolveLive(hint.Key, hint.Confidence, minConfidence)
             : resolvedName;
+
+    /// <summary>
+    /// Parses one <c>stt:far_speaker_late</c> entry. False means it cannot be applied at all (no room,
+    /// no segment id, no name) and takes the bounded-retry-then-dead-letter path with its payload
+    /// intact, like a malformed entry on any other stream here. A missing or low confidence is NOT a
+    /// parse failure: that is a well-formed entry whose name is simply not to be shown, decided by
+    /// the caller against the threshold.
+    /// </summary>
+    public static bool TryParseFarSpeakerLate(
+        string stream,
+        IReadOnlyDictionary<string, string> values,
+        out FarSpeakerLateMessage message)
+    {
+        message = null!;
+
+        if (!TryResolveRoomId(stream, values, out var roomId)
+            || !Guid.TryParse(values.GetValueOrDefault("segment_id"), out var segmentId)
+            || segmentId == Guid.Empty
+            || string.IsNullOrWhiteSpace(values.GetValueOrDefault("far_speaker_name")))
+        {
+            return false;
+        }
+
+        var source = values.GetValueOrDefault("far_speaker_source");
+        message = new FarSpeakerLateMessage(
+            roomId,
+            segmentId,
+            values["far_speaker_name"].Trim(),
+            string.IsNullOrWhiteSpace(source) ? null : source.Trim(),
+            FarSpeakerNames.ParseConfidence(values.GetValueOrDefault("far_speaker_confidence")));
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a stand-in row's <paramref name="speakerName"/> is "nobody in particular": blank, the
+    /// fallback "Google Meet participants", or the stand-in's own GUID (what rows written before the
+    /// far-speaker migration carry — see 20261001120000_add_segment_far_speaker.sql).
+    /// </summary>
+    public static bool IsUnnamedStandInName(string? speakerName) =>
+        string.IsNullOrWhiteSpace(speakerName)
+        || string.Equals(speakerName.Trim(), FarSpeakerNames.Fallback, StringComparison.Ordinal)
+        || string.Equals(speakerName.Trim(), ExternalBridgeConstants.ParticipantUserId.ToString(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The <c>far_speaker_source</c> values a late live name never overrides: the post-meeting
+    /// relabel's and the host's. Same precedence <c>FarSpeakerRelabelService</c> keeps — Google's
+    /// attribution wins over the live one, and nothing automatic overwrites a host.
+    /// </summary>
+    public static IReadOnlyList<string> SourcesALateNameNeverOverrides { get; } =
+        [FarSpeakerSources.GoogleTranscript, FarSpeakerSources.Host];
+
+    /// <summary>
+    /// What a late far-side name does to <paramref name="row"/> (null: no row with that id yet). Pure,
+    /// so the rule is testable without a database; <c>IUnitOfWork.NameStandInSegmentLateAsync</c>
+    /// repeats the same guard in its UPDATE so a row that changes between this read and that write
+    /// is still never overwritten.
+    /// </summary>
+    /// <remarks>
+    /// Only ever FILLS a gap. The live rule already named every line it could at write time; a late
+    /// entry exists for the lines it could not, and it may name exactly those — a stand-in row that
+    /// still reads the fallback and that nobody (the relabel, the host) has attributed since.
+    /// </remarks>
+    public static FarSpeakerLateDecision DecideFarSpeakerLate(TranscriptSegment? row)
+    {
+        if (row is null)
+            return FarSpeakerLateDecision.RowNotStoredYet;
+        if (!IsBridgeStandIn(row.SpeakerParticipantId))
+            return FarSpeakerLateDecision.NotStandIn;
+        if (row.FarSpeakerSource is { } source && SourcesALateNameNeverOverrides.Contains(source))
+            return FarSpeakerLateDecision.AttributedAfterMeeting;
+        if (!IsUnnamedStandInName(row.SpeakerName))
+            return FarSpeakerLateDecision.AlreadyNamed;
+        return FarSpeakerLateDecision.Apply;
+    }
 
     /// <summary>
     /// The Redis field carrying the STT model's own confidence for a transcribed segment.

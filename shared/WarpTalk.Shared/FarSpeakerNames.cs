@@ -63,12 +63,47 @@ public static class FarSpeakerNames
     /// truncated to the column) when it is non-blank and <paramref name="confidence"/> is known and
     /// at least <paramref name="minConfidence"/>; <see cref="Fallback"/> otherwise.
     /// </summary>
-    public static string ResolveLive(string? liveName, float? confidence, double minConfidence)
+    public static string ResolveLive(string? liveName, float? confidence, double minConfidence) =>
+        TryResolveConfident(liveName, confidence, minConfidence) ?? Fallback;
+
+    /// <summary>
+    /// <paramref name="liveName"/> (trimmed, truncated to the column) when it may be shown — non-blank,
+    /// with a known <paramref name="confidence"/> of at least <paramref name="minConfidence"/> — or
+    /// <c>null</c> when it may not.
+    /// </summary>
+    /// <remarks>
+    /// The same rule as <see cref="ResolveLive"/> without the fallback, for the LATE name
+    /// (<see cref="LateNameStream"/>): there, "not confident enough" means "leave the line as it is",
+    /// not "rename it to Google Meet participants" — the line already reads that, and a late entry
+    /// must never be able to take a name away.
+    /// </remarks>
+    public static string? TryResolveConfident(string? liveName, float? confidence, double minConfidence)
     {
         if (string.IsNullOrWhiteSpace(liveName) || confidence is not { } score || score < minConfidence)
-            return Fallback;
+            return null;
 
         var name = liveName.Trim();
         return name.Length <= MaxLength ? name : name[..MaxLength];
     }
+
+    /// <summary>
+    /// The global Redis stream warptalk-ai's stt_worker publishes a LATE far-side name on (it also
+    /// writes the per-room <c>stt:far_speaker_late:{roomId}</c>, through base_worker.publish(), like
+    /// every result stream).
+    /// </summary>
+    /// <remarks>
+    /// WHY A LATE NAME EXISTS. stt_worker names a stand-in segment when it finalizes it, from the Meet
+    /// caption hints it has seen so far. On the first line after the Meet side changes speaker the
+    /// new speaker's hints have not arrived yet (captions lag the audio), so that line goes out as
+    /// "Google Meet participants". The PO's call: show the line at once, unchanged, and put the name
+    /// on it about a second later — live AND in the saved transcript. stt_worker re-attributes the
+    /// segment at ~+1 s and ~+2.5 s and, when the vote is now confident, publishes ONE entry here:
+    /// <c>type=far_speaker_late, meeting_id, segment_id</c> (the SAME id as the original stt:results
+    /// entry), <c>far_speaker_name, far_speaker_source, far_speaker_confidence, t_ms</c>.
+    ///
+    /// WHY NOT ON stt:results. That stream has many readers (translation, tts, billing, the
+    /// assistant), each of which would read a late-name entry as a new sentence — translated,
+    /// dubbed, billed. Only the Gateway (live line) and TranscriptService (saved row) read this one.
+    /// </remarks>
+    public const string LateNameStream = "stt:far_speaker_late";
 }

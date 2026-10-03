@@ -83,6 +83,7 @@ public sealed class StalePendingHousekeepingTests
     [InlineData("ai_assistant:results")]
     [InlineData("transcript:clean")]
     [InlineData("voice:clone:state")]
+    [InlineData("stt:far_speaker_late")]
     public async Task EntryWithoutMeetingId_IsAcknowledged(string streamKey)
     {
         var entry = new StreamEntry(

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranscriptService.Domain.Entities;
@@ -86,6 +87,35 @@ public interface IUnitOfWork : IDisposable
     /// be compared.
     /// </summary>
     Task<int?> PlaceSegmentByStartTimeAsync(Guid transcriptId, Guid segmentId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Puts a LATE far-side name on one bridge stand-in segment — <c>speaker_name</c> and the hint
+    /// behind it (<c>far_speaker_key/_source/_confidence</c>) — in a single guarded UPDATE that touches
+    /// no other column. Returns whether the row changed.
+    ///
+    /// The WHERE repeats TranscriptConsumerPollingPolicy.DecideFarSpeakerLate: the row must belong to
+    /// <paramref name="standInId"/>, still read one of <paramref name="unnamedNames"/> (or be blank),
+    /// and carry no far_speaker_source in <paramref name="protectedSources"/> (the post-meeting
+    /// relabel's, the host's). So a row named, corrected or relabelled between the caller's read and
+    /// this write is left alone, and a redelivered late entry changes nothing the second time.
+    ///
+    /// The hint is written with the name, not just the name: the post-meeting relabel re-derives an
+    /// unaligned segment's name from its STORED hint (FarSpeakerRelabelService.Apply), so a name
+    /// without the hint behind it would be put back to the fallback by the relabel.
+    ///
+    /// Targeted rather than Update() on a tracked entity for the reason in
+    /// <see cref="StampTranscriptTimelineAnchorAsync"/>: Update() marks every column modified and
+    /// would write back whatever else was read, e.g. revert a correction saved in between.
+    /// </summary>
+    Task<bool> NameStandInSegmentLateAsync(
+        Guid segmentId,
+        Guid standInId,
+        string speakerName,
+        string? farSpeakerSource,
+        float farSpeakerConfidence,
+        IReadOnlyList<string> unnamedNames,
+        IReadOnlyList<string> protectedSources,
+        CancellationToken cancellationToken = default);
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }
