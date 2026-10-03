@@ -750,6 +750,27 @@ public class TranslationRoomServiceTests
     }
 
     /// <summary>
+    /// WT-909 wave 2: a room naming two Meet-side languages (vi host; ja and en in Meet) starts with
+    /// the far side's STT unpinned, while the dub into Meet stays on the stand-in's own language.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_LeavesTheFarSideUnpinned_WhenTheRoomNamesSeveralMeetLanguages()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = ArrangeBridgeResume(roomId, hostId, "ja");
+        room.TargetLanguages = "[\"ja\",\"en\",\"vi\"]";
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:speak_languages", StandInId, "auto"), Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:languages", StandInId, "ja"), Times.Once);
+    }
+
+    /// <summary>
     /// Only where nothing is there yet: a pick the gateway already wrote to Redis is newer than the
     /// row, which is persisted after it. HashSetIfAbsentAsync (HSETNX) is the guarantee; a plain
     /// HashSetAsync here would put the old language back over the host's pick.

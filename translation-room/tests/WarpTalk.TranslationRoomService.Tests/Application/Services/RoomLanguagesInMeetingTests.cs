@@ -105,6 +105,7 @@ public class RoomLanguagesInMeetingTests
     private readonly Mock<ILanguagePolicy> _languagePolicy = new();
     private readonly Mock<IUserSettingsDirectory> _userSettings = new();
     private readonly Mock<IRedisStateRepository> _redis = new();
+    private readonly Mock<ITranslationRoomAudioRouteService> _routes = new();
     private readonly Dictionary<string, string> _stored = new(StringComparer.Ordinal);
     private readonly List<string> _published = new();
 
@@ -138,7 +139,7 @@ public class RoomLanguagesInMeetingTests
             _unitOfWork.Object,
             _languagePolicy.Object,
             Mock.Of<IAudioRouteEventProcessor>(),
-            Mock.Of<ITranslationRoomAudioRouteService>(),
+            _routes.Object,
             _userSettings.Object,
             _workspacePolicy.Object,
             Mock.Of<IWorkspaceMemberDirectory>(),
@@ -251,6 +252,80 @@ public class RoomLanguagesInMeetingTests
         JsonSerializer.Deserialize<List<string>>(_stored[$"meeting:{RoomId}:target_languages"])
             .Should().Equal("en", "ko");
         room.TargetLanguages.Should().Contain("es").And.Contain("ko");
+    }
+
+    // ── WT-909 wave 2: a second Meet-side language unpins the far side's STT ──────────
+
+    private static readonly string StandInId = WarpTalk.TranslationRoomService.Domain.Constants
+        .TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+
+    private static TranslationRoom BridgeRoom(string targets)
+    {
+        var room = Room(type: "EXTERNAL_BRIDGE");
+        room.SourceLanguage = "en";
+        room.TargetLanguages = targets;
+        return room;
+    }
+
+    /// <summary>
+    /// The demo call: host on English, a Vietnamese and a Japanese speaker in Meet. Pinned to vi,
+    /// STT garbles the Japanese speaker; so once the room names both, the stand-in runs "auto" —
+    /// and the routes are republished so STT's allow-list holds ja before its first line.
+    /// </summary>
+    [Fact]
+    public async Task A_bridge_room_given_a_second_Meet_language_unpins_the_far_side_and_republishes()
+    {
+        var service = Service(BridgeRoom("[\"vi\",\"en\"]"));
+
+        var result = await service.AddRoomLanguageAsync(RoomId, HostId, "ja");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _redis.Verify(r => r.HashSetAsync(
+            $"translationRoom:{RoomId}:speak_languages",
+            It.Is<Dictionary<string, string>>(f => f.Count == 1 && f[StandInId] == "auto")), Times.Once);
+        // The dub into Meet is not touched: one cable, one language.
+        _redis.Verify(r => r.HashSetAsync($"translationRoom:{RoomId}:languages", It.IsAny<Dictionary<string, string>>()), Times.Never);
+        _routes.Verify(r => r.RefreshDubVoiceAsync(RoomId, HostId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task A_bridge_room_with_one_Meet_language_keeps_its_far_side_pinned()
+    {
+        var service = Service(BridgeRoom("[\"en\"]"));
+
+        var result = await service.AddRoomLanguageAsync(RoomId, HostId, "vi");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _redis.Verify(r => r.HashSetAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never);
+        _routes.Verify(r => r.RefreshDubVoiceAsync(RoomId, HostId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task A_native_room_adding_a_language_touches_no_stand_in()
+    {
+        var service = Service(Room());
+
+        var result = await service.AddRoomLanguageAsync(RoomId, HostId, "ko");
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _redis.Verify(r => r.HashSetAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never);
+        _routes.Verify(r => r.RefreshDubVoiceAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("en", "[\"en\"]", false)]
+    [InlineData("en", "[\"vi\",\"en\"]", false)]
+    [InlineData("en-US", "[\"vi-VN\",\"vi\",\"en\"]", false)]
+    [InlineData("en", "[\"vi\",\"en\",\"ja\"]", true)]
+    [InlineData("en", "[\"vi\",\"auto\",\"en\"]", false)]
+    public void Far_side_speaks_several_languages_counts_the_rooms_languages_other_than_the_hosts(
+        string source, string targets, bool expected)
+    {
+        var room = BridgeRoom(targets);
+        room.SourceLanguage = source;
+
+        WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService
+            .FarSideSpeaksSeveralLanguages(room).Should().Be(expected);
     }
 
     // ── the join: a profile default is not a choice ───────────────────────────────
