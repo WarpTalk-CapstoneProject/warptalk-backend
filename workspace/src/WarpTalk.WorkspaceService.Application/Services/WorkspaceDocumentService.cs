@@ -41,6 +41,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
     private readonly IPlatformSettings? _platformSettings;
 
+    // Optional so the constructor stays source-compatible; when either is missing, a path that
+    // needs a scan fails closed (does not index) instead of indexing unscanned text.
+    private readonly IDocumentSecurityScanner? _securityScanner;
+    private readonly IAiPolicyResolver? _policyResolver;
+
     public WorkspaceDocumentService(
         IUnitOfWork unitOfWork,
         IDocumentAccessEvaluator accessEvaluator,
@@ -52,8 +57,12 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         IDocumentTextExtractor textExtractor,
         IKnowledgeChunkWriter chunkWriter,
         ILogger<WorkspaceDocumentService> logger,
-        IPlatformSettings? platformSettings = null)
+        IPlatformSettings? platformSettings = null,
+        IDocumentSecurityScanner? securityScanner = null,
+        IAiPolicyResolver? policyResolver = null)
     {
+        _securityScanner = securityScanner;
+        _policyResolver = policyResolver;
         _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _accessEvaluator = accessEvaluator;
@@ -429,6 +438,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // for one of them. Same reasoning for the name and the source type: the mapper copies
             // the request through verbatim, so the normalised forms are applied here.
             document.ConfidentialityLevel = confidentiality ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
+
+            // The verdict follows the BYTES, not the row. A scan that found PII/DLP labels one
+            // document restricted; a fresh row for the same file used to start clean and be judged
+            // again from scratch — by a model, for anything the regexes cannot see.
+            if (await HasRestrictedTwinAsync(workspaceId, contentHash, null, ct))
+            {
+                document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+            }
+
             document.Name = name;
             document.SourceType = sourceType;
 
@@ -488,6 +506,82 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while uploading document. WorkspaceId: {WorkspaceId}", workspaceId);
             return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// Scans edited extracted text under the document's effective AI policy and indexes it only if
+    /// it is clean. Returns whether an index request was published.
+    /// </summary>
+    /// <remarks>
+    /// Fails closed three ways: no scanner wired, the scan throws, or it finds something. A finding
+    /// does what the upload guardrail does — label the document restricted and pull its vectors.
+    /// The masked text is not indexed here: the consumer indexes it and the result processor then
+    /// purges it because the row is restricted, so publishing it would only be wasted work.
+    /// </remarks>
+    private async Task<bool> ScanThenIndexEditedTextAsync(WorkspaceDocument document, string text, CancellationToken ct)
+    {
+        if (_securityScanner is null || _policyResolver is null)
+        {
+            _logger.LogWarning(
+                "Edited text of document {DocumentId} was saved but not indexed: no security scanner is available.",
+                document.Id);
+            return false;
+        }
+
+        DocumentSecurityScanResult scan;
+        try
+        {
+            var policy = await _policyResolver.ResolvePolicySettingsAsync(_unitOfWork, document, ct);
+            scan = await _securityScanner.ScanAsync(text, policy.PiiEnabled, policy.DlpEnabled, policy.KeywordsBlacklist, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Security scan of edited text failed for document {DocumentId}; not indexing.", document.Id);
+            return false;
+        }
+
+        if (scan.PiiDetected || scan.DlpDetected)
+        {
+            document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+            document.AiEligible = false;
+            document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+            document.IngestionFailureReason = scan.DlpDetected
+                ? WorkspaceDocumentIngestionFailureReasons.DlpDetected
+                : null;
+            document.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishDocumentDeletedAsync(document.Id, document.WorkspaceId, ct);
+            return false;
+        }
+
+        await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Has any other row in this workspace with the same bytes already been labelled restricted?
+    /// </summary>
+    /// <remarks>
+    /// Soft-deleted rows count: deleting a flagged document and uploading it again is the obvious
+    /// way round a label that lives only on the row. An Owner/Admin can still relabel the new row,
+    /// which re-scans it. The label is read as written, so a manual "restricted" is inherited too —
+    /// the same file was already declared confidential once.
+    /// </remarks>
+    private Task<bool> HasRestrictedTwinAsync(Guid workspaceId, string? contentHash, Guid? excludeDocumentId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(contentHash))
+        {
+            return Task.FromResult(false);
+        }
+
+        var restricted = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+        return _unitOfWork.WorkspaceDocumentRepository.AnyAsync(
+            d => d.WorkspaceId == workspaceId
+                && d.ContentHash == contentHash
+                && d.ConfidentialityLevel == restricted
+                && (excludeDocumentId == null || d.Id != excludeDocumentId),
+            ct);
     }
 
     /// <summary>
@@ -1531,6 +1625,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.SizeBytes = request.File.Length;
             document.ContentHash = DocumentContentHelper.ComputeSha256(content);
             document.UpdatedAt = now;
+
+            // Same rule as a fresh upload: new bytes that were already found restricted elsewhere
+            // in this workspace arrive restricted. (A label already on this row is never cleared.)
+            if (await HasRestrictedTwinAsync(workspaceId, document.ContentHash, documentId, ct))
+            {
+                document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+            }
 
             // Back to the queue, whichever state it came from. A replaced file has not been read by
             // anyone, so it cannot keep a published document's approval — that is the difference
@@ -2796,9 +2897,14 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // A restricted document's vectors are purged when it is relabelled; this endpoint put
             // them straight back, which made the whole confidentiality boundary bypassable by
             // anyone who could edit the text.
+            //
+            // AND THE SAME SCAN UPLOAD RUNS. The label gate above only holds while the label does:
+            // an edited text is new content nobody has looked at, and indexing it raw let PII or a
+            // blacklisted term reach the vector store through the one path that skipped the worker.
+            var reindexed = false;
             if (document.IsIndexEligible())
             {
-                await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
+                reindexed = await ScanThenIndexEditedTextAsync(document, text, ct);
             }
 
             // Rewriting the AI-readable body of a document left no trace at all before this. It is
@@ -2815,7 +2921,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 workspaceId,
                 userId,
                 WorkspaceDocumentConstants.AuditActions.UpdateExtractedText,
-                new { Length = text?.Length ?? 0, Reindexed = document.IsIndexEligible() },
+                new { Length = text?.Length ?? 0, Reindexed = reindexed },
                 _logger,
                 ct);
 
