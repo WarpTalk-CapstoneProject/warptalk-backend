@@ -100,6 +100,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
 // WT-691: language catalog writes, each recorded in the platform audit log before it is saved.
 builder.Services.AddScoped<IAdminLanguageService, AdminLanguageService>();
+// WT-880: the enabled rows of that catalog, for any signed-in user (glossary import template).
+builder.Services.AddScoped<IPublishedLanguageService, PublishedLanguageService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();

@@ -101,6 +101,8 @@ WarpTalk.Shared.PlatformSettings.PlatformSettingsServiceCollectionExtensions.Add
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
+// PO 2026-10-02: settles "loaded into WarpBot" for glossary terms from embedding:index_results.
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryIndexResultConsumer>();
 
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
