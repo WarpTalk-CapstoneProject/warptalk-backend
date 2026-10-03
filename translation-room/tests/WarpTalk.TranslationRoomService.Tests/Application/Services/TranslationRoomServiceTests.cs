@@ -704,6 +704,129 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    // ── WT-909: the far side's language reaches the pipeline without a pill pick ──────────
+
+    private static readonly string StandInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+
+    private TranslationRoom ArrangeBridgeResume(Guid roomId, Guid hostId, string? standInSpeakLanguage)
+    {
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = TranslationRoomTypes.ExternalBridge;
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(p => p.GetByRoomAndUserAsync(roomId, TranslationRoomConstants.ExternalBridgeParticipantUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(standInSpeakLanguage is null
+                ? null
+                : new TranslationRoomParticipant
+                {
+                    TranslationRoomId = roomId,
+                    UserId = TranslationRoomConstants.ExternalBridgeParticipantUserId,
+                    SpeakLanguage = standInSpeakLanguage,
+                    ListenLanguage = standInSpeakLanguage,
+                });
+        return room;
+    }
+
+    /// <summary>
+    /// The popup shows the stand-in's stored language; Start makes it the one in effect. Before,
+    /// the stand-in had no Redis entry until somebody touched the far-side pill, so its STT ran
+    /// unpinned and the host was translated into nobody's language.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_SeedsTheStandInsLanguage_ForAnExternalBridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, "ja-JP");
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:speak_languages", StandInId, "ja"), Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:languages", StandInId, "ja"), Times.Once);
+    }
+
+    /// <summary>
+    /// Only where nothing is there yet: a pick the gateway already wrote to Redis is newer than the
+    /// row, which is persisted after it. HashSetIfAbsentAsync (HSETNX) is the guarantee; a plain
+    /// HashSetAsync here would put the old language back over the host's pick.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_NeverOverwritesTheStandInsLanguage()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, "en");
+
+        await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetAsync(
+                It.Is<string>(key => key.EndsWith(":speak_languages") || key.EndsWith(":languages")),
+                It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("auto")]
+    // NewStartableRoom's source: the fallback of a claim that named no far side, not a choice.
+    [InlineData("vi-VN")]
+    public async Task ResumeTranslationRoomAsync_SeedsNothing_WithoutARealStandInLanguage(string? standInSpeakLanguage)
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, standInSpeakLanguage);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_SeedsNothing_ForANativeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _mockParticipantRepo.Verify(
+            p => p.GetByRoomAndUserAsync(roomId, TranslationRoomConstants.ExternalBridgeParticipantUserId, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>A Redis outage costs the pin, never the Start.</summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_StillStarts_WhenSeedingTheStandInFails()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, "en");
+        _mockRedisStateRepository
+            .Setup(r => r.HashSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            .ThrowsAsync(new InvalidOperationException("redis down"));
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.Is<string>(p => p.Contains("RoomStarted"))),
+            Times.Once);
+    }
+
     [Fact]
     public async Task ResumeTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
     {
