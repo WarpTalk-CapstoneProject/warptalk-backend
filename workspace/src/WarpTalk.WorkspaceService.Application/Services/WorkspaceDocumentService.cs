@@ -2902,7 +2902,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // an edited text is new content nobody has looked at, and indexing it raw let PII or a
             // blacklisted term reach the vector store through the one path that skipped the worker.
             var reindexed = false;
-            if (document.IsIndexEligible() && text is not null)
+            if (document.IsIndexEligible())
             {
                 reindexed = await ScanThenIndexEditedTextAsync(document, text, ct);
             }
