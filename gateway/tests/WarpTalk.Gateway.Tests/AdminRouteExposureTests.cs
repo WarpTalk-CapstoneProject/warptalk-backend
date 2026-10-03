@@ -48,6 +48,9 @@ public sealed class AdminRouteExposureTests
         // deactivating a language stops every new room in it platform-wide, and translation-room
         // has no message bus to record who did it.
         "/api/v1/admin/languages/{**catch-all}",
+        // Word report -> PDF, served by translation-room (the Gotenberg converter lives there). Bytes
+        // in, bytes out: it stores nothing and reads no database; billing.read to call it.
+        "/api/v1/admin/reports/{**catch-all}",
         // Voice-clone consent, served by auth. COUNTS ONLY — a per-person list of who agreed to
         // being cloned is a register of biometric permissions, and nothing here acts on a person.
         "/api/v1/admin/voice-consent/{**catch-all}",
