@@ -100,6 +100,15 @@ public class AssistantConversationsController : ControllerBase
         return Accepted(result.Value);
     }
 
+    /// <summary>Stop a reply that is still being written (WarpBot's Stop button).</summary>
+    [HttpPost("{id:guid}/messages/{messageId:guid}/stop")]
+    public async Task<IActionResult> StopReply(Guid id, Guid messageId, CancellationToken ct)
+    {
+        var result = await _conversationService.StopReplyAsync(id, messageId, CurrentUserId, ct);
+        if (result.IsSuccess) return Accepted();
+        return result.ErrorCode == "NOT_FOUND" ? NotFound(result.Error) : BadRequest(result.Error);
+    }
+
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> ArchiveConversation(Guid id, CancellationToken ct)
     {

@@ -19,6 +19,13 @@ public class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
 {
     private const string StreamName = "assistant:chat_requests";
 
+    /// <summary>Read by ai_assistant_worker (CHAT_CANCEL_KEY_PREFIX in chat_worker.py).</summary>
+    public const string StopKeyPrefix = "assistant:chat_cancel:";
+
+    /// <summary>Longer than any turn runs, so a stop is never forgotten mid-turn; short enough that
+    /// the keys do not pile up.</summary>
+    private static readonly TimeSpan StopKeyLifetime = TimeSpan.FromMinutes(15);
+
     private readonly IConnectionMultiplexer _redis;
 
     public RedisAssistantChatRequestPublisher(IConnectionMultiplexer redis)
@@ -69,6 +76,9 @@ public class RedisAssistantChatRequestPublisher : IAssistantChatRequestPublisher
 
         await db.StreamAddAsync(StreamName, entries, maxLength: 10000, useApproximateMaxLength: true);
     }
+
+    public Task RequestStopAsync(Guid requestId, CancellationToken ct = default) =>
+        _redis.GetDatabase().StringSetAsync($"{StopKeyPrefix}{requestId}", "1", StopKeyLifetime);
 
     public async Task PublishPlatformAsync(
         Guid requestId,
