@@ -618,6 +618,8 @@ public partial class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
             }
             await PublishRoomTargetLanguagesAsync(room, ct);
+            if (standIn is not null)
+                await SeedExternalMeetingLanguageAsync(room, standIn.SpeakLanguage, ct);
 
             // Send invitations
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
@@ -2521,6 +2523,61 @@ public partial class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-909: hand the AI pipeline the far side's language of an EXTERNAL_BRIDGE room, from the
+    /// stand-in's own row.
+    ///
+    /// The pipeline reads the stand-in's language from Redis only — speak_languages pins its STT,
+    /// languages makes it a translation target — and until now the only writer was
+    /// TranslationRoomHub.SetExternalMeetingLanguage, i.e. somebody touching the popup's far-side
+    /// pill. A room whose host never touched it ran the far side's speech unpinned and translated
+    /// the host into nobody's language, while the popup showed the stand-in's stored language as if
+    /// it were in effect. The value written here is the one the popup shows: no default of our own.
+    ///
+    /// Only where the hash does not hold it yet (HSETNX): the gateway writes a pick to Redis at once
+    /// and the row only once ParticipantLanguageProcessor has persisted it, so a Start that lands
+    /// between the two must not put the old language back. Best-effort like every realtime write
+    /// here: a failed seed costs the pin, never the Start.
+    /// </summary>
+    private async Task SeedExternalMeetingLanguageAsync(TranslationRoom room, string? standInLanguage, CancellationToken ct)
+    {
+        if (_redisStateRepository is null || !TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            return;
+
+        try
+        {
+            var language = standInLanguage;
+            if (language is null)
+            {
+                var standIn = await _participantRepository.GetByRoomAndUserAsync(
+                    room.Id, TranslationRoomConstants.ExternalBridgeParticipantUserId, ct);
+                language = standIn?.SpeakLanguage;
+            }
+
+            var normalized = LanguageHelper.NormalizeLanguageCode(language);
+            // "auto" is STT's free-run hint, not a language a route can target (see the hub).
+            if (normalized.Length == 0 || normalized == "auto")
+                return;
+
+            // The host's own language on the stand-in is what a claim that named no far side
+            // falls back to (ResolveExternalMeetingLanguage), not anybody's choice: pinning the far
+            // side's STT to it would garble whoever speaks there. The popup's start step moves such
+            // a room to its first offered language, and that pick reaches Redis through the gateway.
+            if (normalized == LanguageHelper.NormalizeLanguageCode(room.SourceLanguage))
+                return;
+
+            var standInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+            await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:speak_languages", standInId, normalized);
+            await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:languages", standInId, normalized);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex,
+                "Failed to seed the external meeting's language for room {RoomId}; the far side runs unpinned until the host picks it.",
+                room.Id);
+        }
+    }
+
     /// <param name="targetLanguages">
     /// WT-708: the languages that may actually be produced for this room, when the caller has
     /// already worked them out. The start path passes L2 ∩ L1(current) here so a language the
@@ -2772,6 +2829,8 @@ public partial class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
             await _unitOfWork.CommitTransactionAsync(ct);
             transactionStarted = false;
+            // WT-909: before RoomStarted, so the far side's first line is already pinned.
+            await SeedExternalMeetingLanguageAsync(translationRoom, null, ct);
             await PublishRoomStartedAsync(translationRoom, ct);
 
             // WT-339: the routes are only now allowed to broadcast. Emitted AFTER SaveChangesAsync

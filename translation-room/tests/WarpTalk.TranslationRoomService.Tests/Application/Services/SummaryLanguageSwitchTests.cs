@@ -315,6 +315,7 @@ internal sealed class InMemoryRedisState : IRedisStateRepository
 
     public Task<Dictionary<string, string>> GetHashAllAsync(string key) => Task.FromResult(new Dictionary<string, string>());
     public Task HashSetAsync(string key, Dictionary<string, string> fields) => Task.CompletedTask;
+    public Task<bool> HashSetIfAbsentAsync(string key, string field, string value) => Task.FromResult(true);
     public Task<bool> KeyExpireAsync(string key, TimeSpan expiry) => Task.FromResult(true);
     public Task<string?> HashGetAsync(string key, string field) => Task.FromResult<string?>(null);
     public Task<bool> WaitForSignalAsync(string channel, TimeSpan timeout, CancellationToken ct) => Task.FromResult(false);

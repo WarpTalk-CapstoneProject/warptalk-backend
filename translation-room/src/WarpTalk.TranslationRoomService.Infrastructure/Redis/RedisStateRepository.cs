@@ -89,6 +89,12 @@ public class RedisStateRepository : IRedisStateRepository
         return await GetDb().StringSetAsync(key, value, expiry.HasValue ? expiry.Value : default);
     }
 
+    public async Task<bool> HashSetIfAbsentAsync(string key, string field, string value)
+    {
+        // `When.NotExists` on a hash field is HSETNX: one round trip, one decision.
+        return await GetDb().HashSetAsync(key, field, value, When.NotExists);
+    }
+
     public async Task<bool> StringSetIfAbsentAsync(string key, string value, TimeSpan expiry)
     {
         // `When.NotExists` is SET NX: the check and the write are one round trip and one decision,
