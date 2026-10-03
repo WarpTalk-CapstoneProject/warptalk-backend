@@ -35,7 +35,8 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         Guid userId,
         Guid? workspaceId,
         IReadOnlyCollection<string>? excludedPluginKeys = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool callerIsPlatformStaff = false)
     {
         // What this workspace has, read once for the whole list.
         //
@@ -45,7 +46,12 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         //
         // The in-workspace check, so an omitted or borrowed workspaceId cannot widen the list: this
         // is a conversation, and a conversation has a workspace.
-        var availability = await _workspacePluginGuard.GetAvailabilityForMemberAsync(workspaceId, userId, ct);
+        //
+        // The one conversation without a workspace that may still use plugins is the admin
+        // portal's WarpBot, for staff holding warpbot.use (the controller asks the auth service).
+        var availability = !workspaceId.HasValue && callerIsPlatformStaff
+            ? Result.Success(await PlatformStaffAvailabilityAsync(ct))
+            : await _workspacePluginGuard.GetAvailabilityForMemberAsync(workspaceId, userId, ct);
         if (!availability.IsSuccess)
             return Result.Success<IReadOnlyList<McpToolDescriptorDto>>(Array.Empty<McpToolDescriptorDto>());
 
@@ -164,7 +170,18 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
             .ToList();
     }
 
-    public async Task<Result<McpToolExecutionResult>> ExecuteAsync(Guid userId, McpToolExecutionRequest request, CancellationToken ct = default)
+    private async Task<WorkspacePluginAvailability> PlatformStaffAvailabilityAsync(CancellationToken ct)
+    {
+        var marketplace = await _unitOfWork.PluginRepository.FindAsync(
+            p => p.IsActive && p.OwnerWorkspaceId == null, ct: ct);
+        return WorkspacePluginAvailability.ForPlatformStaff(marketplace.Select(p => p.Id).ToHashSet());
+    }
+
+    public async Task<Result<McpToolExecutionResult>> ExecuteAsync(
+        Guid userId,
+        McpToolExecutionRequest request,
+        CancellationToken ct = default,
+        bool callerIsPlatformStaff = false)
     {
         var pluginEntity = await _unitOfWork.PluginRepository.FirstOrDefaultAsync(
             p => p.PluginKey == request.PluginKey && p.IsActive, ct: ct);
@@ -192,11 +209,20 @@ public class McpToolOrchestrator : IMcpToolOrchestrator
         // workspace they named. Omitting the field used to pass this gate outright, and the audit
         // row it wrote carried workspace_id = NULL - so the calls that slipped past the policy were
         // also the ones its Owner could not see.
-        var policyCheck = await _workspacePluginGuard.CanUsePluginInWorkspaceAsync(
-            request.WorkspaceId,
-            userId,
-            pluginEntity,
-            ct);
+        //
+        // Except for the admin portal's WarpBot: no workspace, staff with warpbot.use, and then
+        // only a marketplace plugin - a workspace's private plugin still needs that workspace.
+        var policyCheck = request.WorkspaceId is null && callerIsPlatformStaff
+            ? pluginEntity.OwnerWorkspaceId is null
+                ? Result.Success()
+                : Result.Failure(
+                    WorkspacePluginConstants.Messages.PrivatePluginNeedsItsWorkspace,
+                    PluginConstants.ErrorCodes.PermissionDenied)
+            : await _workspacePluginGuard.CanUsePluginInWorkspaceAsync(
+                request.WorkspaceId,
+                userId,
+                pluginEntity,
+                ct);
         if (!policyCheck.IsSuccess)
             return await McpToolAuditRecorder.RecordFailureAsync(
                 _unitOfWork,

@@ -94,6 +94,101 @@ public class McpToolOrchestratorTests
         Assert.Empty(result.Value!);
     }
 
+    // ---- The admin portal's WarpBot: staff with warpbot.use and no workspace (3 Oct 2026) -----
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_WithoutAWorkspace_StillOffersNothingToAnOrdinaryUser()
+    {
+        ArrangeInstalledDrive();
+
+        var result = await CreateSut().ListAvailableToolsAsync(UserId, workspaceId: null);
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(result.Value!);
+    }
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_WithoutAWorkspace_OffersPlatformStaffTheirInstalledMarketplacePlugins()
+    {
+        ArrangeInstalledDrive();
+        // Staff need not belong to any workspace, and none is asked about.
+        _callerIsActiveMember = false;
+
+        var result = await CreateSut().ListAvailableToolsAsync(
+            UserId, workspaceId: null, callerIsPlatformStaff: true);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(result.Value!, tool => tool.Name == "google_drive_search");
+        Assert.DoesNotContain(result.Value!, tool => tool.PluginKey == PrivateKey);
+    }
+
+    /// <summary>Drive, installed by the caller - plus a workspace's private plugin, which staff never get.</summary>
+    private void ArrangeInstalledDrive()
+    {
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlyList<Plugin>)new[] { GoogleDrivePlugin(), PrivatePlugin("crm_lookup") }
+                .Where(call.Arg<Expression<Func<Plugin, bool>>>().Compile())
+                .ToList());
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                },
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = PrivatePluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                },
+            ]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithoutAWorkspace_RunsForPlatformStaff()
+    {
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+        _callerIsActiveMember = false;
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "drive:file", null));
+
+        var request = Request("google_drive_search") with { WorkspaceId = null };
+        var result = await CreateSut().ExecuteAsync(UserId, request, callerIsPlatformStaff: true);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithoutAWorkspace_IsStillRefusedForAnOrdinaryUser()
+    {
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+
+        var request = Request("google_drive_search") with { WorkspaceId = null };
+        var result = await CreateSut().ExecuteAsync(UserId, request);
+
+        Assert.False(result.IsSuccess && result.Value!.IsSuccess);
+        await _gateway.DidNotReceive().ExecuteAsync(
+            Arg.Any<PluginDefinitionDto>(),
+            Arg.Any<McpToolDescriptorDto>(),
+            Arg.Any<PluginConnection>(),
+            Arg.Any<McpToolExecutionRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task ExecuteAsync_RecordsPermissionDenied_WhenWorkspaceDisallowsPersonalPlugins()
     {

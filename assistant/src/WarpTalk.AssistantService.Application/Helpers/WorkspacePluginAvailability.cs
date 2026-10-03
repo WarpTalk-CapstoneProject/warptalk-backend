@@ -29,6 +29,7 @@ public sealed class WorkspacePluginAvailability
 {
     private readonly IReadOnlySet<Guid> _addedPluginIds;
     private readonly IReadOnlyDictionary<Guid, WorkspacePluginOverride> _overrides;
+    private readonly bool _platformStaff;
 
     /// <param name="overrides">The platform admin's overrides for this workspace, by plugin id.</param>
     /// <param name="planSlug">
@@ -41,8 +42,10 @@ public sealed class WorkspacePluginAvailability
         IReadOnlySet<Guid> addedPluginIds,
         bool callerIsOwner = false,
         IReadOnlyDictionary<Guid, WorkspacePluginOverride>? overrides = null,
-        string? planSlug = null)
+        string? planSlug = null,
+        bool platformStaff = false)
     {
+        _platformStaff = platformStaff;
         WorkspaceId = workspaceId;
         IsCurated = isCurated;
         _addedPluginIds = addedPluginIds;
@@ -53,6 +56,18 @@ public sealed class WorkspacePluginAvailability
 
     /// <summary>The workspace's plan as the plan rule read it; null when none or unknown.</summary>
     public string? PlanSlug { get; }
+
+    /// <summary>
+    /// What a platform staff member with <c>warpbot.use</c> may use from the admin portal's
+    /// WarpBot, where there is no workspace: every active marketplace plugin. A workspace's plan,
+    /// its list and its overrides describe that workspace's members and do not apply to staff
+    /// outside one; another workspace's private plugin stays out (<see cref="Of"/>, Guid.Empty is
+    /// nobody's workspace).
+    /// </summary>
+    public static WorkspacePluginAvailability ForPlatformStaff(IReadOnlySet<Guid> activeMarketplacePluginIds) =>
+        new(Guid.Empty, isCurated: true, activeMarketplacePluginIds, platformStaff: true);
+
+    public bool IsPlatformStaff => _platformStaff;
 
     /// <summary>
     /// The platform layer alone: may this workspace have <paramref name="plugin"/> at all? Applied
@@ -110,7 +125,7 @@ public sealed class WorkspacePluginAvailability
                 : WorkspacePluginConstants.Availability.NotAdded;
         }
 
-        if (!PlatformVerdict(plugin).Allowed)
+        if (!_platformStaff && !PlatformVerdict(plugin).Allowed)
             return WorkspacePluginConstants.Availability.DisabledByPlatform;
 
         return _addedPluginIds.Contains(plugin.Id)
