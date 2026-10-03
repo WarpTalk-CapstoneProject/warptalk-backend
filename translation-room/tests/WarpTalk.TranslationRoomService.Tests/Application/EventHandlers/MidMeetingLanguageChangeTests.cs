@@ -86,6 +86,37 @@ public class MidMeetingLanguageChangeTests
     }
 
     /// <summary>
+    /// The consumer's retry (and a DLQ replay) calls the processor again with the same event. If the
+    /// first attempt saved the row and then failed to regenerate, the retry used to find "nothing
+    /// changed" and succeed without regenerating — the mesh stayed on the old language for good.
+    /// The failed attempt now restores the row, so the retry does the whole job.
+    /// </summary>
+    [Fact]
+    public async Task AFailedRegeneration_IsRetriedForReal_NotSwallowedAsNoChange()
+    {
+        var userId = Guid.NewGuid();
+        var participant = Participant(userId, speak: "vi", listen: "vi");
+        var (processor, routeService) = BuildProcessor(participant);
+        routeService
+            .SetupSequence(s => s.GenerateRoutesAsync(RoomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<List<TranslationRoomAudioRouteDto>>("redis down", ErrorCodes.InternalServerError))
+            .ReturnsAsync(Result.Success(new List<TranslationRoomAudioRouteDto>()));
+
+        var first = await processor.ProcessLanguageChangeAsync(RoomId, userId, "ja", "ja");
+
+        first.IsSuccess.Should().BeFalse("the consumer only retries a failure");
+        participant.SpeakLanguage.Should().Be("vi", "the row is restored so the retry still sees a change");
+        participant.ListenLanguage.Should().Be("vi");
+
+        var retry = await processor.ProcessLanguageChangeAsync(RoomId, userId, "ja", "ja");
+
+        retry.IsSuccess.Should().BeTrue();
+        participant.SpeakLanguage.Should().Be("ja");
+        participant.ListenLanguage.Should().Be("ja");
+        routeService.Verify(s => s.GenerateRoutesAsync(RoomId, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    /// <summary>
     /// "auto" is not a language. It reaches STT as a free-run hint and is never something a route
     /// can target, so it must not overwrite a real choice on the way through.
     /// </summary>
