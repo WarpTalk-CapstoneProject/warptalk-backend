@@ -39,7 +39,26 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         _logger = logger;
     }
 
-    public async Task<Result> EvaluateAccessAsync(Guid userId, Guid workspaceId, Guid documentId, string requiredPermission, CancellationToken ct = default)
+    public Task<Result> EvaluateAccessAsync(Guid userId, Guid workspaceId, Guid documentId, string requiredPermission, CancellationToken ct = default)
+        => EvaluateByIdAsync(userId, workspaceId, documentId, requiredPermission, ignoreRestriction: false, ct);
+
+    public Task<Result> EvaluateAccessIgnoringRestrictionAsync(Guid userId, Guid workspaceId, Guid documentId, string requiredPermission, CancellationToken ct = default)
+        => EvaluateByIdAsync(userId, workspaceId, documentId, requiredPermission, ignoreRestriction: true, ct);
+
+    public Task<Result> EvaluateAccessIgnoringRestrictionAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        string requiredPermission,
+        WorkspaceMember member,
+        string roleName,
+        IEnumerable<WorkspaceDocumentAccessPolicy> policies,
+        Dictionary<Guid, TranslationRoomDto?>? roomCache = null,
+        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
+        CancellationToken ct = default)
+        => EvaluateCoreAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, roomCache, participantsCache, ignoreRestriction: true, ct);
+
+    private async Task<Result> EvaluateByIdAsync(Guid userId, Guid workspaceId, Guid documentId, string requiredPermission, bool ignoreRestriction, CancellationToken ct)
     {
         var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
         if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
@@ -71,10 +90,10 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
             .FindAsync(p => p.DocumentId == documentId, "", ct);
 
-        return await EvaluateAccessAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, null, null, ct);
+        return await EvaluateCoreAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, null, null, ignoreRestriction, ct);
     }
 
-    public async Task<Result> EvaluateAccessAsync(
+    public Task<Result> EvaluateAccessAsync(
         Guid userId,
         Guid workspaceId,
         WorkspaceDocument document,
@@ -85,6 +104,26 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         Dictionary<Guid, TranslationRoomDto?>? roomCache = null,
         Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
         CancellationToken ct = default)
+        => EvaluateCoreAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, roomCache, participantsCache, ignoreRestriction: false, ct);
+
+    /// <param name="ignoreRestriction">
+    /// Answer as though the document were not restricted. Only the restricted gate is skipped:
+    /// explicit DENY, private, pending approval, archived and the External-member rules all
+    /// still apply. This is the question the MASKED copy is gated on — "would this person read
+    /// the document if it held nothing sensitive?" — and it never grants the original.
+    /// </param>
+    private async Task<Result> EvaluateCoreAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        string requiredPermission,
+        WorkspaceMember member,
+        string roleName,
+        IEnumerable<WorkspaceDocumentAccessPolicy> policies,
+        Dictionary<Guid, TranslationRoomDto?>? roomCache,
+        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache,
+        bool ignoreRestriction,
+        CancellationToken ct)
     {
         var isPublishedDocument = IsPublishedDocumentStatus(document.Status);
         var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
@@ -256,7 +295,7 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             return Result.Success();
         }
 
-        if (document.IsRestricted())
+        if (!ignoreRestriction && document.IsRestricted())
         {
             // Owner/Admin keep sight of a sensitive document. WT-411.
             //

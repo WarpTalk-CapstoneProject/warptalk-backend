@@ -35,6 +35,20 @@ public record UpdateGlossaryDto(
     bool IsActive
 );
 
+/// <summary>
+/// PO 2026-10-02: a glossary's language pair can change after creation (an en→en import that
+/// should have been en→vi). Terms are kept exactly as they are — nothing is re-translated.
+/// </summary>
+public record UpdateGlossaryLanguagesDto(
+    [Required(ErrorMessage = "SourceLanguage is required.")]
+    [MaxLength(10, ErrorMessage = "SourceLanguage cannot exceed 10 characters.")]
+    string SourceLanguage,
+
+    [Required(ErrorMessage = "TargetLanguage is required.")]
+    [MaxLength(10, ErrorMessage = "TargetLanguage cannot exceed 10 characters.")]
+    string TargetLanguage
+);
+
 public record GlossaryDto(
     Guid Id,
     Guid WorkspaceId,
@@ -146,3 +160,18 @@ public record GlossaryTermDto(
     DateTime CreatedAt,
     DateTime UpdatedAt
 );
+
+/// <summary>
+/// PO 2026-10-02: whether a glossary's terms have reached WarpBot's knowledge (GlossaryWarpBotStatus).
+/// </summary>
+/// <param name="State">idle | loading | stalled | failed | ready.</param>
+/// <param name="Failed">Terms whose latest index result was a failure.</param>
+/// <param name="Pending">Index requests still waiting for a result.</param>
+public sealed record GlossaryWarpBotStatusDto(
+    string State,
+    long Requested,
+    long Indexed,
+    long Failed,
+    long Blocked,
+    long Pending,
+    DateTime? UpdatedAt);

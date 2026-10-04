@@ -19,15 +19,13 @@ public static class AdminSubscriptionRevenue
     /// <summary>
     /// Monthly recurring revenue per currency, never as one number.
     ///
-    /// The platform sells in more than one currency: <c>plans.currency</c> defaults to VND, and
-    /// <c>PlanDefaults</c> carries both a MinimumVndPlanPrice and a MinimumUsdPlanPrice, so a USD
-    /// plan row is an expected thing. Adding 1,900,000 VND to 29 USD produces 1,900,029 of
-    /// nothing.
+    /// The platform sells in more than one currency: <c>plans.currency</c> defaults to USD, but a
+    /// plan may still be priced in VND (every plan was, until 2 Oct 2026). Adding 1,900,000 VND to
+    /// 29 USD produces 1,900,029 of nothing.
     ///
-    /// Converting instead of grouping was the other option and is worse: the only rate available
-    /// is <c>RateCardDefaults.FxRateUsdVnd</c>, a seed constant that nobody updates, and a
-    /// dashboard that silently applies a stale rate reports a revenue figure that is confidently
-    /// wrong rather than obviously split.
+    /// Grouping, not converting, because this is a run rate, not a past amount: there is no "day"
+    /// whose Stripe rate it should be read at. Reports that need one USD total convert each group
+    /// themselves, and say which rate they used.
     /// </summary>
     public static IReadOnlyList<AdminMoney> MonthlyRecurring(IReadOnlyList<AdminSubscriptionRow> rows)
         => rows
@@ -62,10 +60,10 @@ public static class AdminSubscriptionRevenue
     /// <summary>
     /// What one subscription is worth per month, in its own currency.
     ///
-    /// <c>ContractPriceVnd</c> wins over the plan's price when it is set: an enterprise contract
+    /// <c>ContractPriceUsd</c> wins over the plan's price when it is set: an enterprise contract
     /// is the agreement, and the catalog row is only what the agreement started from. Its name
-    /// states its currency, so it is VND regardless of what the plan says — reading the plan's
-    /// currency for a contract price would relabel a VND figure as USD on any USD-priced plan.
+    /// states its currency, so it is USD regardless of what the plan says — reading the plan's
+    /// currency for a contract price would relabel a USD figure as VND on any VND-priced plan.
     ///
     /// A yearly cycle is divided by twelve. It is NOT rounded here: rounding twelve subscriptions
     /// individually and then summing drifts from the true total, so rounding happens once, when
@@ -73,8 +71,8 @@ public static class AdminSubscriptionRevenue
     /// </summary>
     public static AdminMoney MonthlyAmount(AdminSubscriptionRow row)
     {
-        var (price, currency) = row.ContractPriceVnd is { } contract
-            ? (contract, PaymentConstants.Currencies.VndAccounting)
+        var (price, currency) = row.ContractPriceUsd is { } contract
+            ? (contract, PaymentConstants.Currencies.UsdAccounting)
             : (row.PlanPrice, row.PlanCurrency);
 
         var monthly = string.Equals(

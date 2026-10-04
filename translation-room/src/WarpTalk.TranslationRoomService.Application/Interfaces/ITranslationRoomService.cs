@@ -27,6 +27,45 @@ public interface ITranslationRoomService
         Guid hostId,
         CancellationToken ct = default,
         SeriesOccurrenceContext? occurrence = null);
+    /// <summary>
+    /// POST /translation-rooms/bridge/claim: find the open EXTERNAL_BRIDGE room for this Google
+    /// Meet code in the caller's workspace, or create it through the ordinary create path; seat the
+    /// caller through the ordinary join; and make them the audio capturer when there is none or the
+    /// current one's lease is stale. Workspace members only.
+    /// </summary>
+    Task<Result<ClaimBridgeRoomResponse>> ClaimBridgeRoomAsync(
+        ClaimBridgeRoomRequest request,
+        Guid userId,
+        string? userEmail = null,
+        CancellationToken ct = default);
+
+    /// <summary>Renews the caller's capturer lease. Conflict when the caller is not the capturer.</summary>
+    Task<Result<BridgeCapturerStatusDto>> HeartbeatBridgeCapturerAsync(
+        Guid translationRoomId,
+        Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Makes a participant the capturer when there is none or the lease is stale. Conflict while a
+    /// live capturer holds it.
+    /// </summary>
+    Task<Result<BridgeCapturerStatusDto>> TakeOverBridgeCapturerAsync(
+        Guid translationRoomId,
+        Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets the CALLER's own bridge audio mode ("voice" / "text") in an open EXTERNAL_BRIDGE room.
+    /// Voice → text is always allowed; text → voice is a Conflict
+    /// (<c>BRIDGE_AUDIO_MODE_LOCKED</c>) while a translation session is active. A change is
+    /// republished to the AI workers at once.
+    /// </summary>
+    Task<Result<BridgeAudioModeDto>> SetBridgeAudioModeAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? mode,
+        CancellationToken ct = default);
+
     Task<Result<TranslationRoomListResponse>> GetTranslationRoomsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>
     /// WT-334: the room detail read, for a HUMAN caller. <paramref name="userId"/> and
@@ -184,6 +223,37 @@ public interface ITranslationRoomService
     Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result<TranslationRoomDto>> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-709: the host adds ONE language to a meeting that is already open, from inside it.
+    ///
+    /// The counterpart to the rule restored in
+    /// <c>LanguagePolicy.ValidateParticipantLanguagesAsync</c>: a participant may only choose a
+    /// language the meeting declares (its L2), so the meeting needs a way to declare one more
+    /// while people are in the room. Without this the restored rule would simply turn away the
+    /// Korean-speaking guest it exists to serve.
+    ///
+    /// Its own door rather than a field on <see cref="UpdateTranslationRoomSettingsAsync"/>, for
+    /// the same reason <see cref="InviteParticipantsAsync"/> has one: that method refuses any room
+    /// past WAITING (<c>ErrorSettingsLocked</c>), and it refuses it deliberately — rewriting a
+    /// room's language SET mid-meeting could drop a language somebody is speaking. Widening that
+    /// guard would open every other settings field with it. This operation is narrow enough to be
+    /// safe in a live room precisely because it can only ADD.
+    ///
+    /// Host only (the EFFECTIVE host, so a handover carries it), the room must be in
+    /// <c>TranslationRoomConstants.RoomLanguageAddableStatuses</c>, and the code must be one the
+    /// platform supports, inside the workspace whitelist (L1) and within the plan's max_languages
+    /// quota — the last two enforced together by
+    /// <see cref="IWorkspaceMeetingPolicy.ValidateRoomLanguagesAsync"/>, which fails CLOSED. A
+    /// language the room already has is a no-op success: the host got what they asked for, and
+    /// two hosts clicking at once must not produce a duplicate or an error.
+    /// </summary>
+    /// <returns>The meeting's languages after the addition, for the caller's pickers.</returns>
+    Task<Result<RoomLanguagesDto>> AddRoomLanguageAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string language,
+        CancellationToken ct = default);
 
     // Lifecycle Controls
     Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);

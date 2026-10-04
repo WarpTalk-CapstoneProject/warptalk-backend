@@ -1,5 +1,6 @@
 using System;
 using WarpTalk.WorkspaceService.Domain.Constants;
+using WarpTalk.WorkspaceService.Domain.Entities;
 
 namespace WarpTalk.WorkspaceService.Application.Helpers;
 
@@ -121,6 +122,81 @@ public static class WorkspaceDocumentHelper
     {
         var normalizedExtension = NormalizeExtension(fileExtension);
         return $"documents/{workspaceId}/{documentId}-r{utcNow:yyyyMMddHHmmssfff}{normalizedExtension}";
+    }
+
+    /// <summary>
+    /// WT-854 — the pending revision's object, addressed the way storage addresses any document
+    /// file (storage reads only the workspace id and the key), so it can be written, read and
+    /// deleted without touching the approved file the row's own StorageKey points at.
+    /// </summary>
+    public static WorkspaceDocument PendingRevisionFile(WorkspaceDocument document) => new()
+    {
+        Id = document.Id,
+        WorkspaceId = document.WorkspaceId,
+        StorageKey = document.PendingStorageKey ?? string.Empty,
+        StorageProvider = document.PendingStorageProvider ?? document.StorageProvider,
+        Name = document.PendingName ?? document.Name,
+        FileName = document.PendingFileName ?? document.FileName,
+        FileExtension = document.PendingFileExtension ?? document.FileExtension,
+        MimeType = document.PendingMimeType ?? document.MimeType,
+    };
+
+    /// <summary>WT-854 — empty the pending revision slot. The object itself is the caller's to delete.</summary>
+    public static void ClearPendingRevision(WorkspaceDocument document)
+    {
+        document.PendingStorageKey = null;
+        document.PendingStorageProvider = null;
+        document.PendingName = null;
+        document.PendingFileName = null;
+        document.PendingFileExtension = null;
+        document.PendingMimeType = null;
+        document.PendingSizeBytes = null;
+        document.PendingContentHash = null;
+        document.PendingNote = null;
+        document.PendingUploadedBy = null;
+        document.PendingUploadedAt = null;
+    }
+
+    public static bool HasPendingRevision(WorkspaceDocument document) =>
+        !string.IsNullOrWhiteSpace(document.PendingStorageKey);
+
+    /// <summary>
+    /// Where the PII-masked copy of a document's current file lives: next to the original, as
+    /// <c>{StorageKey}_masked{extension}</c>.
+    /// </summary>
+    /// <remarks>
+    /// Derived from StorageKey and nothing else, so the copy belongs to one FILE rather than to a
+    /// document row: a new revision gets a new StorageKey and therefore starts with no masked
+    /// copy, instead of inheriting one that describes bytes it no longer has.
+    /// </remarks>
+    public static string MaskedFileStorageKey(WorkspaceDocument document) =>
+        $"{document.StorageKey}_masked{NormalizeExtension(System.IO.Path.GetExtension(document.StorageKey))}";
+
+    /// <summary>
+    /// The name a masked copy downloads as: <c>{Name} (masked){extension}</c>, in the format the
+    /// document was uploaded in.
+    /// </summary>
+    public static string MaskedDownloadFileName(WorkspaceDocument document)
+    {
+        var extension = NormalizeExtension(document.FileExtension);
+        var name = string.IsNullOrWhiteSpace(document.Name) ? document.FileName : document.Name;
+        name = (name ?? string.Empty).Trim();
+        if (extension.Length > 0 && name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[..^extension.Length].TrimEnd();
+        }
+
+        foreach (var invalid in new[] { '\\', '/', ':', '*', '?', '"', '<', '>', '|', '\r', '\n' })
+        {
+            name = name.Replace(invalid, '_');
+        }
+
+        if (name.Length == 0)
+        {
+            name = "document";
+        }
+
+        return $"{name} (masked){extension}";
     }
 
     public static string NormalizeExtension(string? fileExtension)

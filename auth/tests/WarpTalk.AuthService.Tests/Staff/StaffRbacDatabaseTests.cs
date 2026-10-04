@@ -113,6 +113,7 @@ public sealed class StaffRbacDatabaseTests : IAsyncLifetime
             new VoiceProfileRepository(_context),
             new VoiceSampleRepository(_context),
             new VoiceConsentRepository(_context),
+            new VoiceEnrollmentChallengeRepository(_context),
             new StaffMemberRepository(_context),
             new StaffInvitationRepository(_context));
 

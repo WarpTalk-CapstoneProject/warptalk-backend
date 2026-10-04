@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -199,6 +200,9 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         var policyResolver = scope.ServiceProvider.GetRequiredService<IAiPolicyResolver>();
         var embeddingPublisher = scope.ServiceProvider.GetRequiredService<IEmbeddingIndexPublisher>();
         var lifecyclePublisher = scope.ServiceProvider.GetRequiredService<IWorkspaceDocumentEventPublisher>();
+        // Optional on purpose: the masked copy is something a document may or may not get, and a
+        // host that does not register the generator still scans and indexes exactly as before.
+        var maskedVersions = scope.ServiceProvider.GetService<IDocumentMaskedVersionGenerator>();
 
         WorkspaceDocument? document = null;
         try
@@ -215,6 +219,23 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             // document that can never enter AI ingestion. AiEligible is not used
             // here because false is also the valid initial state of an approved
             // document waiting for security/indexing to complete.
+            // A RE-SCAN FOR THE MASKED COPY, asked for by an Owner/Admin.
+            //
+            // A restricted document is exactly what the gate below skips — correctly, for
+            // indexing. But the masked copy members read is a product of the scan, and documents
+            // restricted before masked copies existed have none. So the same event, for a
+            // restricted document with a re-scan request on record, runs the scan for the copy
+            // alone: nothing is indexed, and the document stays restricted whatever it finds.
+            if (maskedVersions is not null
+                && document.IsRestricted()
+                && await DocumentSecurityGuardrailHelper.HasPendingMaskedVersionRescanAsync(unitOfWork, document.Id, ct))
+            {
+                await RescanForMaskedVersionAsync(
+                    document, unitOfWork, storage, textExtractor, securityScanner, policyResolver,
+                    lifecyclePublisher, maskedVersions, ct);
+                return true;
+            }
+
             if (!DocumentSecurityGuardrailHelper.HasBasicIndexEligibility(document))
             {
                 await DocumentSecurityGuardrailHelper.MarkSkippedAsync(document, unitOfWork, lifecyclePublisher, ct);
@@ -246,10 +267,34 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             var policy = await policyResolver.ResolvePolicySettingsAsync(unitOfWork, document, ct);
 
             // 2. Read Document Content (Physical storage read + decryption)
-            ExtractedDocumentContent content;
-            using (var decryptedStream = await storage.GetDecryptedStreamAsync(document, ct))
+            var (originalFile, content) = await ReadAndExtractAsync(storage, textExtractor, document, ct);
+
+            // Unreadable text is neither stored as the document's text, scanned, nor embedded:
+            // a PII scan over operator soup answers "clean" about a file nobody read, and the
+            // embedder would index it. Not restricted either — this is a fault, not a finding.
+            if (ExtractedTextQuality.LooksUnreadable(content.FullText))
             {
-                content = await textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+                _logger.LogWarning(
+                    "Extracted text of document {DocumentId} ({Extension}) is unreadable; not scanning or indexing.",
+                    document.Id,
+                    document.FileExtension);
+                document.AiEligible = false;
+                document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+                document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.ExtractionUnreadable;
+                document.UpdatedAt = DateTime.UtcNow;
+                unitOfWork.WorkspaceDocumentRepository.Update(document);
+                await unitOfWork.SaveChangesAsync(ct);
+                await lifecyclePublisher.PublishDocumentDeletedAsync(document.Id, document.WorkspaceId, ct);
+                await lifecyclePublisher.PublishDocumentLifecycleAsync(
+                    document.Id,
+                    document.WorkspaceId,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Failed,
+                    document.UpdatedAt,
+                    document.UploadedBy,
+                    ct);
+                return true;
             }
 
             // 2.5 Save the extracted structured content serialized as JSON on disk
@@ -264,6 +309,13 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 policy.KeywordsBlacklist,
                 ct);
 
+            // The masked copy members are shown, in the file's own format. Produced here because
+            // this is the only moment both the file and the scan's answer are in hand; it stores
+            // a copy or removes the old one, and never throws for a masking reason.
+            string? maskedVersion = maskedVersions is null
+                ? null
+                : await maskedVersions.GenerateAsync(document, originalFile, content, scanResult, ct);
+
             await unitOfWork.AuditAsync(
                 document.Id,
                 document.WorkspaceId,
@@ -275,7 +327,8 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     scanResult.PiiDetected,
                     scanResult.DlpDetected,
                     policy.PiiEnabled,
-                    policy.DlpEnabled
+                    policy.DlpEnabled,
+                    MaskedVersion = maskedVersion
                 },
                 _logger,
                 ct);
@@ -297,7 +350,8 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             }
 
             var isApproved = string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase);
-            var hasMaskedContent = !string.IsNullOrWhiteSpace(scanResult.MaskedContent);
+            var hasMaskedContent = !string.IsNullOrWhiteSpace(scanResult.MaskedContent)
+                && !string.Equals(scanResult.MaskedContent.Trim(), content.FullText.Trim(), StringComparison.Ordinal);
             var canIndex = document.IsAiAllowed
                 && !wasRestrictedBeforeScan
                 && isApproved
@@ -308,7 +362,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             if (scanResult.PiiDetected && !hasMaskedContent)
             {
                 _logger.LogWarning(
-                    "Skipping embedding for document {DocumentId} because PII was detected but masked content was unavailable.",
+                    "Skipping embedding for document {DocumentId} because PII was detected but masked content was unavailable or unmasked.",
                     documentId);
             }
 
@@ -399,6 +453,20 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             // Fail-Safe Fallback (Fail-Closed Policy): Default to restricted access on error
             if (document != null)
             {
+                // A scan that did not finish says nothing about what a masked copy should hide,
+                // so a copy left by an earlier scan of this file does not outlive it.
+                if (maskedVersions is not null)
+                {
+                    try
+                    {
+                        await maskedVersions.DiscardAsync(document, ct);
+                    }
+                    catch (Exception discardEx)
+                    {
+                        _logger.LogError(discardEx, "Could not remove the masked copy of document {DocumentId} after a failed scan.", documentId);
+                    }
+                }
+
                 try
                 {
                     document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
@@ -448,6 +516,125 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
 
             return false;
         }
+    }
+
+    private static async Task<(byte[] File, ExtractedDocumentContent Content)> ReadAndExtractAsync(
+        IWorkspaceDocumentStorage storage,
+        IDocumentTextExtractor textExtractor,
+        WorkspaceDocument document,
+        CancellationToken ct)
+    {
+        byte[] file;
+        using (var decryptedStream = await storage.GetDecryptedStreamAsync(document, ct))
+        using (var buffer = new MemoryStream())
+        {
+            await decryptedStream.CopyToAsync(buffer, ct);
+            file = buffer.ToArray();
+        }
+
+        using var readable = new MemoryStream(file, writable: false);
+        var content = await textExtractor.ExtractTextAsync(readable, document.FileExtension, ct);
+        return (file, content);
+    }
+
+    /// <summary>
+    /// Runs the scan for a restricted document's masked copy and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// PII detection is forced on whatever the workspace policy says: an Owner/Admin asked for a
+    /// copy with personal details hidden, and a policy that has PII scanning off would answer
+    /// "nothing to hide" about a document that was restricted for exactly that. DLP follows the
+    /// policy, because a banned keyword still means there is no copy to give.
+    ///
+    /// The document's confidentiality, ingestion status and index are not touched. A failure
+    /// leaves no masked copy and records that the re-scan failed, so the page stops saying
+    /// "scanning" and the next attempt is a deliberate one.
+    /// </remarks>
+    private async Task RescanForMaskedVersionAsync(
+        WorkspaceDocument document,
+        IUnitOfWork unitOfWork,
+        IWorkspaceDocumentStorage storage,
+        IDocumentTextExtractor textExtractor,
+        IDocumentSecurityScanner securityScanner,
+        IAiPolicyResolver policyResolver,
+        IWorkspaceDocumentEventPublisher lifecyclePublisher,
+        IDocumentMaskedVersionGenerator maskedVersions,
+        CancellationToken ct)
+    {
+        try
+        {
+            var policy = await policyResolver.ResolvePolicySettingsAsync(unitOfWork, document, ct);
+            var (originalFile, content) = await ReadAndExtractAsync(storage, textExtractor, document, ct);
+
+            var scanResult = await securityScanner.ScanAsync(
+                content.FullText,
+                true,
+                policy.DlpEnabled,
+                policy.KeywordsBlacklist,
+                ct);
+
+            var maskedVersion = await maskedVersions.GenerateAsync(document, originalFile, content, scanResult, ct);
+
+            await unitOfWork.AuditAsync(
+                document.Id,
+                document.WorkspaceId,
+                null,
+                WorkspaceDocumentConstants.AuditActions.SecurityScanCompleted,
+                new
+                {
+                    scanResult.ViolationFound,
+                    scanResult.PiiDetected,
+                    scanResult.DlpDetected,
+                    PiiEnabled = true,
+                    policy.DlpEnabled,
+                    MaskedVersion = maskedVersion,
+                    MaskedVersionOnly = true
+                },
+                _logger,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Re-scan for the masked copy of document {DocumentId} failed.", document.Id);
+
+            try
+            {
+                await maskedVersions.DiscardAsync(document, ct);
+            }
+            catch (Exception discardEx)
+            {
+                _logger.LogError(discardEx, "Could not remove the masked copy of document {DocumentId} after a failed re-scan.", document.Id);
+            }
+
+            await unitOfWork.AuditAsync(
+                document.Id,
+                document.WorkspaceId,
+                null,
+                WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanFailed,
+                new
+                {
+                    Reason = ex is TimeoutException
+                        ? WorkspaceDocumentIngestionFailureReasons.SecurityScanTimeout
+                        : WorkspaceDocumentIngestionFailureReasons.SecurityScanFailed
+                },
+                _logger,
+                ct);
+        }
+
+        // The row itself did not change; the event is what tells an open document page to re-read.
+        await lifecyclePublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            document.WorkspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.Updated,
+            DateTime.UtcNow,
+            document.UploadedBy,
+            ct);
     }
 
 }

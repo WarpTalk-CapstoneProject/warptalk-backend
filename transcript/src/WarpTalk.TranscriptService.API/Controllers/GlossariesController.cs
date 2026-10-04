@@ -141,6 +141,25 @@ public class GlossariesController : ControllerBase
         return Ok();
     }
 
+    /// <summary>
+    /// PO 2026-10-02: change a glossary's language pair in place, Owner/Admin only (same gate as
+    /// editing the glossary). Terms are kept as they are. Answers the updated glossary.
+    /// </summary>
+    [HttpPut("{id}/languages")]
+    public async Task<ActionResult<GlossaryDto>> UpdateGlossaryLanguages(Guid id, [FromBody] UpdateGlossaryLanguagesDto request, CancellationToken cancellationToken)
+    {
+        var existing = await _glossaryService.GetGlossaryByIdAsync(id, cancellationToken);
+        if (!existing.IsSuccess) return HandleFailure(existing.ErrorCode, existing.Error);
+
+        var authError = await EnsureManagerAsync(existing.Value!.WorkspaceId, cancellationToken);
+        if (authError != null) return authError;
+
+        var result = await _glossaryService.UpdateGlossaryLanguagesAsync(id, request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+
+        return Ok(result.Value);
+    }
+
     [HttpDelete("{id}")]
     public async Task<ActionResult> DeleteGlossary(Guid id, CancellationToken cancellationToken)
     {
@@ -193,6 +212,25 @@ public class GlossariesController : ControllerBase
         if (authError != null) return authError;
 
         var result = await _glossaryService.BulkImportTermsAsync(id, request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// PO 2026-10-02: whether the glossary's terms have been loaded into WarpBot's knowledge —
+    /// state idle | loading | ready | failed plus counts. Any member of the workspace.
+    /// </summary>
+    [HttpGet("{id}/warpbot-status")]
+    public async Task<ActionResult<GlossaryWarpBotStatusDto>> GetWarpBotStatus(Guid id, CancellationToken cancellationToken)
+    {
+        var glossary = await _glossaryService.GetGlossaryByIdAsync(id, cancellationToken);
+        if (!glossary.IsSuccess) return HandleFailure(glossary.ErrorCode, glossary.Error);
+
+        var authError = await EnsureMemberAsync(glossary.Value!.WorkspaceId, cancellationToken);
+        if (authError != null) return authError;
+
+        var result = await _glossaryService.GetWarpBotStatusAsync(id, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
 
         return Ok(result.Value);

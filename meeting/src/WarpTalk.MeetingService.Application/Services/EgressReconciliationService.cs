@@ -21,21 +21,6 @@ public sealed class EgressReconciliationService : IEgressReconciliation
     /// </summary>
     private static readonly TimeSpan UnknownEgressGrace = TimeSpan.FromHours(1);
 
-    /// <summary>
-    /// LiveKit's terminal EgressStatus values. Anything else — STARTING, ACTIVE, ENDING — means
-    /// the recording is still happening and the room is right to say so.
-    ///
-    /// Matched case-insensitively on the string form, because Twirp JSON serialises a proto enum
-    /// as its name while some clients send the integer; the numeric fallback below covers that.
-    /// </summary>
-    private static readonly HashSet<string> TerminalStatuses = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "EGRESS_COMPLETE",
-        "EGRESS_FAILED",
-        "EGRESS_ABORTED",
-        "EGRESS_LIMIT_REACHED"
-    };
-
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILiveKitEgressService _egressService;
     private readonly IEgressCompletion _egressCompletion;
@@ -103,7 +88,9 @@ public sealed class EgressReconciliationService : IEgressReconciliation
                     continue;
                 }
 
-                if (!IsTerminal(info)) continue;
+                // COMPLETE/FAILED/ABORTED/LIMIT_REACHED. STARTING, ACTIVE, ENDING mean the recording
+                // is still happening and the room is right to say so.
+                if (!EgressStatuses.IsTerminal(info)) continue;
 
                 var outcome = await _egressCompletion.ApplyAsync(info, ct);
                 finished++;
@@ -142,19 +129,5 @@ public sealed class EgressReconciliationService : IEgressReconciliation
 
         if (finished > 0) await _unitOfWork.SaveChangesAsync();
         return Result.Success(finished);
-    }
-
-    private static bool IsTerminal(JsonElement info)
-    {
-        if (!info.TryGetProperty("status", out var status)) return false;
-
-        if (status.ValueKind == JsonValueKind.String)
-            return TerminalStatuses.Contains(status.GetString() ?? string.Empty);
-
-        // Proto enum ordinals: 0 STARTING, 1 ACTIVE, 2 ENDING, 3 COMPLETE, 4 FAILED, 5 ABORTED,
-        // 6 LIMIT_REACHED. Only used when a client sends the numeric form.
-        return status.ValueKind == JsonValueKind.Number
-            && status.TryGetInt32(out var ordinal)
-            && ordinal >= 3;
     }
 }

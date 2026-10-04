@@ -35,14 +35,23 @@ public interface IRoomHostAuthority
     /// the "External Meeting" stand-in's language? Asked by
     /// TranslationRoomHub.SetExternalMeetingLanguage.
     ///
-    /// Deliberately NARROWER than <see cref="HasHostAuthorityAsync"/>: the same two gates as the
-    /// bridge-token endpoint (MeetingRoomService.GenerateBridgeTokenAsync), because it acts on the
-    /// same identity. Only an EXTERNAL_BRIDGE room has a stand-in, and only its host — the one
-    /// person whose device publishes the far side's audio — speaks for it. A workspace Owner/Admin
-    /// who is not in the call has no way to know what the far side is speaking. An ended room is
-    /// refused: there is no mesh left to re-route.
+    /// Only an EXTERNAL_BRIDGE room has a stand-in. PO rule 2026-10-01: the room host OR the
+    /// current capturer may say what it speaks (ExternalBridgeConstants.CanControlBridgeSession),
+    /// the same rule as the bridge's other session controls. Deliberately without the workspace
+    /// Owner/Admin widening of <see cref="HasHostAuthorityAsync"/>: an Owner/Admin who is not in
+    /// the call has no way to know what the far side is speaking. An ended room is refused: there
+    /// is no mesh left to re-route.
     /// </summary>
     Task<bool> CanSetExternalMeetingLanguageAsync(Guid translationRoomId, string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// May this caller report the far side's live speaker names (TranslationRoomHub.ReportFarSpeakerHints)?
+    /// Narrower than <see cref="CanSetExternalMeetingLanguageAsync"/>: the bridge AUDIO OWNER of a
+    /// live EXTERNAL_BRIDGE room only — the capturer (the host, for a legacy room with no capturer),
+    /// the same gate as the bridge-token endpoint — because only the capturer's desktop reads the
+    /// Meet captions these come from.
+    /// </summary>
+    Task<bool> CanReportFarSpeakerHintsAsync(Guid translationRoomId, string userId, CancellationToken ct = default);
 }
 
 /// <summary>WT-699 / TC1806: where a connection may sit relative to a room's broadcasts.</summary>
@@ -175,15 +184,29 @@ public sealed class RoomHostAuthority : IRoomHostAuthority
     /// <remarks>Fails closed on the room lookup, as the host check does.</remarks>
     public async Task<bool> CanSetExternalMeetingLanguageAsync(Guid translationRoomId, string userId, CancellationToken ct = default)
     {
+        var room = await TryGetBridgeRoomAsync(translationRoomId, userId, "set the external meeting's language", ct);
+        return room is not null && CanSetExternalMeetingLanguage(room, userId);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Fails closed on the room lookup, as the host check does.</remarks>
+    public async Task<bool> CanReportFarSpeakerHintsAsync(Guid translationRoomId, string userId, CancellationToken ct = default)
+    {
+        var room = await TryGetBridgeRoomAsync(translationRoomId, userId, "report far-side speakers", ct);
+        return room is not null && IsExternalBridgeHost(room, userId);
+    }
+
+    private async Task<GetTranslationRoomResponse?> TryGetBridgeRoomAsync(
+        Guid translationRoomId, string userId, string action, CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(userId))
         {
-            return false;
+            return null;
         }
 
-        GetTranslationRoomResponse room;
         try
         {
-            room = await _roomClient.GetTranslationRoomByIdAsync(
+            return await _roomClient.GetTranslationRoomByIdAsync(
                 new GetTranslationRoomRequest { Id = translationRoomId.ToString() },
                 cancellationToken: ct);
         }
@@ -191,19 +214,42 @@ public sealed class RoomHostAuthority : IRoomHostAuthority
         {
             _logger.LogWarning(
                 ex,
-                "RoomHostAuthority: could not resolve room {RoomId} to authorize {UserId} to set the external meeting's language; refusing.",
+                "RoomHostAuthority: could not resolve room {RoomId} to authorize {UserId} to {Action}; refusing.",
                 translationRoomId,
-                userId);
-            return false;
+                userId,
+                action);
+            return null;
         }
-
-        return IsExternalBridgeHost(room, userId);
     }
 
     /// <summary>
-    /// The pure half of <see cref="CanSetExternalMeetingLanguageAsync"/>. An empty room type (a
-    /// response from a server older than the field) is "not a bridge", never a permissive default —
-    /// the same reading the proto comment on translation_room_type requires.
+    /// The pure half of <see cref="CanSetExternalMeetingLanguageAsync"/> ("They speak"). PO rule
+    /// 2026-10-01: the host (booker or effective host after a transfer) OR the current capturer —
+    /// <see cref="ExternalBridgeConstants.CanControlBridgeSession"/>, the same rule /resume,
+    /// /stop-translation and transcript Pause/Resume use. It used to be the audio owner only, so a
+    /// host who had handed capture to someone else could not say what the far side speaks.
+    ///
+    /// Still bridge-only and still live-only, and still NOT workspace Owner/Admin: someone not in
+    /// the call cannot know what the far side is speaking. Writing the stand-in's language is not
+    /// publishing as the stand-in — that (the bridge LiveKit token) stays audio-owner only.
+    /// </summary>
+    public static bool CanSetExternalMeetingLanguage(GetTranslationRoomResponse room, string userId)
+        => ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType)
+            && ExternalBridgeConstants.CanControlBridgeSession(
+                room.TranslationRoomType,
+                room.HostId,
+                room.EffectiveHostId,
+                room.BridgeCapturerUserId,
+                userId)
+            && IsLive(room);
+
+    /// <summary>
+    /// Whether the caller is the bridge AUDIO OWNER of a live EXTERNAL_BRIDGE room: the capturer —
+    /// the one desktop publishing the far side — or the host of a legacy room that has none. Same
+    /// predicate as the bridge-token endpoint. Gates the far-speaker caption hints, which only the
+    /// capturer's desktop can observe. An empty room type (a response from a server older than the
+    /// field) is "not a bridge", never a permissive default — the same reading the proto comment
+    /// on translation_room_type requires.
     /// </summary>
     public static bool IsExternalBridgeHost(GetTranslationRoomResponse room, string userId)
     {
@@ -212,12 +258,16 @@ public sealed class RoomHostAuthority : IRoomHostAuthority
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(room.HostId)
-            || !string.Equals(room.HostId, userId, StringComparison.OrdinalIgnoreCase))
+        if (!ExternalBridgeConstants.IsBridgeAudioOwner(room.BridgeCapturerUserId, room.HostId, userId))
         {
             return false;
         }
 
+        return IsLive(room);
+    }
+
+    private static bool IsLive(GetTranslationRoomResponse room)
+    {
         var status = room.Status?.Trim().ToUpperInvariant();
         return status is not ("ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED");
     }

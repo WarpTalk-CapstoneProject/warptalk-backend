@@ -13,7 +13,7 @@ public static class WorkspaceDocumentMapper
 {
     public static WorkspaceDocumentDto ToDto(
         this WorkspaceDocument doc,
-        string downloadUrl,
+        string? downloadUrl,
         Guid? approvedBy = null,
         string? rejectionReason = null)
     {
@@ -40,8 +40,28 @@ public static class WorkspaceDocumentMapper
             doc.CreatedAt,
             doc.UpdatedAt,
             doc.IngestionFailureReason,
-            rejectionReason
+            rejectionReason,
+            doc.ToPendingRevisionDto()
         );
+    }
+
+    /// <summary>WT-854 — the pending revision slot as the API shows it, or null when empty.</summary>
+    public static WorkspaceDocumentPendingRevisionDto? ToPendingRevisionDto(this WorkspaceDocument doc)
+    {
+        if (string.IsNullOrWhiteSpace(doc.PendingStorageKey))
+        {
+            return null;
+        }
+
+        return new WorkspaceDocumentPendingRevisionDto(
+            doc.PendingName ?? doc.Name,
+            doc.PendingFileName ?? doc.FileName,
+            doc.PendingFileExtension ?? doc.FileExtension,
+            doc.PendingMimeType ?? doc.MimeType,
+            doc.PendingSizeBytes ?? 0,
+            doc.PendingUploadedBy,
+            doc.PendingUploadedAt ?? doc.UpdatedAt,
+            doc.PendingNote);
     }
 
     public static WorkspaceDocument ToEntity(
@@ -140,6 +160,59 @@ public static class WorkspaceDocumentMapper
             audit.ActorId,
             audit.ActionAt,
             ReadAuditReason(audit.Metadata));
+    }
+
+    /// <summary>What a SecurityScanCompleted audit row says the scan found.</summary>
+    /// <param name="RestrictedByPii">Personal details were found and no banned keyword was.</param>
+    /// <param name="MaskedVersion">A WorkspaceDocumentMaskedVersionStatuses value, or null on rows older than masked copies.</param>
+    public readonly record struct ScanOutcome(bool RestrictedByPii, string? MaskedVersion);
+
+    /// <summary>
+    /// Reads a SecurityScanCompleted row's Metadata. The guardrail writes it as an anonymous
+    /// object (`PiiDetected`, `DlpDetected`, `MaskedVersion`), so the property names are the
+    /// contract; they are matched without regard to case, and anything unreadable is "the scan
+    /// said nothing", which every caller treats as the closed answer.
+    /// </summary>
+    public static ScanOutcome ReadScanOutcome(string? metadata)
+    {
+        if (string.IsNullOrWhiteSpace(metadata))
+        {
+            return default;
+        }
+
+        try
+        {
+            using var parsed = JsonDocument.Parse(metadata);
+            if (parsed.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return default;
+            }
+
+            bool pii = false, dlp = false;
+            string? masked = null;
+            foreach (var property in parsed.RootElement.EnumerateObject())
+            {
+                if (property.NameEquals("PiiDetected") || string.Equals(property.Name, "piiDetected", StringComparison.OrdinalIgnoreCase))
+                {
+                    pii = property.Value.ValueKind == JsonValueKind.True;
+                }
+                else if (string.Equals(property.Name, "DlpDetected", StringComparison.OrdinalIgnoreCase))
+                {
+                    dlp = property.Value.ValueKind == JsonValueKind.True;
+                }
+                else if (string.Equals(property.Name, "MaskedVersion", StringComparison.OrdinalIgnoreCase)
+                         && property.Value.ValueKind == JsonValueKind.String)
+                {
+                    masked = property.Value.GetString();
+                }
+            }
+
+            return new ScanOutcome(pii && !dlp, masked);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
     }
 
     /// <summary>The `reason` string inside an audit row's Metadata JSON, or null.</summary>

@@ -31,7 +31,7 @@ public static class ExpenseReportBuilder
         DateTime now)
     {
         var categoryById = categories.ToDictionary(c => c.Id);
-        var budgetByCell = budgets.ToDictionary(b => (b.CategoryId, b.Month), b => b.AmountVnd);
+        var budgetByCell = budgets.ToDictionary(b => (b.CategoryId, b.Month), b => b.AmountUsd);
 
         var monthRows = months.Select(month => MonthRow(month, rows, budgetByCell)).ToList();
 
@@ -39,24 +39,24 @@ public static class ExpenseReportBuilder
             .Select(category =>
             {
                 var own = rows.Where(r => r.Expense.CategoryId == category.Id).ToList();
-                var budget = budgets.Where(b => b.CategoryId == category.Id).Select(b => b.AmountVnd).DefaultIfEmpty().Sum();
+                var budget = budgets.Where(b => b.CategoryId == category.Id).Select(b => b.AmountUsd).DefaultIfEmpty().Sum();
                 return new ExpenseCategoryTotalDto(
                     category.Id, category.Slug, category.Name, category.Color,
-                    own.Sum(r => r.Vnd ?? 0), own.Count,
+                    own.Sum(r => r.Usd ?? 0), own.Count,
                     budgets.Any(b => b.CategoryId == category.Id) ? budget : null);
             })
-            .Where(total => total.Count > 0 || total.BudgetVnd is not null)
-            .OrderByDescending(total => total.AmountVnd)
+            .Where(total => total.Count > 0 || total.BudgetUsd is not null)
+            .OrderByDescending(total => total.AmountUsd)
             .ToList();
 
         var topVendors = rows
             .GroupBy(r => r.Expense.Vendor.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(group => new ExpenseVendorTotalDto(
                 group.First().Expense.Vendor.Trim(),
-                group.Sum(r => r.Vnd ?? 0),
+                group.Sum(r => r.Usd ?? 0),
                 group.Count(),
                 group.GroupBy(r => r.Expense.CategoryId).OrderByDescending(g => g.Count()).Select(g => categoryById.GetValueOrDefault(g.Key)?.Name).FirstOrDefault()))
-            .OrderByDescending(vendor => vendor.AmountVnd)
+            .OrderByDescending(vendor => vendor.AmountUsd)
             .ThenBy(vendor => vendor.Vendor, StringComparer.OrdinalIgnoreCase)
             .Take(TopVendorCount)
             .ToList();
@@ -66,24 +66,24 @@ public static class ExpenseReportBuilder
         var alerts = new List<ExpenseBudgetAlertDto>();
         foreach (var month in monthRows)
         {
-            foreach (var cell in month.Categories.Where(c => c.BudgetVnd is > 0))
+            foreach (var cell in month.Categories.Where(c => c.BudgetUsd is > 0))
             {
-                var percent = Math.Round(cell.AmountVnd * 100m / cell.BudgetVnd!.Value, 1, MidpointRounding.AwayFromZero);
+                var percent = Math.Round(cell.AmountUsd * 100m / cell.BudgetUsd!.Value, 1, MidpointRounding.AwayFromZero);
                 if (percent < AlertThresholdPercent) continue;
                 alerts.Add(new ExpenseBudgetAlertDto(
                     cell.CategoryId, categoryById.GetValueOrDefault(cell.CategoryId)?.Name ?? string.Empty,
-                    month.Month, cell.BudgetVnd.Value, cell.AmountVnd, percent, percent > 100m));
+                    month.Month, cell.BudgetUsd.Value, cell.AmountUsd, percent, percent > 100m));
             }
         }
 
-        var total = rows.Sum(r => r.Vnd ?? 0);
+        var total = rows.Sum(r => r.Usd ?? 0);
         var elapsed = months.Count(month => month <= ExpenseRecurrence.FirstOfMonth(today));
         var runRate = series
             .Where(s => s.Expense.RecurrenceEndDate is null || s.Expense.RecurrenceEndDate >= today)
             .Sum(s =>
             {
-                var vnd = OperatingExpenseService.ToVnd(s.Expense.Amount, s.Expense.Currency, today, fx).Vnd ?? 0;
-                return s.Expense.Recurrence == OperatingExpenseConstants.Recurrences.Yearly ? vnd / 12m : vnd;
+                var usd = OperatingExpenseService.ToUsd(s.Expense.Amount, s.Expense.Currency, today, fx).Usd ?? 0;
+                return s.Expense.Recurrence == OperatingExpenseConstants.Recurrences.Yearly ? usd / 12m : usd;
             });
 
         return new ExpenseReportDto(
@@ -97,11 +97,11 @@ public static class ExpenseReportBuilder
             commitments,
             alerts.OrderByDescending(a => a.Month, StringComparer.Ordinal).ThenByDescending(a => a.Percent).ToList(),
             total,
-            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Paid).Sum(r => r.Vnd ?? 0),
-            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Planned).Sum(r => r.Vnd ?? 0),
+            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Paid).Sum(r => r.Usd ?? 0),
+            rows.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Planned).Sum(r => r.Usd ?? 0),
             elapsed == 0 ? 0 : decimal.Round(total / elapsed, 0, MidpointRounding.AwayFromZero),
             decimal.Round(runRate, 0, MidpointRounding.AwayFromZero),
-            rows.Count(r => r.Vnd is null),
+            rows.Count(r => r.Usd is null),
             OperatingExpenseService.Describe(rows));
     }
 
@@ -117,19 +117,19 @@ public static class ExpenseReportBuilder
         var cells = categoryIds
             .Select(id =>
             {
-                var amount = own.Where(r => r.Expense.CategoryId == id).Sum(r => r.Vnd ?? 0);
+                var amount = own.Where(r => r.Expense.CategoryId == id).Sum(r => r.Usd ?? 0);
                 decimal? budget = budgetByCell.TryGetValue((id, month), out var b) ? b : null;
                 return new ExpenseMonthCategoryDto(id, amount, budget, budget is { } cap && amount > cap);
             })
-            .OrderByDescending(c => c.AmountVnd)
+            .OrderByDescending(c => c.AmountUsd)
             .ToList();
         var budgets = budgetByCell.Where(kv => kv.Key.Month == month).Select(kv => kv.Value).ToList();
 
         return new ExpenseReportMonthDto(
             ExpenseRecurrence.MonthKey(month),
-            own.Sum(r => r.Vnd ?? 0),
-            own.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Paid).Sum(r => r.Vnd ?? 0),
-            own.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Planned).Sum(r => r.Vnd ?? 0),
+            own.Sum(r => r.Usd ?? 0),
+            own.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Paid).Sum(r => r.Usd ?? 0),
+            own.Where(r => r.Expense.Status == OperatingExpenseConstants.Statuses.Planned).Sum(r => r.Usd ?? 0),
             budgets.Count == 0 ? null : budgets.Sum(),
             cells);
     }
@@ -149,7 +149,7 @@ public static class ExpenseReportBuilder
             var e = row.Expense;
             list.Add(new ExpenseCommitmentDto(
                 e.Id, e.RecurringSourceId, e.ExpenseDate, e.Vendor, e.CategoryId, categories.GetValueOrDefault(e.CategoryId)?.Name ?? string.Empty,
-                e.Amount, e.Currency, row.Vnd,
+                e.Amount, e.Currency, row.Usd,
                 e.RecurringSourceId is null ? OperatingExpenseConstants.Recurrences.None : "occurrence", Projected: false));
         }
 
@@ -162,7 +162,7 @@ public static class ExpenseReportBuilder
             {
                 list.Add(new ExpenseCommitmentDto(
                     null, e.Id, date, e.Vendor, e.CategoryId, categories.GetValueOrDefault(e.CategoryId)?.Name ?? string.Empty,
-                    e.Amount, e.Currency, OperatingExpenseService.ToVnd(e.Amount, e.Currency, date, fx).Vnd,
+                    e.Amount, e.Currency, OperatingExpenseService.ToUsd(e.Amount, e.Currency, date, fx).Usd,
                     e.Recurrence, Projected: true));
             }
         }
@@ -182,7 +182,7 @@ public static class FinancePnlBuilder
         IReadOnlyList<ExpenseBudget> budgets,
         DateTime now)
     {
-        var budgetByCell = budgets.ToDictionary(b => (b.CategoryId, b.Month), b => b.AmountVnd);
+        var budgetByCell = budgets.ToDictionary(b => (b.CategoryId, b.Month), b => b.AmountUsd);
         var dayByMonth = pnl.Days.GroupBy(day => day.Key[..7], StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
 
         var monthRows = new List<FinancePnlMonthDto>();
@@ -191,15 +191,15 @@ public static class FinancePnlBuilder
             var key = ExpenseRecurrence.MonthKey(month);
             var days = dayByMonth.GetValueOrDefault(key) ?? [];
             var expense = ExpenseReportBuilder.MonthRow(month, rows, budgetByCell);
-            monthRows.Add(Row(key, days, expense.TotalVnd, expense.Categories));
+            monthRows.Add(Row(key, days, expense.TotalUsd, expense.Categories));
         }
 
         var allDays = pnl.Days.Where(day => months.Any(m => day.Key.StartsWith(ExpenseRecurrence.MonthKey(m), StringComparison.Ordinal))).ToList();
         var byCategory = monthRows
             .SelectMany(m => m.ExpensesByCategory)
             .GroupBy(c => c.CategoryId)
-            .Select(g => new ExpenseMonthCategoryDto(g.Key, g.Sum(c => c.AmountVnd), null, false))
-            .OrderByDescending(c => c.AmountVnd)
+            .Select(g => new ExpenseMonthCategoryDto(g.Key, g.Sum(c => c.AmountUsd), null, false))
+            .OrderByDescending(c => c.AmountUsd)
             .ToList();
         var total = Row("total", allDays, monthRows.Sum(m => m.OperatingExpenses), byCategory);
 

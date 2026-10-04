@@ -26,7 +26,7 @@ using WarpTalk.TranslationRoomService.Domain.ValueObjects;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
 
-public class TranslationRoomService : ITranslationRoomService
+public partial class TranslationRoomService : ITranslationRoomService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomRepository _translationRoomRepository;
@@ -101,6 +101,21 @@ public class TranslationRoomService : ITranslationRoomService
     /// clients re-read the session list rather than trusting a payload.
     /// </summary>
     private const string TranslationStoppedCommand = "TranslationStopped";
+
+    /// <summary>
+    /// WT-709: the relay command TranslationRoomRedisSubscriberService turns into the
+    /// "RoomLanguagesChanged" SignalR event, after the host adds a language to a running meeting.
+    ///
+    /// Carries the room's languages rather than just the one that was added, and that is the
+    /// point: every client's picker shows the SET, so a client that missed an earlier event (a
+    /// reconnect, a second addition while a tab was backgrounded) repaints correctly from any
+    /// single message instead of accumulating deltas it may have holes in.
+    ///
+    /// Relayed to the lobby group as well as the room group. The person this feature exists for
+    /// is usually still at the door: a guest knocks, the host sees they need Korean and adds it,
+    /// and the pre-join picker they are looking at has to grow the option without a reload.
+    /// </summary>
+    private const string RoomLanguagesChangedCommand = "RoomLanguagesChanged";
 
     /// <summary>
     /// WT-187: the channel NotificationRedisSubscriberService relays to the
@@ -372,11 +387,26 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <inheritdoc />
-    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
+    public Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
         CreateTranslationRoomRequest request,
         Guid hostId,
         CancellationToken ct = default,
-        SeriesOccurrenceContext? occurrence = null)
+        SeriesOccurrenceContext? occurrence = null) =>
+        CreateTranslationRoomCoreAsync(request, hostId, ct, occurrence, bridgeMeetCode: null);
+
+    /// <summary>
+    /// The one creation path. <paramref name="bridgeMeetCode"/> is set only by bridge claim
+    /// (<see cref="ClaimBridgeRoomAsync"/>): the room is stamped with that normalized Meet code and
+    /// the creator as its first capturer BEFORE the insert, so the per-workspace unique index on
+    /// open bridge rooms is what decides a concurrent claim. A loser of that race gets
+    /// <see cref="ErrorCodes.Conflict"/> with nothing left tracked, and re-reads the winner's room.
+    /// </summary>
+    private async Task<Result<TranslationRoomDto>> CreateTranslationRoomCoreAsync(
+        CreateTranslationRoomRequest request,
+        Guid hostId,
+        CancellationToken ct,
+        SeriesOccurrenceContext? occurrence,
+        string? bridgeMeetCode)
     {
         try
         {
@@ -468,6 +498,19 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>(reason, policy.ErrorCode);
             }
 
+            // GMCAL1001: a Google Meet room filed through the ordinary create (WarpBot books a Meet,
+            // then the AI worker files its WarpTalk room) carries the Meet code too, so the
+            // desktop's later bridge claim FINDS this room instead of opening a second one. Only
+            // the code: the capturer is whoever first claims from the desktop, not the booker.
+            var meetCode = bridgeMeetCode ?? MeetCodeOfOrdinaryCreate(request, occurrence);
+            if (bridgeMeetCode is null && meetCode is not null)
+            {
+                // Cheap pre-check; the unique index below still decides a race.
+                var existing = await _translationRoomRepository.GetOpenBridgeRoomByMeetCodeAsync(workspaceId, meetCode, ct);
+                if (existing is not null)
+                    return await ExistingMeetRoomForCreatorAsync(existing, hostId, ct);
+            }
+
             // 1. Determine initial status
             var status = request.ScheduledAt.HasValue ? "SCHEDULED" : "WAITING";
 
@@ -507,6 +550,19 @@ public class TranslationRoomService : ITranslationRoomService
             room.SeriesId = occurrence?.SeriesId;
             room.SeriesOccurrenceLocalDate = occurrence?.LocalDate;
 
+            // Bridge claim: the Meet code and the first capturer are part of the INSERT, never a
+            // follow-up update, so the unique index sees them at the moment it has to decide.
+            if (bridgeMeetCode is not null)
+            {
+                room.ExternalMeetingCode = bridgeMeetCode;
+                room.BridgeCapturerUserId = hostId;
+                room.BridgeCapturerHeartbeatAt = _utcNow();
+            }
+            else if (meetCode is not null)
+            {
+                room.ExternalMeetingCode = meetCode;
+            }
+
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
@@ -527,15 +583,43 @@ public class TranslationRoomService : ITranslationRoomService
             // they are actually sitting in. The stand-in is seeded here, at creation, rather than
             // when the room starts, because the audio mesh is built from whoever holds a seat and
             // a bridge room with one seat would generate no routes at all.
+            TranslationRoomParticipant? standIn = null;
             if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
             {
-                await _participantRepository.AddAsync(
-                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs, externalMeetingLanguage),
-                    ct);
+                standIn = TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs, externalMeetingLanguage);
+                await _participantRepository.AddAsync(standIn, ct);
             }
 
-            await _unitOfWork.SaveChangesAsync(ct);
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+            catch (Exception ex) when (meetCode is not null && PersistenceConflict.IsUniqueViolation(ex))
+            {
+                // Another desktop claimed this Meet code first. Untrack the losing rows — Remove on
+                // an Added entity detaches it — so the caller's follow-up join does not try to
+                // insert them again on its own SaveChanges.
+                if (standIn is not null) _participantRepository.Remove(standIn);
+                _participantRepository.Remove(hostParticipant);
+                _translationRoomRepository.Remove(room);
+
+                // GMCAL1001: an ordinary create that lost the race answers like the pre-check did.
+                if (bridgeMeetCode is null)
+                {
+                    var winner = await _translationRoomRepository.GetOpenBridgeRoomByMeetCodeAsync(room.WorkspaceId, meetCode, ct);
+                    return winner is null
+                        ? Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict)
+                        : await ExistingMeetRoomForCreatorAsync(winner, hostId, ct);
+                }
+
+                _logger.LogInformation(
+                    "Bridge claim for Meet code {MeetCode} in workspace {WorkspaceId} lost the create race; joining the existing room.",
+                    bridgeMeetCode, room.WorkspaceId);
+                return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
+            }
             await PublishRoomTargetLanguagesAsync(room, ct);
+            if (standIn is not null)
+                await SeedExternalMeetingLanguageAsync(room, standIn.SpeakLanguage, ct);
 
             // Send invitations
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
@@ -627,6 +711,46 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while creating translation room for HostId: {HostId}", hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while creating the room.", ErrorCodes.InternalServerError);
         }
+    }
+
+    private const string MeetRoomAlreadyExists = "An open room for this Google Meet call already exists.";
+
+    /// <summary>
+    /// The normalized Meet code an ordinary create stamps: a one-off (never a series occurrence)
+    /// EXTERNAL_BRIDGE room on GOOGLE_MEET whose join link parses. Null for every other room.
+    /// </summary>
+    private static string? MeetCodeOfOrdinaryCreate(CreateTranslationRoomRequest request, SeriesOccurrenceContext? occurrence)
+    {
+        if (occurrence is not null
+            || !TranslationRoomTypes.IsExternalBridge(TranslationRoomTypes.Normalize(request.TranslationRoomType))
+            || !string.Equals(request.ExternalProvider, TranslationRoomConstants.ExternalProviderGoogleMeet, StringComparison.Ordinal))
+            return null;
+
+        return GoogleMeetCode.TryNormalize(request.ExternalMeetingUrl, out var code) ? code : null;
+    }
+
+    /// <summary>
+    /// GMCAL1001: creating a room for a Meet code that already has an open one in the workspace
+    /// is idempotent — the caller gets that room back (same DTO as a fresh create), so a retried
+    /// WarpBot booking or a second filing never 500s on the unique index. Only when the caller
+    /// could already read it: host (effective or booker) or participant — the RoomReadAccess
+    /// clauses answerable without an email. Anyone else gets 409 rather than a stranger's room.
+    /// </summary>
+    private async Task<Result<TranslationRoomDto>> ExistingMeetRoomForCreatorAsync(
+        TranslationRoom existing, Guid callerId, CancellationToken ct)
+    {
+        var readable = existing.HostId == callerId
+            || existing.IsHostedBy(callerId)
+            || await _participantRepository.GetByRoomAndUserAsync(existing.Id, callerId, ct) is not null;
+        if (!readable)
+            return Result.Failure<TranslationRoomDto>(MeetRoomAlreadyExists, ErrorCodes.Conflict);
+
+        _logger.LogInformation(
+            "Create for Meet code {MeetCode} in workspace {WorkspaceId} returned the existing open room {RoomId}.",
+            existing.ExternalMeetingCode, existing.WorkspaceId, existing.Id);
+        return Result.Success(existing.ToResponseDto(
+            await _participantRepository.CountSeatHoldingParticipantsAsync(existing.Id, ct),
+            await _participantRepository.CountEverJoinedAsync(existing.Id, ct)));
     }
 
     public async Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default)
@@ -935,6 +1059,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (room == null || room.WorkspaceId == Guid.Empty)
                 return Result.Success(EmptyJoinLanguagePolicy);
 
+            // WT-866: a link to a meeting that is over opened the full pre-join screen — camera,
+            // microphone, language pickers — and only the Join press learned it was dead. The
+            // join refuses with exactly this fact (see JoinTranslationRoomAsync), so saying it
+            // here first reveals nothing the join does not, and spares the round trip.
+            if (TranslationRoomConstants.TerminalStatuses.Contains(room.Status))
+                return Result.Success(EmptyJoinLanguagePolicy with { RoomEnded = true });
+
             // WT-490: the languages this ROOM declares — its source plus its targets, deduped.
             // A room is defined by the set of languages that will be spoken in it, and the screen
             // was ignoring that set entirely: a workspace permitting four languages and a room
@@ -1062,8 +1193,27 @@ public class TranslationRoomService : ITranslationRoomService
                 var userDefaults = await _userSettingsDirectory.GetDefaultsAsync(userId, ct);
                 if (userDefaults != null)
                 {
-                    speakLang ??= userDefaults.DefaultSpeakLanguage;
-                    listenLang ??= userDefaults.DefaultListenLanguage;
+                    var declared = LanguagePolicy.LanguagePolicy.DeclaredLanguages(translationRoom);
+
+                    // WT-709: a profile default is not a choice the joiner made for THIS meeting,
+                    // so it is not refused like one. A default outside the meeting's languages
+                    // falls back to the meeting's source language; only a language the joiner
+                    // actually picked is held to the rule and refused with "ask the host".
+                    string? FitDefault(string? fallback)
+                    {
+                        if (string.IsNullOrWhiteSpace(fallback) || declared.Count == 0)
+                            return fallback;
+
+                        var normalized = LanguageHelper.NormalizeLanguageCode(fallback);
+                        return declared.Contains(normalized, StringComparer.OrdinalIgnoreCase)
+                            ? fallback
+                            : LanguageHelper.NormalizeLanguageCode(translationRoom.SourceLanguage);
+                    }
+
+                    if (string.IsNullOrWhiteSpace(speakLang))
+                        speakLang = FitDefault(userDefaults.DefaultSpeakLanguage);
+                    if (string.IsNullOrWhiteSpace(listenLang))
+                        listenLang = FitDefault(userDefaults.DefaultListenLanguage);
                 }
             }
 
@@ -1147,7 +1297,7 @@ public class TranslationRoomService : ITranslationRoomService
                 !isHost &&
                 !TranslationRoomParticipantStatuses.HoldsSeat(participant?.Status))
             {
-                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct);
+                var seatsTaken = await CountSeatsAgainstCapacityAsync(translationRoom, ct);
                 if (seatsTaken >= translationRoom.MaxParticipants)
                 {
                     // Conflict, not Forbidden or InvalidState: the caller is permitted and the room
@@ -1671,7 +1821,15 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (translationRoom.Status == "IN_PROGRESS")
             {
-                await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+                // WT-708: the re-Start republishes the room's languages, so it is a drift check
+                // like any other start — a host who restarts after an admin narrowed L1 must not
+                // push the forbidden languages back at the AI workers.
+                var restartLanguages = await ResolveEffectiveStartLanguagesAsync(translationRoom, ct);
+                if (!restartLanguages.IsSuccess)
+                    return Result.Failure<TranslationRoomDto>(restartLanguages.Error!, restartLanguages.ErrorCode);
+
+                await PublishRoomTargetLanguagesAsync(
+                    translationRoom, ct, restartLanguages.Value!.TargetLanguages);
 
                 // S7. This early return used to skip route generation entirely, which is why
                 // "just restart the room" never recovered a late joiner who had no route row.
@@ -1688,7 +1846,8 @@ public class TranslationRoomService : ITranslationRoomService
 
                 return Result.Success(translationRoom.ToResponseDto(
                     await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
-                    await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                    await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct))
+                    with { LanguagePolicyNotice = restartLanguages.Value!.Notice });
             }
 
             // OPEN joins the two here rather than replacing them (WT-612): the clock opens the
@@ -1710,6 +1869,13 @@ public class TranslationRoomService : ITranslationRoomService
                 translationRoom.WorkspaceId, ct);
             if (!lifecycle.IsSuccess)
                 return Result.Failure<TranslationRoomDto>(lifecycle.Error!, lifecycle.ErrorCode);
+
+            // WT-708: and the workspace's language whitelist as it stands RIGHT NOW, not as it
+            // stood when the room was booked. Ordered after the suspension gate and before
+            // anything is written, so a refusal leaves the room exactly SCHEDULED/WAITING.
+            var startLanguages = await ResolveEffectiveStartLanguagesAsync(translationRoom, ct);
+            if (!startLanguages.IsSuccess)
+                return Result.Failure<TranslationRoomDto>(startLanguages.Error!, startLanguages.ErrorCode);
 
             // (Re)generate audio routes for the participants currently in the room so speech is
             // routed correctly once translation starts. Routes form a full mesh between
@@ -1758,7 +1924,7 @@ public class TranslationRoomService : ITranslationRoomService
                 throw;
             }
 
-            await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+            await PublishRoomTargetLanguagesAsync(translationRoom, ct, startLanguages.Value!.TargetLanguages);
 
             // WT-322: tell everyone already in the room that translation is now live. Published
             // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
@@ -1790,7 +1956,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct),
-                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct)));
+                await _participantRepository.CountEverJoinedAsync(translationRoom.Id, ct))
+                with { LanguagePolicyNotice = startLanguages.Value!.Notice });
         }
         catch (Exception ex)
         {
@@ -1851,6 +2018,156 @@ public class TranslationRoomService : ITranslationRoomService
 
         return Result.Success();
     }
+
+    /// <summary>
+    /// WT-708 — what this room may actually be translated into, judged against the workspace
+    /// whitelist AS IT STANDS NOW rather than as it stood when the room was booked.
+    ///
+    /// THE DRIFT
+    ///   A meeting's languages (L2 = source ∪ targets) are checked against the workspace whitelist
+    ///   (L1) at creation and at edit, and by nothing afterwards. An admin who narrows L1 on Monday
+    ///   therefore leaves every room booked before Monday carrying languages the workspace no
+    ///   longer allows — and Start handed that stored set straight to the AI workers via
+    ///   <see cref="PublishRoomTargetLanguagesAsync"/>, so the owner's setting was enforced against
+    ///   the booking form and against nothing that actually costs money.
+    ///
+    /// WHAT IT DOES ABOUT IT
+    ///   Nothing at all when L1 is empty — empty means UNRESTRICTED here exactly as it does
+    ///   everywhere else that reads this list, and reading it the other way would refuse every
+    ///   meeting in every workspace that never configured languages, which is most of them.
+    ///
+    ///   Otherwise it recomputes L2 ∩ L1. A partially narrowed meeting PROCEEDS with the
+    ///   intersection — that is what reaches the workers, and the host is told in the response what
+    ///   was dropped. A meeting with no translatable language left is REFUSED, naming both sets,
+    ///   because starting it would open a billable room that translates into nothing.
+    ///
+    /// WHAT IT DELIBERATELY DOES NOT DO
+    ///   It does not write. The room keeps the languages the host booked, so an admin who widens L1
+    ///   back restores them with no edit and no migration — and a stale narrowing can never become
+    ///   the room's permanent shape.
+    ///
+    ///   It does not touch the SOURCE language on the wire. That is the language people in the room
+    ///   are already speaking, and the summary language has to agree with the transcript that
+    ///   actually happens; rewriting it here would be reclassification, not enforcement. It is
+    ///   still reported to the host in <see cref="RoomLanguagePolicyNoticeDto.Dropped"/> when the
+    ///   whitelist no longer covers it.
+    ///
+    ///   It does not touch anybody already in the room. Participants keep the languages they chose
+    ///   until the meeting ends — nobody is kicked and nobody is switched. The narrowing bounds
+    ///   what this service PRODUCES, not who may sit here.
+    ///
+    /// FAILURE
+    ///   Fails OPEN, like every other workspace check on the start path (see
+    ///   <c>EnsureWorkspaceCanHostMeetingsAsync</c> and the interface docs on why start and join
+    ///   differ from create): a WorkspaceService outage must not become "no meeting in the product
+    ///   can begin". An unreadable whitelist leaves the behaviour exactly as it was before this
+    ///   change and says so in the log.
+    /// </summary>
+    private async Task<Result<StartLanguagePolicyOutcome>> ResolveEffectiveStartLanguagesAsync(
+        TranslationRoom room,
+        CancellationToken ct)
+    {
+        var storedTargets = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+        var unchanged = Result.Success(new StartLanguagePolicyOutcome(storedTargets, null));
+
+        // A room outside any workspace has no whitelist to apply — the same Guid.Empty guard
+        // ValidateSeriesLanguagesAsync and RoomArtifactLanguagePolicy use.
+        if (room.WorkspaceId == Guid.Empty)
+            return unchanged;
+
+        IReadOnlyList<string>? whitelist;
+        try
+        {
+            var lookup = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+            if (lookup is null || !lookup.IsSuccess || lookup.Value is null)
+            {
+                _logger.LogWarning(
+                    "WT-708: workspace language whitelist unreadable for workspace {WorkspaceId} (room {RoomId}): {Error}. Starting with the room's own languages, unchanged.",
+                    room.WorkspaceId, room.Id, lookup?.Error);
+                return unchanged;
+            }
+
+            whitelist = lookup.Value;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "WT-708: workspace language whitelist lookup threw for workspace {WorkspaceId} (room {RoomId}). Starting with the room's own languages, unchanged.",
+                room.WorkspaceId, room.Id);
+            return unchanged;
+        }
+
+        // Both sides normalized: rooms store primary subtags ("vi") while a workspace may have
+        // stored a regional code ("vi-VN"), and a raw comparison would drop languages the owner
+        // allows. Same fold WorkspaceMeetingPolicyGrpcClient applies on the create/edit path.
+        var allowed = new HashSet<string>(
+            whitelist.Select(LanguageHelper.NormalizeLanguageCode).Where(code => code.Length > 0),
+            StringComparer.Ordinal);
+
+        if (allowed.Count == 0)
+            return unchanged;
+
+        var sourceLanguage = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
+
+        // L2, built exactly as the join screen and the artifact policy build it, so the three can
+        // never disagree about what "this meeting's languages" means.
+        var meetingLanguages = new List<string> { sourceLanguage }
+            .Concat(storedTargets)
+            .Where(code => code.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var dropped = meetingLanguages.Where(code => !allowed.Contains(code)).ToList();
+        if (dropped.Count == 0)
+            return unchanged;
+
+        var effectiveTargets = storedTargets.Where(allowed.Contains).ToList();
+
+        // No target survives, so there is nothing left to translate INTO. Refused rather than
+        // started empty: a room whose published target list is [] looks to every worker and every
+        // client exactly like a room whose configuration failed to arrive, and the host would be
+        // left diagnosing silence instead of reading a sentence that names the problem.
+        if (effectiveTargets.Count == 0)
+        {
+            _logger.LogWarning(
+                "WT-708: refusing to start room {RoomId}; its languages [{Meeting}] have no overlap with workspace {WorkspaceId}'s current whitelist [{Allowed}].",
+                room.Id, string.Join(", ", meetingLanguages), room.WorkspaceId, string.Join(", ", allowed.OrderBy(code => code, StringComparer.Ordinal)));
+
+            return Result.Failure<StartLanguagePolicyOutcome>(
+                string.Format(
+                    TranslationRoomConstants.ErrorStartLanguagesNotAllowed,
+                    string.Join(", ", meetingLanguages),
+                    string.Join(", ", allowed.OrderBy(code => code, StringComparer.Ordinal))),
+                ErrorCodes.Forbidden);
+        }
+
+        var effectiveMeetingLanguages = meetingLanguages.Where(allowed.Contains).ToList();
+
+        _logger.LogWarning(
+            "WT-708: room {RoomId} starts narrowed; [{Dropped}] are no longer allowed by workspace {WorkspaceId} and will not be produced.",
+            room.Id, string.Join(", ", dropped), room.WorkspaceId);
+
+        return Result.Success(new StartLanguagePolicyOutcome(
+            effectiveTargets,
+            new RoomLanguagePolicyNoticeDto(
+                meetingLanguages,
+                effectiveMeetingLanguages,
+                dropped,
+                string.Format(
+                    TranslationRoomConstants.WarningStartLanguagesNarrowed,
+                    string.Join(", ", dropped),
+                    string.Join(", ", effectiveMeetingLanguages)))));
+    }
+
+    /// <summary>
+    /// WT-708: the two things the start path needs out of the drift check — what to publish, and
+    /// what to tell the host. <see cref="Notice"/> is null when nothing was narrowed, which is the
+    /// overwhelmingly common case and the one that must stay invisible to existing clients.
+    /// </summary>
+    private sealed record StartLanguagePolicyOutcome(
+        List<string> TargetLanguages,
+        RoomLanguagePolicyNoticeDto? Notice);
 
     /// <summary>
     /// WT-341 — tells the people invited to this meeting that it has begun.
@@ -2206,17 +2523,146 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    private async Task PublishRoomTargetLanguagesAsync(TranslationRoom room, CancellationToken ct)
+    /// <summary>
+    /// WT-909: hand the AI pipeline the far side's language of an EXTERNAL_BRIDGE room, from the
+    /// stand-in's own row.
+    ///
+    /// The pipeline reads the stand-in's language from Redis only — speak_languages pins its STT,
+    /// languages makes it a translation target — and until now the only writer was
+    /// TranslationRoomHub.SetExternalMeetingLanguage, i.e. somebody touching the popup's far-side
+    /// pill. A room whose host never touched it ran the far side's speech unpinned and translated
+    /// the host into nobody's language, while the popup showed the stand-in's stored language as if
+    /// it were in effect. The value written here is the one the popup shows: no default of our own.
+    ///
+    /// Only where the hash does not hold it yet (HSETNX): the gateway writes a pick to Redis at once
+    /// and the row only once ParticipantLanguageProcessor has persisted it, so a Start that lands
+    /// between the two must not put the old language back. Best-effort like every realtime write
+    /// here: a failed seed costs the pin, never the Start.
+    /// </summary>
+    private async Task SeedExternalMeetingLanguageAsync(TranslationRoom room, string? standInLanguage, CancellationToken ct)
+    {
+        if (_redisStateRepository is null || !TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            return;
+
+        try
+        {
+            var language = standInLanguage;
+            if (language is null)
+            {
+                var standIn = await _participantRepository.GetByRoomAndUserAsync(
+                    room.Id, TranslationRoomConstants.ExternalBridgeParticipantUserId, ct);
+                language = standIn?.SpeakLanguage;
+            }
+
+            var normalized = LanguageHelper.NormalizeLanguageCode(language);
+            // "auto" is STT's free-run hint, not a language a route can target (see the hub).
+            if (normalized.Length == 0 || normalized == "auto")
+                return;
+
+            // The host's own language on the stand-in is what a claim that named no far side
+            // falls back to (ResolveExternalMeetingLanguage), not anybody's choice: pinning the far
+            // side's STT to it would garble whoever speaks there. The popup's start step moves such
+            // a room to its first offered language, and that pick reaches Redis through the gateway.
+            if (normalized == LanguageHelper.NormalizeLanguageCode(room.SourceLanguage))
+                return;
+
+            var standInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+            // Wave 2: the far side's STT is pinned only while the room names ONE language for it.
+            // The dub into Meet (`languages`) is always the stand-in's own language — one cable,
+            // one mix — whatever STT does.
+            var sttLanguage = FarSideSpeaksSeveralLanguages(room) ? UnpinnedSttLanguage : normalized;
+            await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:speak_languages", standInId, sttLanguage);
+            await _redisStateRepository.HashSetIfAbsentAsync($"translationRoom:{room.Id}:languages", standInId, normalized);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex,
+                "Failed to seed the external meeting's language for room {RoomId}; the far side runs unpinned until the host picks it.",
+                room.Id);
+        }
+    }
+
+    /// <summary>STT's free-run hint: what speak_languages holds for a speaker it must not pin.</summary>
+    private const string UnpinnedSttLanguage = "auto";
+
+    /// <summary>
+    /// WT-909 wave 2: does this bridge room say the Meet side speaks more than one language?
+    ///
+    /// The room's declared languages other than the host's are the languages of everybody else in
+    /// the call, and in a bridge room everybody else IS the far side. One of them: the stand-in's
+    /// STT is pinned to it, as since wave 1. Two or more — a host on English with a Vietnamese and a
+    /// Japanese speaker in Meet — and pinning to either one garbles the other; worse, STT drops a
+    /// line whose language the room never declared. So the stand-in runs unpinned ("auto"): the
+    /// pipeline then labels each line from its own script (kana/kanji, Vietnamese diacritics) and,
+    /// with no declaration, learns no latch (stt_worker `_learn_language_evidence` returns early).
+    /// No AI change: "auto" is the value an unregistered speaker already has.
+    /// </summary>
+    public static bool FarSideSpeaksSeveralLanguages(TranslationRoom room)
+    {
+        var host = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
+        return LanguageHelper.ParseTargetLanguages(room.TargetLanguages)
+            .Select(LanguageHelper.NormalizeLanguageCode)
+            .Where(language => language.Length > 0 && language != UnpinnedSttLanguage && language != host)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count() >= 2;
+    }
+
+    /// <summary>
+    /// WT-909 wave 2: after a language was added to a bridge room, unpin the far side's STT once the
+    /// room names two or more languages for it, and republish the route snapshot so STT's
+    /// allow-list (`room_languages` on it) holds the new language before its first line.
+    ///
+    /// Overwrites rather than HSETNX: the pin was set for one language and is wrong now. Never pins
+    /// back — a room's languages only grow. Best-effort, like the seed.
+    /// </summary>
+    private async Task UnpinExternalMeetingSttIfSeveralAsync(TranslationRoom room, Guid hostId, CancellationToken ct)
+    {
+        if (_redisStateRepository is null || !TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            return;
+
+        try
+        {
+            if (FarSideSpeaksSeveralLanguages(room))
+            {
+                var standInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+                await _redisStateRepository.HashSetAsync(
+                    $"translationRoom:{room.Id}:speak_languages",
+                    new Dictionary<string, string> { [standInId] = UnpinnedSttLanguage });
+            }
+
+            // Republishing IS the refresh (see RefreshDubVoiceAsync): the payload re-reads the
+            // room's languages. Without it STT keeps the old allow-list and deletes the new
+            // language's lines until some other change rebuilds the routes.
+            await _audioRouteService.RefreshDubVoiceAsync(room.Id, hostId, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex,
+                "Failed to unpin the external meeting's STT after a language was added to room {RoomId}.",
+                room.Id);
+        }
+    }
+
+    /// <param name="targetLanguages">
+    /// WT-708: the languages that may actually be produced for this room, when the caller has
+    /// already worked them out. The start path passes L2 ∩ L1(current) here so a language the
+    /// workspace has since forbidden never reaches the AI workers; everyone else omits it and
+    /// gets the room's stored set, which is what this method always did.
+    /// </param>
+    private async Task PublishRoomTargetLanguagesAsync(
+        TranslationRoom room,
+        CancellationToken ct,
+        IReadOnlyList<string>? targetLanguages = null)
     {
         if (_redisStateRepository is null)
             return;
 
         try
         {
-            var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+            var effectiveTargets = targetLanguages?.ToList() ?? LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
             await _redisStateRepository.StringSetAsync(
                 $"meeting:{room.Id}:target_languages",
-                JsonSerializer.Serialize(targetLanguages),
+                JsonSerializer.Serialize(effectiveTargets),
                 TimeSpan.FromHours(24));
 
                 // The language the automatic summary is written in, so the first one and any
@@ -2409,7 +2855,8 @@ public class TranslationRoomService : ITranslationRoomService
             // saying why.
             //
             // Stopping stays host-only below and in StopTranslationAsync: opening a meeting up is
-            // not the same as letting anyone cut it off for everybody.
+            // not the same as letting anyone cut it off for everybody. (Exception, both ways: the
+            // current capturer of an EXTERNAL_BRIDGE room — RoomBridgeControlAccess.)
             if (!await RoomStartTranslationAccess.CanStartTranslationAsync(
                     translationRoom, hostId, _workspaceMemberDirectory, _participantRepository, ct))
             {
@@ -2447,6 +2894,8 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
             await _unitOfWork.CommitTransactionAsync(ct);
             transactionStarted = false;
+            // WT-909: before RoomStarted, so the far side's first line is already pinned.
+            await SeedExternalMeetingLanguageAsync(translationRoom, null, ct);
             await PublishRoomStartedAsync(translationRoom, ct);
 
             // WT-339: the routes are only now allowed to broadcast. Emitted AFTER SaveChangesAsync
@@ -2491,7 +2940,9 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            // Host (IsHostedBy, unchanged) OR — EXTERNAL_BRIDGE only — the current capturer
+            // (PO 2026-10-01). Every other room type answers exactly as IsHostedBy did.
+            if (!RoomBridgeControlAccess.CanControlBridgeSession(translationRoom, hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             // Only a live room can stop translating. A PAUSED room is not translating either, but
             // resuming it is a different act with a different endpoint, and quietly accepting the
@@ -2929,6 +3380,181 @@ public class TranslationRoomService : ITranslationRoomService
                 translationRoomId,
                 hostId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<RoomLanguagesDto>> AddRoomLanguageAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string language,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+
+            if (translationRoom == null)
+                return Result.Failure<RoomLanguagesDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            // The EFFECTIVE host, like every other host gate here, so a handover carries this with
+            // it. Checked before the status and the code, because "you may not do this at all" is
+            // a different answer from "not in this state" and a non-host must not learn the room's
+            // lifecycle by probing.
+            if (!translationRoom.IsHostedBy(hostId))
+                return Result.Failure<RoomLanguagesDto>(
+                    TranslationRoomConstants.ErrorUnauthorizedAddRoomLanguage, ErrorCodes.Unauthorized);
+
+            if (!TranslationRoomConstants.RoomLanguageAddableStatuses.Contains(translationRoom.Status))
+                return Result.Failure<RoomLanguagesDto>(
+                    string.Format(
+                        TranslationRoomConstants.ErrorRoomLanguagesNotAddable,
+                        string.Join("/", TranslationRoomConstants.RoomLanguageAddableStatuses)),
+                    ErrorCodes.InvalidState);
+
+            if (string.IsNullOrWhiteSpace(language))
+                return Result.Failure<RoomLanguagesDto>(
+                    TranslationRoomConstants.ValidationRoomLanguageRequired, ErrorCodes.ValidationError);
+
+            var normalized = LanguageHelper.NormalizeLanguageCode(language);
+
+            if (!await _languagePolicy.IsSupportedAsync(normalized))
+                return Result.Failure<RoomLanguagesDto>(
+                    string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, normalized),
+                    ErrorCodes.ValidationError);
+
+            var sourceLanguage = LanguageHelper.NormalizeLanguageCode(translationRoom.SourceLanguage);
+            var targetLanguages = LanguageHelper.ParseTargetLanguages(translationRoom.TargetLanguages);
+
+            // Already declared — by the source or by a target — is a no-op SUCCESS, not a conflict.
+            // The host asked for a room that speaks Korean and the room speaks Korean; reporting an
+            // error would make two hosts clicking the same button a failure for one of them, and
+            // would make the web retry logic have to tell "already there" apart from "refused".
+            // Returning before the write also keeps the quota check off a call that adds nothing,
+            // so a room already at its plan limit can still answer this idempotently.
+            if (string.Equals(sourceLanguage, normalized, StringComparison.OrdinalIgnoreCase)
+                || targetLanguages.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                return Result.Success(new RoomLanguagesDto(sourceLanguage, targetLanguages));
+            }
+
+            var updatedTargets = targetLanguages.Append(normalized).ToList();
+
+            // WT-708 × WT-709: a room booked before the workspace narrowed its whitelist still
+            // STORES the languages L1 has since dropped (Start narrows what is published, never
+            // what is saved). Those must neither block this addition — validating the stored set
+            // would refuse "ko" because of an "es" nobody is translating — nor come back to life
+            // through it. So the gate and the publish both work from what the room is actually
+            // running in (L2 ∩ L1 now) plus the new language; the row keeps the booking as it was.
+            var running = await ResolveEffectiveStartLanguagesAsync(translationRoom, ct);
+            var liveTargets = (running.IsSuccess ? running.Value!.TargetLanguages : new List<string>())
+                .Append(normalized)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // L1 and the plan's max_languages quota, together, from the one gate that already
+            // enforces both on the room-edit path (WT-707). Passed the WHOLE new target set rather
+            // than the single code, because the quota counts the set: a room at its limit must be
+            // refused the fifth language even though each language on its own is whitelisted.
+            //
+            // Fails CLOSED, as it does on the edit path: this is the enforcement of a rule an owner
+            // set deliberately, and an unreachable WorkspaceService must not become the way around
+            // it. Safe to fail closed HERE, unlike on the join, because refusing this refuses an
+            // addition — nobody currently in the meeting loses anything.
+            //
+            // An external-bridge room carries Guid.Empty and belongs to no workspace, so there is
+            // no whitelist to ask for; the same carve-out the settings edit makes.
+            if (translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                    translationRoom.WorkspaceId,
+                    sourceLanguage,
+                    liveTargets,
+                    ct);
+
+                if (!languagePolicy.IsSuccess)
+                    return Result.Failure<RoomLanguagesDto>(
+                        languagePolicy.Error ?? "The workspace does not allow that language in meetings.",
+                        languagePolicy.ErrorCode);
+            }
+
+            translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(updatedTargets);
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+            translationRoom.UpdatedBy = hostId;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Persisted FIRST, then told to the workers, then to the clients. The order is the
+            // point: the stored set is what the room's L2 snapshot is read from when the meeting
+            // ends, so a language announced but not saved would be one the artifact rules never
+            // see — exactly the hole WT-709 closes on the participant side.
+            //
+            // The AI workers read meeting:{id}:target_languages, not the database, so a new target
+            // that never reaches Redis is a language the room accepts and then does not translate.
+            await PublishRoomTargetLanguagesAsync(translationRoom, ct, liveTargets);
+            await PublishRoomLanguagesChangedAsync(translationRoom, ct);
+            await UnpinExternalMeetingSttIfSeveralAsync(translationRoom, hostId, ct);
+
+            _logger.LogInformation(
+                "room_language_added: RoomId={RoomId} HostId={HostId} Language={Language}",
+                translationRoom.Id,
+                hostId,
+                normalized);
+
+            return Result.Success(new RoomLanguagesDto(sourceLanguage, updatedTargets));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Error adding a language to a room. RoomId: {RoomId}, HostId: {HostId}, Language: {Language}",
+                translationRoomId,
+                hostId,
+                language);
+            return Result.Failure<RoomLanguagesDto>(
+                TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-709: tells everyone in the room — and everyone still at its door — that the meeting's
+    /// declared languages just grew, so their pickers can offer the new one without a reload.
+    ///
+    /// Never throws, like every other publisher on this channel. The addition is already committed
+    /// and in Redis by the time this runs; failing the host's click over an undelivered broadcast
+    /// would report "could not add the language" about a language that IS added, and the clients
+    /// pick the new set up on their next room fetch anyway.
+    /// </summary>
+    private async Task PublishRoomLanguagesChangedAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+            return;
+
+        try
+        {
+            // camelCase deliberately: the Gateway forwards the `languages` element to clients
+            // untouched, exactly as it does the RoomStarted state and the poll payloads.
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = RoomLanguagesChangedCommand,
+                RoomId = room.Id.ToString(),
+                Languages = new
+                {
+                    sourceLanguage = LanguageHelper.NormalizeLanguageCode(room.SourceLanguage),
+                    targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages)
+                }
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to publish {Command} for RoomId: {RoomId}. The language is saved; participants' pickers will show it after their next room fetch.",
+                RoomLanguagesChangedCommand,
+                room.Id);
         }
     }
 

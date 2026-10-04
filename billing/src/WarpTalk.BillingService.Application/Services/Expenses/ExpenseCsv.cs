@@ -201,7 +201,7 @@ public static class ExpenseCsv
         var upper = value?.Trim().ToUpperInvariant();
         return upper switch
         {
-            null or "" => OperatingExpenseConstants.Currencies.Vnd,
+            null or "" => OperatingExpenseConstants.Currencies.Usd,
             "VND" or "₫" or "Đ" or "VNĐ" => OperatingExpenseConstants.Currencies.Vnd,
             "USD" or "$" or "US$" => OperatingExpenseConstants.Currencies.Usd,
             _ => null,

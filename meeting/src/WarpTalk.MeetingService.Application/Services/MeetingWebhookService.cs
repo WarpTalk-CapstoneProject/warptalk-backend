@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Enums;
@@ -21,14 +22,17 @@ public class MeetingWebhookService : IMeetingWebhookService
     private readonly IEgressCompletion _egressCompletion;
     private readonly string _apiSecret;
     private readonly ILogger<MeetingWebhookService> _logger;
+    private readonly IBridgeRecordingEndWatcher? _bridgeRecordingEndWatcher;
 
     public MeetingWebhookService(
         IUnitOfWork unitOfWork,
         IRedisService redisService,
         IEgressCompletion egressCompletion,
         IConfiguration config,
-        ILogger<MeetingWebhookService> logger)
+        ILogger<MeetingWebhookService> logger,
+        IBridgeRecordingEndWatcher? bridgeRecordingEndWatcher = null)
     {
+        _bridgeRecordingEndWatcher = bridgeRecordingEndWatcher;
         _unitOfWork = unitOfWork;
         _redisService = redisService;
         _egressCompletion = egressCompletion;
@@ -134,6 +138,10 @@ public class MeetingWebhookService : IMeetingWebhookService
 
         var eventType = eventProperty.GetString();
 
+        // Per event: a departure left over from an earlier event on this instance (one that failed
+        // before its save) must never be handed over on the back of this one.
+        _pendingRecordingDeparture = null;
+
         try
         {
             switch (eventType)
@@ -175,18 +183,56 @@ public class MeetingWebhookService : IMeetingWebhookService
             }
 
             await _unitOfWork.SaveChangesAsync();
+
+            // Only AFTER the save. The watcher re-reads the room in its own scope; handed over
+            // before, it could read the row as it was before this webhook (ActiveHostId still set,
+            // LeftAt still null) and act on that.
+            if (_pendingRecordingDeparture is { } departure)
+            {
+                _pendingRecordingDeparture = null;
+                HandOverRecordingDeparture(departure);
+            }
+
             return Result.Success<bool>(true);
         }
         catch (Exception ex)
         {
+            // Logged here because nothing else does: the controller turns this into a bare 500 and
+            // LiveKit only retries it. track_published threw on every single webhook from May to
+            // October 2026 (see TrackType) and meeting-service never printed a line about it.
+            _logger.LogError(ex, "LiveKit webhook {EventType} failed and will be retried by LiveKit.", eventType);
             return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// "audio" or "video" for a LiveKit webhook's TrackInfo.
+    ///
+    /// LiveKit sends <c>track.type</c> (TrackType), never a <c>kind</c> field, and serialises it with
+    /// protobuf JSON — which OMITS a field holding its default value. TrackType.AUDIO is 0, so an
+    /// audio track arrives with no <c>type</c> at all. This handler read <c>track.kind</c> with
+    /// GetProperty, which threw on every track_published: <c>meeting.meeting_tracks</c> had zero rows
+    /// on production (3 Oct 2026), and every such webhook was a 500 LiveKit kept retrying.
+    /// </summary>
+    public static string TrackType(JsonElement track)
+    {
+        if (!track.TryGetProperty("type", out var type)) return "audio";
+        return type.ValueKind switch
+        {
+            JsonValueKind.String => string.Equals(type.GetString(), "VIDEO", StringComparison.OrdinalIgnoreCase) ? "video"
+                : string.Equals(type.GetString(), "DATA", StringComparison.OrdinalIgnoreCase) ? "data"
+                : "audio",
+            JsonValueKind.Number => type.GetInt32() switch { 1 => "video", 2 => "data", _ => "audio" },
+            _ => "audio",
+        };
     }
 
     private async Task HandleParticipantJoined(JsonElement root)
     {
         var roomName = root.GetProperty("room").GetProperty("name").GetString();
         var identity = root.GetProperty("participant").GetProperty("identity").GetString();
+
+        await PublishParticipantJoinedAsync(roomName, identity);
 
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
         if (room == null) return;
@@ -198,6 +244,55 @@ public class MeetingWebhookService : IMeetingWebhookService
         {
             participant.JoinedAt = DateTime.UtcNow;
             participant.LeftAt = null;
+        }
+    }
+
+    /// <summary>
+    /// WT-923: tell the ingress worker a person is in the room, so its bot is connected and
+    /// subscribed before that person's first sentence instead of after it.
+    ///
+    /// Not before a track exists for a reason that sounds like it should matter and does not: the
+    /// bot reads nothing until a microphone is published and unmuted (WT-542), so joining early
+    /// costs only the connection. What it buys is that the first unmute arrives on a connection
+    /// LiveKit already holds — a subscribe within the SFU — rather than starting a webhook →
+    /// Redis → token → WebRTC dial while the person is already talking.
+    ///
+    /// Best effort, unlike track_published: that event is still published and still summons the
+    /// bot, so a failure here costs the old latency and nothing else. Throwing would turn a
+    /// warm-up miss into a 500 and a LiveKit retry of a webhook whose real work already succeeded.
+    /// </summary>
+    private async Task PublishParticipantJoinedAsync(string? roomName, string? identity)
+    {
+        if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(identity))
+            return;
+        // Our own participants (LiveKitParticipantIdentities): the ingress bot's own join must not
+        // summon the ingress bot.
+        if (LiveKitParticipantIdentities.IsBot(identity))
+            return;
+
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.ParticipantJoined,
+            "meeting-service",
+            workspaceId: null,
+            new MeetingParticipantJoinedEventPayload(roomName, identity, DateTime.UtcNow));
+        try
+        {
+            var result = await _redisService.PublishEventAsync(MeetingEventTypes.ParticipantJoined, envelope);
+            if (!result.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "Could not publish {EventType} for room {RoomName}: {Error}. The ingress bot will "
+                    + "join on the first published microphone instead.",
+                    MeetingEventTypes.ParticipantJoined, roomName, result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not publish {EventType} for room {RoomName}. The ingress bot will join on the "
+                + "first published microphone instead.",
+                MeetingEventTypes.ParticipantJoined, roomName);
         }
     }
 
@@ -233,6 +328,67 @@ public class MeetingWebhookService : IMeetingWebhookService
         {
             room.ActiveHostId = null;
         }
+
+        _pendingRecordingDeparture = RecordingRoomDeparture(root, room, identity);
+    }
+
+    /// <summary>
+    /// Set by participant_left, handed to the watcher by ProcessWebhookAsync once the departure is
+    /// saved. The service is scoped to one webhook request, so this never carries across requests.
+    /// </summary>
+    private BridgeRecordingEndRequest? _pendingRecordingDeparture;
+
+    /// <summary>
+    /// A person left a room that is being recorded: it may be the end of a Google Meet bridge
+    /// session, whose recording otherwise runs on into LiveKit's own empty-room timeout (~20 s of
+    /// nothing at the end of the file). The decision — bridge or not, anyone left, grace for a
+    /// reload — is made off this request by the watcher (BridgeRecordingEndPolicy), so the webhook
+    /// stays as fast as it was. Our own bots and the egress recorder leaving decide nothing.
+    /// Returns the departure to hand over after the save, or null.
+    /// </summary>
+    private BridgeRecordingEndRequest? RecordingRoomDeparture(JsonElement root, MeetingRoom room, string? identity)
+    {
+        if (_bridgeRecordingEndWatcher is null || string.IsNullOrEmpty(room.ActiveEgressId))
+            return null;
+
+        string? kind = null;
+        if (root.GetProperty("participant").TryGetProperty("kind", out var kindProperty))
+        {
+            kind = kindProperty.ValueKind switch
+            {
+                JsonValueKind.String => kindProperty.GetString(),
+                // STANDARD=0, INGRESS=1, EGRESS=2, SIP=3, AGENT=4 — only the machinery matters here.
+                JsonValueKind.Number when kindProperty.TryGetInt32(out var ordinal) => ordinal switch
+                {
+                    1 => "INGRESS",
+                    2 => "EGRESS",
+                    4 => "AGENT",
+                    _ => null,
+                },
+                _ => null,
+            };
+        }
+
+        if (!BridgeRecordingEndPolicy.IsPerson(identity, kind))
+            return null;
+
+        return new BridgeRecordingEndRequest(room.ProviderRoomName, room.ActiveEgressId, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Never throws: the participant's departure is already recorded, and a 500 here would only
+    /// make LiveKit retry a webhook whose real work succeeded.
+    /// </summary>
+    private void HandOverRecordingDeparture(BridgeRecordingEndRequest departure)
+    {
+        try
+        {
+            _bridgeRecordingEndWatcher?.NotifyParticipantLeft(departure);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not hand the departure from {RoomName} to the bridge recording watcher.", departure.ProviderRoomName);
+        }
     }
 
     // A completed RoomComposite Egress must not be acknowledged to LiveKit until its durable
@@ -257,10 +413,23 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         var identity = root.GetProperty("participant").GetProperty("identity").GetString();
         var trackId = root.GetProperty("track").GetProperty("sid").GetString();
-        var kind = root.GetProperty("track").GetProperty("kind").GetString();
+        var kind = TrackType(root.GetProperty("track"));
+        var roomName = root.TryGetProperty("room", out var roomElement)
+            && roomElement.TryGetProperty("name", out var nameElement)
+                ? nameElement.GetString()
+                : null;
+
+        // The participant row of THIS room. Matching on identity alone picked whichever of a
+        // user's rows the database returned first — one per meeting they have ever joined — so a
+        // track would have been filed under an old meeting. (Moot until the TrackType fix above:
+        // nothing ever got this far.)
+        var room = string.IsNullOrWhiteSpace(roomName)
+            ? null
+            : await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
+        if (room == null) return;
 
         var participant = await _unitOfWork.RtcStreamParticipantRepository
-            .FirstOrDefaultAsync(p => p.ProviderIdentity == identity);
+            .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.ProviderIdentity == identity);
 
         if (participant == null) return;
 
@@ -286,7 +455,6 @@ public class MeetingWebhookService : IMeetingWebhookService
         // Publish to Redis Pub/Sub for Transcript Worker to start
         if (kind == "audio")
         {
-            var roomName = root.GetProperty("room").GetProperty("name").GetString();
             if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(trackId))
                 throw new InvalidOperationException("Audio track webhook is missing room name or track id");
 

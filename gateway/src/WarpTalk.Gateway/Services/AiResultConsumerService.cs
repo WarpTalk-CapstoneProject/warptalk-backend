@@ -5,7 +5,9 @@ using System.Text.RegularExpressions;
 using Grpc.Core;
 using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
+using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Shared.Coordination;
 
 namespace WarpTalk.Gateway.Services;
 
@@ -17,6 +19,8 @@ namespace WarpTalk.Gateway.Services;
 ///   - stt:results:{translationRoomId}     → TranscriptSegmentReceived (original transcript,
 ///                                           plus WT-716 tier-1 cleanText/cleanFlags)
 ///   - transcript:clean                    → TranscriptCleanSentenceReceived (WT-716 tier 2)
+///   - stt:far_speaker_late                → TranscriptSegmentSpeakerNamed (a bridge stand-in line's
+///                                           name, a second after the line itself)
 ///   - tts:results:{translationRoomId}     → TranslatedAudioReceived (translated + cloned voice) 
 ///   - ai_assistant:results:{translationRoomId} → AiAssistantResult (summaries, action items)
 ///                                              → AiSuggestionReceived when type="suggestion"
@@ -39,6 +43,16 @@ public sealed class AiResultConsumerService : BackgroundService
     private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceClient;
     private readonly WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient _roomClient;
     private readonly ILogger<AiResultConsumerService> _logger;
+    // Live text arrives on pub/sub, which every replica receives; only the relay leader forwards
+    // it. Both are optional so a test that does not exercise live text need not supply them.
+    private readonly IPubSubLeadership? _relayLeadership;
+    private readonly IConnectionMultiplexer? _redis;
+
+    // How long a caption-carrying loop waits after finding its stream empty. RedisStreamService
+    // cannot block (StackExchange.Redis has no XREADGROUP BLOCK on a shared connection), so this IS
+    // the delivery latency floor for those loops: it was 200ms, half of which every caption paid on
+    // average. Measured 4 Oct 2026 as part of the caption budget. The other loops keep 200ms.
+    private static readonly TimeSpan CaptionPollDelay = TimeSpan.FromMilliseconds(25);
 
     private const string ConsumerGroupName = "gateway-consumers";
     private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
@@ -69,14 +83,61 @@ public sealed class AiResultConsumerService : BackgroundService
 
     private readonly MeetingCaptionMetrics _captionMetrics;
 
+    /// <summary>
+    /// How sure stt_worker must be of a live far-side speaker name before a bridge stand-in line
+    /// carries it — <see cref="WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey"/>, the same
+    /// key TranscriptService reads, so the live line and the saved row agree.
+    /// </summary>
+    private readonly double _farSpeakerMinConfidence;
+
+    // ── Pending-list hygiene (WarpTalkAiPendingStuck) ────────
+    //
+    // Every stream this service reads, for the housekeeping pass. Kept in step with the consume
+    // loops by StalePendingHousekeepingTests.
+    public static readonly IReadOnlyList<string> ConsumedStreams =
+    [
+        "stt:results",
+        "transcript:clean",
+        "translate:results",
+        "tts:results",
+        "voice:clone:state",
+        "ai_assistant:results",
+        WarpTalk.Shared.FarSpeakerNames.LateNameStream,
+    ];
+
+    // Everything here is a live broadcast: a caption or a summary minutes old is worthless to the
+    // room, so an entry pending this long is retired, not redelivered.
+    private static readonly TimeSpan StalePendingAge = TimeSpan.FromMinutes(5);
+
+    // A live consumer polls several times a second, so an hour of silence means its process is
+    // gone. Deliberately far above anything a Redis blip or a slow deploy could produce.
+    private static readonly TimeSpan DeadConsumerIdle = TimeSpan.FromHours(1);
+
+    private static readonly TimeSpan HousekeepingInterval = TimeSpan.FromMinutes(5);
+
+    // Lets the consume loops create their groups first, so the first pass does not trip NOGROUP.
+    private static readonly TimeSpan HousekeepingStartDelay = TimeSpan.FromSeconds(30);
+
+    // Unroutable entries are logged at Warning at most once a minute per stream, Debug otherwise:
+    // a producer that drops meeting_id on stt:results would otherwise log every sentence spoken.
+    private static readonly long UnroutableWarningIntervalMs = (long)TimeSpan.FromMinutes(1).TotalMilliseconds;
+    private readonly ConcurrentDictionary<string, long> _unroutableWarnedAt = new();
+
     public AiResultConsumerService(
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IHubContext<TranslationRoomHub> hubContext,
         WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
         WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
-        ILogger<AiResultConsumerService> logger)
+        ILogger<AiResultConsumerService> logger,
+        IConfiguration? configuration = null,
+        IPubSubLeadership? relayLeadership = null,
+        IConnectionMultiplexer? redis = null)
     {
+        _relayLeadership = relayLeadership;
+        _redis = redis;
+        _farSpeakerMinConfidence = WarpTalk.Shared.FarSpeakerNames.NormalizeMinConfidence(
+            configuration?.GetValue<double?>(WarpTalk.Shared.FarSpeakerNames.MinConfidenceConfigKey));
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _hubContext = hubContext;
@@ -101,7 +162,10 @@ public sealed class AiResultConsumerService : BackgroundService
                 ConsumeTTSResultsAsync(stoppingToken),
                 ConsumeAiAssistantResultsAsync(stoppingToken),
                 ConsumeCleanSentencesAsync(stoppingToken),
-                ConsumeVoiceCloneStateAsync(stoppingToken));
+                ConsumeVoiceCloneStateAsync(stoppingToken),
+                ConsumeFarSpeakerLateNamesAsync(stoppingToken),
+                RelayInterimTranscriptsAsync(stoppingToken),
+                HousekeepConsumerGroupsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
         {
@@ -176,6 +240,96 @@ public sealed class AiResultConsumerService : BackgroundService
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Acknowledge an entry no room can receive (no meeting_id, or a payload the client cannot
+    /// render), and say so.
+    /// </summary>
+    /// <remarks>
+    /// WarpTalkAiPendingStuck. Four loops used to <c>continue</c> past such an entry without
+    /// XACK, so it stayed pending on this consumer forever — and, once the pod was replaced, on a
+    /// consumer nobody would ever read as again. On 30 Sep ai_assistant:results held 62 of them
+    /// (summaries and action items published without a meeting_id) across 12 dead pods. Retrying
+    /// is pointless: an entry with no room can never become routable.
+    /// </remarks>
+    private async Task AcknowledgeUnroutableAsync(string streamKey, StreamEntry entry)
+    {
+        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+
+        var now = Environment.TickCount64;
+        var warn = !_unroutableWarnedAt.TryGetValue(streamKey, out var last)
+            || now - last >= UnroutableWarningIntervalMs;
+        if (warn) _unroutableWarnedAt[streamKey] = now;
+
+        _logger.Log(
+            warn ? LogLevel.Warning : LogLevel.Debug,
+            "Acknowledged unroutable entry {EntryId} on {Stream} (type={Type}) without delivering it: "
+            + "no meeting_id or no usable payload, so no room can receive it.",
+            entry.Id.ToString(), streamKey, RedisStreamService.GetField(entry, "type") ?? "(none)");
+    }
+
+    /// <summary>
+    /// Periodically retire stale pending entries and remove dead consumers from this service's
+    /// group on every stream it reads. WarpTalkAiPendingStuck.
+    /// </summary>
+    /// <remarks>
+    /// Acking every entry in the loops is not enough on its own: an exception mid-entry (a
+    /// SignalR send, say) or a pod killed between read and XACK still leaves entries pending on a
+    /// consumer that never comes back, because each process reads under a fresh random name and
+    /// nothing reclaims another's. The group also collected one consumer per process ever started
+    /// (97 on 30 Sep). Both are cleaned here.
+    ///
+    /// Runs on every replica with no leader: a claim resets the idle time of what it claims, XACK
+    /// is idempotent, and a consumer idle for an hour with nothing pending is dead on any replica's
+    /// view. A failure only logs — like EnsureConsumerGroupWithRetryAsync, nothing here may throw
+    /// out of ExecuteAsync and stop the host — and the next pass tries again.
+    /// </remarks>
+    private async Task HousekeepConsumerGroupsAsync(CancellationToken ct)
+    {
+        await Task.Delay(HousekeepingStartDelay, ct);
+
+        while (!ct.IsCancellationRequested)
+        {
+            foreach (var streamKey in ConsumedStreams)
+            {
+                await HousekeepConsumerGroupAsync(streamKey);
+            }
+
+            await Task.Delay(HousekeepingInterval, ct);
+        }
+    }
+
+    private async Task HousekeepConsumerGroupAsync(string streamKey)
+    {
+        try
+        {
+            // Claim first: it moves stale entries off dead consumers, which is what lets the
+            // deletion below remove them in the same pass.
+            var retired = await _streamService.AcknowledgeStalePendingAsync(
+                streamKey, ConsumerGroupName, _consumerName, StalePendingAge);
+            if (retired > 0)
+            {
+                _logger.LogWarning(
+                    "Retired {Count} entries pending longer than {Age} on {Stream}/{Group} without delivering them.",
+                    retired, StalePendingAge, streamKey, ConsumerGroupName);
+            }
+
+            var removed = await _streamService.DeleteDeadConsumersAsync(
+                streamKey, ConsumerGroupName, _consumerName, DeadConsumerIdle);
+            if (removed.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Removed {Count} dead consumer(s) idle longer than {Idle} from {Stream}/{Group}.",
+                    removed.Count, DeadConsumerIdle, streamKey, ConsumerGroupName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Pending-list housekeeping failed on {Stream}/{Group}; retrying next pass.",
+                streamKey, ConsumerGroupName);
+        }
     }
 
     // ── Profanity Masking ────────────────────────────────────
@@ -319,8 +473,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
-
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "text") ?? "";
                     // WT-716 tier 1. Masked under the same switch as the raw text: Clean is the
@@ -350,7 +507,12 @@ public sealed class AiResultConsumerService : BackgroundService
                         // had this problem: TranscriptRedisConsumerService resolves the name over
                         // auth gRPC before it writes the row, so the two copies of the same
                         // meeting disagreed about who spoke.
-                        SpeakerName: await ResolveSpeakerNameAsync(translationRoomId, speakerId),
+                        //
+                        // A bridge stand-in line is not looked up at all: its LiveKit name is the
+                        // seat ("External Meeting"), not whoever spoke. It is named from the live
+                        // far-side hint on the entry, by the rule the saved row uses.
+                        SpeakerName: TryResolveStandInSpeakerName(entry, _farSpeakerMinConfidence)
+                            ?? await ResolveSpeakerNameAsync(translationRoomId, speakerId),
                         OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
@@ -372,7 +534,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 }
 
                 if (entries.Length == 0)
-                    await Task.Delay(200, ct);
+                    await Task.Delay(CaptionPollDelay, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -383,6 +545,250 @@ public sealed class AiResultConsumerService : BackgroundService
                 await Task.Delay(1000, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// The live name of a bridge stand-in line, or <c>null</c> when the entry's speaker is not the
+    /// stand-in (<see cref="WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId"/>).
+    /// </summary>
+    /// <remarks>
+    /// <c>far_speaker_name</c> when stt_worker attached one with <c>far_speaker_confidence</c> at
+    /// or above <paramref name="minConfidence"/>, "Google Meet participants" otherwise — see
+    /// <see cref="WarpTalk.Shared.FarSpeakerNames"/>, which TranscriptService applies to the saved
+    /// row too. Pure and static so the rule is testable without a running consumer.
+    /// </remarks>
+    public static string? TryResolveStandInSpeakerName(StreamEntry entry, double minConfidence)
+    {
+        if (!Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var speaker)
+            || speaker != WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId)
+        {
+            return null;
+        }
+
+        return WarpTalk.Shared.FarSpeakerNames.ResolveLive(
+            RedisStreamService.GetField(entry, "far_speaker_name"),
+            WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
+            minConfidence);
+    }
+
+    // ── Live text → TranscriptInterimReceived ─────────────────
+
+    /// <summary>
+    /// Relays stt_worker's live text — the words of a turn still being spoken — to the room.
+    ///
+    /// Measured 4 Oct 2026: a short sentence reached the caption ~2.5s after the speaker stopped,
+    /// because nothing was shown until the turn closed. The model already had the words ~1s behind
+    /// the speaker. This forwards them as they come; the TranscriptSegmentReceived line for the same
+    /// speaker replaces them.
+    ///
+    /// Masked under the same profanity switch as the final line, or the filter would be off for the
+    /// second or two before every line. Pub/sub reaches every replica, so only the relay leader
+    /// sends. Not a required relay subscription on purpose: a failure here must cost live text, not
+    /// every other realtime event the leader carries.
+    /// </summary>
+    private async Task RelayInterimTranscriptsAsync(CancellationToken ct)
+    {
+        if (_redis is null || _relayLeadership is null)
+            return;
+
+        var subscriber = _redis.GetSubscriber();
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await subscriber.SubscribeAsync(
+                    RedisChannel.Literal(RealtimeConstants.RedisChannels.SttInterim),
+                    (_channel, message) => _ = RelayInterimAsync(message, ct));
+                _logger.LogInformation("Relaying live text from '{Channel}'.", RealtimeConstants.RedisChannels.SttInterim);
+                return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Could not subscribe to live text; retrying in {RetryDelay}.", retryDelay);
+                await Task.Delay(retryDelay, ct);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+    }
+
+    private async Task RelayInterimAsync(RedisValue message, CancellationToken ct)
+    {
+        try
+        {
+            if (_relayLeadership is null || !_relayLeadership.ShouldHandle || message.IsNullOrEmpty)
+                return;
+
+            var interim = TryReadInterim(message.ToString());
+            if (interim is null)
+                return;
+
+            var (roomId, speakerId, itemId, text, language) = interim.Value;
+            if (await IsProfanityFilterEnabledAsync(roomId, ct))
+                text = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(text);
+
+            var dto = new TranscriptInterimDto(
+                SpeakerId: Guid.TryParse(speakerId, out var spk) ? spk : Guid.Empty,
+                SpeakerName: await ResolveSpeakerNameAsync(roomId, speakerId),
+                ItemId: itemId,
+                Text: text,
+                Language: language);
+
+            await _hubContext.Clients
+                .Group($"translationRoom:{roomId}")
+                .SendAsync("TranscriptInterimReceived", dto, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // A dropped preview is replaced by the final line moments later.
+            _logger.LogDebug(ex, "Live text relay failed.");
+        }
+    }
+
+    /// <summary>Parses one stt:interim message, or null when it is not one this relay can route.</summary>
+    public static (string RoomId, string SpeakerId, string ItemId, string Text, string Language)? TryReadInterim(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            string Read(string name) =>
+                root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                    ? value.GetString() ?? ""
+                    : "";
+            var roomId = Read("meeting_id");
+            var text = Read("text");
+            if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(text))
+                return null;
+            return (roomId, Read("speaker_id"), Read("item_id"), text, Read("language"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    // ── Late far-side names → TranscriptSegmentSpeakerNamed ──
+
+    /// <summary>
+    /// Relays a bridge stand-in line's LATE name to the room: the line already went out as "Google
+    /// Meet participants" on TranscriptSegmentReceived, and stt_worker has since become sure who on
+    /// the Meet side said it. See <see cref="WarpTalk.Shared.FarSpeakerNames.LateNameStream"/> for
+    /// why the name can trail its line, and why it rides a stream of its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Stateless, like every relay here. The client applies the event to the line with the same
+    /// segment id only while that line still reads the fallback, so a duplicate (a redelivery, a
+    /// second replica) renames nothing twice, and an id the client never saw is ignored.
+    /// </para>
+    /// <para>
+    /// The same gate as the line itself: the confidence is checked again against
+    /// <see cref="_farSpeakerMinConfidence"/>, the threshold <see cref="TryResolveStandInSpeakerName"/>
+    /// applies to stt:results. stt_worker only sends at or above ITS 0.6, but this deployment may be
+    /// configured stricter, and a late entry must not show a name the line itself would have hidden.
+    /// TranscriptService reads the same stream in its own group and applies the same check to the
+    /// saved row, so a reload agrees with what the room saw.
+    /// </para>
+    /// <para>
+    /// No ordering against the stt:results loop is attempted. The two loops (and two replicas) can
+    /// race, and the late entry could in principle overtake its own line; the client then ignores
+    /// it, and the saved row — which TranscriptService names regardless — carries the name on the
+    /// next load. The producer publishes ≥ 1 s after the line, so in practice the line is long out.
+    /// </para>
+    /// <para>
+    /// Never logs the name: a Meet participant's name is personal data from somebody else's meeting.
+    /// </para>
+    /// </remarks>
+    private async Task ConsumeFarSpeakerLateNamesAsync(CancellationToken ct)
+    {
+        var streamKey = "stt:far_speaker_late";
+
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
+
+        _logger.LogDebug("Consuming late far-side speaker names: {StreamKey}", streamKey);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var entries = await _streamService.ConsumeAsync(
+                    streamKey, ConsumerGroupName, _consumerName, count: 10, blockMs: 2000);
+
+                foreach (var entry in entries)
+                {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    var named = TryReadLateSpeakerName(entry, _farSpeakerMinConfidence);
+
+                    // Acknowledged either way, like every loop here: an entry with no room, no
+                    // segment id or no showable name can never become deliverable, and leaving it
+                    // pending would only feed WarpTalkAiPendingStuck. A name under this
+                    // deployment's threshold lands here too, on purpose — it is not to be shown.
+                    if (string.IsNullOrEmpty(translationRoomId) || named is null)
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
+
+                    await _hubContext.Clients
+                        .Group($"translationRoom:{translationRoomId}")
+                        .SendAsync("TranscriptSegmentSpeakerNamed", named, ct);
+
+                    _logger.LogDebug(
+                        "Relayed a late far-side name for segment {SegmentId} in room {RoomId}",
+                        named.SegmentId, translationRoomId);
+
+                    await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                // WT-387: a vanished consumer group is recoverable; everything else is not.
+                if (await TryRestoreConsumerGroupAsync(ex, streamKey, ct)) continue;
+                _logger.LogError(ex, "Error consuming late far-side speaker names");
+                await Task.Delay(1000, ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One <c>stt:far_speaker_late</c> entry as a client payload, or <c>null</c> when it must not be
+    /// shown: no parsable <c>segment_id</c>, no name, a confidence that is absent, unparsable or under
+    /// <paramref name="minConfidence"/>, or a <c>speaker_id</c> that names somebody other than the
+    /// bridge stand-in. Pure and static, like <see cref="TryResolveStandInSpeakerName"/>.
+    /// </summary>
+    /// <remarks>
+    /// The wire contract carries no <c>speaker_id</c> — stt_worker only publishes late names for
+    /// stand-in segments. When a producer does add one and it is anybody else, the entry is refused:
+    /// a real participant's line is named by who they are, never by a Meet caption.
+    /// </remarks>
+    public static TranscriptSegmentSpeakerNamedDto? TryReadLateSpeakerName(StreamEntry entry, double minConfidence)
+    {
+        if (!Guid.TryParse(RedisStreamService.GetField(entry, "segment_id"), out var segmentId)
+            || segmentId == Guid.Empty)
+        {
+            return null;
+        }
+
+        var speakerId = RedisStreamService.GetField(entry, "speaker_id");
+        if (!string.IsNullOrWhiteSpace(speakerId)
+            && (!Guid.TryParse(speakerId, out var speaker)
+                || speaker != WarpTalk.Shared.ExternalBridgeConstants.ParticipantUserId))
+        {
+            return null;
+        }
+
+        var name = WarpTalk.Shared.FarSpeakerNames.TryResolveConfident(
+            RedisStreamService.GetField(entry, "far_speaker_name"),
+            WarpTalk.Shared.FarSpeakerNames.ParseConfidence(RedisStreamService.GetField(entry, "far_speaker_confidence")),
+            minConfidence);
+
+        return name is null ? null : new TranscriptSegmentSpeakerNamedDto(segmentId, name);
     }
 
     /// <summary>
@@ -468,7 +874,7 @@ public sealed class AiResultConsumerService : BackgroundService
                     // group dead-letters it with its payload; that is where it gets looked at.
                     if (string.IsNullOrEmpty(translationRoomId) || sentence is null)
                     {
-                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
                         continue;
                     }
 
@@ -488,7 +894,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 }
 
                 if (entries.Length == 0)
-                    await Task.Delay(200, ct);
+                    await Task.Delay(CaptionPollDelay, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -609,7 +1015,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     var originalText = RedisStreamService.GetField(entry, "original_text") ?? "";
                     var translatedText = RedisStreamService.GetField(entry, "translated_text") ?? "";
@@ -643,7 +1053,7 @@ public sealed class AiResultConsumerService : BackgroundService
                 }
 
                 if (entries.Length == 0)
-                    await Task.Delay(200, ct);
+                    await Task.Delay(CaptionPollDelay, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -677,7 +1087,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
                     var audioDto = new TranslatedAudioDto(
                         SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
@@ -761,7 +1175,7 @@ public sealed class AiResultConsumerService : BackgroundService
                     // and stop every later message for every room.
                     if (string.IsNullOrEmpty(translationRoomId) || string.IsNullOrEmpty(reason))
                     {
-                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
                         continue;
                     }
 
@@ -829,7 +1243,11 @@ public sealed class AiResultConsumerService : BackgroundService
                 foreach (var entry in entries)
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
-                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    if (string.IsNullOrEmpty(translationRoomId))
+                    {
+                        await AcknowledgeUnroutableAsync(streamKey, entry);
+                        continue;
+                    }
 
                     // Inline transcript suggestions ride this same stream but are a different
                     // client event with a different shape. Route them out FIRST and leave the

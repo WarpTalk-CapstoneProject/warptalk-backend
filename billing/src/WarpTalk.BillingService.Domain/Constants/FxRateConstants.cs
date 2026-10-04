@@ -1,6 +1,9 @@
 namespace WarpTalk.BillingService.Domain.Constants;
 
-/// <summary>Vocabulary of subscription.fx_rates and of the USD→VND rate every VND report converts with.</summary>
+/// <summary>
+/// Vocabulary of subscription.fx_rates: the USD→VND rate (VND per US dollar) that turns a VND amount —
+/// a historical payment, a VND-priced sale, a VND expense — into the USD every report is in.
+/// </summary>
 public static class FxRateConstants
 {
     public const string Usd = "USD";

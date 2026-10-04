@@ -56,6 +56,7 @@ public static class PlatformSettingsCatalog
     public const string FrozenCreditGraceDays = "billing.frozen_credits.grace_days";
     public const string FrozenCreditPolicyEffectiveAt = "billing.frozen_credits.policy_effective_at";
     public const string DunningGraceDays = "billing.dunning.grace_days";
+    public const string VatPercent = "billing.vat.percent";
 
     // ── Notifications & email ───────────────────────────────────────────────────────────────
     public const string EmailFromName = "notifications.email.from_name";
@@ -309,6 +310,20 @@ public static class PlatformSettingsCatalog
             Min = 0, Max = 60, Unit = "days",
             Label = "Failed card payment grace",
             Description = "Days a workspace keeps its plan after an automatic renewal charge fails, while Stripe retries the card and the owner is asked to update it. After this the subscription expires and its credits are frozen.",
+        },
+        new()
+        {
+            // Owner decision 3 Oct 2026: plan and pack prices are entered WITHOUT VAT and one
+            // platform-wide rate is added on top at Stripe checkout, plans and top-ups alike. Read
+            // by BillingService when it builds a Checkout Session (StripeVatTaxRates turns the
+            // percentage into an exclusive Stripe TaxRate) and served to the pricing pages so the
+            // "+ VAT" they print is the same number. Zero switches VAT off. A change applies to
+            // checkouts started after it; a running subscription keeps the rate it was sold with.
+            Key = VatPercent, Category = SettingCategories.Billing, Type = SettingValueType.Decimal,
+            Default = Json(10m), OwningService = SettingOwners.Billing, Risky = true,
+            Min = 0, Max = 30, Unit = "%",
+            Label = "VAT rate",
+            Description = "Added on top of every plan, add-on and credit price at Stripe checkout. Prices in the admin are entered without VAT. 0 turns VAT off.",
         },
 
         // Notifications & email

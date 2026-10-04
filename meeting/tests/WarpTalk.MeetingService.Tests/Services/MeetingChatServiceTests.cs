@@ -31,6 +31,7 @@ public class MeetingChatServiceTests
     private readonly Mock<IMeetingChatTranslationRepository> _translationRepoMock;
     private readonly Mock<IChatTranslator> _chatTranslatorMock;
     private readonly Mock<IMeetingChatFileStorage> _fileStorageMock;
+    private readonly Mock<ITranslationRoomGrpcService> _translationRoomGrpcMock = new();
     private readonly Mock<IRtcSessionRevocationRepository> _revocationRepoMock = new();
     private readonly List<RtcSessionRevocation> _revocations = new();
     private readonly MeetingChatService _sut;
@@ -73,7 +74,11 @@ public class MeetingChatServiceTests
         _chatTranslatorMock.Setup(t => t.ModelName).Returns("gpt-4o-mini");
         _chatTranslatorMock.Setup(t => t.PromptVersion).Returns(1);
 
-        _sut = new MeetingChatService(_unitOfWorkMock.Object, _notifierMock.Object, _redisMock.Object, _chatTranslatorMock.Object, _fileStorageMock.Object);
+        // No room details unless a test says otherwise, so the workspace stays unresolved.
+        _translationRoomGrpcMock.Setup(g => g.GetRoomDetailsAsync(It.IsAny<Guid>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Failure<WarpTalk.Shared.Protos.GetTranslationRoomResponse>("unavailable", "UNAVAILABLE"));
+
+        _sut = new MeetingChatService(_unitOfWorkMock.Object, _notifierMock.Object, _redisMock.Object, _chatTranslatorMock.Object, _fileStorageMock.Object, _translationRoomGrpcMock.Object);
     }
 
     private static IFormFile CreateFormFile(string fileName, string contentType, int sizeBytes)
@@ -564,6 +569,103 @@ public class MeetingChatServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    // --- Workspace resolution ---
+    //
+    // From 17 Aug 2026 every meeting-chat message and @WarpBot request was stamped with an empty
+    // workspace: this service read `meeting:room:{id}`, a key WT-428 had renamed to
+    // `meeting:room:v2:{id}` on the write side. WarpBot then looked up workspace 0000… and
+    // reported its document tools as broken in every meeting.
+
+    private void SetupWarpbotSend()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom());
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<RtcStreamParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateParticipant(_userId));
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+    }
+
+    private static SendMeetingChatMessageRequest WarpbotRequest() => new()
+    {
+        OriginalText = "@WarpBot find the related documents",
+        OriginalLanguage = "en",
+        Mentions = new List<ChatMentionDto> { new ChatMentionDto { Id = "warpbot", Display = "WarpBot", Type = "agent" } }
+    };
+
+    [Fact]
+    public async Task SendMessageAsync_WorkspaceComesFromTheV2RoomProjection()
+    {
+        SetupWarpbotSend();
+        var workspaceId = Guid.NewGuid();
+        _redisMock.Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>($"meeting:room:v2:{_roomId}"))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse { WorkspaceId = workspaceId.ToString() }));
+        Dictionary<string, string>? published = null;
+        _redisMock.Setup(r => r.PublishStreamMessageAsync("assistant:chat_requests", It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, fields) => published = fields)
+            .ReturnsAsync(WarpTalk.Shared.Result.Success());
+        MeetingChatAssistantRequest? recorded = null;
+        _assistantRepoMock.Setup(r => r.AddAsync(It.IsAny<MeetingChatAssistantRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<MeetingChatAssistantRequest, CancellationToken>((request, _) => recorded = request);
+
+        var result = await _sut.SendMessageAsync(_roomId, _userId, WarpbotRequest());
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(workspaceId.ToString(), published!["workspace_id"]);
+        Assert.Equal(workspaceId, recorded!.WorkspaceId);
+        _translationRoomGrpcMock.Verify(g => g.GetRoomDetailsAsync(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_WithoutAProjection_AsksTranslationRoomForTheWorkspace()
+    {
+        SetupWarpbotSend();
+        var workspaceId = Guid.NewGuid();
+        _translationRoomGrpcMock.Setup(g => g.GetRoomDetailsAsync(_roomId))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse { WorkspaceId = workspaceId.ToString() }));
+        Dictionary<string, string>? published = null;
+        _redisMock.Setup(r => r.PublishStreamMessageAsync("assistant:chat_requests", It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, fields) => published = fields)
+            .ReturnsAsync(WarpTalk.Shared.Result.Success());
+
+        var result = await _sut.SendMessageAsync(_roomId, _userId, WarpbotRequest());
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(workspaceId.ToString(), published!["workspace_id"]);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_NeverReadsThePreV2RoomKey()
+    {
+        SetupWarpbotSend();
+        _redisMock.Setup(r => r.PublishStreamMessageAsync("assistant:chat_requests", It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success());
+
+        await _sut.SendMessageAsync(_roomId, _userId, WarpbotRequest());
+
+        _redisMock.Verify(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>($"meeting:room:{_roomId}"), Times.Never);
+    }
+
+    [Fact]
+    public async Task UploadFileAsync_StampsTheResolvedWorkspace()
+    {
+        SetupWarpbotSend();
+        var workspaceId = Guid.NewGuid();
+        _translationRoomGrpcMock.Setup(g => g.GetRoomDetailsAsync(_roomId))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse { WorkspaceId = workspaceId.ToString() }));
+        MeetingChatMessage? saved = null;
+        _chatMessageRepoMock.Setup(r => r.AddAsync(It.IsAny<MeetingChatMessage>(), It.IsAny<CancellationToken>()))
+            .Callback<MeetingChatMessage, CancellationToken>((message, _) => saved = message);
+
+        var result = await _sut.UploadFileAsync(_roomId, _userId, new UploadMeetingChatFileRequest { File = CreateFormFile("notes.pdf", "application/pdf", 100) });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(workspaceId, saved!.WorkspaceId);
     }
 
     [Fact]

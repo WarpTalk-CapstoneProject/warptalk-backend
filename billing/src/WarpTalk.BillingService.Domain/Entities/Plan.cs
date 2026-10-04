@@ -17,7 +17,7 @@ public partial class Plan
 
     public decimal Price { get; set; }
 
-    public string Currency { get; set; } = PaymentConstants.Currencies.VndAccounting;
+    public string Currency { get; set; } = PaymentConstants.Currencies.UsdAccounting;
 
     public string BillingCycle { get; set; } = SubscriptionConstants.BillingCycles.Monthly;
 

@@ -32,7 +32,7 @@ public static class UsageSettlementMapper
             IdempotencyKey: BillingIdempotencyKeyHelper.ForUsage(request),
             PricingRateCardId: null,
             UnitPriceSnapshot: null,
-            Currency: PaymentConstants.Currencies.VndAccounting,
+            Currency: PaymentConstants.Currencies.UsdAccounting,
             Details: request.Details);
 
     public static SettleUsageChargeRequest ToSettlementRequest(
@@ -55,7 +55,7 @@ public static class UsageSettlementMapper
             IdempotencyKey: BillingIdempotencyKeyHelper.ForDirectConsume(workspaceId, request),
             PricingRateCardId: null,
             UnitPriceSnapshot: null,
-            Currency: PaymentConstants.Currencies.VndAccounting,
+            Currency: PaymentConstants.Currencies.UsdAccounting,
             Details: null);
 
     public static SettleUsageChargeRequest ToAggregatedSettlementRequest(this IEnumerable<TempUsageLogDto> logs)
@@ -87,7 +87,7 @@ public static class UsageSettlementMapper
             IdempotencyKey: BillingIdempotencyKeyHelper.ForAggregate(items.Select(x => x.IdempotencyKey)),
             PricingRateCardId: first.PricingRateCardId,
             UnitPriceSnapshot: first.UnitPriceSnapshot,
-            Currency: PaymentConstants.Currencies.VndAccounting,
+            Currency: PaymentConstants.Currencies.UsdAccounting,
             Details: CreateAggregatedDetails(items, first));
     }
 

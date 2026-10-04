@@ -176,6 +176,15 @@ builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.Mee
 // LiveKit directly. With the webhook working it finds nothing.
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.EgressReconciliationWorker>();
 
+// A Google Meet bridge recording stops when the bridge session ends (the room empties past a short
+// grace for reloads, or translation-room has ended it) instead of running ~20 s into LiveKit's
+// empty-room timeout. One instance: the webhook hands departures to it, and it follows them up.
+builder.Services.AddSingleton<WarpTalk.MeetingService.API.Workers.BridgeRecordingEndWorker>();
+builder.Services.AddSingleton<IBridgeRecordingEndWatcher>(
+    sp => sp.GetRequiredService<WarpTalk.MeetingService.API.Workers.BridgeRecordingEndWorker>());
+builder.Services.AddHostedService(
+    sp => sp.GetRequiredService<WarpTalk.MeetingService.API.Workers.BridgeRecordingEndWorker>());
+
 // Chat repositories and services
 builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
 builder.Services.AddScoped<IMeetingChatTranslationRepository, MeetingChatTranslationRepository>();

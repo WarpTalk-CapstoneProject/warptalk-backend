@@ -15,6 +15,7 @@ using WarpTalk.AssistantService.Infrastructure.Repositories;
 using WarpTalk.AssistantService.Infrastructure.Clients;
 using WarpTalk.AssistantService.Infrastructure.Messaging;
 using WarpTalk.AssistantService.Infrastructure.Mcp;
+using WarpTalk.AssistantService.Infrastructure.Meet;
 using WarpTalk.AssistantService.Infrastructure.OAuth;
 using WarpTalk.AssistantService.Infrastructure.Plugins;
 using WarpTalk.AssistantService.Infrastructure.Security;
@@ -22,6 +23,7 @@ using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Coordination;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.PlatformSettings;
 using WarpTalk.Shared.Protos;
 
 Log.Logger = new LoggerConfiguration()
@@ -53,6 +55,11 @@ try
     builder.WebHost.ConfigureKestrel(options =>
     {
         options.ListenAnyIP(5108, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+        // Internal gRPC (meet_conference.proto): Google Meet REST through a user's own grant, for
+        // translation-room's conference-end worker and transcript's far-speaker relabel.
+        options.ListenAnyIP(
+            builder.Configuration.GetValue("Grpc:Port", 50058),
+            listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
     builder.Services.AddDbContext<AssistantDbContext>(options =>
@@ -81,6 +88,10 @@ try
     // Same instance behind the narrow refresh slice McpToolOrchestrator depends on.
     builder.Services.AddScoped<IPluginTokenRefresher>(sp => sp.GetRequiredService<PluginConnectionService>());
     builder.Services.AddScoped<IMcpToolOrchestrator, McpToolOrchestrator>();
+    // The WarpBot tools page: the worker's built-in manifest (Redis), the web search switch and the
+    // orchestrator's own plugin list. Singleton source: it holds the 60-second manifest cache.
+    builder.Services.AddScoped<IAssistantToolsService, AssistantToolsService>();
+    builder.Services.AddSingleton<IAssistantToolManifestSource, RedisAssistantToolManifestSource>();
     builder.Services.AddScoped<IWorkspacePluginPolicyClient, WorkspacePluginPolicyGrpcClient>();
     builder.Services.AddScoped<IWorkspaceMembershipClient, WorkspaceMembershipGrpcClient>();
     // WT-646. The single place a workspace's plugin policy is applied - the catalog, install,
@@ -88,9 +99,14 @@ try
     // so the null-versus-empty allowlist rule exists once.
     builder.Services.AddScoped<IWorkspacePluginGuard, WorkspacePluginGuard>();
     builder.Services.AddScoped<IPluginToolAuditQueryService, PluginToolAuditQueryService>();
+    // Wave 4: every WarpBot tool call (built-in, web search, plugin) recorded as metadata, and the
+    // workspace and platform Insights that read it.
+    builder.Services.AddScoped<IAssistantToolCallRecorder, AssistantToolCallRecorder>();
+    builder.Services.AddScoped<IAssistantToolInsightsService, AssistantToolInsightsService>();
     // The workspace plugin marketplace: which plugins a workspace has, private MCP plugins, and
     // members asking the Owner for more. Notifies through the notification service's gRPC.
     builder.Services.AddScoped<IWorkspacePluginMarketplaceService, WorkspacePluginMarketplaceService>();
+    builder.Services.AddScoped<IWorkspaceToolPolicyService, WorkspaceToolPolicyService>();
     builder.Services.AddScoped<IWorkspaceDirectoryClient, WorkspaceDirectoryGrpcClient>();
     builder.Services.AddScoped<IWorkspacePluginMemberService, WorkspacePluginMemberService>();
     builder.Services.AddScoped<IUserNotificationClient, UserNotificationGrpcClient>();
@@ -122,6 +138,14 @@ try
         (sp, _) => sp.GetRequiredService<GoogleWorkspaceOAuthClient>());
     builder.Services.AddScoped<IPluginOAuthStateProtector, DataProtectionPluginOAuthStateProtector>();
     builder.Services.AddScoped<IPluginCredentialProtector, DataProtectionPluginCredentialProtector>();
+
+    // Google Meet REST v2 (conference records, participants, transcripts) with the host's own
+    // grant. The bridge's conference-end detection, post-meeting relabel and Meet roster use it.
+    builder.Services.Configure<GoogleMeetApiOptions>(builder.Configuration.GetSection("Plugins:GoogleWorkspace:MeetApi"));
+    builder.Services.AddHttpClient<IGoogleMeetRestClient, GoogleMeetRestClient>();
+    builder.Services.AddScoped<IHostMeetConferenceService, HostMeetConferenceService>();
+    builder.Services.AddScoped<IBridgeRoomDirectory, BridgeRoomDirectoryGrpcClient>();
+    builder.Services.AddScoped<IBridgeMeetRosterService, BridgeMeetRosterService>();
 
     // MCP client registration ladder (WT-602). Registration order below IS the spec's priority
     // order - MCP Authorization 2026-07-28 requires walking pre-registered, then Client ID
@@ -174,6 +198,18 @@ try
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
 
+    // The bridge Meet roster checks that the caller is the room's host or participant, and finds
+    // the Meet link, through translation-room's existing room/participant reads.
+    builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
+    {
+        o.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcSettings:TranslationRoomServiceUrl",
+            "http://localhost:50052");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
+
     // Plugin request notifications (member asks the Owner; the Owner decides). Required outside
     // Development like every other gRPC address: GetRequiredServiceUri throws when it is missing, and
     // warptalk-infrastructure's check-grpc-config-coverage.mjs fails a descriptor that omits it.
@@ -200,6 +236,8 @@ try
         _ => StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     // One replica reads assistant:chat_results at a time (ordered reply chunks); see
     // AssistantChatResultConsumerService.LeaseResource.
+    // flags.warpbot_web_search, read the way ai_assistant_worker reads it, for the tools page.
+    builder.Services.AddWarpTalkPlatformSettings();
     builder.Services.AddWarpTalkLeaderElection(AssistantChatResultConsumerService.LeaseResource);
     builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
@@ -292,7 +330,11 @@ try
     builder.Services.AddWarpTalkServiceHealthChecks<AssistantDbContext>(
         "assistant-database");
 
-    builder.Services.AddControllers();
+    // Tool schemas are bounded where they are read (ToolSchemaDepth), but MVC's default of 32 left
+    // five levels of catalog wrapping as the whole margin; one deep provider schema turned a 200
+    // into a body cut off mid-write. 64 is System.Text.Json's own default.
+    builder.Services.AddControllers()
+        .AddJsonOptions(options => options.JsonSerializerOptions.MaxDepth = 64);
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(options =>
     {
@@ -379,6 +421,7 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
+    app.MapGrpcService<WarpTalk.AssistantService.API.GrpcServices.MeetConferenceGrpcService>();
     // WebSockets only: reached through the gateway's YARP route to the Kubernetes Service, which
     // pins nothing to a pod. See SignalRBackplaneExtensions.UseWebSocketsOnly.
     app.MapHub<AssistantHub>("/api/v1/assistant/chat-hub", SignalRBackplaneExtensions.UseWebSocketsOnly);

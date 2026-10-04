@@ -3518,7 +3518,7 @@
                 },
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"workspaceId\": \"{{workspaceId}}\",\n  \"amount\": 100000,\n  \"currency\": \"VND\"\n}",
+                  "raw": "{\n  \"workspaceId\": \"{{workspaceId}}\",\n  \"amount\": 5,\n  \"currency\": \"usd\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"

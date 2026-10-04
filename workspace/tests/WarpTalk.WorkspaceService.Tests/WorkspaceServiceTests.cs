@@ -308,6 +308,116 @@ public class WorkspaceServiceTests
         Assert.Contains("corporate domain registered with another workspace", result.Error);
     }
 
+    /// <summary>
+    /// Prod, 30 Sep 2026: fpt.edu.vn was still held by a soft-deleted workspace, so every
+    /// fpt.edu.vn user who created a workspace with the default policy was refused with
+    /// DomainRegisteredElsewhere — by a workspace nobody can see or restore.
+    ///
+    /// The claim must succeed, and it must succeed by revoking the stale row first. Merely
+    /// skipping it would hand the INSERT to the partial unique index (status = 'verified'
+    /// only), which still counts the deleted workspace's row and turns the refusal into a 500.
+    /// </summary>
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldClaimDomain_WhenItsHolderWorkspaceWasDeleted()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "student@fpt.edu.vn" };
+        var request = new CreateWorkspaceRequest("FPTU", null);
+
+        _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
+        _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>());
+
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
+
+        var deletedBy = Guid.NewGuid();
+        var deletedWorkspace = new Workspace
+        {
+            Id = Guid.NewGuid(),
+            Name = "FPT",
+            Slug = "fpt",
+            IsActive = true,
+            DeletedAt = DateTime.UtcNow.AddDays(-1),
+            UpdatedBy = deletedBy,
+        };
+        var staleClaim = new WorkspaceVerifiedDomain
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = deletedWorkspace.Id,
+            Domain = "fpt.edu.vn",
+            Status = "verified",
+            VerifiedAt = DateTime.UtcNow.AddDays(-30),
+            Workspace = deletedWorkspace,
+        };
+        _workspaceVerifiedDomainRepository.FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Is("Workspace"),
+            Arg.Any<CancellationToken>())
+            .Returns(staleClaim);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess, result.Error);
+
+        Assert.Equal("revoked", staleClaim.Status);
+        Assert.NotNull(staleClaim.RevokedAt);
+        Assert.Equal(deletedBy, staleClaim.UpdatedBy);
+        _workspaceVerifiedDomainRepository.Received(1).Update(staleClaim);
+
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd =>
+            vd.Domain == "fpt.edu.vn" && vd.Status == "verified" && vd.WorkspaceId != deletedWorkspace.Id),
+            Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The release is for deleted holders only. A suspended workspace is coming back and keeps
+    /// its domain, exactly as before.
+    /// </summary>
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldStillFail_WhenDomainHolderIsOnlySuspended()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "user@company.com" };
+        var request = new CreateWorkspaceRequest("New Work", null);
+
+        _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
+        _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>());
+
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
+
+        var suspendedWorkspace = new Workspace { Id = Guid.NewGuid(), IsActive = false };
+        var claim = new WorkspaceVerifiedDomain
+        {
+            WorkspaceId = suspendedWorkspace.Id,
+            Domain = "company.com",
+            Status = "verified",
+            VerifiedAt = DateTime.UtcNow.AddDays(-30),
+            Workspace = suspendedWorkspace,
+        };
+        _workspaceVerifiedDomainRepository.FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Is("Workspace"),
+            Arg.Any<CancellationToken>())
+            .Returns(claim);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.DomainRegisteredElsewhere, result.Error);
+        Assert.Equal("verified", claim.Status);
+        Assert.Null(claim.RevokedAt);
+        _workspaceVerifiedDomainRepository.DidNotReceive().Update(Arg.Any<WorkspaceVerifiedDomain>());
+    }
+
     [Fact]
     public async Task CreateWorkspaceAsync_ShouldClaimCallerDomain_WhenPolicyOmitted()
     {

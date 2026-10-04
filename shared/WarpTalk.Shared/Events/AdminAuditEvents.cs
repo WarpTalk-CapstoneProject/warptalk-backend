@@ -45,7 +45,7 @@ public static class AdminAuditEntityTypes
     public const string AuditLog = "audit_log";
     /// <summary>A payment recorded by hand against a subscription (bank transfer, offline).</summary>
     public const string Payment = "payment";
-    /// <summary>The USD→VND rate VND reports convert with (billing <c>fx_rates</c> + its config keys).</summary>
+    /// <summary>The USD→VND rate USD reports convert VND amounts with (billing <c>fx_rates</c> + its config keys).</summary>
     public const string FxRate = "fx_rate";
     /// <summary>A platform staff member (G10). Entity id = the staff member's USER id.</summary>
     public const string StaffMember = "staff_member";
@@ -143,6 +143,7 @@ public static class AdminAuditBillingActions
     public const string RateCardUpserted = "rate_card.upserted";
     public const string RateCardDeactivated = "rate_card.deactivated";
     public const string RateCardCostSet = "rate_card.provider_cost_set";
+    public const string RateCardCreditPriceSet = "rate_card.credit_price_set";
     public const string PricingConfigUpdated = "pricing_config.updated";
     public const string BillingPolicyUpdated = "billing_policy.updated";
     public const string ContractCreated = "subscription.contract_created";
@@ -164,7 +165,7 @@ public static class AdminAuditBillingActions
 
     public static readonly string[] All =
     [
-        PlanCreated, PlanUpdated, RateCardUpserted, RateCardDeactivated, RateCardCostSet,
+        PlanCreated, PlanUpdated, RateCardUpserted, RateCardDeactivated, RateCardCostSet, RateCardCreditPriceSet,
         PricingConfigUpdated, BillingPolicyUpdated, ContractCreated, ContractTermsUpdated,
         SubscriptionCancelled, SubscriptionReactivated, SubscriptionResumed, SalesLeadStatusChanged,
         PaymentRecorded, FxRateRefreshed, FxRateOverridden, FxRateOverrideCleared,

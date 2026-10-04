@@ -161,7 +161,14 @@ public class LiveKitEgressService : ILiveKitEgressService
     }
 
     /// <inheritdoc />
-    public async Task<Result<JsonElement?>> GetEgressAsync(string egressId, CancellationToken ct = default)
+    public Task<Result<JsonElement?>> GetEgressAsync(string egressId, CancellationToken ct = default) =>
+        ReadEgressAsync(egressId, strictNotFound: false, ct);
+
+    /// <inheritdoc />
+    public Task<Result<JsonElement?>> GetEgressStrictAsync(string egressId, CancellationToken ct = default) =>
+        ReadEgressAsync(egressId, strictNotFound: true, ct);
+
+    private async Task<Result<JsonElement?>> ReadEgressAsync(string egressId, bool strictNotFound, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(egressId))
             return Result.Success<JsonElement?>(null);
@@ -192,7 +199,12 @@ public class LiveKitEgressService : ILiveKitEgressService
             // and not one of them could ever converge. The interface has always documented the
             // intended contract ("Not knowing an id is a normal answer, not a failure"); the
             // implementation was guessing the wrong wire shape for it.
-            if (IsNotFound(response.StatusCode, body))
+            //
+            // Strict callers (deciding a recording is ALREADY STOPPED) accept only LiveKit's own
+            // answer — a 404 with a Twirp not_found body; any other 404 is a failure for them.
+            if (strictNotFound
+                    ? LiveKitTwirpErrors.IsNotFound(response.StatusCode, body)
+                    : IsNotFoundLenient(response.StatusCode, body))
             {
                 _logger.LogInformation(
                     "LiveKit has no record of egress {EgressId}; treating it as aged out.",
@@ -262,12 +274,14 @@ public class LiveKitEgressService : ILiveKitEgressService
     /// gateway in front of LiveKit can turn a 404 into something else, and the Twirp body's own
     /// <c>not_found</c> code is the authoritative statement. Conflating this with a transport
     /// failure is what kept five production rooms recording forever.
+    ///
+    /// LENIENT, for the reconciliation sweep (GetEgressAsync): any 404, or a not_found body under any
+    /// status. The sweep acts on "unknown" only after its one-hour UnknownEgressGrace, so a stray
+    /// proxy 404 costs nothing there — and turning it into a failure would bring back the rooms that
+    /// could never converge. The strict reading lives in LiveKitTwirpErrors.IsNotFound.
     /// </summary>
-    private static bool IsNotFound(HttpStatusCode status, string body)
-    {
-        if (status == HttpStatusCode.NotFound) return true;
-        return body.Contains("\"code\":\"not_found\"", StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool IsNotFoundLenient(HttpStatusCode status, string body) =>
+        status == HttpStatusCode.NotFound || LiveKitTwirpErrors.HasNotFoundCode(body);
 
     private static object? BuildS3Output(IConfiguration configuration, ILogger logger)
     {

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.AssistantService.Application.DTOs;
 using WarpTalk.AssistantService.Application.Interfaces;
 using WarpTalk.AssistantService.Domain.Constants;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AssistantService.API.Controllers;
@@ -14,14 +15,26 @@ public class AssistantMcpToolsController : ControllerBase
 {
     private readonly IMcpToolOrchestrator _orchestrator;
     private readonly IPluginToolAuditQueryService _auditQueryService;
+    private readonly IStaffAccessResolver _staffAccess;
 
     public AssistantMcpToolsController(
         IMcpToolOrchestrator orchestrator,
-        IPluginToolAuditQueryService auditQueryService)
+        IPluginToolAuditQueryService auditQueryService,
+        IStaffAccessResolver staffAccess)
     {
         _orchestrator = orchestrator;
         _auditQueryService = auditQueryService;
+        _staffAccess = staffAccess;
     }
+
+    /// <summary>
+    /// Whether a request with no workspace comes from the admin portal's WarpBot: staff holding
+    /// warpbot.use, the permission that WarpBot is gated on. Only asked when there is no workspace,
+    /// so a member's in-workspace call never costs a round trip to the auth service.
+    /// </summary>
+    private async Task<bool> IsPlatformStaffWithoutWorkspaceAsync(Guid? workspaceId, CancellationToken ct) =>
+        workspaceId is null
+        && await _staffAccess.StaffOverrideAllowsAsync(User, AdminPermissions.WarpBotUse, ct);
 
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
 
@@ -35,7 +48,9 @@ public class AssistantMcpToolsController : ControllerBase
         [FromQuery] string[]? excludePluginKeys,
         CancellationToken ct)
     {
-        var result = await _orchestrator.ListAvailableToolsAsync(CurrentUserId, workspaceId, excludePluginKeys, ct);
+        var callerIsPlatformStaff = await IsPlatformStaffWithoutWorkspaceAsync(workspaceId, ct);
+        var result = await _orchestrator.ListAvailableToolsAsync(
+            CurrentUserId, workspaceId, excludePluginKeys, ct, callerIsPlatformStaff);
         return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
     }
 
@@ -45,7 +60,8 @@ public class AssistantMcpToolsController : ControllerBase
     [ProducesResponseType(typeof(McpToolExecutionErrorDto), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Execute([FromBody] McpToolExecutionRequest request, CancellationToken ct)
     {
-        var result = await _orchestrator.ExecuteAsync(CurrentUserId, request, ct);
+        var callerIsPlatformStaff = await IsPlatformStaffWithoutWorkspaceAsync(request.WorkspaceId, ct);
+        var result = await _orchestrator.ExecuteAsync(CurrentUserId, request, ct, callerIsPlatformStaff);
         if (result.IsSuccess) return Ok(result.Value);
 
         var status = result.ErrorCode switch

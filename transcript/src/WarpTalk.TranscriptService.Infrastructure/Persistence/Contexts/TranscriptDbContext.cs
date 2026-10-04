@@ -467,6 +467,10 @@ public partial class TranscriptDbContext : DbContext
             // WT-716 tier 1. See migration 20260917072013_add_transcript_clean_text.
             entity.Property(e => e.CleanText).HasColumnName("clean_text");
             entity.Property(e => e.CleanFlags).HasColumnName("clean_flags");
+            // Bridge far-side speakers. See migration 20261001120000_add_segment_far_speaker.
+            entity.Property(e => e.FarSpeakerKey).HasColumnName("far_speaker_key");
+            entity.Property(e => e.FarSpeakerSource).HasColumnName("far_speaker_source");
+            entity.Property(e => e.FarSpeakerConfidence).HasColumnName("far_speaker_confidence");
 
             entity.HasOne(d => d.Transcript).WithMany(p => p.TranscriptSegments)
                 .HasForeignKey(d => d.TranscriptId)

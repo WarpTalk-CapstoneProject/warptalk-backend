@@ -83,9 +83,9 @@ public sealed class FxRateTableTests
             configured: null);
 
         FxRateTable.Describe([table.Resolve(Sep20)]).Should()
-            .Be("USD converted at 25,990 VND/USD (Stripe FX quote, 2026-09-20)");
+            .Be("VND converted at 25,990 VND/USD (Stripe FX quote, 2026-09-20)");
         FxRateTable.Describe([table.Resolve(Sep20), table.Resolve(Sep20.AddDays(1))]).Should()
-            .Be("USD converted at each day's rate (25,990–26,010 VND/USD; Stripe FX quote, Stripe charge conversion)");
+            .Be("VND converted at each day's rate (25,990–26,010 VND/USD; Stripe FX quote, Stripe charge conversion)");
         FxRateTable.Describe([]).Should().BeNull();
     }
 }

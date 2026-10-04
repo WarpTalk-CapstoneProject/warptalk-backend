@@ -10,6 +10,18 @@ public record ParticipantInfoDto(
     bool IsMuted,
     DateTime JoinedAt);
 
+/// <summary>
+/// The words of a turn that is still being spoken (the live caption). A preview: never stored,
+/// never translated, and replaced by the TranscriptSegmentReceived line for the same speaker.
+/// <c>ItemId</c> identifies the turn, so a client can tell an update from a new turn.
+/// </summary>
+public record TranscriptInterimDto(
+    Guid SpeakerId,
+    string SpeakerName,
+    string ItemId,
+    string Text,
+    string Language);
+
 public record TranscriptSegmentDto(
     Guid SegmentId,
     Guid SpeakerId,
@@ -51,6 +63,21 @@ public record TranscriptCleanSentenceDto(
     IReadOnlyList<string> Flags,
     string Source,
     int Revision);
+
+/// <summary>
+/// A bridge stand-in line that went out as "Google Meet participants" now has a name, broadcast as
+/// "TranscriptSegmentSpeakerNamed" (<c>{ segmentId, speakerName }</c> on the wire). Relayed from
+/// <c>stt:far_speaker_late</c> — see <see cref="WarpTalk.Shared.FarSpeakerNames.LateNameStream"/>
+/// for why the name can arrive a second after its line.
+///
+/// The client sets the name on the line whose <see cref="TranscriptSegmentDto.SegmentId"/> matches,
+/// and only when that line still carries the fallback: an unknown id is ignored, and a real name is
+/// never replaced. Older clients ignore the event, so their line simply keeps the fallback until a
+/// reload reads the saved row, which TranscriptService names from the same stream.
+/// </summary>
+public record TranscriptSegmentSpeakerNamedDto(
+    Guid SegmentId,
+    string SpeakerName);
 
 public record ChatMessageDto(
     Guid MessageId,

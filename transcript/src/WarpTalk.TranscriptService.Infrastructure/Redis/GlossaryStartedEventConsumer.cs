@@ -2,6 +2,7 @@ using WarpTalk.Shared.PlatformSettings;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,6 +26,11 @@ namespace WarpTalk.TranscriptService.Infrastructure.Redis;
 /// _get_mt_glossary) — so code-switched terms (e.g. "architect" spoken inside a Vietnamese
 /// sentence) have a chance of being recognized and translated consistently instead of being
 /// phonetically mangled by STT and then mistranslated. See docs/code-switching-research.md.
+///
+/// WT-422: <c>translationRoom:{roomId}:stt_keywords</c> also carries the names of the people the
+/// meeting is with (host, joined, invited), read from TranslationRoomService's GetRoomPeopleNames
+/// and appended after the glossary terms in a budget of their own — see
+/// <see cref="MaxParticipantNameSttKeywords"/>.
 ///
 /// Mirrors WorkspaceService.MeetingStartedEventConsumer's exact subscribe-to-"meeting.started"
 /// pattern, but lives here (not WorkspaceService) because Glossary/GlossaryTerm are owned by
@@ -60,7 +66,7 @@ public class GlossaryStartedEventConsumer : BackgroundService
     /// So the budget is small on purpose. It should hold the handful of names this room genuinely
     /// cannot be transcribed without, not a dictionary.
     /// </summary>
-    private const int MaxSttKeywords = 10;
+    internal const int MaxSttKeywords = 10;
 
     /// <summary>
     /// Of that budget, how much a PLATFORM-WIDE term may take.
@@ -71,6 +77,59 @@ public class GlossaryStartedEventConsumer : BackgroundService
     /// budget first and globals take what is left.
     /// </summary>
     private const int MaxGlobalSttKeywords = 3;
+
+    /// <summary>
+    /// WT-422: how many PARTICIPANT NAMES the recogniser is biased toward, on top of the glossary's
+    /// <see cref="MaxSttKeywords"/>.
+    /// <para>
+    /// A separate budget, not a share of the glossary's, and that is the decision this ticket turns
+    /// on. BuildSttKeywords spends a slot on BOTH sides of every term pair, so five glossary terms
+    /// already fill all ten slots — names queued "after the glossary, inside the same budget" would
+    /// reach the recogniser in almost no real workspace, which is the bug again. The opposite
+    /// (names first) would let a large meeting push out the terms the workspace curated. Each kind
+    /// gets its own bounded room instead, and neither can starve the other.
+    /// </para>
+    /// <para>
+    /// Names go AFTER the glossary in the list. The total is held to the reader's ceiling below, so
+    /// today the order decides nothing about what is kept; it is chosen for the day that ceiling
+    /// drops. Glossary terms are the curated list and keep their place at the front, and the
+    /// existing output for a room is unchanged as a prefix.
+    /// </para>
+    /// <para>
+    /// Names carry less of the WT-426 risk than global terms did: a global term is usually about
+    /// nobody in the room, while every name here is someone the host invited or who walked in.
+    /// Six, not more, because the list is still a thumb on the scale on marginal audio.
+    /// </para>
+    /// </summary>
+    internal const int MaxParticipantNameSttKeywords = 6;
+
+    /// <summary>
+    /// The most keywords warptalk-ai will read from <c>translationRoom:{room}:stt_keywords</c>:
+    /// <c>_MAX_STT_KEYWORDS</c> in stt_worker/worker.py. It truncates from the END and says nothing,
+    /// so the writer keeps glossary + names inside it rather than letting the reader decide.
+    /// </summary>
+    internal const int SttWorkerKeywordCeiling = 16;
+
+    /// <summary>
+    /// The longest keyword the reader keeps intact: stt_worker cuts every entry to 100 characters
+    /// (model.py <c>_normalized_keywords</c>, worker.py <c>_get_stt_keywords</c>). A name it would
+    /// cut is a name it would mangle, so it is left out instead.
+    /// </summary>
+    internal const int MaxSttKeywordLength = 100;
+
+    /// <summary>
+    /// How many names to ask TranslationRoomService for: twice the budget, because some are dropped
+    /// here (too short to bias safely, already a glossary term) and the next one should take the slot.
+    /// </summary>
+    private const int ParticipantNameLookupLimit = MaxParticipantNameSttKeywords * 2;
+
+    /// <summary>
+    /// Room for a roster read plus a handful of Auth lookups. Past this the prompt is published
+    /// with the glossary alone: the first STT chunk reads the key, and late names are worth less
+    /// than on-time terms.
+    /// </summary>
+    private static readonly TimeSpan ParticipantNameLookupTimeout = TimeSpan.FromSeconds(3);
+
     // Below this, an entry is treated as a false-accept risk rather than a useful hint;
     // see IsUsefulSttKeyword for the acronym exception.
     private const int MinSttKeywordLength = 3;
@@ -212,14 +271,21 @@ public class GlossaryStartedEventConsumer : BackgroundService
         // The fix is not to take them back out — "Codex" still needs to be heard. It is to stop
         // them crowding out the terms this workspace actually uses, and to keep the whole list
         // small enough that it biases rather than dictates.
-        var sttKeywords = BuildSttKeywords(
+        var glossaryKeywords = BuildSttKeywords(
             workspaceTerms, globalTerms, MaxSttKeywords, MaxGlobalSttKeywords);
 
+        // WT-422: and the people in the meeting. Their names are the proper nouns STT gets wrong
+        // most reliably — Vietnamese and Japanese names especially — and no glossary holds them.
+        var participantNames = await LoadParticipantNamesAsync(scope, roomId, ct);
+        var sttKeywords = AppendParticipantNames(
+            glossaryKeywords, participantNames, MaxParticipantNameSttKeywords);
+        var participantNameCount = sttKeywords.Count - glossaryKeywords.Count;
+
         var meetingContext = BuildMeetingContext(title, description);
-        if (merged.Count == 0 && string.IsNullOrEmpty(meetingContext))
+        if (merged.Count == 0 && string.IsNullOrEmpty(meetingContext) && sttKeywords.Count == 0)
         {
             _logger.LogInformation(
-                "No meeting context or glossary terms for workspace {WorkspaceId}; skipping STT/MT prompt for room {RoomId}.",
+                "No meeting context, glossary terms or participant names for workspace {WorkspaceId}; skipping STT/MT prompt for room {RoomId}.",
                 workspaceId, roomId);
             return;
         }
@@ -228,8 +294,10 @@ public class GlossaryStartedEventConsumer : BackgroundService
 
         // Short meeting context shapes ambiguous/code-switched speech without asking the model
         // to invent content. Glossary terms remain a compact bias list rather than a keyword dump.
+        // Empty only for a room whose sole content is participant names (WT-422) — nothing to say.
         var sttPrompt = BuildSttPrompt(title, description, merged);
-        await db.StringSetAsync($"translationRoom:{roomId}:stt_prompt", sttPrompt, PromptTtl);
+        if (!string.IsNullOrEmpty(sttPrompt))
+            await db.StringSetAsync($"translationRoom:{roomId}:stt_prompt", sttPrompt, PromptTtl);
         if (sttKeywords.Count > 0)
         {
             await db.StringSetAsync(
@@ -254,11 +322,11 @@ public class GlossaryStartedEventConsumer : BackgroundService
         }
 
         _logger.LogInformation(
-            "Published meeting context + {SttKeywordCount} workspace STT keywords + MT glossary for room {RoomId}: {TermCount} terms " +
+            "Published meeting context + {SttKeywordCount} STT keywords ({ParticipantNameCount} participant names) + MT glossary for room {RoomId}: {TermCount} terms " +
             "({WorkspaceCount} workspace, {GlobalCount} global; {OverriddenCount} global terms " +
             "shadowed by a workspace override, {OverBudgetCount} global terms dropped over the " +
             "{MaxTerms}-term prompt budget).",
-            sttKeywords.Count, roomId, merged.Count,
+            sttKeywords.Count, participantNameCount, roomId, merged.Count,
             workspaceTerms.Count, globalTerms.Count,
             droppedAsOverridden, droppedAsOverBudget, MaxTermsInPrompt);
     }
@@ -393,6 +461,108 @@ public class GlossaryStartedEventConsumer : BackgroundService
                     keywords.Add(cleaned);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// WT-422: the glossary keywords, then the participants' names in their own budget.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The glossary part is passed through untouched, so a room's existing keywords stay a prefix
+    /// of what it gets now. Names come in the order TranslationRoomService ranked them (host,
+    /// people in the room, people who left, invitees), and at most <paramref name="maxNames"/> of
+    /// them are added — see <see cref="MaxParticipantNameSttKeywords"/> for why it is a budget of
+    /// their own rather than what is left of the glossary's.
+    /// </para>
+    /// <para>
+    /// Each name is NFC-normalised (a macOS keyboard can hand over decomposed Vietnamese, which
+    /// neither matches nor de-duplicates against the composed form) and whitespace-collapsed the
+    /// way the reader collapses it. A name already in the glossary, or already added, is skipped
+    /// rather than spending a second slot. A name passes the same short-term test as glossary terms
+    /// (<see cref="IsUsefulSttKeyword"/>): a two-letter given name like "Tú" is also an ordinary
+    /// Vietnamese syllable, and biasing toward it would pull ordinary speech into it — the WT-426
+    /// failure. An address with an '@' is not something anyone says, and anything longer than
+    /// the reader keeps whole is left out rather than cut.
+    /// </para>
+    /// <para>
+    /// The full name is the keyword; it is not split into words. Single words would be shorter,
+    /// more numerous and far more likely to match ordinary speech.
+    /// </para>
+    /// </remarks>
+    internal static List<string> AppendParticipantNames(
+        IReadOnlyList<string> glossaryKeywords,
+        IEnumerable<string?> participantNames,
+        int maxNames)
+    {
+        var keywords = new List<string>(glossaryKeywords);
+        if (maxNames <= 0)
+            return keywords;
+
+        var seen = new HashSet<string>(keywords.Select(NormalizeKey));
+        var added = 0;
+        foreach (var raw in participantNames)
+        {
+            if (added >= maxNames)
+                break;
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+
+            var cleaned = string.Join(
+                " ",
+                raw.Normalize(NormalizationForm.FormC)
+                    .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            if (cleaned.Length > MaxSttKeywordLength
+                || cleaned.Contains('@')
+                || !IsUsefulSttKeyword(cleaned))
+            {
+                continue;
+            }
+            if (!seen.Add(NormalizeKey(cleaned)))
+                continue;
+
+            keywords.Add(cleaned);
+            added++;
+        }
+
+        return keywords;
+    }
+
+    /// <summary>
+    /// WT-422: the names of the people this meeting is with, from TranslationRoomService (which owns
+    /// the roster and the invitations). Fails open to no names: a slow or unreachable roster must
+    /// not cost the room its glossary keywords, which is what this method's caller publishes
+    /// either way.
+    /// </summary>
+    internal async Task<IReadOnlyList<string>> LoadParticipantNamesAsync(
+        IServiceScope scope,
+        string roomId,
+        CancellationToken ct)
+    {
+        var roomClient = scope.ServiceProvider
+            .GetService<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
+        if (roomClient is null)
+            return Array.Empty<string>();
+
+        try
+        {
+            var response = await roomClient.GetRoomPeopleNamesAsync(
+                new WarpTalk.Shared.Protos.GetRoomPeopleNamesRequest
+                {
+                    RoomId = roomId,
+                    MaxNames = ParticipantNameLookupLimit,
+                },
+                deadline: DateTime.UtcNow.Add(ParticipantNameLookupTimeout),
+                cancellationToken: ct);
+            return response.DisplayNames.ToList();
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not load participant names for room {RoomId}; its STT keywords carry glossary terms only.",
+                roomId);
+            return Array.Empty<string>();
         }
     }
 

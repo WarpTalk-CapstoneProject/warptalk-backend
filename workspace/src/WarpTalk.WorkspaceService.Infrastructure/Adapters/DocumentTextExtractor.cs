@@ -8,14 +8,14 @@ using System.Linq;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using DocumentFormat.OpenXml.Spreadsheet;
-using iTextSharp.text.pdf;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 /// <summary>
-/// Infrastructure service using iTextSharp PrTokeniser for PDF extraction and OpenXml for DOCX/XLSX extraction.
+/// Infrastructure service using PdfPig for PDF extraction and OpenXml for DOCX/XLSX extraction.
 /// </summary>
 public class DocumentTextExtractor : IDocumentTextExtractor
 {
@@ -29,39 +29,31 @@ public class DocumentTextExtractor : IDocumentTextExtractor
             return await Task.Run(() =>
             {
                 var fullTextBuilder = new StringBuilder();
-                var reader = new PdfReader(fileStream);
-                try
-                {
-                    for (int page = 1; page <= reader.NumberOfPages; page++)
-                    {
-                        var pageTextBuilder = new StringBuilder();
-                        var contentBytes = reader.GetPageContent(page);
-                        if (contentBytes != null && contentBytes.Length > 0)
-                        {
-                            var tokenizer = new PrTokeniser(new RandomAccessFileOrArray(contentBytes));
-                            while (tokenizer.NextToken())
-                            {
-                                var tokenType = tokenizer.TokenType;
-                                var val = tokenizer.StringValue;
-                                if (tokenType == PrTokeniser.TK_STRING || tokenType == PrTokeniser.TK_OTHER)
-                                {
-                                    if (!string.IsNullOrWhiteSpace(val) && val.Any(char.IsLetterOrDigit))
-                                    {
-                                        pageTextBuilder.Append(val).Append(' ');
-                                    }
-                                }
-                            }
-                        }
 
-                        var pageText = pageTextBuilder.ToString().Trim();
-                        result.Pages.Add(new ExtractedPage { PageNumber = page, Text = pageText });
-                        fullTextBuilder.AppendLine(pageText);
-                    }
-                }
-                finally
+                // PdfPig needs a seekable stream; the storage layer's decrypted stream may not be.
+                Stream source = fileStream;
+                if (!fileStream.CanSeek)
                 {
-                    reader.Close();
+                    var copy = new MemoryStream();
+                    fileStream.CopyTo(copy);
+                    copy.Position = 0;
+                    source = copy;
                 }
+
+                // PdfPig interprets the content stream and decodes each string through its font
+                // (ToUnicode / encoding). This used to tokenise the raw stream with iTextSharp's
+                // PrTokeniser and keep every string AND every operator, so a page came out as
+                // "Td Tj BDC EMC ..." plus undecoded glyph codes — and that is what was chunked,
+                // embedded and handed to the PII scan. (The LGPLv2.Core port has no text parser.)
+                using var pdf = UglyToad.PdfPig.PdfDocument.Open(source);
+                foreach (var page in pdf.GetPages())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var pageText = ContentOrderTextExtractor.GetText(page).Trim();
+                    result.Pages.Add(new ExtractedPage { PageNumber = page.Number, Text = pageText });
+                    fullTextBuilder.AppendLine(pageText);
+                }
+
                 result.FullText = fullTextBuilder.ToString();
                 return result;
             }, ct);

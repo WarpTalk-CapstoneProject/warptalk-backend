@@ -29,13 +29,16 @@ public class WorkspacePluginsController : ControllerBase
 {
     private readonly IWorkspacePluginMarketplaceService _service;
     private readonly IWorkspacePluginMemberService _memberService;
+    private readonly IWorkspaceToolPolicyService _toolPolicyService;
 
     public WorkspacePluginsController(
         IWorkspacePluginMarketplaceService service,
-        IWorkspacePluginMemberService memberService)
+        IWorkspacePluginMemberService memberService,
+        IWorkspaceToolPolicyService toolPolicyService)
     {
         _service = service;
         _memberService = memberService;
+        _toolPolicyService = toolPolicyService;
     }
 
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
@@ -58,6 +61,34 @@ public class WorkspacePluginsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> ListConnectedMembers(Guid workspaceId, string pluginKey, CancellationToken ct) =>
         ToResponse(await _memberService.ListConnectedMembersAsync(workspaceId, CurrentUserId, pluginKey, ct));
+
+    /// <summary>
+    /// The plugin's tools with this workspace's rules for WarpBot: <c>approval</c> (ask every time),
+    /// <c>blocked</c>, or null (each member's own choice). Owner or Admin; <c>canManage</c> is true
+    /// for the Owner only.
+    /// </summary>
+    [HttpGet("{pluginKey}/tool-policies")]
+    [ProducesResponseType(typeof(WorkspaceToolPoliciesDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetToolPolicies(Guid workspaceId, string pluginKey, CancellationToken ct) =>
+        ToResponse(await _toolPolicyService.GetAsync(workspaceId, CurrentUserId, pluginKey, ct));
+
+    /// <summary>
+    /// Sets or clears one tool's rule. Owner. A rule only tightens: WarpBot gets the stricter of it and
+    /// each member's own choice, so there is no "allow".
+    /// </summary>
+    [HttpPut("{pluginKey}/tool-policies")]
+    [ProducesResponseType(typeof(WorkspaceToolPoliciesDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetToolPolicy(
+        Guid workspaceId,
+        string pluginKey,
+        [FromBody] UpdateWorkspaceToolPolicyRequest request,
+        CancellationToken ct) =>
+        ToResponse(await _toolPolicyService.SetAsync(workspaceId, CurrentUserId, pluginKey, request, ct));
 
     /// <summary>Adds a marketplace plugin. Owner.</summary>
     [HttpPost("marketplace/{pluginKey}")]

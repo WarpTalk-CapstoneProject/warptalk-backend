@@ -704,6 +704,150 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    // ── WT-909: the far side's language reaches the pipeline without a pill pick ──────────
+
+    private static readonly string StandInId = TranslationRoomConstants.ExternalBridgeParticipantUserId.ToString();
+
+    private TranslationRoom ArrangeBridgeResume(Guid roomId, Guid hostId, string? standInSpeakLanguage)
+    {
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = TranslationRoomTypes.ExternalBridge;
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(p => p.GetByRoomAndUserAsync(roomId, TranslationRoomConstants.ExternalBridgeParticipantUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(standInSpeakLanguage is null
+                ? null
+                : new TranslationRoomParticipant
+                {
+                    TranslationRoomId = roomId,
+                    UserId = TranslationRoomConstants.ExternalBridgeParticipantUserId,
+                    SpeakLanguage = standInSpeakLanguage,
+                    ListenLanguage = standInSpeakLanguage,
+                });
+        return room;
+    }
+
+    /// <summary>
+    /// The popup shows the stand-in's stored language; Start makes it the one in effect. Before,
+    /// the stand-in had no Redis entry until somebody touched the far-side pill, so its STT ran
+    /// unpinned and the host was translated into nobody's language.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_SeedsTheStandInsLanguage_ForAnExternalBridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, "ja-JP");
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:speak_languages", StandInId, "ja"), Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:languages", StandInId, "ja"), Times.Once);
+    }
+
+    /// <summary>
+    /// WT-909 wave 2: a room naming two Meet-side languages (vi host; ja and en in Meet) starts with
+    /// the far side's STT unpinned, while the dub into Meet stays on the stand-in's own language.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_LeavesTheFarSideUnpinned_WhenTheRoomNamesSeveralMeetLanguages()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = ArrangeBridgeResume(roomId, hostId, "ja");
+        room.TargetLanguages = "[\"ja\",\"en\",\"vi\"]";
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:speak_languages", StandInId, "auto"), Times.Once);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync($"translationRoom:{roomId}:languages", StandInId, "ja"), Times.Once);
+    }
+
+    /// <summary>
+    /// Only where nothing is there yet: a pick the gateway already wrote to Redis is newer than the
+    /// row, which is persisted after it. HashSetIfAbsentAsync (HSETNX) is the guarantee; a plain
+    /// HashSetAsync here would put the old language back over the host's pick.
+    /// </summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_NeverOverwritesTheStandInsLanguage()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, "en");
+
+        await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetAsync(
+                It.Is<string>(key => key.EndsWith(":speak_languages") || key.EndsWith(":languages")),
+                It.IsAny<Dictionary<string, string>>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("auto")]
+    // NewStartableRoom's source: the fallback of a claim that named no far side, not a choice.
+    [InlineData("vi-VN")]
+    public async Task ResumeTranslationRoomAsync_SeedsNothing_WithoutARealStandInLanguage(string? standInSpeakLanguage)
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, standInSpeakLanguage);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_SeedsNothing_ForANativeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.HashSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _mockParticipantRepo.Verify(
+            p => p.GetByRoomAndUserAsync(roomId, TranslationRoomConstants.ExternalBridgeParticipantUserId, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>A Redis outage costs the pin, never the Start.</summary>
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_StillStarts_WhenSeedingTheStandInFails()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        ArrangeBridgeResume(roomId, hostId, "en");
+        _mockRedisStateRepository
+            .Setup(r => r.HashSetIfAbsentAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            .ThrowsAsync(new InvalidOperationException("redis down"));
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync("warptalk:translation-room:commands", It.Is<string>(p => p.Contains("RoomStarted"))),
+            Times.Once);
+    }
+
     [Fact]
     public async Task ResumeTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
     {
@@ -886,6 +1030,136 @@ public class TranslationRoomServiceTests
         _mockWorkspaceMemberDirectory.Verify(
             d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    // ── PO 2026-10-01: bridge session controls = host OR current capturer ───────────────────
+    // After a capturer takeover the person in the Meet call may not be the host; /resume and
+    // /stop-translation must accept them in an EXTERNAL_BRIDGE room, and only there.
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_LetsTheBridgeCapturerStart_EvenWhenNotHostAndNotOptedIn()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        room.BridgeCapturerUserId = capturer;
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_RefusesAPlainMemberOfABridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.TranslationRoomType = "EXTERNAL_BRIDGE";
+        room.BridgeCapturerUserId = Guid.NewGuid();
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_IgnoresTheCapturerColumn_OutsideABridgeRoom()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid()); // INSTANT
+        room.Status = "IN_PROGRESS";
+        room.BridgeCapturerUserId = capturer;
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_LetsTheBridgeCapturerStop_EvenWhenNotHost()
+    {
+        var roomId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "EXTERNAL_BRIDGE",
+            BridgeCapturerUserId = capturer
+        };
+        var session = new TranslationRoomSession
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Status = TranslationRoomSessionStatus.ACTIVE.ToString()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        _mockSessionRepo.Setup(r => r.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        var result = await _service.StopTranslationAsync(roomId, capturer);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        session.Status.Should().Be(TranslationRoomSessionStatus.ENDED.ToString());
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_StillLetsTheHostOfABridgeRoomStop_WhenSomeoneElseCaptures()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "EXTERNAL_BRIDGE",
+            BridgeCapturerUserId = Guid.NewGuid()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Theory]
+    [InlineData("EXTERNAL_BRIDGE", false)] // a plain member of a bridge room
+    [InlineData("INSTANT", true)]          // the capturer column means nothing outside a bridge
+    public async Task StopTranslationAsync_RefusesNonHostNonCapturer(string roomType, bool callerIsInCapturerColumn)
+    {
+        var roomId = Guid.NewGuid();
+        var caller = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            TranslationRoomType = roomType,
+            BridgeCapturerUserId = callerIsInCapturerColumn ? caller : Guid.NewGuid()
+        };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, caller);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
     }
 
     private static TranslationRoom NewStartableRoom(Guid roomId, Guid hostId) => new()

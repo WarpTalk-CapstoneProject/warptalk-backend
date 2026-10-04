@@ -57,7 +57,8 @@ public partial class Subscription
 
     public int? CreditsPerCycleOverride { get; set; }
 
-    public decimal? ContractPriceVnd { get; set; }
+    /// <summary>Negotiated price per cycle, in USD (the accounting currency) whatever the plan's own currency.</summary>
+    public decimal? ContractPriceUsd { get; set; }
 
     public int? OverageCapCreditsOverride { get; set; }
 

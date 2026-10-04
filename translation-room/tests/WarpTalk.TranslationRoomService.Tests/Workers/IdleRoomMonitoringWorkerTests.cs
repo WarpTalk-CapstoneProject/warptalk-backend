@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.API.Workers;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -144,6 +145,85 @@ public sealed class IdleRoomMonitoringWorkerTests
         await harness.TickAsync();
 
         harness.Redis.Has(IdleKey(room)).Should().BeTrue();
+    }
+
+    // ── A CONNECTED row whose disconnect was never delivered ─────────────────
+
+    private static readonly TimeSpan HeartbeatWarm = RoomHubLiveness.Warmup + TimeSpan.FromMinutes(1);
+
+    [Fact]
+    public async Task ARoomHeldOnlyByConnectedRows_WithNoHubSocketOnIt_IsEndedOnceTheGraceHasRun()
+    {
+        var room = Room();
+        var harness = new Harness(
+            room,
+            Host(room, TranslationRoomParticipantStatuses.Connected),
+            Guest(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+        harness.Redis.ObservedEmpty(IdleKey(room), TimeSpan.FromMinutes(6));
+
+        await harness.TickAsync();
+
+        harness.Ended.Should().Equal(new[] { room.Id },
+            "no Gateway holds a socket on the room, so its CONNECTED rows are not people");
+    }
+
+    [Fact]
+    public async Task ARoomHeldOnlyByConnectedRows_WithNoHubSocketOnIt_IsNotEndedOnTheFirstTick()
+    {
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+
+        await harness.TickAsync();
+
+        harness.Ended.Should().BeEmpty();
+        harness.Redis.Has(IdleKey(room)).Should().BeTrue("the grace starts from this observation");
+    }
+
+    [Fact]
+    public async Task ARoomSomeGatewayHoldsASocketOn_IsLeftAlone()
+    {
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+        harness.Redis.HubSocketOn(room.Id);
+        harness.Redis.ObservedEmpty(IdleKey(room), TimeSpan.FromMinutes(6));
+
+        await harness.TickAsync();
+
+        harness.Ended.Should().BeEmpty();
+        harness.Redis.Has(IdleKey(room)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WithNoGatewayHeartbeat_TheRowsAreStillBelieved()
+    {
+        var room = Room();
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.ObservedEmpty(IdleKey(room), TimeSpan.FromMinutes(6));
+
+        await harness.TickAsync();
+
+        harness.Ended.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ARoomOlderThanTheLookback_IsLeftForADeliberateRepair()
+    {
+        // The August backlog. This worker has no age filter of its own, so without this rule the
+        // deploy would end those rooms itself — stamping a six-week meeting and queueing their
+        // artifacts as if they had just finished. They get a reviewed one-off repair instead.
+        var room = Room();
+        room.StartedAt = DateTime.UtcNow - AbandonedRoomPolicy.Lookback - TimeSpan.FromDays(38);
+        room.CreatedAt = room.StartedAt.Value.AddDays(-2);
+        var harness = new Harness(room, Host(room, TranslationRoomParticipantStatuses.Connected));
+        harness.Redis.HubHeartbeatRunning(HeartbeatWarm);
+        harness.Redis.ObservedEmpty(IdleKey(room), TimeSpan.FromMinutes(6));
+
+        await harness.TickAsync();
+
+        harness.Ended.Should().BeEmpty();
     }
 
     private sealed class Harness

@@ -78,12 +78,22 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         var basePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../database/migrations"));
         if (Directory.Exists(basePath))
         {
+            // The historical migrations below were written when the contract price was VND, and 004's
+            // LANGUAGE sql function is checked against the table when it is created. The EF model now
+            // has only contract_price_usd, so the VND column is put back the way history had it; the
+            // USD-accounting migration at the end of the list folds it into contract_price_usd and
+            // drops it, exactly as it does in production.
+            await ExecuteSqlTextAsync(db,
+                "ALTER TABLE subscription.subscriptions ADD COLUMN IF NOT EXISTS contract_price_vnd numeric(14, 2);");
+
             var migrationsToApply = new[] 
             { 
                 "004-add-atomic-usage-settlement-functions.sql",
                 "007-seed-enterprise-subscription-plan.sql",
                 "008-phase3-contract-overage-settlement.sql",
-                "017-add-just-entered-overage-to-settlement.sql"
+                "017-add-just-entered-overage-to-settlement.sql",
+                // USD accounting: contract_price_usd, and resolve_contract_terms re-created over it.
+                "20261002120000_usd_accounting_currency.sql"
             };
 
             foreach (var migration in migrationsToApply)

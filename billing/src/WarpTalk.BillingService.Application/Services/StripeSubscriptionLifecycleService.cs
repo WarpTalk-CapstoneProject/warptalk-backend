@@ -175,9 +175,9 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
             // adds overage then, which is not known yet).
             var plan = sub.Plan ?? await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, ct);
             nextAt = sub.CurrentPeriodEnd;
-            nextAmount = sub.ContractPriceVnd ?? plan?.Price;
-            nextCurrency = sub.ContractPriceVnd is not null
-                ? PaymentConstants.Currencies.Vnd
+            nextAmount = sub.ContractPriceUsd ?? plan?.Price;
+            nextCurrency = sub.ContractPriceUsd is not null
+                ? PaymentConstants.Currencies.Usd
                 : plan?.Currency?.ToLowerInvariant();
         }
 
@@ -402,10 +402,8 @@ public sealed class StripeSubscriptionLifecycleService : IStripeSubscriptionLife
     // ---- helpers -----------------------------------------------------------------------------
 
     private Task<Subscription?> LoadLiveAsync(Guid workspaceId, CancellationToken ct) =>
-        _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-            "Plan",
-            ct);
+        _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: true, cancellationToken: ct);
 
     private async Task PublishEntitlementsAsync(Guid workspaceId, CancellationToken ct)
     {

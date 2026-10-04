@@ -57,6 +57,11 @@ public class RedisStateRepository : IRedisStateRepository
         return value.HasValue ? value.ToString() : null;
     }
 
+    public async Task<bool> HashDeleteAsync(string key, string field)
+    {
+        return await GetDb().HashDeleteAsync(key, field);
+    }
+
     public async Task<bool> WaitForSignalAsync(string channel, TimeSpan timeout, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -87,6 +92,12 @@ public class RedisStateRepository : IRedisStateRepository
     public async Task<bool> StringSetAsync(string key, string value, TimeSpan? expiry = null)
     {
         return await GetDb().StringSetAsync(key, value, expiry.HasValue ? expiry.Value : default);
+    }
+
+    public async Task<bool> HashSetIfAbsentAsync(string key, string field, string value)
+    {
+        // `When.NotExists` on a hash field is HSETNX: one round trip, one decision.
+        return await GetDb().HashSetAsync(key, field, value, When.NotExists);
     }
 
     public async Task<bool> StringSetIfAbsentAsync(string key, string value, TimeSpan expiry)

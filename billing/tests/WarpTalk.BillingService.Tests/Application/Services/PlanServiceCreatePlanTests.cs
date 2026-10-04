@@ -104,6 +104,15 @@ public class PlanServiceCreatePlanTests
     }
 
     [Fact]
+    public async Task CreatePlanAsync_ANewPlanIsPricedInUsd_VndIsRefused()
+    {
+        // USD is the accounting currency since 2 Oct 2026: no new plan may be sold in VND.
+        var result = await _service.CreatePlanAsync(ValidRequest() with { Currency = "VND", Price = 1_900_000m });
+
+        AssertValidationFailure(result, ApiMessageConstants.ValidationMessages.PlanCurrencyInvalid);
+    }
+
+    [Fact]
     public async Task CreatePlanAsync_UTCID05_PriceBelowConfiguredMinimum_ReturnsValidationError()
     {
         // Above the hardcoded PlanDefaults minimum (0.50) but below the configured one (5.00):
@@ -207,9 +216,8 @@ public class PlanServiceCreatePlanTests
 
     private static PricingConfigDto CreatePricingConfig() => new(
         FxRateUsdVnd: 26300m,
-        CreditValueVnd: 4m,
-        MinimumPricePerCreditVnd: 2.60m,
-        MinimumContractPriceVnd: 15000m,
+        CreditValueUsd: 0.0001520913m,
+        MinimumPricePerCreditUsd: 0.0000988593m,
         MinimumContractPriceUsd: ConfiguredMinimumUsdPrice,
         SalesUsageWeight: 0.45m,
         SalesMembersWeight: 0.15m,

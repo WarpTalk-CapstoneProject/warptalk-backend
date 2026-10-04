@@ -111,7 +111,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         var invoiceTermsDays = subscription.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays;
 
         // The currency follows the amounts it labels (see BillingCycleCharge): a contract price is
-        // VND whatever the plan is priced in.
+        // USD whatever the plan is priced in.
         var resolution = BillingCycleCharge.Resolve(subscription, plan);
         if (resolution.Charge is not { } charge)
         {
@@ -164,7 +164,16 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
 
         var (newStart, newEnd) = SubscriptionRenewalHelper.CalculateNextCycleDates(subscription.CurrentPeriodEnd, plan.BillingCycle);
 
-        _domainService.RenewCycle(subscription);
+        // WT-878: the rollover cap applies to plan leftover only; purchased credits carry over
+        // whole, and anything the cap removes is a credit_forfeit ledger row (staged before the
+        // grant row below). Shared with the Stripe renewal so both paths renew identically.
+        await CycleRenewalCredits.RenewAsync(
+            _unitOfWork,
+            _domainService,
+            subscription,
+            CycleRenewalCredits.CycleCloseForfeitKey(subscription.Id, newStart),
+            now,
+            cancellationToken);
         subscription.CurrentPeriodStart = newStart;
         subscription.CurrentPeriodEnd = newEnd;
         subscription.UpdatedAt = now;

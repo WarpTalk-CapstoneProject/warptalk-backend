@@ -49,6 +49,10 @@ public class McpToolOrchestratorTests
     private readonly IPluginOAuthClient _oauthClient = Substitute.For<IPluginOAuthClient>();
     private readonly IPluginOAuthStateProtector _stateProtector = Substitute.For<IPluginOAuthStateProtector>();
     private readonly IPluginCredentialProtector _credentialProtector = Substitute.For<IPluginCredentialProtector>();
+    private readonly IWorkspacePluginToolPolicyRepository _workspaceRuleRepository = Substitute.For<IWorkspacePluginToolPolicyRepository>();
+
+    /// <summary>The workspace Owner's per-tool rules the next call reads. Empty: member's choice.</summary>
+    private readonly List<WorkspacePluginToolPolicy> _workspaceRules = [];
 
     public McpToolOrchestratorTests()
     {
@@ -57,6 +61,14 @@ public class McpToolOrchestratorTests
         _unitOfWork.PluginConnectionRepository.Returns(_connectionRepository);
         _unitOfWork.PluginToolAuditRepository.Returns(_auditRepository);
         _unitOfWork.PluginConfirmationTokenRepository.Returns(_confirmationTokenRepository);
+        _unitOfWork.WorkspacePluginToolPolicyRepository.Returns(_workspaceRuleRepository);
+        _workspaceRuleRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspacePluginToolPolicy, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlyList<WorkspacePluginToolPolicy>)_workspaceRules
+                .Where(call.Arg<Expression<Func<WorkspacePluginToolPolicy, bool>>>().Compile())
+                .ToList());
         _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns(1);
         // A provider that carries nothing extra through the round trip returns the state unchanged;
         // without this the substitute hands back null and the state never matches.
@@ -80,6 +92,101 @@ public class McpToolOrchestratorTests
         // workspace with AllowAnyPlugins=false has no plugin that is usable here.
         Assert.True(result.IsSuccess);
         Assert.Empty(result.Value!);
+    }
+
+    // ---- The admin portal's WarpBot: staff with warpbot.use and no workspace (3 Oct 2026) -----
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_WithoutAWorkspace_StillOffersNothingToAnOrdinaryUser()
+    {
+        ArrangeInstalledDrive();
+
+        var result = await CreateSut().ListAvailableToolsAsync(UserId, workspaceId: null);
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(result.Value!);
+    }
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_WithoutAWorkspace_OffersPlatformStaffTheirInstalledMarketplacePlugins()
+    {
+        ArrangeInstalledDrive();
+        // Staff need not belong to any workspace, and none is asked about.
+        _callerIsActiveMember = false;
+
+        var result = await CreateSut().ListAvailableToolsAsync(
+            UserId, workspaceId: null, callerIsPlatformStaff: true);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(result.Value!, tool => tool.Name == "google_drive_search");
+        Assert.DoesNotContain(result.Value!, tool => tool.PluginKey == PrivateKey);
+    }
+
+    /// <summary>Drive, installed by the caller - plus a workspace's private plugin, which staff never get.</summary>
+    private void ArrangeInstalledDrive()
+    {
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => (IReadOnlyList<Plugin>)new[] { GoogleDrivePlugin(), PrivatePlugin("crm_lookup") }
+                .Where(call.Arg<Expression<Func<Plugin, bool>>>().Compile())
+                .ToList());
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                },
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = PrivatePluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                },
+            ]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithoutAWorkspace_RunsForPlatformStaff()
+    {
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+        _callerIsActiveMember = false;
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "drive:file", null));
+
+        var request = Request("google_drive_search") with { WorkspaceId = null };
+        var result = await CreateSut().ExecuteAsync(UserId, request, callerIsPlatformStaff: true);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithoutAWorkspace_IsStillRefusedForAnOrdinaryUser()
+    {
+        var plugin = GoogleDrivePlugin();
+        ConfigureInstalledConnected(plugin);
+
+        var request = Request("google_drive_search") with { WorkspaceId = null };
+        var result = await CreateSut().ExecuteAsync(UserId, request);
+
+        Assert.False(result.IsSuccess && result.Value!.IsSuccess);
+        await _gateway.DidNotReceive().ExecuteAsync(
+            Arg.Any<PluginDefinitionDto>(),
+            Arg.Any<McpToolDescriptorDto>(),
+            Arg.Any<PluginConnection>(),
+            Arg.Any<McpToolExecutionRequest>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -900,6 +1007,222 @@ public class McpToolOrchestratorTests
 
         Assert.Equal(PluginConstants.ErrorCodes.PermissionDenied, result.Value!.ErrorCode);
         Assert.Empty(PluginToolPolicyStore.Read(_installation!.ConfigJson));
+    }
+
+    // ---- Workspace tool rules: the Owner tightens, never loosens --------------------------------
+
+    private void WorkspaceRule(string toolName, string policy, Guid? pluginId = null) =>
+        _workspaceRules.Add(new WorkspacePluginToolPolicy
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = WorkspaceId,
+            PluginId = pluginId ?? PluginId,
+            ToolName = toolName,
+            Policy = policy,
+            SetBy = Guid.NewGuid(),
+            SetAt = DateTime.UtcNow,
+        });
+
+    private void InstalledDriveForListing(string? configJson)
+    {
+        _pluginRepository.FindAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([GoogleDrivePlugin(includeWriteTool: true)]);
+        _installationRepository.FindAsync(
+                Arg.Any<Expression<Func<PluginInstallation, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns([
+                new PluginInstallation
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, PluginId = PluginId,
+                    Status = PluginConstants.InstallationStatus.Installed, InstalledAt = DateTime.UtcNow,
+                    ConfigJson = configJson,
+                },
+            ]);
+    }
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_LeavesOutAToolTheWorkspaceBlocked_EvenWhenTheMemberAllowedIt()
+    {
+        InstalledDriveForListing("""{"toolPolicy":{"google_drive_search":"allow"}}""");
+        WorkspaceRule("google_drive_search", PluginConstants.ToolPolicy.Blocked);
+
+        var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId);
+
+        var tool = Assert.Single(result.Value!);
+        Assert.Equal("google_calendar_create_event", tool.Name);
+        Assert.Null(tool.WorkspacePolicy);
+    }
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_OffersTheStricterPolicy_WhenTheWorkspaceAsksEveryTime()
+    {
+        InstalledDriveForListing("""{"toolPolicy":{"google_drive_search":"allow","google_calendar_create_event":"allow"}}""");
+        WorkspaceRule("google_drive_search", PluginConstants.ToolPolicy.Approval);
+
+        var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId);
+
+        var search = Assert.Single(result.Value!, tool => tool.Name == "google_drive_search");
+        Assert.Equal(PluginConstants.ToolPolicy.Approval, search.Policy);
+        Assert.Equal(PluginConstants.ToolPolicy.Approval, search.WorkspacePolicy);
+        // A rule on one tool says nothing about another.
+        var create = Assert.Single(result.Value!, tool => tool.Name == "google_calendar_create_event");
+        Assert.Equal(PluginConstants.ToolPolicy.Allow, create.Policy);
+    }
+
+    [Fact]
+    public async Task ListAvailableToolsAsync_IgnoresAnotherWorkspacesRule()
+    {
+        InstalledDriveForListing(null);
+        _workspaceRules.Add(new WorkspacePluginToolPolicy
+        {
+            Id = Guid.NewGuid(), WorkspaceId = Guid.NewGuid(), PluginId = PluginId,
+            ToolName = "google_drive_search", Policy = PluginConstants.ToolPolicy.Blocked,
+            SetBy = Guid.NewGuid(), SetAt = DateTime.UtcNow,
+        });
+
+        var result = await CreateSut().ListAvailableToolsAsync(UserId, WorkspaceId);
+
+        Assert.Contains(result.Value!, tool => tool.Name == "google_drive_search");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RecordsWorkspaceToolBlocked_BeforeAnythingTheMemberOwns()
+    {
+        // Not installed at all: the Owner's block is still what the member is told, because it is
+        // the one thing no amount of connecting would fix.
+        _pluginRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<Plugin, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(GoogleDrivePlugin());
+        WorkspaceRule("google_drive_search", PluginConstants.ToolPolicy.Blocked);
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PluginConstants.ErrorCodes.WorkspaceToolBlocked, result.Value!.ErrorCode);
+        await _auditRepository.Received(1)
+            .AddAsync(
+                Arg.Is<PluginToolAudit>(audit =>
+                    audit.WorkspaceId == WorkspaceId
+                    && audit.ResultStatus == PluginConstants.ErrorCodes.WorkspaceToolBlocked),
+                Arg.Any<CancellationToken>());
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReportsTheWorkspaceBlock_WhenBothTheMemberAndTheWorkspaceBlocked()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_drive_search":"blocked"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin());
+        WorkspaceRule("google_drive_search", PluginConstants.ToolPolicy.Blocked);
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.Equal(PluginConstants.ErrorCodes.WorkspaceToolBlocked, result.Value!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KeepsTheMembersOwnBlock_UnderAWorkspaceThatOnlyAsks()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_drive_search":"blocked"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin());
+        WorkspaceRule("google_drive_search", PluginConstants.ToolPolicy.Approval);
+
+        var result = await CreateSut().ExecuteAsync(UserId, Request("google_drive_search"));
+
+        Assert.Equal(PluginConstants.ErrorCodes.ToolBlocked, result.Value!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AsksDespiteTheMembersAllow_AndOffersNoAlwaysAllow_WhenTheWorkspaceAsksEveryTime()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_drive_search":"allow"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin());
+        WorkspaceRule("google_drive_search", PluginConstants.ToolPolicy.Approval);
+        var request = Request("google_drive_search");
+        _confirmationTokenService.CreateAsync(UserId, PluginId, request, Arg.Any<CancellationToken>())
+            .Returns(Result.Success("signed-confirmation-token"));
+
+        var result = await CreateSut().ExecuteAsync(UserId, request);
+
+        Assert.Equal(PluginConstants.ErrorCodes.ConfirmationRequired, result.Value!.ErrorCode);
+        Assert.Equal("signed-confirmation-token", result.Value.ConfirmationToken);
+        Assert.False(result.Value.AlwaysAllowOffered);
+        await _gateway.DidNotReceive()
+            .ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_LeavesAlwaysAllowOfferedUnset_WhenOnlyTheMemberAsks()
+    {
+        _installationConfigJson = """{"toolPolicy":{"google_drive_search":"approval"}}""";
+        ConfigureInstalledConnected(GoogleDrivePlugin());
+        var request = Request("google_drive_search");
+        _confirmationTokenService.CreateAsync(UserId, PluginId, request, Arg.Any<CancellationToken>())
+            .Returns(Result.Success("signed-confirmation-token"));
+
+        var result = await CreateSut().ExecuteAsync(UserId, request);
+
+        Assert.Equal(PluginConstants.ErrorCodes.ConfirmationRequired, result.Value!.ErrorCode);
+        Assert.Null(result.Value.AlwaysAllowOffered);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RunsButStoresNoAlwaysAllow_WhenTheWorkspaceAsksEveryTime()
+    {
+        ConfigureInstalledConnected(GoogleDrivePlugin(includeWriteTool: true));
+        WorkspaceRule("google_calendar_create_event", PluginConstants.ToolPolicy.Approval);
+        var confirmed = Request(
+            "google_calendar_create_event",
+            new JsonObject { ["summary"] = "Roadmap review" },
+            "signed-confirmation-token") with { AlwaysAllow = true };
+        _confirmationTokenService.ValidateAndConsumeAsync(
+                UserId, PluginId, confirmed, "signed-confirmation-token", Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+        _gateway.ExecuteAsync(
+                Arg.Any<PluginDefinitionDto>(),
+                Arg.Any<McpToolDescriptorDto>(),
+                Arg.Any<PluginConnection>(),
+                Arg.Any<McpToolExecutionRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new McpToolExecutionResult(true, null, null, new JsonObject { ["ok"] = true }, "calendar:event", null));
+
+        var result = await CreateSut().ExecuteAsync(UserId, confirmed);
+
+        Assert.True(result.Value!.IsSuccess);
+        Assert.Null(result.Value.AppliedToolPolicy);
+        Assert.Empty(PluginToolPolicyStore.Read(_installation!.ConfigJson));
+    }
+
+    [Theory]
+    [InlineData("allow", null, "allow")]
+    [InlineData("approval", null, "approval")]
+    [InlineData("blocked", null, "blocked")]
+    [InlineData("allow", "approval", "approval")]
+    [InlineData("approval", "approval", "approval")]
+    [InlineData("blocked", "approval", "blocked")]
+    [InlineData("allow", "blocked", "blocked")]
+    [InlineData("approval", "blocked", "blocked")]
+    [InlineData("blocked", "blocked", "blocked")]
+    public void Strictest_IsTheStricterOfTheMemberAndTheWorkspace(string member, string? workspace, string expected)
+    {
+        Assert.Equal(expected, PluginConstants.ToolPolicy.Strictest(member, workspace));
     }
 
     // ---- WT-646: the workspace gate on the tool path -------------------------------------------

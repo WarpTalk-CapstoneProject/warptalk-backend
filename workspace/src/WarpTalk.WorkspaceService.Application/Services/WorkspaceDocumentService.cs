@@ -41,6 +41,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
     private readonly IPlatformSettings? _platformSettings;
 
+    // Optional so the constructor stays source-compatible; when either is missing, a path that
+    // needs a scan fails closed (does not index) instead of indexing unscanned text.
+    private readonly IDocumentSecurityScanner? _securityScanner;
+    private readonly IAiPolicyResolver? _policyResolver;
+
     public WorkspaceDocumentService(
         IUnitOfWork unitOfWork,
         IDocumentAccessEvaluator accessEvaluator,
@@ -52,8 +57,12 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         IDocumentTextExtractor textExtractor,
         IKnowledgeChunkWriter chunkWriter,
         ILogger<WorkspaceDocumentService> logger,
-        IPlatformSettings? platformSettings = null)
+        IPlatformSettings? platformSettings = null,
+        IDocumentSecurityScanner? securityScanner = null,
+        IAiPolicyResolver? policyResolver = null)
     {
+        _securityScanner = securityScanner;
+        _policyResolver = policyResolver;
         _platformSettings = platformSettings;
         _unitOfWork = unitOfWork;
         _accessEvaluator = accessEvaluator;
@@ -429,6 +438,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // for one of them. Same reasoning for the name and the source type: the mapper copies
             // the request through verbatim, so the normalised forms are applied here.
             document.ConfidentialityLevel = confidentiality ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
+
+            // The verdict follows the BYTES, not the row. A scan that found PII/DLP labels one
+            // document restricted; a fresh row for the same file used to start clean and be judged
+            // again from scratch — by a model, for anything the regexes cannot see.
+            if (await HasRestrictedTwinAsync(workspaceId, contentHash, null, ct))
+            {
+                document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+            }
+
             document.Name = name;
             document.SourceType = sourceType;
 
@@ -488,6 +506,82 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while uploading document. WorkspaceId: {WorkspaceId}", workspaceId);
             return Result.Failure<UploadDocumentOutcomeDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// Scans edited extracted text under the document's effective AI policy and indexes it only if
+    /// it is clean. Returns whether an index request was published.
+    /// </summary>
+    /// <remarks>
+    /// Fails closed three ways: no scanner wired, the scan throws, or it finds something. A finding
+    /// does what the upload guardrail does — label the document restricted and pull its vectors.
+    /// The masked text is not indexed here: the consumer indexes it and the result processor then
+    /// purges it because the row is restricted, so publishing it would only be wasted work.
+    /// </remarks>
+    private async Task<bool> ScanThenIndexEditedTextAsync(WorkspaceDocument document, string text, CancellationToken ct)
+    {
+        if (_securityScanner is null || _policyResolver is null)
+        {
+            _logger.LogWarning(
+                "Edited text of document {DocumentId} was saved but not indexed: no security scanner is available.",
+                document.Id);
+            return false;
+        }
+
+        DocumentSecurityScanResult scan;
+        try
+        {
+            var policy = await _policyResolver.ResolvePolicySettingsAsync(_unitOfWork, document, ct);
+            scan = await _securityScanner.ScanAsync(text, policy.PiiEnabled, policy.DlpEnabled, policy.KeywordsBlacklist, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Security scan of edited text failed for document {DocumentId}; not indexing.", document.Id);
+            return false;
+        }
+
+        if (scan.PiiDetected || scan.DlpDetected)
+        {
+            document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+            document.AiEligible = false;
+            document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+            document.IngestionFailureReason = scan.DlpDetected
+                ? WorkspaceDocumentIngestionFailureReasons.DlpDetected
+                : null;
+            document.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishDocumentDeletedAsync(document.Id, document.WorkspaceId, ct);
+            return false;
+        }
+
+        await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Has any other row in this workspace with the same bytes already been labelled restricted?
+    /// </summary>
+    /// <remarks>
+    /// Soft-deleted rows count: deleting a flagged document and uploading it again is the obvious
+    /// way round a label that lives only on the row. An Owner/Admin can still relabel the new row,
+    /// which re-scans it. The label is read as written, so a manual "restricted" is inherited too —
+    /// the same file was already declared confidential once.
+    /// </remarks>
+    private Task<bool> HasRestrictedTwinAsync(Guid workspaceId, string? contentHash, Guid? excludeDocumentId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(contentHash))
+        {
+            return Task.FromResult(false);
+        }
+
+        var restricted = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+        return _unitOfWork.WorkspaceDocumentRepository.AnyAsync(
+            d => d.WorkspaceId == workspaceId
+                && d.ContentHash == contentHash
+                && d.ConfidentialityLevel == restricted
+                && (excludeDocumentId == null || d.Id != excludeDocumentId),
+            ct);
     }
 
     /// <summary>
@@ -664,11 +758,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     participantsCache,
                     ct);
 
-                if (accessResult.IsSuccess)
+                // Which version this caller gets. For anything that is not restricted this is
+                // the evaluator's answer and nothing more; for a restricted document a member is
+                // listed only when there is a masked copy for them to open.
+                var version = await DecideListedVersionAsync(
+                    userId, workspaceId, doc, member, roleName, docPolicies, roomCache, participantsCache, accessResult, ct);
+
+                if (version != DocumentContentVersion.None)
                 {
-                    var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, doc.Id);
+                    var isOriginal = version == DocumentContentVersion.Original;
                     approvedByDocument.TryGetValue(doc.Id, out var approvedBy);
-                    allowedDtos.Add(doc.ToDto(downloadUrl, approvedBy));
+                    allowedDtos.Add(doc.ToDto(
+                            isOriginal ? _urlProvider.GetDocumentDownloadUrl(workspaceId, doc.Id) : null,
+                            approvedBy)
+                        with
+                        {
+                            ContentAccess = version.ToWireValue(),
+                            MaskedVersionAvailable = !isOriginal
+                        });
                 }
             }
 
@@ -698,20 +805,33 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             }
 
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
-            if (!accessResult.IsSuccess)
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+
+            // A refusal stands as it always has — unless the document is restricted, in which
+            // case the caller may still be owed its MASKED copy and the decision below settles it.
+            var mayHaveMaskedVersion = document != null
+                && document.WorkspaceId == workspaceId
+                && document.DeletedAt == null
+                && document.IsRestricted();
+            if (!accessResult.IsSuccess && !mayHaveMaskedVersion)
             {
                 return Result.Failure<WorkspaceDocumentDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
             }
 
-            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null)
             {
                 return Result.Failure<WorkspaceDocumentDto>("Document not found.", ErrorCodes.NotFound);
             }
 
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.View, accessResult, ct);
+            if (!DocumentContentAccessDecision.CanOpenDocument(content))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.GetDocumentDetails, logger: _logger, ct: ct);
 
-            var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
             var approvalAudit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
                 a => a.DocumentId == documentId &&
                      a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument,
@@ -723,7 +843,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // would add a second audit query per row.
             var rejectionReason = await GetLatestRejectionReasonAsync(documentId, ct);
 
-            return Result.Success(document.ToDto(downloadUrl, approvalAudit?.ActorId, rejectionReason));
+            return Result.Success(await ToDetailDtoAsync(document, content, approvalAudit?.ActorId, rejectionReason, ct));
         }
         catch (Exception ex)
         {
@@ -1082,7 +1202,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
             }
 
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.pending_approval.ToString(), StringComparison.OrdinalIgnoreCase))
+            var isPendingApproval = string.Equals(document.Status, WorkspaceDocumentStatus.pending_approval.ToString(), StringComparison.OrdinalIgnoreCase);
+            var isRevisionReview = !isPendingApproval
+                && document.IsPublic()
+                && WorkspaceDocumentHelper.HasPendingRevision(document);
+            if (!isPendingApproval && !isRevisionReview)
             {
                 return Result.Failure("Document is not pending approval.", ErrorCodes.ValidationError);
             }
@@ -1102,6 +1226,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure(
                     $"The reason must be {WorkspaceDocumentConstants.MaxRejectionReasonLength} characters or fewer. This one is {reason.Length}.",
                     ErrorCodes.ValidationError);
+            }
+
+            if (isRevisionReview)
+            {
+                return request.Approve
+                    ? await PromotePendingRevisionAsync(document, reason, userId, ct)
+                    : await DiscardPendingRevisionAsync(document, reason, userId, ct);
             }
 
             if (request.Approve)
@@ -1188,6 +1319,157 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     }
 
     /// <summary>
+    /// WT-854 — approve a corrected version of a published document: it becomes the document.
+    ///
+    /// The pending values replace the live ones, and the document is re-ingested through the same
+    /// pipeline an approval always uses (the security scan reads StorageKey, so it now reads the
+    /// new file). The superseded blob is kept, as every revision's is, and named in the audit row.
+    /// Its chunks are purged synchronously after the commit — the DocumentDeleted invalidation has
+    /// no consumer (WT-871), so publishing it would leave the old text answering in WarpBot.
+    /// </summary>
+    private async Task<Result> PromotePendingRevisionAsync(
+        WorkspaceDocument document, string reason, Guid userId, CancellationToken ct)
+    {
+        var workspaceId = document.WorkspaceId;
+        var previousStorageKey = document.StorageKey;
+        var previousFileName = document.FileName;
+        var extension = document.PendingFileExtension ?? document.FileExtension;
+
+        document.StorageKey = document.PendingStorageKey!;
+        document.StorageProvider = document.PendingStorageProvider ?? document.StorageProvider;
+        document.Name = document.PendingName ?? document.Name;
+        document.FileName = document.PendingFileName ?? document.FileName;
+        document.FileExtension = extension;
+        document.MimeType = document.PendingMimeType ?? WorkspaceDocumentHelper.GetSafeContentType(extension);
+        document.DocumentType = extension.TrimStart('.').ToUpperInvariant();
+        document.SizeBytes = document.PendingSizeBytes ?? document.SizeBytes;
+        document.ContentHash = document.PendingContentHash;
+        WorkspaceDocumentHelper.ClearPendingRevision(document);
+
+        // The same rule upload applies: an image cannot be AI-readable however the switch was left.
+        document.IsAiAllowed = document.IsAiAllowed && WorkspaceDocumentHelper.IsAiReadableExtension(extension);
+        document.AiEligible = false;
+        document.LastIndexedAt = null;
+        document.IngestionFailureReason = null;
+        document.IngestionStatus = document.IsAiAllowed
+            ? WorkspaceDocumentIngestionStatus.pending.ToString()
+            : WorkspaceDocumentIngestionStatus.skipped.ToString();
+        document.UpdatedAt = DateTime.UtcNow;
+
+        _unitOfWork.WorkspaceDocumentRepository.Update(document);
+        if (document.IsAiAllowed)
+        {
+            await _eventPublisher.PublishDocumentUploadedAsync(
+                document.Id,
+                workspaceId,
+                document.StorageKey,
+                document.FileName,
+                document.FileExtension,
+                document.UploadedBy ?? userId,
+                document.ConfidentialityLevel,
+                ct);
+        }
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        // After the commit, so a failed save cannot strip the index of the approved file it still
+        // serves. Re-ingestion of the new file is queued in the same commit and runs through the
+        // outbox and the security scan, which is far slower than this call.
+        var vectorsPurged = await TryPurgeDocumentChunksAsync(workspaceId, document.Id, ct);
+
+        await _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            workspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.Approved,
+            document.UpdatedAt,
+            userId,
+            ct);
+
+        await _unitOfWork.AuditAsync(
+            document.Id,
+            workspaceId,
+            userId,
+            WorkspaceDocumentConstants.AuditActions.ApproveDocument,
+            new
+            {
+                revision = true,
+                previousStorageKey,
+                previousFileName,
+                fileName = document.FileName,
+                vectorsPurged,
+                reason = reason.Length > 0 ? reason : null
+            },
+            _logger,
+            ct);
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// WT-854 — reject a corrected version of a published document. The document never stopped
+    /// being the approved file, so there is nothing to restore: the pending slot is emptied and
+    /// its object deleted. The reason goes on the audit row, like any rejection.
+    /// </summary>
+    private async Task<Result> DiscardPendingRevisionAsync(
+        WorkspaceDocument document, string reason, Guid userId, CancellationToken ct)
+    {
+        var workspaceId = document.WorkspaceId;
+        var pendingFile = WorkspaceDocumentHelper.PendingRevisionFile(document);
+
+        WorkspaceDocumentHelper.ClearPendingRevision(document);
+        document.UpdatedAt = DateTime.UtcNow;
+        _unitOfWork.WorkspaceDocumentRepository.Update(document);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        // After the commit: deleting first would leave a row pointing at nothing if the save
+        // failed. A failed delete leaves an orphaned encrypted blob nothing references, which is
+        // the harmless direction — and it is logged and recorded.
+        var pendingFileDeleted = true;
+        try
+        {
+            await _storage.DeleteDocumentContentAsync(pendingFile, ct);
+        }
+        catch (Exception ex)
+        {
+            pendingFileDeleted = false;
+            _logger.LogError(
+                ex,
+                "Could not delete the rejected revision {StorageKey} of document {DocumentId}.",
+                pendingFile.StorageKey,
+                document.Id);
+        }
+
+        await _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            workspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.Rejected,
+            document.UpdatedAt,
+            userId,
+            ct);
+
+        await _unitOfWork.AuditAsync(
+            document.Id,
+            workspaceId,
+            userId,
+            WorkspaceDocumentConstants.AuditActions.RejectDocument,
+            new
+            {
+                reason,
+                revision = true,
+                rejectedFileName = pendingFile.FileName,
+                rejectedStorageKey = pendingFile.StorageKey,
+                pendingFileDeleted
+            },
+            _logger,
+            ct);
+
+        return Result.Success();
+    }
+
+    /// <summary>
     /// Audit actions the history route leaves out. A read is not a decision, and
     /// GetDocumentDetails is written on every single view of the detail page.
     /// </summary>
@@ -1264,6 +1546,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     ErrorCodes.ValidationError);
             }
 
+            // WT-854 — one revision under review at a time, for the same reason a document already
+            // pending approval is refused: the reviewer must decide about the file they read.
+            if (WorkspaceDocumentHelper.HasPendingRevision(document))
+            {
+                return Result.Failure<WorkspaceDocumentDto>(
+                    "A corrected version of this document is already awaiting review. It must be approved or rejected before another one is uploaded.",
+                    ErrorCodes.Conflict);
+            }
+
             var name = string.IsNullOrWhiteSpace(request.Name) ? document.Name : request.Name.Trim();
             if (name.Length == 0)
             {
@@ -1299,6 +1590,16 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             }
 
             var content = contentResult.Value;
+
+            // WT-854 — a PUBLISHED document keeps serving its approved file. The correction waits in
+            // the pending slot, and readers, downloads and the AI index are untouched until a
+            // reviewer approves it. Only a rejected document — which nobody is reading — is still
+            // replaced in place below.
+            if (isPublished)
+            {
+                return await StagePendingRevisionAsync(document, request, name, note, extension, content, userId, ct);
+            }
+
             var now = DateTime.UtcNow;
             var previousStorageKey = document.StorageKey;
             var previousFileName = document.FileName;
@@ -1324,6 +1625,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.SizeBytes = request.File.Length;
             document.ContentHash = DocumentContentHelper.ComputeSha256(content);
             document.UpdatedAt = now;
+
+            // Same rule as a fresh upload: new bytes that were already found restricted elsewhere
+            // in this workspace arrive restricted. (A label already on this row is never cleared.)
+            if (await HasRestrictedTwinAsync(workspaceId, document.ContentHash, documentId, ct))
+            {
+                document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
+            }
 
             // Back to the queue, whichever state it came from. A replaced file has not been read by
             // anyone, so it cannot keep a published document's approval — that is the difference
@@ -1403,6 +1711,142 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         }
     }
 
+    /// <summary>
+    /// WT-854 — store a corrected file for a PUBLISHED document beside the approved one.
+    ///
+    /// Before this, a re-upload overwrote StorageKey at once and sent the document back to
+    /// pending_approval: readers lost the approved document the moment somebody uploaded a fix, the
+    /// unreviewed file was what downloads served, and Reject had nothing to restore — the approved
+    /// file's key survived only in the audit row. Now nothing a reader can reach changes: status,
+    /// StorageKey, the file metadata, the extracted text and the AI index all keep describing the
+    /// approved file. ApproveDocumentAsync promotes this slot; a rejection deletes it.
+    /// </summary>
+    private async Task<Result<WorkspaceDocumentDto>> StagePendingRevisionAsync(
+        WorkspaceDocument document,
+        ReuploadDocumentApiRequest request,
+        string name,
+        string note,
+        string extension,
+        byte[] content,
+        Guid userId,
+        CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var workspaceId = document.WorkspaceId;
+
+        // A NEW KEY, as for any revision: the approved blob stays exactly where it is.
+        document.PendingStorageKey = WorkspaceDocumentHelper.GenerateRevisionStorageKey(workspaceId, document.Id, extension, now);
+        document.PendingStorageProvider = _storage.StorageProviderName;
+        document.PendingName = string.Equals(name, document.Name, StringComparison.Ordinal) ? null : name;
+        document.PendingFileName = request.File.FileName;
+        document.PendingFileExtension = extension;
+        document.PendingMimeType = WorkspaceDocumentHelper.GetSafeContentType(extension);
+        document.PendingSizeBytes = request.File.Length;
+        document.PendingContentHash = DocumentContentHelper.ComputeSha256(content);
+        document.PendingNote = note.Length > 0 ? note : null;
+        document.PendingUploadedBy = userId;
+        document.PendingUploadedAt = now;
+
+        var pendingFile = WorkspaceDocumentHelper.PendingRevisionFile(document);
+        await _storage.SaveDocumentContentAsync(pendingFile, new MemoryStream(content, writable: false), ct);
+
+        try
+        {
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // The row never learned about the pending object, so nothing references it.
+            await _storage.DeleteDocumentContentAsync(pendingFile, ct);
+            throw;
+        }
+
+        await _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            workspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.PendingApproval,
+            document.UpdatedAt,
+            userId,
+            ct);
+
+        await _unitOfWork.AuditAsync(
+            document.Id,
+            workspaceId,
+            userId,
+            WorkspaceDocumentConstants.AuditActions.ReuploadDocument,
+            new
+            {
+                pendingRevision = true,
+                pendingStorageKey = document.PendingStorageKey,
+                currentStorageKey = document.StorageKey,
+                previousFileName = document.FileName,
+                fileName = document.PendingFileName,
+                reason = document.PendingNote
+            },
+            _logger,
+            ct);
+
+        var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
+        return Result.Success(document.ToDto(downloadUrl));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<DocumentDownloadStreamDto>> DownloadPendingRevisionAsync(
+        Guid workspaceId,
+        Guid documentId,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null
+                || !WorkspaceDocumentHelper.HasPendingRevision(document))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>("No corrected version is awaiting review.", ErrorCodes.NotFound);
+            }
+
+            // The people who decide about it and the people who sent it — not every reader of the
+            // published document. An unreviewed file is not published content.
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            var isUploader = document.UploadedBy == userId || document.OwnerId == userId || document.PendingUploadedBy == userId;
+            if (!isUploader && !roleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(
+                    "Only a reviewer or the uploader can open a version that is awaiting review.",
+                    ErrorCodes.Forbidden);
+            }
+
+            var pendingFile = WorkspaceDocumentHelper.PendingRevisionFile(document);
+            var stream = await _storage.GetDecryptedStreamAsync(pendingFile, ct);
+
+            return Result.Success(new DocumentDownloadStreamDto(
+                stream,
+                WorkspaceDocumentHelper.GetSafeContentType(pendingFile.FileExtension),
+                pendingFile.FileName));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while downloading a pending revision. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
     /// <inheritdoc />
     public async Task<Result<PagedResult<DocumentHistoryEntryDto>>> GetDocumentHistoryAsync(
         Guid workspaceId,
@@ -1474,6 +1918,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<DocumentDownloadStreamDto>("Document not found.", ErrorCodes.NotFound);
             }
 
+            // THE ORIGINAL BYTES. A restricted document's original goes to Owner/Admin and the
+            // uploader; everybody else is on the masked copy or on nothing, whatever policy let
+            // them through the evaluator above. Same function the detail route answers from.
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.Download, accessResult, ct);
+            if (DocumentContentAccessDecision.Decide(content) != DocumentContentVersion.Original)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.AccessDeniedOriginalContent, ErrorCodes.Forbidden);
+            }
+
             var stream = await _storage.GetDecryptedStreamAsync(document, ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadDocument, logger: _logger, ct: ct);
@@ -1485,6 +1938,312 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while downloading document. DocumentId: {DocumentId}", documentId);
             return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<DocumentDownloadStreamDto>> DownloadMaskedDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            if (!await IsWorkspaceOperationalAsync(workspaceId, ct))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            // Download, not View: this route is also what the page's preview reads, exactly as
+            // the original download is for an original — so a DENY on `download` closes both.
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, ct);
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(accessResult.Error ?? WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.Forbidden);
+            }
+
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.Download, accessResult, ct);
+            if (DocumentContentAccessDecision.Decide(content) == DocumentContentVersion.None)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
+            if (!DocumentContentAccessDecision.CanReadMaskedVersion(content))
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.MaskedVersionNotFound, ErrorCodes.NotFound);
+            }
+
+            var stream = await _storage.GetMaskedFileStreamAsync(document, ct);
+            if (stream == null)
+            {
+                return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.MaskedVersionNotFound, ErrorCodes.NotFound);
+            }
+
+            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadMaskedDocument, logger: _logger, ct: ct);
+
+            return Result.Success(new DocumentDownloadStreamDto(
+                stream,
+                WorkspaceDocumentHelper.GetSafeContentType(document.FileExtension),
+                WorkspaceDocumentHelper.MaskedDownloadFileName(document)));
+        }
+        catch (Exception ex)
+        {
+            // Including a masked copy that fails its integrity check. The answer is an error —
+            // there is no path from here to the original.
+            _logger.LogError(ex, "Error occurred while downloading the masked copy. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<WorkspaceDocumentDto>> RescanMaskedVersionAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var (loaded, isOwnerOrAdmin, _, failure) = await LoadForVisibilityChangeAsync(workspaceId, documentId, userId, ct);
+            if (failure != null || loaded == null)
+            {
+                return failure ?? Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            var document = loaded;
+
+            if (!isOwnerOrAdmin)
+            {
+                return Result.Failure<WorkspaceDocumentDto>("Forbidden. Only a workspace Owner or Admin can re-scan a document.", ErrorCodes.Forbidden);
+            }
+
+            if (!document.IsRestricted())
+            {
+                return Result.Failure<WorkspaceDocumentDto>("Only a restricted document has a masked version.", ErrorCodes.ValidationError);
+            }
+
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
+            var state = await ReadMaskedVersionStateAsync(document, await SafeMaskedFileExistsAsync(document, ct), ct);
+
+            // Already asked and not answered yet: one scan is enough.
+            if (state.Status != WorkspaceDocumentMaskedVersionStatuses.Pending)
+            {
+                // The REQUEST is the audit row — the guardrail looks for it when the event below
+                // arrives, because a restricted document is otherwise skipped. So unlike every
+                // other audit write it is not allowed to fail quietly, and it is saved together
+                // with the outbox row: either both exist or neither does.
+                await _unitOfWork.WorkspaceDocumentAuditRepository.AddAsync(
+                    WorkspaceDocumentMapper.ToAuditEntity(
+                        documentId,
+                        workspaceId,
+                        userId,
+                        WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanRequested),
+                    ct);
+
+                // The same event an upload publishes. No second pipeline.
+                await _eventPublisher.PublishDocumentUploadedAsync(
+                    document.Id,
+                    workspaceId,
+                    document.StorageKey,
+                    document.FileName,
+                    document.FileExtension,
+                    userId,
+                    document.ConfidentialityLevel,
+                    ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+
+            var content = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.View, accessResult, ct);
+            return Result.Success(await ToDetailDtoAsync(document, content, null, null, ct));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while requesting a masked-copy re-scan. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Looks up everything <see cref="DocumentContentAccessDecision"/> needs for one caller and
+    /// one document. For a document that is not restricted this is the evaluator's answer and no
+    /// further I/O.
+    /// </summary>
+    private async Task<DocumentContentAccessInput> ResolveContentAccessAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        string permission,
+        Result? access,
+        CancellationToken ct)
+    {
+        var granted = access?.IsSuccess == true;
+        if (!document.IsRestricted())
+        {
+            return new DocumentContentAccessInput(false, false, false, granted, granted, false, false);
+        }
+
+        var isUploader = document.OwnerId == userId || document.UploadedBy == userId;
+        var isOwnerOrAdmin = false;
+        var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+        if (member != null)
+        {
+            isOwnerOrAdmin = (await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct)).IsOwnerOrAdmin();
+        }
+
+        var maskedExists = await SafeMaskedFileExistsAsync(document, ct);
+
+        var grantedIgnoringRestriction = granted;
+        if (!granted && !isOwnerOrAdmin && !isUploader)
+        {
+            var ignoring = await _accessEvaluator.EvaluateAccessIgnoringRestrictionAsync(userId, workspaceId, document.Id, permission, ct);
+            grantedIgnoringRestriction = ignoring?.IsSuccess == true;
+        }
+
+        var restrictedByPii = maskedExists
+            || (!isOwnerOrAdmin && !isUploader && await WasRestrictedByPiiAsync(document.Id, ct));
+
+        return new DocumentContentAccessInput(
+            isOwnerOrAdmin, isUploader, true, granted, grantedIgnoringRestriction, maskedExists, restrictedByPii);
+    }
+
+    /// <summary>The list's version of the same decision, with the member and role it already loaded.</summary>
+    private async Task<DocumentContentVersion> DecideListedVersionAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        WorkspaceMember member,
+        string roleName,
+        IEnumerable<WorkspaceDocumentAccessPolicy> policies,
+        Dictionary<Guid, TranslationRoomDto?>? roomCache,
+        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache,
+        Result? access,
+        CancellationToken ct)
+    {
+        var granted = access?.IsSuccess == true;
+        if (!document.IsRestricted())
+        {
+            return granted ? DocumentContentVersion.Original : DocumentContentVersion.None;
+        }
+
+        var isUploader = document.OwnerId == userId || document.UploadedBy == userId;
+        var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+        if (isOwnerOrAdmin || isUploader)
+        {
+            return DocumentContentAccessDecision.Decide(
+                new DocumentContentAccessInput(isOwnerOrAdmin, isUploader, true, granted, granted, false, false));
+        }
+
+        var grantedIgnoringRestriction = granted;
+        if (!granted)
+        {
+            var ignoring = await _accessEvaluator.EvaluateAccessIgnoringRestrictionAsync(
+                userId, workspaceId, document, WorkspaceDocumentPermissions.View, member, roleName, policies, roomCache, participantsCache, ct);
+            grantedIgnoringRestriction = ignoring?.IsSuccess == true;
+        }
+
+        if (!grantedIgnoringRestriction)
+        {
+            return DocumentContentVersion.None;
+        }
+
+        var maskedExists = await SafeMaskedFileExistsAsync(document, ct);
+        var restrictedByPii = maskedExists || (granted && await WasRestrictedByPiiAsync(document.Id, ct));
+
+        return DocumentContentAccessDecision.Decide(
+            new DocumentContentAccessInput(false, false, true, granted, grantedIgnoringRestriction, maskedExists, restrictedByPii));
+    }
+
+    /// <summary>
+    /// Is there a masked copy? A store that cannot say is treated as "no": a member then gets
+    /// nothing, which is the safe side of not knowing.
+    /// </summary>
+    private async Task<bool> SafeMaskedFileExistsAsync(WorkspaceDocument document, CancellationToken ct)
+    {
+        try
+        {
+            return await _storage.MaskedFileExistsAsync(document, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Could not check for the masked copy of document {DocumentId}.", document.Id);
+            return false;
+        }
+    }
+
+    /// <summary>Did the last security scan restrict this document for personal details, and not for a banned keyword?</summary>
+    private async Task<bool> WasRestrictedByPiiAsync(Guid documentId, CancellationToken ct)
+    {
+        var scan = await _unitOfWork.WorkspaceDocumentAuditRepository.GetLatestActionAsync(
+            documentId, WorkspaceDocumentConstants.AuditActions.SecurityScanCompleted, ct);
+        return WorkspaceDocumentMapper.ReadScanOutcome(scan?.Metadata).RestrictedByPii;
+    }
+
+    /// <summary>
+    /// Why the document does or does not have a masked copy, from the audit trail. Storage
+    /// decides whether one exists; this only explains it.
+    /// </summary>
+    private async Task<(bool RestrictedByPii, string Status)> ReadMaskedVersionStateAsync(
+        WorkspaceDocument document,
+        bool maskedExists,
+        CancellationToken ct)
+    {
+        var audits = _unitOfWork.WorkspaceDocumentAuditRepository;
+        var scan = await audits.GetLatestActionAsync(document.Id, WorkspaceDocumentConstants.AuditActions.SecurityScanCompleted, ct);
+        var requested = await audits.GetLatestActionAsync(document.Id, WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanRequested, ct);
+        var failed = await audits.GetLatestActionAsync(document.Id, WorkspaceDocumentConstants.AuditActions.MaskedVersionRescanFailed, ct);
+
+        var outcome = WorkspaceDocumentMapper.ReadScanOutcome(scan?.Metadata);
+        var restrictedByPii = maskedExists || outcome.RestrictedByPii;
+
+        if (requested != null
+            && (scan == null || scan.ActionAt < requested.ActionAt)
+            && (failed == null || failed.ActionAt < requested.ActionAt))
+        {
+            return (restrictedByPii, WorkspaceDocumentMaskedVersionStatuses.Pending);
+        }
+
+        if (maskedExists)
+        {
+            return (restrictedByPii, WorkspaceDocumentMaskedVersionStatuses.Available);
+        }
+
+        if (failed != null && (scan == null || scan.ActionAt < failed.ActionAt))
+        {
+            return (restrictedByPii, WorkspaceDocumentMaskedVersionStatuses.Error);
+        }
+
+        // "available" on record with no file in storage is a copy that has since gone.
+        var recorded = outcome.MaskedVersion;
+        var status = string.IsNullOrWhiteSpace(recorded) || recorded == WorkspaceDocumentMaskedVersionStatuses.Available
+            ? WorkspaceDocumentMaskedVersionStatuses.NotGenerated
+            : recorded;
+        return (restrictedByPii, status);
+    }
+
+    /// <summary>The detail DTO, told which version this caller gets and what there is to offer them.</summary>
+    private async Task<WorkspaceDocumentDto> ToDetailDtoAsync(
+        WorkspaceDocument document,
+        DocumentContentAccessInput content,
+        Guid? approvedBy,
+        string? rejectionReason,
+        CancellationToken ct)
+    {
+        var version = DocumentContentAccessDecision.Decide(content);
+        var dto = document.ToDto(
+            version == DocumentContentVersion.Original
+                ? _urlProvider.GetDocumentDownloadUrl(document.WorkspaceId, document.Id)
+                : null,
+            approvedBy,
+            rejectionReason);
+
+        if (!document.IsRestricted())
+        {
+            return dto;
+        }
+
+        var state = await ReadMaskedVersionStateAsync(document, content.MaskedVersionExists, ct);
+        return dto with
+        {
+            ContentAccess = version.ToWireValue(),
+            MaskedVersionAvailable = DocumentContentAccessDecision.CanReadMaskedVersion(content),
+            MaskedVersionStatus = state.Status,
+            CanRescanMaskedVersion = content.IsOwnerOrAdmin
+        };
     }
 
     public async Task<Result> DeleteDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
@@ -1997,7 +2756,42 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // Checked AFTER the ACL on purpose: someone who may not see the document at all gets
             // the same answer as before, and only a caller who can see it learns why WarpBot
             // cannot use it.
+            // The extracted text is written before the scan runs, so it is the ORIGINAL text.
+            // IsIndexEligible below already refuses every restricted document; this says the same
+            // thing through the content decision, so the rule "no original for a masked viewer"
+            // does not depend on that gate staying the way it is.
+            var contentAccess = await ResolveContentAccessAsync(userId, workspaceId, document, WorkspaceDocumentPermissions.View, accessResult, ct);
+            if (DocumentContentAccessDecision.Decide(contentAccess) != DocumentContentVersion.Original)
+            {
+                return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.AccessDeniedOriginalContent, ErrorCodes.Forbidden);
+            }
+
             if (!document.IsIndexEligible())
+            {
+                return Result.Failure<ExtractedTextDto>(
+                    WorkspaceConstants.Errors.DocumentNotAiEligible,
+                    WorkspaceDocumentConstants.DocumentNotAiEligibleErrorCode);
+            }
+
+            // WT-929. IsIndexEligible is a fact about the DOCUMENT; `ai_retrieval` is the answer
+            // for THIS CALLER, and nothing on this read asked it. An owner who set "Deny AI
+            // retrieval" for a member (or for the Member role) took the document out of that
+            // person's semantic search — ListAiRetrievableDocumentIdsAsync asks the evaluator —
+            // while an @document mention, or get_document with an id, still read the whole text
+            // back through here on the strength of `view` alone.
+            //
+            // Same evaluator call, same permission as the ai-retrievable list, so the two cannot
+            // disagree: what the assistant may not retrieve for a person it may not quote to them
+            // either. That includes the index-side half of the permission (ingestion finished,
+            // indexed, AiEligible) — a document the index has not caught up with is one the
+            // list does not offer yet, and this read now says the same.
+            //
+            // The same refusal as above on purpose: the caller already holds `view`, so there is
+            // nothing to hide about the document's existence, and one error code means WarpBot
+            // has one thing to explain.
+            var aiAccess = await _accessEvaluator.EvaluateAccessAsync(
+                userId, workspaceId, documentId, WorkspaceDocumentPermissions.AiRetrieval, ct);
+            if (!aiAccess.IsSuccess)
             {
                 return Result.Failure<ExtractedTextDto>(
                     WorkspaceConstants.Errors.DocumentNotAiEligible,
@@ -2103,9 +2897,14 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             // A restricted document's vectors are purged when it is relabelled; this endpoint put
             // them straight back, which made the whole confidentiality boundary bypassable by
             // anyone who could edit the text.
+            //
+            // AND THE SAME SCAN UPLOAD RUNS. The label gate above only holds while the label does:
+            // an edited text is new content nobody has looked at, and indexing it raw let PII or a
+            // blacklisted term reach the vector store through the one path that skipped the worker.
+            var reindexed = false;
             if (document.IsIndexEligible())
             {
-                await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
+                reindexed = await ScanThenIndexEditedTextAsync(document, text, ct);
             }
 
             // Rewriting the AI-readable body of a document left no trace at all before this. It is
@@ -2122,7 +2921,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 workspaceId,
                 userId,
                 WorkspaceDocumentConstants.AuditActions.UpdateExtractedText,
-                new { Length = text?.Length ?? 0, Reindexed = document.IsIndexEligible() },
+                new { Length = text?.Length ?? 0, Reindexed = reindexed },
                 _logger,
                 ct);
 

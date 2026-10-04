@@ -25,14 +25,30 @@ public class PaymentAppService : IPaymentAppService
     private readonly IAiServiceStateStore? _aiServiceStateStore;
     private readonly IStripeRecurringGateway? _recurring;
 
-    /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
-    private const string CreditValueConfigKey = "credit_value_vnd";
+    /// <summary>WT-429: the admin-editable USD price of one credit.</summary>
+    private const string CreditValueConfigKey = BillingPricingConfigKeys.CreditValueUsd;
 
     /// <summary>
     /// WT-429: the smallest top-up worth a Stripe round trip, mirrored by the web's own minimum.
     /// A floor also stops a 1-credit purchase whose Stripe fee exceeds the amount charged.
+    ///
+    /// 5,000 since USD: 1,500 credits was 6,000 VND but is $0.23, under Stripe's $0.50 minimum charge,
+    /// so every smallest top-up would have been refused by Stripe. 5,000 is ~$0.76. The check below
+    /// also raises it to whatever the CURRENT credit value needs, so a cheaper credit cannot reopen it.
     /// </summary>
-    private const int MinimumTopUpCredits = 1500;
+    private const int MinimumTopUpCredits = 5000;
+
+    /// <summary>
+    /// The fewest credits a top-up may buy at <paramref name="creditValueUsd"/>: the fixed floor, or
+    /// more when that many credits would come to less than Stripe's minimum USD charge.
+    /// </summary>
+    public static int MinimumTopUpCreditsFor(decimal creditValueUsd)
+    {
+        if (creditValueUsd <= 0) return MinimumTopUpCredits;
+        var forStripe = (int)Math.Ceiling(
+            PackageCatalogConstants.Currencies.MinimumCharge(PaymentConstants.Currencies.Usd) / creditValueUsd);
+        return Math.Max(MinimumTopUpCredits, forStripe);
+    }
 
     public PaymentAppService(
         IStripePaymentService stripePaymentService,
@@ -79,7 +95,10 @@ public class PaymentAppService : IPaymentAppService
             s => s.WorkspaceId == workspaceId
                 && s.DeletedAt == null
                 && s.IsActive
-                && s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                && (s.Status == SubscriptionConstants.SubscriptionStatuses.Active
+                    // WT-878: a row cancelled at period end the pre-WT-878 way
+                    // (Subscription.IsLegacyCancelledInPeriod).
+                    || (s.Status == SubscriptionConstants.SubscriptionStatuses.Cancelled && s.CancelledAt == null))
                 && s.CurrentPeriodEnd >= now);
     }
 
@@ -93,6 +112,34 @@ public class PaymentAppService : IPaymentAppService
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
             }
+
+            // WT-878 — ALLOWLIST, before anything is priced or any Stripe session exists. Only the
+            // customer-facing types with a server-priced branch below may start a checkout. Any
+            // other type fell through to the generic session, which charged request.Amount and
+            // stamped the request's PlanSlug/BillingCycle on the metadata — so "SubscriptionUpdate"
+            // + planSlug "enterprise" + a token amount was a 12-month Enterprise plan for pennies,
+            // activated by SubscriptionPaymentEventHandler, even on a hidden plan.
+            var paymentType = PaymentConstants.PaymentTypes.CustomerCheckoutTypes.FirstOrDefault(
+                t => string.Equals(t, request.PaymentType?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (paymentType is null)
+            {
+                _logger.LogWarning(
+                    "checkout_refused_payment_type: WorkspaceId={WorkspaceId} PaymentType={PaymentType} PlanSlug={PlanSlug}",
+                    request.WorkspaceId,
+                    request.PaymentType,
+                    request.PlanSlug);
+                return Result.Failure<string>(
+                    PaymentConstants.PaymentTypes.CheckoutTypeNotAllowedMessage,
+                    ErrorCodes.ValidationError);
+            }
+
+            // The canonical spelling from here on: StripePaymentService and the event handlers
+            // compare it case-sensitively. Only a plan checkout carries a plan.
+            request = request with
+            {
+                PaymentType = paymentType,
+                PlanSlug = paymentType == PaymentConstants.PaymentTypes.Subscription ? request.PlanSlug : string.Empty,
+            };
 
             // #466: a plan is priced by the server and sold either as a recurring Stripe
             // Subscription (auto-renew on) or as one paid period (auto-renew off).
@@ -180,34 +227,49 @@ public class PaymentAppService : IPaymentAppService
             // authoritative field, which is what the grant handler needs.
             if (string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.CreditTopUp, StringComparison.OrdinalIgnoreCase))
             {
-                if (request.Credits < MinimumTopUpCredits)
-                {
-                    return Result.Failure<string>(
-                        string.Format(
-                            BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum,
-                            MinimumTopUpCredits),
-                        ErrorCodes.ValidationError);
-                }
-
-                var creditValueVnd = await _rateCards.ReadPricingConfigValueAsync(
+                var creditValueUsd = await _rateCards.ReadPricingConfigValueAsync(
                     CreditValueConfigKey,
-                    SubscriptionConstants.RateCardDefaults.CreditValueVnd);
+                    SubscriptionConstants.RateCardDefaults.CreditValueUsd);
 
-                if (creditValueVnd <= 0)
+                if (creditValueUsd <= 0)
                 {
                     _logger.LogError(
                         "credit_topup_rate_unavailable: {Key} resolved to {Value}; refusing to price a top-up.",
-                        CreditValueConfigKey, creditValueVnd);
+                        CreditValueConfigKey, creditValueUsd);
                     return Result.Failure<string>(
                         BillingMessageConstants.ErrorMessages.CreditTopUpRateUnavailable,
                         ErrorCodes.InternalServerError);
                 }
 
+                var minimumCredits = MinimumTopUpCreditsFor(creditValueUsd);
+                if (request.Credits < minimumCredits)
+                {
+                    return Result.Failure<string>(
+                        string.Format(
+                            BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum,
+                            minimumCredits),
+                        ErrorCodes.ValidationError);
+                }
+
                 request = request with
                 {
-                    Amount = decimal.Round(request.Credits * creditValueVnd, 0, MidpointRounding.AwayFromZero),
-                    Currency = PaymentConstants.Currencies.Vnd,
+                    // Cents, rounded up: a top-up never charges less than the credits are worth.
+                    Amount = decimal.Round(request.Credits * creditValueUsd, 2, MidpointRounding.AwayFromZero),
+                    Currency = PaymentConstants.Currencies.Usd,
                 };
+            }
+            else
+            {
+                // WT-878: the generic session below charges request.Amount as given. Only a top-up,
+                // re-priced just above, may reach it; a catalog type that did not come back with
+                // its own priced line must not be sold at the client's number.
+                _logger.LogError(
+                    "checkout_refused_unpriced: WorkspaceId={WorkspaceId} PaymentType={PaymentType} reached the generic checkout without a server price.",
+                    request.WorkspaceId,
+                    request.PaymentType);
+                return Result.Failure<string>(
+                    BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
+                    ErrorCodes.InternalServerError);
             }
 
             var result = await _stripePaymentService.CreateCheckoutSessionAsync(request);
@@ -320,7 +382,9 @@ public class PaymentAppService : IPaymentAppService
         if (session.PaymentStatus == PaymentConstants.Payments.StatusPaid)
         {
             bool isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
-            decimal finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
+            // Net of VAT, as the webhook reads it: both paths process the same session and must agree.
+            decimal taxAmount = isZeroDecimal ? (session.AmountTax ?? 0) : ((session.AmountTax ?? 0) / 100m);
+            decimal finalAmount = (isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m)) - taxAmount;
 
             var processResult = await ProcessPaymentEventAsync(new StripePaymentEventRequest(
                 StripeSessionId: session.Id,
@@ -342,7 +406,8 @@ public class PaymentAppService : IPaymentAppService
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var sessionCredits) ? sessionCredits : 0,
                 StripeSubscriptionId: session.SubscriptionId ?? string.Empty,
-                StripeCustomerId: session.CustomerId ?? string.Empty
+                StripeCustomerId: session.CustomerId ?? string.Empty,
+                TaxAmount: taxAmount
             ).WithCatalogMetadata(session.Metadata));
             
             if (!processResult.IsSuccess)
@@ -593,6 +658,10 @@ public class PaymentAppService : IPaymentAppService
         var metadata = new Dictionary<string, string>(extras.Metadata)
         {
             [PaymentConstants.StripeMetadata.AutoRenew] = autoRenew ? "true" : "false",
+            // WT-878: what this session was priced at, so activation honours it if the plan is
+            // repriced before the buyer finishes paying.
+            [PaymentConstants.StripeMetadata.ExpectedAmount] = amount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            [PaymentConstants.StripeMetadata.ExpectedCurrency] = currency,
         };
         var line = new CatalogCheckoutLine(
             plan.Name,
@@ -663,8 +732,8 @@ public class PaymentAppService : IPaymentAppService
             : request.PaymentIntentId;
 
         var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(p => p.ProviderTransactionId == providerTxId);
-        var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null);
+        var subscription = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: false);
 
         return Result.Success(request.ToPaymentEventContext(
             workspaceId,
@@ -686,7 +755,8 @@ public class PaymentAppService : IPaymentAppService
                 Currency: context.Request.Currency,
                 ProviderTransactionId: context.ProviderTransactionId,
                 Status: context.ParsedPaymentStatus,
-                FailureReason: context.Request.FailureReason));
+                FailureReason: context.Request.FailureReason,
+                TaxAmount: context.Request.TaxAmount));
 
             payment.Id = context.PaymentId;
             await _unitOfWork.PaymentRepository.AddAsync(payment);
@@ -699,6 +769,13 @@ public class PaymentAppService : IPaymentAppService
         if (context.ParsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
         {
             context.ExistingPayment.PaidAt ??= DateTime.UtcNow;
+            // A row opened before the buyer reached Stripe knew the net price only; the VAT is
+            // known once Stripe has charged it.
+            if (context.Request.TaxAmount > 0)
+            {
+                context.ExistingPayment.TaxAmount = context.Request.TaxAmount;
+                context.ExistingPayment.TotalAmount = context.ExistingPayment.Amount + context.Request.TaxAmount;
+            }
         }
         context.ExistingPayment.UpdatedAt = DateTime.UtcNow;
     }
@@ -728,7 +805,8 @@ public class PaymentAppService : IPaymentAppService
             UserId: context.UserId,
             Amount: context.Request.Amount,
             Currency: context.Request.Currency,
-            PdfUrl: context.Request.InvoicePdf));
+            PdfUrl: context.Request.InvoicePdf,
+            TaxAmount: context.Request.TaxAmount));
 
         await _unitOfWork.InvoiceRepository.AddAsync(invoice);
     }

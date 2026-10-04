@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
@@ -45,6 +46,12 @@ public class CreditFreezeServiceTests
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Expression<Func<Subscription, bool>> p, CancellationToken _) =>
                 _subscriptions.FirstOrDefault(p.Compile()));
+        subscriptions
+            .Setup(r => r.GetActiveByWorkspaceIdAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid workspaceId, bool _, bool _, CancellationToken _) =>
+                SubscriptionSelection.OrderCurrentFirst(
+                        SubscriptionSelection.ForWorkspace(_subscriptions.AsQueryable(), workspaceId).Where(s => s.IsActive))
+                    .FirstOrDefault());
 
         var ledger = new Mock<ICreditTransactionRepository>();
         ledger
@@ -240,6 +247,27 @@ public class CreditFreezeServiceTests
     }
 
     [Fact]
+    public async Task Restored_credits_settle_the_overage_they_paid_off_so_the_next_charge_does_not_re_suspend()
+    {
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 500;
+        ended.CreditsFrozenAt = Now.AddDays(-3);
+        var capped = AddSubscription(plan, balance: -200, active: true);
+        capped.ServiceState = SubscriptionConstants.ServiceStates.Suspended;
+        capped.SuspendedReason = SubscriptionConstants.SuspendedReasons.OverageCap;
+        capped.OverageCreditsThisCycle = 200;
+        capped.OverageStartedAt = Now.AddDays(-2);
+
+        await _service.StageReleaseIntoAsync(capped, Now);
+
+        capped.CreditsRemaining.Should().Be(300);
+        capped.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        capped.OverageCreditsThisCycle.Should().Be(0, "a positive balance owes no overage");
+        capped.OverageStartedAt.Should().BeNull();
+    }
+
+    [Fact]
     public async Task The_sweep_releases_only_into_a_live_subscription()
     {
         var plan = AddPlan(rolloverCap: 0);
@@ -254,6 +282,43 @@ public class CreditFreezeServiceTests
         (await _service.ReleaseFrozenCreditsAsync(Now)).Should().Be(1);
         renewed.CreditsRemaining.Should().Be(1_300);
         ended.FrozenCredits.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task The_sweep_pushes_the_ai_state_after_a_release_lifts_an_overage_cap_suspension()
+    {
+        var lift = new Mock<WarpTalk.BillingService.Application.Interfaces.ISuspensionLiftService>();
+        var service = new CreditFreezeService(_unitOfWork.Object, NullLogger<CreditFreezeService>.Instance, lift.Object);
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 500;
+        ended.CreditsFrozenAt = Now.AddDays(-3);
+        var capped = AddSubscription(plan, balance: -100, active: true);
+        capped.ServiceState = SubscriptionConstants.ServiceStates.Suspended;
+        capped.SuspendedReason = SubscriptionConstants.SuspendedReasons.OverageCap;
+
+        (await service.ReleaseFrozenCreditsAsync(Now)).Should().Be(1);
+
+        capped.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        lift.Verify(l => l.PushServiceStateAsync(capped, It.IsAny<CancellationToken>()), Times.Once,
+            "the billing_worker reads the AI key; without the push the rooms stay stopped");
+        lift.Verify(l => l.PublishCreditsUpdatedAsync(capped, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task The_sweep_does_not_push_when_the_release_lifted_nothing()
+    {
+        var lift = new Mock<WarpTalk.BillingService.Application.Interfaces.ISuspensionLiftService>();
+        var service = new CreditFreezeService(_unitOfWork.Object, NullLogger<CreditFreezeService>.Instance, lift.Object);
+        var plan = AddPlan(rolloverCap: 0);
+        var ended = AddSubscription(plan, balance: 0);
+        ended.FrozenCredits = 500;
+        ended.CreditsFrozenAt = Now.AddDays(-3);
+        AddSubscription(plan, balance: 100, active: true);
+
+        (await service.ReleaseFrozenCreditsAsync(Now)).Should().Be(1);
+
+        lift.Verify(l => l.PushServiceStateAsync(It.IsAny<Subscription>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

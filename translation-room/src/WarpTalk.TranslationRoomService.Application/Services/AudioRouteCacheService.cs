@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -129,6 +130,17 @@ public class AudioRouteCacheService : IAudioRouteCacheService
                     configuredLanguages.Add(target);
                 }
             }
+
+            if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            {
+                foreach (var language in ExternalMeetingLanguages(activeOrPendingRoutes))
+                {
+                    if (!configuredLanguages.Contains(language))
+                    {
+                        configuredLanguages.Add(language);
+                    }
+                }
+            }
         }
 
         var payload = new
@@ -156,5 +168,38 @@ public class AudioRouteCacheService : IAudioRouteCacheService
         await _redisStateRepo.PublishAsync(eventChannel, pubSubPayload);
 
         return activeOrPendingRoutes;
+    }
+
+    /// <summary>
+    /// The language the far side of an EXTERNAL_BRIDGE room currently speaks, as the mesh holds it:
+    /// every route out of the "External Meeting" stand-in carries its speak language, every route
+    /// into it its listen language.
+    ///
+    /// WHY THIS IS PART OF room_languages
+    ///   TranslationRoomHub.SetExternalMeetingLanguage ("They speak") moves the stand-in to any
+    ///   language the workspace allows — a bridge room has no L2 to hold it to (RoomLanguagePolicy)
+    ///   — and never adds it to the room's TargetLanguages. STT's allow-list is
+    ///   speak_languages ∪ room_languages. While the stand-in is pinned, speak_languages carries the
+    ///   pick and the union is right. But once the far side runs unpinned (WT-909 wave 2: the hub
+    ///   leaves the stand-in at "auto" and the pick only moves the dub), neither half named the
+    ///   language the Meet side was just declared to speak, so stt_worker deleted every line of it
+    ///   as foreign to the room. The stand-in's row is persisted by ParticipantLanguageProcessor
+    ///   before the mesh is regenerated, so the routes read here already carry the pick.
+    /// </summary>
+    private static IEnumerable<string> ExternalMeetingLanguages(IEnumerable<TranslationRoomAudioRouteDto> routes)
+    {
+        var standIn = TranslationRoomConstants.ExternalBridgeParticipantUserId;
+        foreach (var route in routes)
+        {
+            var language = route.SourceUserId == standIn ? route.SourceLanguage
+                : route.TargetUserId == standIn ? route.TargetLanguage
+                : null;
+
+            var normalized = Helpers.LanguageHelper.NormalizeLanguageCode(language);
+            if (!string.IsNullOrWhiteSpace(normalized) && normalized != "auto")
+            {
+                yield return normalized;
+            }
+        }
     }
 }

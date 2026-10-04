@@ -11,15 +11,21 @@ namespace WarpTalk.BillingService.Domain.Services;
 /// preview and any future server-side derivation both go through here.
 ///
 /// unit price (credits per unit)
-///     = provider_unit_cost_usd * fx_rate_usd_vnd * markup_multiplier / credit_value_vnd
+///     = provider_unit_cost_usd * markup_multiplier / credit_value_usd
+///
+/// No exchange rate: providers bill in USD and USD is the accounting currency, so the price
+/// of a credit and the cost of a unit are already in the same money.
 /// </summary>
 public static class RateCardPricingCalculator
 {
     /// <summary>Unit prices are stored at six decimals (e.g. 1.643750).</summary>
     public const int UnitPriceDecimals = 6;
 
-    /// <summary>VND amounts are reported to two decimals.</summary>
-    public const int MoneyDecimals = 2;
+    /// <summary>
+    /// USD amounts are reported to six decimals. A credit is worth a fraction of a cent, so the two
+    /// decimals VND used would round a single unit's price, cost and margin to zero.
+    /// </summary>
+    public const int MoneyDecimals = 6;
 
     /// <summary>Ratios are reported to four decimals (0.6000 = 60%).</summary>
     public const int RatioDecimals = 4;
@@ -27,7 +33,7 @@ public static class RateCardPricingCalculator
     /// <summary>
     /// Prices <paramref name="quantity"/> units of a billing identity.
     /// Rounding is MidpointRounding.ToEven throughout, matching decimal's default, so a
-    /// preview and a later derivation of the same inputs cannot disagree by a cent.
+    /// preview and a later derivation of the same inputs cannot disagree.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">
     /// When an input cannot produce a meaningful price: a non-positive credit value would
@@ -35,15 +41,12 @@ public static class RateCardPricingCalculator
     /// </exception>
     public static RateCardPricingBreakdown Calculate(
         decimal providerUnitCostUsd,
-        decimal fxRateUsdVnd,
         decimal markupMultiplier,
-        decimal creditValueVnd,
+        decimal creditValueUsd,
         decimal quantity)
     {
-        if (creditValueVnd <= 0)
-            throw new ArgumentOutOfRangeException(nameof(creditValueVnd), "Credit value must be greater than zero.");
-        if (fxRateUsdVnd <= 0)
-            throw new ArgumentOutOfRangeException(nameof(fxRateUsdVnd), "FX rate must be greater than zero.");
+        if (creditValueUsd <= 0)
+            throw new ArgumentOutOfRangeException(nameof(creditValueUsd), "Credit value must be greater than zero.");
         if (providerUnitCostUsd < 0)
             throw new ArgumentOutOfRangeException(nameof(providerUnitCostUsd), "Provider unit cost cannot be negative.");
         if (markupMultiplier < 0)
@@ -51,27 +54,26 @@ public static class RateCardPricingCalculator
         if (quantity < 0)
             throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity cannot be negative.");
 
-        var providerUnitCostVnd = providerUnitCostUsd * fxRateUsdVnd;
         var unitPriceCredits = Math.Round(
-            providerUnitCostVnd * markupMultiplier / creditValueVnd, UnitPriceDecimals);
+            providerUnitCostUsd * markupMultiplier / creditValueUsd, UnitPriceDecimals);
 
         var creditsCharged = Math.Round(unitPriceCredits * quantity, UnitPriceDecimals);
-        var customerPriceVnd = Math.Round(creditsCharged * creditValueVnd, MoneyDecimals);
-        var providerCostVnd = Math.Round(providerUnitCostVnd * quantity, MoneyDecimals);
-        var marginVnd = Math.Round(customerPriceVnd - providerCostVnd, MoneyDecimals);
+        var customerPriceUsd = Math.Round(creditsCharged * creditValueUsd, MoneyDecimals);
+        var providerCostUsd = Math.Round(providerUnitCostUsd * quantity, MoneyDecimals);
+        var marginUsd = Math.Round(customerPriceUsd - providerCostUsd, MoneyDecimals);
 
         // A zero customer price (free tier, or a zero-cost provider) has no meaningful
         // margin ratio; reporting 0 there beats dividing by zero or reporting NaN.
-        var marginRatio = customerPriceVnd == 0
+        var marginRatio = customerPriceUsd == 0
             ? 0m
-            : Math.Round(marginVnd / customerPriceVnd, RatioDecimals);
+            : Math.Round(marginUsd / customerPriceUsd, RatioDecimals);
 
         return new RateCardPricingBreakdown(
             unitPriceCredits,
             creditsCharged,
-            customerPriceVnd,
-            providerCostVnd,
-            marginVnd,
+            customerPriceUsd,
+            providerCostUsd,
+            marginUsd,
             marginRatio);
     }
 }
@@ -85,7 +87,7 @@ public static class RateCardPricingCalculator
 public sealed record RateCardPricingBreakdown(
     decimal UnitPriceCredits,
     decimal CreditsCharged,
-    decimal CustomerPriceVnd,
-    decimal ProviderCostVnd,
-    decimal MarginVnd,
+    decimal CustomerPriceUsd,
+    decimal ProviderCostUsd,
+    decimal MarginUsd,
     decimal MarginRatio);

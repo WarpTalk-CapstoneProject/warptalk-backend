@@ -6,9 +6,9 @@ namespace WarpTalk.BillingService.Application.DTOs;
 // G12 — internal management: operating costs and expenses. camelCase on the wire; these names ARE
 // the contract with warptalk-web src/types/admin-expenses.ts.
 //
-// Money: an expense keeps its own currency (VND or USD). Every VND figure below is converted at the
-// USD→VND rate of the expense's own date (subscription.fx_rates, like the Insights P&L) and is null
-// with a note when no rate exists. Months are "yyyy-MM", dates "yyyy-MM-dd".
+// Money: an expense keeps its own currency (USD or VND). Every *Usd figure below is in USD, the
+// accounting currency; a VND expense is converted at the USD→VND rate of its own date
+// (subscription.fx_rates, like the Insights P&L) and is null with a note when no rate exists. Months are "yyyy-MM", dates "yyyy-MM-dd".
 
 public sealed record ExpenseCategoryDto(
     Guid Id,
@@ -41,7 +41,7 @@ public sealed record OperatingExpenseDto(
     string? Description,
     decimal Amount,
     string Currency,
-    decimal? AmountVnd,
+    decimal? AmountUsd,
     decimal? FxRate,
     string? FxSource,
     DateOnly? FxRateDate,
@@ -67,7 +67,7 @@ public sealed record OperatingExpenseListDto(
     ExpenseTotalsDto Totals,
     string? FxNote);
 
-public sealed record ExpenseTotalsDto(int Count, decimal TotalVnd, decimal PaidVnd, decimal PlannedVnd, int Unconverted);
+public sealed record ExpenseTotalsDto(int Count, decimal TotalUsd, decimal PaidUsd, decimal PlannedUsd, int Unconverted);
 
 /// <summary>Create or replace an expense. <see cref="Recurrence"/> monthly|yearly makes it a series.</summary>
 public sealed record SaveOperatingExpenseRequest(
@@ -86,10 +86,10 @@ public sealed record SaveOperatingExpenseRequest(
 
 public sealed record MarkExpensePaidRequest(DateTime? PaidAt, string? PaidBy, string? PaymentMethod);
 
-public sealed record ExpenseBudgetDto(Guid CategoryId, string Month, decimal AmountVnd, string? Note);
+public sealed record ExpenseBudgetDto(Guid CategoryId, string Month, decimal AmountUsd, string? Note);
 
-/// <summary>One budget cell; <see cref="AmountVnd"/> null removes the budget of that (category, month).</summary>
-public sealed record ExpenseBudgetInput(Guid CategoryId, string Month, decimal? AmountVnd, string? Note);
+/// <summary>One budget cell; <see cref="AmountUsd"/> null removes the budget of that (category, month).</summary>
+public sealed record ExpenseBudgetInput(Guid CategoryId, string Month, decimal? AmountUsd, string? Note);
 
 public sealed record SaveExpenseBudgetsRequest(IReadOnlyList<ExpenseBudgetInput> Items);
 
@@ -106,27 +106,27 @@ public sealed record ExpenseReportDto(
     IReadOnlyList<ExpenseVendorTotalDto> TopVendors,
     IReadOnlyList<ExpenseCommitmentDto> Commitments,
     IReadOnlyList<ExpenseBudgetAlertDto> BudgetAlerts,
-    decimal TotalVnd,
-    decimal PaidVnd,
-    decimal PlannedVnd,
-    decimal MonthlyAverageVnd,
-    decimal RecurringMonthlyRunRateVnd,
+    decimal TotalUsd,
+    decimal PaidUsd,
+    decimal PlannedUsd,
+    decimal MonthlyAverageUsd,
+    decimal RecurringMonthlyRunRateUsd,
     int Unconverted,
     string? FxNote);
 
 public sealed record ExpenseReportMonthDto(
     string Month,
-    decimal TotalVnd,
-    decimal PaidVnd,
-    decimal PlannedVnd,
-    decimal? BudgetVnd,
+    decimal TotalUsd,
+    decimal PaidUsd,
+    decimal PlannedUsd,
+    decimal? BudgetUsd,
     IReadOnlyList<ExpenseMonthCategoryDto> Categories);
 
-public sealed record ExpenseMonthCategoryDto(Guid CategoryId, decimal AmountVnd, decimal? BudgetVnd, bool OverBudget);
+public sealed record ExpenseMonthCategoryDto(Guid CategoryId, decimal AmountUsd, decimal? BudgetUsd, bool OverBudget);
 
-public sealed record ExpenseCategoryTotalDto(Guid CategoryId, string Slug, string Name, string? Color, decimal AmountVnd, int Count, decimal? BudgetVnd);
+public sealed record ExpenseCategoryTotalDto(Guid CategoryId, string Slug, string Name, string? Color, decimal AmountUsd, int Count, decimal? BudgetUsd);
 
-public sealed record ExpenseVendorTotalDto(string Vendor, decimal AmountVnd, int Count, string? CategoryName);
+public sealed record ExpenseVendorTotalDto(string Vendor, decimal AmountUsd, int Count, string? CategoryName);
 
 /// <summary>A payment expected in the next 90 days: a planned row, or a projected occurrence of a series.</summary>
 public sealed record ExpenseCommitmentDto(
@@ -138,11 +138,11 @@ public sealed record ExpenseCommitmentDto(
     string CategoryName,
     decimal Amount,
     string Currency,
-    decimal? AmountVnd,
+    decimal? AmountUsd,
     string Recurrence,
     bool Projected);
 
-public sealed record ExpenseBudgetAlertDto(Guid CategoryId, string CategoryName, string Month, decimal BudgetVnd, decimal ActualVnd, decimal Percent, bool Over);
+public sealed record ExpenseBudgetAlertDto(Guid CategoryId, string CategoryName, string Month, decimal BudgetUsd, decimal ActualUsd, decimal Percent, bool Over);
 
 // ── P&L ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -192,7 +192,7 @@ public sealed record ExpenseImportRowDto(
     string? CategoryName,
     decimal? Amount,
     string? Currency,
-    decimal? AmountVnd,
+    decimal? AmountUsd,
     string? Status,
     string? PaymentMethod,
     string? PaidBy,
@@ -206,6 +206,6 @@ public sealed record ExpenseImportPreviewDto(
     IReadOnlyList<ExpenseImportRowDto> Rows,
     int ValidCount,
     int InvalidCount,
-    decimal TotalVnd);
+    decimal TotalUsd);
 
 public sealed record ExpenseImportResultDto(Guid BatchId, int Imported, int Skipped);

@@ -26,4 +26,10 @@ public interface IAssistantConversationService
     /// needs the ownership check but none of the conversation payload.
     /// </summary>
     Task<Result> AuthorizeConversationAccessAsync(Guid conversationId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Stop the reply <paramref name="messageId"/> while it is still being written. Idempotent: a
+    /// reply that already finished has nothing to stop and still answers success.
+    /// </summary>
+    Task<Result> StopReplyAsync(Guid conversationId, Guid messageId, Guid userId, CancellationToken ct = default);
 }

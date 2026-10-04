@@ -43,6 +43,32 @@ public interface IWorkspaceDocumentStorage
     Task<string> GetExtractedTextAsync(WorkspaceDocument document, CancellationToken ct = default);
 
     /// <summary>
+    /// Encrypts and saves the PII-masked copy of the document's current file. It is a file of the
+    /// SAME FORMAT as the original (a masked .docx for a .docx), stored next to it as
+    /// <c>{StorageKey}_masked{extension}</c>. Keyed by StorageKey, so a new revision never
+    /// inherits an older file's masked copy.
+    /// </summary>
+    Task SaveMaskedFileAsync(WorkspaceDocument document, Stream contentStream, CancellationToken ct = default);
+
+    /// <summary>
+    /// Decrypts the masked copy, or returns null when none exists for the current file. A copy
+    /// that exists but fails its integrity check throws: callers must treat that as "nothing to
+    /// serve", never as a reason to fall back to the original.
+    /// </summary>
+    Task<Stream?> GetMaskedFileStreamAsync(WorkspaceDocument document, CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether a masked copy exists for the current file, without decrypting it.
+    /// </summary>
+    Task<bool> MaskedFileExistsAsync(WorkspaceDocument document, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the masked copy of the current file, if any. Throws when the store refuses, so a
+    /// caller that must not leave a stale copy behind can tell.
+    /// </summary>
+    Task DeleteMaskedFileAsync(WorkspaceDocument document, CancellationToken ct = default);
+
+    /// <summary>
     /// Deletes the physical storage blob for a document, if it exists. Best-effort compensating
     /// action for callers that wrote the blob before a subsequent step (e.g. the DB insert) failed.
     /// </summary>

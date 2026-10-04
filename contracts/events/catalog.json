@@ -165,6 +165,20 @@
         "redis-pubsub"
       ],
       "schema": "v1/meeting-track-published.schema.json"
+    },
+    {
+      "event_type": "meeting.participant_joined",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "meeting-service",
+      "consumers": [
+        "ai-livekit-ingress.v1",
+        "ai-stt-prewarm.v1"
+      ],
+      "transports": [
+        "redis-pubsub"
+      ],
+      "schema": "v1/meeting-participant-joined.schema.json"
     }
   ],
   "planned_event_types": [

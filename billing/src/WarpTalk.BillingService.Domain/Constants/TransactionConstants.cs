@@ -41,6 +41,12 @@ public static class TransactionConstants
 
         /// <summary>An audited admin adjustment of an ended subscription's FROZEN credits.</summary>
         public const string FrozenCreditAdjustment = "frozen_credit_adjustment";
+
+        /// <summary>
+        /// WT-878: plan credits above the rollover cap, removed when a cycle renewed (cycle close or
+        /// Stripe renewal). The type is credit_forfeit; ReferenceId is the subscription.
+        /// </summary>
+        public const string CycleRollover = "cycle_rollover";
     }
 
     public static class TransactionTypes
@@ -55,7 +61,10 @@ public static class TransactionConstants
         /// <summary>Frozen credits moved back into a live subscription's spendable balance.</summary>
         public const string CreditUnfreeze = "credit_unfreeze";
 
-        /// <summary>Plan credits above the plan's rollover cap, removed when the subscription ended.</summary>
+        /// <summary>
+        /// Plan credits above the plan's rollover cap, removed when the subscription ended
+        /// (reference subscription_expiry) or when a cycle renewed (reference cycle_rollover).
+        /// </summary>
         public const string CreditForfeit = "credit_forfeit";
     }
 }

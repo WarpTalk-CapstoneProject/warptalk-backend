@@ -94,9 +94,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -163,7 +162,8 @@ public class SubscriptionService : ISubscriptionService
 
     public async Task<Result<SubscriptionDto>> CreateWorkspaceContractSubscriptionAsync(
         CreateWorkspaceContractSubscriptionRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? replaceLiveReason = null)
     {
         try
         {
@@ -180,7 +180,7 @@ public class SubscriptionService : ISubscriptionService
                 s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
                 cancellationToken);
 
-            if (existing is not null)
+            if (existing is not null && replaceLiveReason is null)
                 return Result.Failure<SubscriptionDto>(
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
                     ErrorCodes.BillingSubscriptionAlreadyActive);
@@ -195,6 +195,13 @@ public class SubscriptionService : ISubscriptionService
                     validation.ErrorCode);
 
             subscription.ApplyContractTerms(request.ContractTerms);
+
+            if (existing is not null)
+            {
+                var retire = await RetireLiveSubscriptionsAsync(request.WorkspaceId, replaceLiveReason!, cancellationToken);
+                if (!retire.IsSuccess)
+                    return Result.Failure<SubscriptionDto>(retire.Error!, retire.ErrorCode);
+            }
 
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -298,9 +305,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<bool>(
@@ -324,7 +330,18 @@ public class SubscriptionService : ISubscriptionService
                     ErrorCodes.BillingSubscriptionConflict);
             }
 
-            if (sub.TrialEndsAt != null)
+            // WT-878: Stripe is asked FIRST, and a refusal fails the whole call with the row left as
+            // it was. This used to save "cancelled" locally, then call Stripe and only log a
+            // warning when it failed — so the page said cancelled while the card kept being
+            // charged. Same order and same rule as the #466 auto-renew toggle
+            // (StripeSubscriptionLifecycleService.SetAutoRenewAsync), which this now mirrors.
+            var stripeFailure = await StopStripeRenewalAsync(sub, cancellationToken);
+            if (stripeFailure is not null)
+            {
+                return Result.Failure<bool>(stripeFailure.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, stripeFailure.ErrorCode);
+            }
+
+            if (sub.TrialEndsAt != null && !sub.IsStripeManaged)
             {
                 sub.CancelImmediately(reason);
             }
@@ -341,18 +358,6 @@ public class SubscriptionService : ISubscriptionService
                 cancellationToken);
 
             var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
-
-            // Call Stripe service to cancel Stripe Subscription
-            try
-            {
-                var cancelResult = await _stripePaymentService.CancelSubscriptionAsync(workspaceId, cancellationToken);
-                if (!cancelResult.IsSuccess)
-                    _logger.LogWarning(BillingMessageConstants.LogMessages.ErrorCancellingStripeSubscription, workspaceId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, BillingMessageConstants.LogMessages.ErrorCancellingStripeSubscription, workspaceId);
-            }
 
             await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
                 _messagePublisher,
@@ -372,6 +377,122 @@ public class SubscriptionService : ISubscriptionService
     }
 
     /// <summary>
+    /// WT-878: stop Stripe renewing this PLAN, before anything is written locally. Returns null
+    /// when Stripe agreed (or there is nothing in Stripe to stop), otherwise the failure to return.
+    ///
+    ///   * Stripe-managed (#466, <see cref="Subscription.IsStripeManaged"/>): <c>cancel_at_period_end</c>
+    ///     on the plan's own Stripe subscription, by its stored id. Never a metadata search — that
+    ///     also matched the workspace's add-on subscriptions and cancelled them with the plan.
+    ///   * Invoice (contract) rows: nothing in Stripe renews them.
+    ///   * Anything else (a card plan bought before #466 whose Stripe subscription was never linked,
+    ///     or a one-off purchase): the legacy search, now limited to plan subscriptions.
+    /// </summary>
+    private async Task<Result?> StopStripeRenewalAsync(Subscription sub, CancellationToken cancellationToken)
+    {
+        if (sub.RenewalMode == SubscriptionConstants.RenewalModes.Invoice && !sub.IsStripeManaged)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (sub.IsStripeManaged)
+            {
+                var updated = await _stripePaymentService.SetPlanSubscriptionCancelAtPeriodEndAsync(
+                    sub.StripeSubscriptionId!,
+                    cancelAtPeriodEnd: true,
+                    cancellationToken);
+                if (updated is null || !updated.IsSuccess)
+                {
+                    _logger.LogError(
+                        "legacy_cancel_stripe_failed WorkspaceId={WorkspaceId} StripeSubscription={StripeSubscriptionId} Error={Error}",
+                        sub.WorkspaceId, sub.StripeSubscriptionId, updated?.Error);
+                    return StripeFailure(updated?.Error);
+                }
+
+                if (!string.IsNullOrWhiteSpace(updated.Value))
+                {
+                    sub.StripeSubscriptionStatus = updated.Value;
+                }
+
+                return null;
+            }
+
+            var legacy = await _stripePaymentService.CancelSubscriptionAsync(sub.WorkspaceId, cancellationToken);
+            if (legacy is null || !legacy.IsSuccess)
+            {
+                _logger.LogError(
+                    "legacy_cancel_stripe_search_failed WorkspaceId={WorkspaceId} Error={Error}",
+                    sub.WorkspaceId, legacy?.Error);
+                return StripeFailure(legacy?.Error);
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCancellingStripeSubscription, sub.WorkspaceId);
+            return StripeFailure(null);
+        }
+    }
+
+    /// <summary>
+    /// WT-878: retire every live row of the workspace so a contract row can take the one live slot
+    /// (migration 016's unique index on is_active). Staged only: the caller's SaveChanges commits
+    /// it with the new row, the same deactivate-previous pattern as a plan change
+    /// (SubscriptionPaymentEventHandler.ActivateSubscriptionAsync).
+    ///
+    /// Stripe is asked FIRST, exactly as the legacy cancel does: a row Stripe would keep charging
+    /// is not retired, and the whole conversion fails with nothing changed locally.
+    ///
+    /// CREDITS: the retired row keeps its balance, and the frozen-credit sweep handles it as any
+    /// ended subscription. Purchased and granted credits are frozen and then released into the
+    /// new live (contract) row; plan-included credits follow the plan's rollover rule, with a
+    /// ledger row for anything forfeited (CreditFreezeService).
+    /// </summary>
+    private async Task<Result> RetireLiveSubscriptionsAsync(Guid workspaceId, string reason, CancellationToken cancellationToken)
+    {
+        var live = await _unitOfWork.SubscriptionRepository.FindAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        foreach (var row in live)
+        {
+            // Renewal already off (cancelled at period end, or auto-renew switched off) means
+            // Stripe has already been told; only a renewing row needs the call.
+            if (row.AutoRenew)
+            {
+                var stripeFailure = await StopStripeRenewalAsync(row, cancellationToken);
+                if (stripeFailure is not null)
+                    return stripeFailure;
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        foreach (var row in live)
+        {
+            row.IsActive = false;
+            row.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
+            row.AutoRenew = false;
+            row.CancelledAt ??= now;
+            row.CancellationReason ??= reason;
+            row.UpdatedAt = now;
+            _unitOfWork.SubscriptionRepository.Update(row);
+
+            _logger.LogInformation(
+                "subscription_retired_for_contract WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} CreditsRemaining={CreditsRemaining}",
+                workspaceId, row.Id, row.CreditsRemaining);
+        }
+
+        return Result.Success();
+    }
+
+    private static Result StripeFailure(string? error) =>
+        Result.Failure(
+            string.IsNullOrWhiteSpace(error) ? ApiMessageConstants.ErrorMessages.BillingInternalError : error,
+            ErrorCodes.BillingExternalServiceError);
+
+    /// <summary>
     /// WT-471: switch renewal back on for a subscription that was cancelled but has not expired.
     ///
     /// There was no way back into a plan from inside the product. Cancel existed, auto-renew was
@@ -385,11 +506,14 @@ public class SubscriptionService : ISubscriptionService
     /// would have refused every cancelled-but-healthy subscription with "AI service is not
     /// suspended", which is true and answers a question nobody asked.
     ///
-    /// Stripe is deliberately NOT called. CancelSubscriptionAsync cancels the Stripe subscription
-    /// as a side effect, and un-cancelling it is not a symmetric operation — the correct path there
-    /// is a new Checkout, which is what the period-ended branch below sends the caller to. This
-    /// endpoint restores the LOCAL renewal intent for the remainder of a period that is already
-    /// paid for; it never creates a charge.
+    /// WT-878: Stripe used to be deliberately NOT called here, on the reasoning that un-cancelling
+    /// was not symmetric. For a Stripe-managed plan it is: CancelSubscriptionAsync only sets
+    /// <c>cancel_at_period_end</c>, and leaving it set meant the page said "renews" while Stripe
+    /// deleted the subscription at period end. So a Stripe-managed row now clears it on the plan's
+    /// own Stripe subscription first, exactly like auto-renew ON (#466), and fails without a local
+    /// change if Stripe refuses. A row nothing can charge again (one-off purchase) is sent to
+    /// checkout, the same "requires checkout" rule the auto-renew toggle has. It still never
+    /// creates a charge: the period is already paid for.
     /// </summary>
     public async Task<Result<SubscriptionDto>> ReactivateSubscriptionAsync(
         Guid workspaceId,
@@ -397,9 +521,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             // A trial cancelled through CancelImmediately has IsActive = false, so it does not
             // match here and correctly reads as "nothing to reactivate" rather than being revived.
@@ -420,6 +543,49 @@ public class SubscriptionService : ISubscriptionService
                 return Result.Failure<SubscriptionDto>(
                     BillingMessageConstants.ApiErrorMessages.BillingSubscriptionPeriodAlreadyEnded,
                     ErrorCodes.BillingSubscriptionConflict);
+
+            // WT-878: the same rules as auto-renew ON (StripeSubscriptionLifecycleService.SetAutoRenewAsync).
+            if (sub.IsStripeManaged)
+            {
+                if (sub.StripeSubscriptionStatus is { } stripeStatus
+                    && SubscriptionConstants.StripeSubscriptionStatuses.Ended.Contains(stripeStatus))
+                {
+                    return Result.Failure<SubscriptionDto>(
+                        StripeSubscriptionLifecycleService.StripeSubscriptionEndedMessage,
+                        StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutCode);
+                }
+
+                // Stripe first: cancel_at_period_end=true is still set there from the cancel, and
+                // leaving it would have Stripe end the subscription at period end while this page
+                // says "renews". If Stripe refuses, nothing changes here.
+                var resumed = await _stripePaymentService.SetPlanSubscriptionCancelAtPeriodEndAsync(
+                    sub.StripeSubscriptionId!,
+                    cancelAtPeriodEnd: false,
+                    cancellationToken);
+                if (resumed is null || !resumed.IsSuccess)
+                {
+                    _logger.LogError(
+                        "legacy_reactivate_stripe_failed WorkspaceId={WorkspaceId} StripeSubscription={StripeSubscriptionId} Error={Error}",
+                        workspaceId, sub.StripeSubscriptionId, resumed?.Error);
+                    return Result.Failure<SubscriptionDto>(
+                        string.IsNullOrWhiteSpace(resumed?.Error) ? ApiMessageConstants.ErrorMessages.BillingInternalError : resumed.Error,
+                        ErrorCodes.BillingExternalServiceError);
+                }
+
+                if (!string.IsNullOrWhiteSpace(resumed.Value))
+                {
+                    sub.StripeSubscriptionStatus = resumed.Value;
+                }
+            }
+            else if (sub.RenewalMode != SubscriptionConstants.RenewalModes.Invoice)
+            {
+                // A one-off card purchase (or a pre-#466 plan whose Stripe subscription was never
+                // linked): nothing here can charge it again, so "renews" cannot be promised by
+                // flipping a flag. That needs a new checkout with auto-renew on.
+                return Result.Failure<SubscriptionDto>(
+                    StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutMessage,
+                    StripeSubscriptionLifecycleService.AutoRenewRequiresCheckoutCode);
+            }
 
             sub.Reactivate();
             _unitOfWork.SubscriptionRepository.Update(sub);
@@ -452,16 +618,46 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
+    /// <summary>Returned when a workspace Owner/Admin asks /resume to lift a suspension that is not theirs to lift.</summary>
+    public const string ResumeNotAllowedCode = "BILLING_RESUME_NOT_ALLOWED";
+
+    public const string ResumeTrialEndedMessage =
+        "The trial has ended. Choose a plan to resume the service.";
+
+    public const string ResumeInvoiceOverdueMessage =
+        "An invoice is overdue. Pay it to resume the service.";
+
+    public const string ResumeOtherReasonMessage =
+        "This suspension can only be lifted by WarpTalk support.";
+
+    public const string ResumeStillOverCapMessage =
+        "The workspace is still over its overage cap. Add credits or raise the cap before resuming.";
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// WT-878: reason-scoped. This endpoint cleared ANY suspension for a workspace Owner/Admin —
+    /// <c>trial_ended</c> and <c>invoice_overdue</c> included — and usage settlement then charged
+    /// the workspace until the hourly sweep suspended it again, repeatably. A workspace may now lift
+    /// only <c>overage_cap</c>, and only when there is room again (credits left, or overage used
+    /// below the effective cap — the rule UpdateContractTermsAsync uses to auto-resume). Every
+    /// other reason has its own way out: a plan checkout for a trial, paying the invoice (the
+    /// invoice-payment handler lifts it), or support.
+    ///
+    /// <paramref name="liftAnyReason"/> is for platform staff holding
+    /// billing.subscriptions_manage (the controller decides, from the staff resolver): they keep
+    /// the unrestricted resume they always had, as do the dedicated admin actions
+    /// (AdminWorkspaceBillingService: extend trial, comp period, mark invoice paid).
+    /// </remarks>
     public async Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(
         Guid workspaceId,
         ResumeSubscriptionRequest request,
+        bool liftAnyReason = false,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -472,6 +668,18 @@ public class SubscriptionService : ISubscriptionService
                 return Result.Failure<SubscriptionDto>(
                     BillingMessageConstants.ApiErrorMessages.BillingAiServiceNotSuspended,
                     ErrorCodes.BillingSubscriptionConflict);
+
+            if (!liftAnyReason)
+            {
+                var refusal = await WorkspaceMayLiftAsync(sub, cancellationToken);
+                if (refusal is not null)
+                {
+                    _logger.LogWarning(
+                        "resume_refused WorkspaceId={WorkspaceId} SubscriptionId={SubscriptionId} SuspendedReason={SuspendedReason}",
+                        workspaceId, sub.Id, sub.SuspendedReason);
+                    return Result.Failure<SubscriptionDto>(refusal, ResumeNotAllowedCode);
+                }
+            }
 
             sub.ResumeAiService();
             _unitOfWork.SubscriptionRepository.Update(sub);
@@ -512,6 +720,28 @@ public class SubscriptionService : ISubscriptionService
             _logger.LogError(ex, "Failed to resume billing AI service. WorkspaceId={WorkspaceId}", workspaceId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>WT-878: null when a workspace Owner/Admin may lift this suspension, otherwise why not.</summary>
+    private async Task<string?> WorkspaceMayLiftAsync(Subscription sub, CancellationToken cancellationToken)
+    {
+        switch (sub.SuspendedReason)
+        {
+            case SubscriptionConstants.SuspendedReasons.OverageCap:
+                break;
+            case SubscriptionConstants.SuspendedReasons.TrialEnded:
+                return ResumeTrialEndedMessage;
+            case SubscriptionConstants.SuspendedReasons.InvoiceOverdue:
+                return ResumeInvoiceOverdueMessage;
+            default:
+                return ResumeOtherReasonMessage;
+        }
+
+        var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
+        var effectiveCap = sub.OverageCapCreditsOverride ?? plan?.OverageCapCredits ?? 0;
+        return sub.CreditsRemaining > 0 || sub.OverageCreditsThisCycle < effectiveCap
+            ? null
+            : ResumeStillOverCapMessage;
     }
 
     /// <summary>What the workspace's billing page shows about running past zero credits.</summary>
@@ -595,9 +825,8 @@ public class SubscriptionService : ISubscriptionService
         // This finds the subscription to bill or credit, not the one that grants plan quotas — a
         // cancelled subscription still inside its paid period keeps its credits until the period
         // ends, so narrowing this to the entitlement test would take money handling with it.
-        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-            cancellationToken);
+        var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+            workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
         if (sub is null)
             return (null, null, Result.Failure<T>(
@@ -621,9 +850,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -683,9 +911,8 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(
+                workspaceId, includePlan: false, cancellationToken: cancellationToken);
 
             if (sub is null)
                 return Result.Failure<SubscriptionDto>(
@@ -766,7 +993,7 @@ public class SubscriptionService : ISubscriptionService
         PricingConfigDto? pricingConfig)
     {
         if (request.CreditsPerCycleOverride is <= 0 ||
-            request.ContractPriceVnd is < 0 ||
+            request.ContractPriceUsd is < 0 ||
             request.OverageCapCreditsOverride is < 0 ||
             request.OveragePricePerCreditOverride is < 0 ||
             request.InvoiceTermsDaysOverride is <= 0)
@@ -779,10 +1006,14 @@ public class SubscriptionService : ISubscriptionService
         var currentCreditsPerCycle = subscription.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
         var currentOverageCap = subscription.OverageCapCreditsOverride ?? plan.OverageCapCredits;
         var nextCreditsPerCycle = request.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
-        var nextContractPrice = request.ContractPriceVnd ?? plan.Price;
+        // The floor is USD per credit, so it only judges a price that is in USD: a negotiated contract
+        // price always is; without one the cycle costs the plan's price in the plan's currency.
+        var nextContractPrice = request.ContractPriceUsd ?? plan.Price;
+        var nextContractPriceIsUsd = request.ContractPriceUsd is not null ||
+            string.Equals(plan.Currency?.Trim(), PaymentConstants.Currencies.UsdAccounting, StringComparison.OrdinalIgnoreCase);
         var nextOverageCap = request.OverageCapCreditsOverride ?? plan.OverageCapCredits;
         var nextOveragePrice = request.OveragePricePerCreditOverride ?? plan.OveragePricePerCredit;
-        var minimumPricePerCreditVnd = pricingConfig?.MinimumPricePerCreditVnd ?? SubscriptionConstants.PlanDefaults.PriceFloorPerCredit;
+        var minimumPricePerCreditUsd = pricingConfig?.MinimumPricePerCreditUsd ?? SubscriptionConstants.PlanDefaults.PriceFloorPerCreditUsd;
 
         if (!string.IsNullOrWhiteSpace(request.BillingContactEmail) && !IsValidEmail(request.BillingContactEmail))
         {
@@ -791,8 +1022,9 @@ public class SubscriptionService : ISubscriptionService
                 ErrorCodes.ValidationError);
         }
 
-        if (nextCreditsPerCycle > 0 &&
-            nextContractPrice / nextCreditsPerCycle < minimumPricePerCreditVnd)
+        if (nextContractPriceIsUsd &&
+            nextCreditsPerCycle > 0 &&
+            nextContractPrice / nextCreditsPerCycle < minimumPricePerCreditUsd)
         {
             return Result.Failure(
                 BillingMessageConstants.ApiErrorMessages.BillingContractPriceBelowFloor,

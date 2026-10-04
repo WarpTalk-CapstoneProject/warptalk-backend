@@ -67,6 +67,14 @@ public static class WorkspaceConstants
         public const string UserNotFound = "User not found.";
         public const string InvalidUserEmail = "Invalid user email.";
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";
+
+        /// <summary>
+        /// Said to the Owner or Admin at invite time, not to the invitee at acceptance. The
+        /// acceptance-side wording (<see cref="UserAlreadyInternalElsewhere"/>) names a
+        /// constraint the invitee cannot act on; this one names the way out, and the person
+        /// reading it is the one who can take it.
+        /// </summary>
+        public const string InviteeAlreadyInternalElsewhere = "This person is already an internal member of another Enterprise Workspace, so they cannot join this one as Internal. Invite them as an External member instead.";
         public const string UserAlreadyOwnsWorkspace = "You already own a workspace. Each account may own only one — join other workspaces as a member instead.";
         public const string DomainRegisteredElsewhere = "This email belongs to a corporate domain registered with another workspace.";
         public const string CannotVerifyPublicDomain = "Cannot verify public domains (like Gmail, Yahoo, etc.) for a workspace.";
@@ -203,6 +211,8 @@ public static class WorkspaceConstants
         public const string AccessDeniedPendingIngestion = "Access denied. Document ingestion is pending.";
         public const string AccessDeniedByPolicy = "Access denied by policy (DENY).";
         public const string AccessDeniedSensitive = "Access denied. Sensitive document.";
+        public const string AccessDeniedOriginalContent = "Access denied. Only the masked version of this document is available to you.";
+        public const string MaskedVersionNotFound = "This document has no masked version.";
         public const string AccessDeniedDefault = "Access denied. Default action blocks access.";
         public const string AccessDeniedPrivate = "Access denied. This document is private.";
         public const string DocumentNotAiEligible = "This document is not available to WarpBot. It is pending approval, rejected, private, restricted, or AI use is turned off for it.";

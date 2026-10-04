@@ -38,7 +38,7 @@ public class UsageSettlementMapperTests
         settlement.ReferenceType.Should().Be(TransactionConstants.ReferenceTypes.UsageRecord);
         settlement.TranslationRoomId.Should().Be(roomId);
         settlement.TranscriptSegmentId.Should().Be(segmentId);
-        settlement.Currency.Should().Be(PaymentConstants.Currencies.VndAccounting);
+        settlement.Currency.Should().Be(PaymentConstants.Currencies.UsdAccounting);
         settlement.IdempotencyKey.Should().StartWith("USAGE:");
     }
 
@@ -88,7 +88,7 @@ public class UsageSettlementMapperTests
         settlement.CreditsConsumed.Should().Be(5);
         settlement.PricingRateCardId.Should().Be(pricingRateId);
         settlement.UnitPriceSnapshot.Should().Be(0.1m);
-        settlement.Currency.Should().Be(PaymentConstants.Currencies.VndAccounting);
+        settlement.Currency.Should().Be(PaymentConstants.Currencies.UsdAccounting);
         settlement.IdempotencyKey.Should().StartWith("AGG:");
     }
 

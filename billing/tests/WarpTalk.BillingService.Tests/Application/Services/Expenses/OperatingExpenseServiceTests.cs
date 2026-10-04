@@ -107,7 +107,7 @@ public sealed class OperatingExpenseServiceTests
     }
 
     private static SaveOperatingExpenseRequest Request(
-        Guid category, decimal amount, string currency = "VND", DateOnly? date = null, string? status = null,
+        Guid category, decimal amount, string currency = "USD", DateOnly? date = null, string? status = null,
         string? recurrence = null, string vendor = "GitHub")
         => new(date ?? new DateOnly(2026, 9, 10), vendor, category, null, amount, currency, "company_card", status, "Tú",
             ["infra", "Infra"], recurrence, null);
@@ -117,20 +117,20 @@ public sealed class OperatingExpenseServiceTests
     [Fact]
     public async Task A_vnd_amount_with_decimals_and_a_retired_category_are_refused()
     {
-        (await _service.CreateExpenseAsync(Request(_saas.Id, 10.5m), Actor)).ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        (await _service.CreateExpenseAsync(Request(_saas.Id, 10.5m, "VND"), Actor)).ErrorCode.Should().Be(ErrorCodes.ValidationError);
         (await _service.CreateExpenseAsync(Request(_retired.Id, 100m), Actor)).Error.Should().Contain("retired");
-        (await _service.CreateExpenseAsync(Request(_saas.Id, 100m, "EUR"), Actor)).Error.Should().Contain("VND or USD");
+        (await _service.CreateExpenseAsync(Request(_saas.Id, 100m, "EUR"), Actor)).Error.Should().Contain("USD or VND");
         _expenses.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task A_usd_expense_is_converted_at_the_rate_of_its_own_date()
+    public async Task A_vnd_expense_is_converted_at_the_rate_of_its_own_date()
     {
-        var august = await _service.CreateExpenseAsync(Request(_saas.Id, 10m, "USD", new DateOnly(2026, 8, 15)), Actor);
-        var september = await _service.CreateExpenseAsync(Request(_saas.Id, 10m, "USD", new DateOnly(2026, 9, 15)), Actor);
+        var august = await _service.CreateExpenseAsync(Request(_saas.Id, 250_000m, "VND", new DateOnly(2026, 8, 15)), Actor);
+        var september = await _service.CreateExpenseAsync(Request(_saas.Id, 260_000m, "VND", new DateOnly(2026, 9, 15)), Actor);
 
-        august.Value!.AmountVnd.Should().Be(250_000m);
-        september.Value!.AmountVnd.Should().Be(260_000m);
+        august.Value!.AmountUsd.Should().Be(10m);
+        september.Value!.AmountUsd.Should().Be(10m);
         september.Value.FxRate.Should().Be(26_000m);
         september.Value.Tags.Should().Equal("infra");
         september.Value.PaidAt.Should().NotBeNull("recorded as paid by default, on its own date");
@@ -176,19 +176,19 @@ public sealed class OperatingExpenseServiceTests
     [Fact]
     public async Task The_report_totals_by_month_flags_over_budget_and_projects_commitments()
     {
-        await _service.CreateExpenseAsync(Request(_saas.Id, 2_000_000m, date: new DateOnly(2026, 9, 3)), Actor);
-        await _service.CreateExpenseAsync(Request(_saas.Id, 10m, "USD", new DateOnly(2026, 8, 3), vendor: "Linear"), Actor);
-        await _service.CreateExpenseAsync(Request(_servers.Id, 1_000_000m, date: new DateOnly(2026, 9, 20), recurrence: "monthly", vendor: "Vietnix"), Actor);
-        await _service.SaveBudgetsAsync(new SaveExpenseBudgetsRequest([new ExpenseBudgetInput(_saas.Id, "2026-09", 1_500_000m, null)]), Actor);
+        await _service.CreateExpenseAsync(Request(_saas.Id, 80m, date: new DateOnly(2026, 9, 3)), Actor);
+        await _service.CreateExpenseAsync(Request(_saas.Id, 250_000m, "VND", new DateOnly(2026, 8, 3), vendor: "Linear"), Actor);
+        await _service.CreateExpenseAsync(Request(_servers.Id, 40m, date: new DateOnly(2026, 9, 20), recurrence: "monthly", vendor: "Vietnix"), Actor);
+        await _service.SaveBudgetsAsync(new SaveExpenseBudgetsRequest([new ExpenseBudgetInput(_saas.Id, "2026-09", 60m, null)]), Actor);
 
         var report = (await _service.GetReportAsync("2026-08", "2026-09")).Value!;
 
-        report.Months.Select(m => m.TotalVnd).Should().Equal(250_000m, 3_000_000m);
+        report.Months.Select(m => m.TotalUsd).Should().Equal(10m, 120m);
         var september = report.Months[1];
         september.Categories.Single(c => c.CategoryId == _saas.Id).OverBudget.Should().BeTrue();
         report.BudgetAlerts.Should().ContainSingle(a => a.Over && a.Month == "2026-09" && a.Percent == 133.3m);
         report.TopVendors[0].Vendor.Should().Be("GitHub");
-        report.RecurringMonthlyRunRateVnd.Should().Be(1_000_000m);
+        report.RecurringMonthlyRunRateUsd.Should().Be(40m);
         // Oct 20, Nov 20 and Dec 20 fall within 90 days of Sep 25.
         report.Commitments.Where(c => c.Projected).Select(c => c.DueDate)
             .Should().Equal(new DateOnly(2026, 10, 20), new DateOnly(2026, 11, 20), new DateOnly(2026, 12, 20));
@@ -197,24 +197,24 @@ public sealed class OperatingExpenseServiceTests
     [Fact]
     public async Task The_pnl_subtracts_operating_expenses_from_gross_margin_per_month()
     {
-        await _service.CreateExpenseAsync(Request(_saas.Id, 1_000_000m, date: new DateOnly(2026, 9, 3)), Actor);
+        await _service.CreateExpenseAsync(Request(_saas.Id, 40m, date: new DateOnly(2026, 9, 3)), Actor);
         _insights.Setup(i => i.GetProfitAndLossAsync(It.IsAny<AdminInsightsQuery>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(Pnl(
-                Day("2026-08-10", revenue: 5_000_000m, cost: 1_000_000m),
-                Day("2026-09-10", revenue: 3_000_000m, cost: 500_000m),
-                Day("2026-09-11", revenue: 1_000_000m, cost: null))));
+                Day("2026-08-10", revenue: 200m, cost: 40m),
+                Day("2026-09-10", revenue: 120m, cost: 20m),
+                Day("2026-09-11", revenue: 40m, cost: null))));
 
         var pnl = (await _service.GetProfitAndLossAsync("2026-08", "2026-09", "Asia/Ho_Chi_Minh")).Value!;
 
-        pnl.Months[0].NetResult.Should().Be(4_000_000m);
+        pnl.Months[0].NetResult.Should().Be(160m);
         var september = pnl.Months[1];
-        september.Revenue.Should().Be(4_000_000m);
-        september.AiCost.Should().Be(500_000m, "a day without a reconstructable cost is left out, and the P&L's note says so");
-        september.GrossMargin.Should().Be(3_500_000m);
-        september.OperatingExpenses.Should().Be(1_000_000m);
-        september.NetResult.Should().Be(2_500_000m);
+        september.Revenue.Should().Be(160m);
+        september.AiCost.Should().Be(20m, "a day without a reconstructable cost is left out, and the P&L's note says so");
+        september.GrossMargin.Should().Be(140m);
+        september.OperatingExpenses.Should().Be(40m);
+        september.NetResult.Should().Be(100m);
         september.NetMarginPercent.Should().Be(62.5m);
-        pnl.Total.NetResult.Should().Be(6_500_000m);
+        pnl.Total.NetResult.Should().Be(260m);
     }
 
     private static AdminPnlPeriodDto Day(string key, decimal? revenue, decimal? cost)
@@ -229,7 +229,7 @@ public sealed class OperatingExpenseServiceTests
     [Fact]
     public async Task Import_previews_every_row_refuses_errors_and_commits_only_valid_rows_when_asked()
     {
-        await _service.CreateExpenseAsync(Request(_saas.Id, 300_000m, date: new DateOnly(2026, 9, 1), vendor: "Canva"), Actor);
+        await _service.CreateExpenseAsync(Request(_saas.Id, 300_000m, "VND", new DateOnly(2026, 9, 1), vendor: "Canva"), Actor);
         const string csv = "date,vendor,category,amount,currency,status\n"
                            + "2026-09-01,Canva,saas,300000,VND,paid\n"
                            + "2026-09-02,OpenAI,provider_plans,50,USD,paid\n"

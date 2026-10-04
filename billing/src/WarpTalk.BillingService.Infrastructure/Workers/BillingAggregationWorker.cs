@@ -170,7 +170,7 @@ public class BillingAggregationWorker : BackgroundService
                     var rateResult = await rateCardResolver.ResolveRateCardAsync(
                         log.ChargeType,
                         log.Unit,
-                        PaymentConstants.Currencies.VndAccounting,
+                        PaymentConstants.Currencies.UsdAccounting,
                         log.SourceLanguageCode,
                         log.TargetLanguageCode,
                         stoppingToken);

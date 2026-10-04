@@ -36,7 +36,6 @@ public sealed record AdminProviderTodayDto(
     string UsageUnit,
     decimal? Usage,
     decimal? CostUsd,
-    decimal? CostVnd,
     string? UsageNote,
     string? CostNote);
 
@@ -75,7 +74,7 @@ public sealed record AdminProviderConfigItemDto(string Key, string Label, string
 public sealed record AdminProviderBucketDto(string Key, DateTime Start, DateTime End, bool Future);
 
 /// <summary>
-/// One metric over the buckets. <paramref name="Unit"/>: count | credits | providerCredits | usd | vnd | percent | ms | minutes.
+/// One metric over the buckets. <paramref name="Unit"/>: count | credits | providerCredits | usd | percent | ms | minutes.
 /// A null value is "not tracked in that bucket" (before tracking began, a source that failed, still to come).
 /// </summary>
 public sealed record AdminProviderMetricSeriesDto(
@@ -104,7 +103,6 @@ public sealed record AdminProviderBreakdownItemDto(
     decimal Value,
     decimal? Share,
     decimal? CostUsd,
-    decimal? CostVnd,
     long? Calls,
     long? Failures);
 

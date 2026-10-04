@@ -64,8 +64,8 @@ public static class PaymentMapper
             SubscriptionId = request.SubscriptionId ?? Guid.Empty,
             UserId = request.UserId,
             Amount = request.Amount,
-            TaxAmount = 0m,
-            TotalAmount = request.Amount,
+            TaxAmount = request.TaxAmount,
+            TotalAmount = request.Amount + request.TaxAmount,
             Currency = request.Currency ?? PaymentConstants.Currencies.Usd,
             PaymentMethod = PaymentConstants.PaymentMethods.Card,
             Provider = PaymentConstants.Providers.Stripe,
@@ -91,7 +91,7 @@ public static class PaymentMapper
             Amount = request.Subtotal,
             TaxAmount = request.Tax,
             TotalAmount = request.Total,
-            // The charge's currency, not the plan's: a contract price is VND on any plan.
+            // The charge's currency, not the plan's: a contract price is USD on any plan.
             Currency = request.Currency,
             PaymentMethod = PaymentConstants.PaymentMethods.Invoice,
             Provider = PaymentConstants.Providers.InternalInvoice,

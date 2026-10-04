@@ -1,5 +1,6 @@
 using System.Text.Json;
 using WarpTalk.AssistantService.Application.DTOs;
+using WarpTalk.AssistantService.Application.Helpers;
 using WarpTalk.AssistantService.Domain.Constants;
 using WarpTalk.AssistantService.Domain.Entities;
 
@@ -28,11 +29,15 @@ internal static class PluginDefinitionMapper
         //     what lets a tool run without a confirmation card. McpToolGateway already ignores the
         //     hint for such a row; this also covers manifests synced before it did.
         var isPrivate = plugin.OwnerWorkspaceId is not null;
+        //   - Parameters, bounded (ToolSchemaDepth). A provider's schema can nest deeper than the
+        //     API can serialise once the catalog has wrapped it; Notion's did, and took every
+        //     user's Plugins page and WarpBot's plugin tools down with it.
         var tools = stored
             .Select(tool => tool with
             {
                 PluginKey = plugin.PluginKey,
                 Effect = isPrivate ? PluginConstants.ToolEffect.Write : tool.Effect,
+                Parameters = ToolSchemaDepth.Clamp(tool.Parameters),
             })
             .ToList();
 

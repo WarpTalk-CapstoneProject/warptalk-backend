@@ -77,7 +77,8 @@ public class SubscriptionPeriodEndTests
             StripeSessionId: "cs_test_wt524",
             PaymentIntentId: "pi_test",
             Amount: 200_000m,
-            Currency: PaymentConstants.Currencies.Vnd,
+            // The plan below states no currency, so it is priced in the default: USD.
+            Currency: PaymentConstants.Currencies.Usd,
             UserIdStr: _userId.ToString(),
             WorkspaceIdStr: _workspaceId.ToString(),
             PaymentType: PaymentConstants.PaymentTypes.Subscription,

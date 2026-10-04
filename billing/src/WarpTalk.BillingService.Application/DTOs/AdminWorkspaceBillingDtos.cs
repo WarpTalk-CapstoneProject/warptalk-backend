@@ -14,7 +14,7 @@ namespace WarpTalk.BillingService.Application.DTOs;
 // platform audit log BEFORE it is saved; an action the audit log refuses is not made.
 
 /// <summary>
-/// A money figure in VND. <paramref name="Amount"/> is null — never a fabricated 0 — when it cannot
+/// A money figure in USD (<paramref name="Currency"/> says so). <paramref name="Amount"/> is null — never a fabricated 0 — when it cannot
 /// be computed, and <paramref name="Note"/> then says why.
 /// </summary>
 public sealed record AdminWorkspaceMoneyDto(decimal? Amount, string Currency, string? Note);

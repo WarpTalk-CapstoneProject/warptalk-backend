@@ -14,7 +14,7 @@ namespace WarpTalk.BillingService.Application.Mappers;
 
 public static class SubscriptionMapper
 {
-    public static SubscriptionDto ToDto(this Subscription sub, string planName, decimal price) => new(
+    public static SubscriptionDto ToDto(this Subscription sub, string planName, decimal price, string? planCurrency = null) => new(
         sub.Id,
         sub.UserId,
         sub.WorkspaceId,
@@ -31,7 +31,7 @@ public static class SubscriptionMapper
         sub.CreatedAt,
         sub.CancelledAt,
         CreditsPerCycleOverride: sub.CreditsPerCycleOverride,
-        ContractPriceVnd: sub.ContractPriceVnd,
+        ContractPriceUsd: sub.ContractPriceUsd,
         OverageCapCreditsOverride: sub.OverageCapCreditsOverride,
         OveragePricePerCreditOverride: sub.OveragePricePerCreditOverride,
         InvoiceTermsDaysOverride: sub.InvoiceTermsDaysOverride,
@@ -40,8 +40,12 @@ public static class SubscriptionMapper
         OverageStartedAt: sub.OverageStartedAt,
         ServiceState: sub.ServiceState,
         SuspendedReason: sub.SuspendedReason,
-        TrialEndsAt: sub.TrialEndsAt
+        TrialEndsAt: sub.TrialEndsAt,
+        PlanCurrency: NormalizeCurrency(planCurrency ?? sub.Plan?.Currency)
     );
+
+    private static string NormalizeCurrency(string? currency) =>
+        string.IsNullOrWhiteSpace(currency) ? PaymentConstants.Currencies.UsdAccounting : currency.Trim().ToUpperInvariant();
 
     public static SubscriptionDto ToDto(this Subscription sub, Plan plan) => new(
         sub.Id,
@@ -60,13 +64,17 @@ public static class SubscriptionMapper
         sub.CreatedAt,
         sub.CancelledAt,
         CreditsPerCycleOverride: sub.CreditsPerCycleOverride,
-        ContractPriceVnd: sub.ContractPriceVnd,
+        ContractPriceUsd: sub.ContractPriceUsd,
         OverageCapCreditsOverride: sub.OverageCapCreditsOverride,
         OveragePricePerCreditOverride: sub.OveragePricePerCreditOverride,
         InvoiceTermsDaysOverride: sub.InvoiceTermsDaysOverride,
         BillingContactEmail: sub.BillingContactEmail,
         EffectiveCreditsPerCycle: sub.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
-        EffectiveContractPriceVnd: sub.ContractPriceVnd ?? plan.Price,
+        PlanCurrency: NormalizeCurrency(plan.Currency),
+        EffectiveContractPrice: sub.ContractPriceUsd ?? plan.Price,
+        EffectiveContractCurrency: sub.ContractPriceUsd is not null
+            ? PaymentConstants.Currencies.UsdAccounting
+            : (string.IsNullOrWhiteSpace(plan.Currency) ? PaymentConstants.Currencies.UsdAccounting : plan.Currency.Trim().ToUpperInvariant()),
         EffectiveOverageCapCredits: sub.OverageCapCreditsOverride ?? plan.OverageCapCredits,
         EffectiveOveragePricePerCredit: sub.OveragePricePerCreditOverride ?? plan.OveragePricePerCredit,
         EffectiveInvoiceTermsDays: sub.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays,
@@ -77,12 +85,27 @@ public static class SubscriptionMapper
         TrialEndsAt: sub.TrialEndsAt
     );
 
+    /// <summary>
+    /// Cancel at period end: renewal off, the plan stays in force until <c>CurrentPeriodEnd</c>.
+    ///
+    /// WT-878: this used to also set <c>Status = cancelled</c>. <see cref="Subscription.GrantsPlanEntitlements"/>
+    /// requires <c>Status == active</c>, so the workspace fell to the platform floor the moment it
+    /// cancelled, weeks before the period it had paid for ended — while the product (and Stripe)
+    /// promise the plan runs to the end. The Status is therefore left alone; "cancelled at period
+    /// end" is <c>AutoRenew == false</c>, exactly what the #466 auto-renew-off path writes
+    /// (StripeSubscriptionLifecycleService.ApplyAutoRenew), and what <c>CancelAtPeriodEnd</c> on
+    /// the wire already reads (<c>!AutoRenew</c>).
+    ///
+    /// Nothing else is needed for the period end: SubscriptionOwnership.DueForExpiry takes an
+    /// active row whose period has ended unless an owner may still renew it, and both of those
+    /// exclusions (invoice cycle close, Stripe renewal) require <c>AutoRenew</c>. So the expiry
+    /// sweep ends the row — IsActive false, Status expired — at <c>CurrentPeriodEnd</c>.
+    /// </summary>
     public static void Cancel(this Subscription sub, string? reason)
     {
         var now = DateTime.UtcNow;
         sub.CancellationReason = reason;
         sub.AutoRenew = false;
-        sub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
         sub.UpdatedAt = now;
     }
 
@@ -133,7 +156,7 @@ public static class SubscriptionMapper
     public static void ApplyContractTerms(this Subscription sub, UpdateSubscriptionContractTermsRequest request)
     {
         sub.CreditsPerCycleOverride = request.CreditsPerCycleOverride;
-        sub.ContractPriceVnd = request.ContractPriceVnd;
+        sub.ContractPriceUsd = request.ContractPriceUsd;
         sub.OverageCapCreditsOverride = request.OverageCapCreditsOverride;
         sub.OveragePricePerCreditOverride = request.OveragePricePerCreditOverride;
         sub.InvoiceTermsDaysOverride = request.InvoiceTermsDaysOverride;
@@ -186,7 +209,7 @@ public static class SubscriptionMapper
             CreditsUsedThisCycle = 0,
             CreditsPerCycleOverride = credits,
             OverageCapCreditsOverride = SubscriptionConstants.TrialDefaults.OverageCapCredits,
-            ContractPriceVnd = null,
+            ContractPriceUsd = null,
             TrialEndsAt = trialEnd,
             OwnerEmailDomain = ownerDomain,
             BillingContactEmail = request.OwnerEmail.Trim(),
@@ -214,7 +237,12 @@ public static class SubscriptionMapper
             Status = SubscriptionConstants.SubscriptionStatuses.Active,
             CreditsRemaining = request.ContractTerms.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
             CreditsPerCycleOverride = request.ContractTerms.CreditsPerCycleOverride,
-            ContractPriceVnd = request.ContractTerms.ContractPriceVnd ?? plan.Price,
+            // A contract price is USD. Defaulting it to the plan's price is only honest when the plan is
+            // priced in USD too; a VND plan without a negotiated price bills at its own price instead.
+            ContractPriceUsd = request.ContractTerms.ContractPriceUsd
+                ?? (string.Equals(plan.Currency?.Trim(), PaymentConstants.Currencies.UsdAccounting, StringComparison.OrdinalIgnoreCase)
+                    ? plan.Price
+                    : null),
             OverageCapCreditsOverride = request.ContractTerms.OverageCapCreditsOverride,
             OveragePricePerCreditOverride = request.ContractTerms.OveragePricePerCreditOverride,
             InvoiceTermsDaysOverride = request.ContractTerms.InvoiceTermsDaysOverride,

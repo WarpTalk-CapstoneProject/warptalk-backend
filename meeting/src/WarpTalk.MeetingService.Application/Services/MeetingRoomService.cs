@@ -92,7 +92,7 @@ public class MeetingRoomService : IMeetingRoomService
         // EXPIRED belongs with these (WT-714): a booking nobody attended is now moved there by the
         // booking sweep instead of sitting in SCHEDULED, and a terminal status that still let
         // people in would be a room the translation service considers over accepting joins.
-        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED" || roomDetails.Status == "EXPIRED")
+        if (TranslationRoomStatuses.IsEnded(roomDetails.Status))
         {
             return Result.Failure<JoinMeetingResponse>("This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
@@ -109,44 +109,8 @@ public class MeetingRoomService : IMeetingRoomService
         await _unitOfWork.BeginTransactionAsync();
         try
         {
-            // 2. Provision / Get Meeting Room
-            var meetingRoom = await _unitOfWork.MeetingRoomRepository
-                .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
-
-            if (meetingRoom == null)
-            {
-                meetingRoom = new MeetingRoom
-                {
-                    TranslationRoomId = translationRoomId,
-                    ProviderRoomName = translationRoomId.ToString(),
-                    Status = roomDetails.Status
-                };
-                await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
-                await _unitOfWork.SaveChangesAsync();
-
-                // Notify WorkspaceService to capture Context Snapshot
-                await PublishMeetingStartedAsync(
-                    translationRoomId,
-                    roomDetails.WorkspaceId,
-                    roomDetails.Title,
-                    roomDetails.Description);
-            }
-            else if (meetingRoom.Status != roomDetails.Status)
-            {
-                meetingRoom.Status = roomDetails.Status;
-                _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-                await _unitOfWork.SaveChangesAsync();
-
-                // If it transitions to IN_PROGRESS, might want to trigger too if not done
-                if (meetingRoom.Status == "IN_PROGRESS")
-                {
-                    await PublishMeetingStartedAsync(
-                        translationRoomId,
-                        roomDetails.WorkspaceId,
-                        roomDetails.Title,
-                        roomDetails.Description);
-                }
-            }
+            // 2. Provision / Get Meeting Room (shared with GenerateBridgeTokenAsync — WT-916)
+            var meetingRoom = await EnsureMeetingRoomAsync(translationRoomId, roomDetails);
 
             // 3. Enforce Authorization (RtcSessionRevocation, Expiration & Dynamic Workspace)
             bool isHost = roomDetails.HostId == userIdString;
@@ -411,9 +375,11 @@ public class MeetingRoomService : IMeetingRoomService
     /// participant_identity. Breaking it here is deliberate and is exactly why it is fenced.
     ///
     /// BOTH gates are load-bearing, neither is belt-and-braces:
-    ///   host-only    otherwise anyone who can reach a room could add a ghost participant to
-    ///                someone else's meeting, and everything it "said" would be attributed to
-    ///                the far side of a call they are not on.
+    ///   capturer     otherwise anyone who can reach a room could add a ghost participant to
+    ///   only         someone else's meeting, and everything it "said" would be attributed to
+    ///                the far side of a call they are not on. The capturer is the one participant
+    ///                of the shared bridge room whose desktop publishes the far side; a legacy
+    ///                room without one falls back to its host (IsBridgeAudioOwner).
     ///   bridge-only  otherwise the host of an ordinary meeting could mint a second identity
     ///                into their own room, which no product surface would explain.
     ///
@@ -440,24 +406,70 @@ public class MeetingRoomService : IMeetingRoomService
                 "This meeting does not bridge an external call.", ErrorCodes.Forbidden);
         }
 
-        if (!string.Equals(room.HostId, callerUserId.ToString(), StringComparison.OrdinalIgnoreCase))
+        // The CAPTURER, not every participant: a bridge room is shared by every WarpTalk user in the
+        // Meet call, and only one desktop may publish as the stand-in or the far side is doubled.
+        // A room with no capturer (created before bridge claim) keeps the old rule: its host.
+        //
+        // Deliberately NOT ExternalBridgeConstants.CanControlBridgeSession (host OR capturer, PO
+        // 2026-10-01). That rule covers the bridge's session CONTROLS — Start/Stop translation,
+        // transcript Pause/Resume, "They speak" — which change state, not audio. This token
+        // PUBLISHES the far side: letting the host mint it while someone else captures would put
+        // two stand-in publishers in the room and double every far-side line. One capturer only.
+        if (!ExternalBridgeConstants.IsBridgeAudioOwner(room.BridgeCapturerUserId, room.HostId, callerUserId.ToString()))
         {
             return Result.Failure<BridgeTokenResponse>(
-                "Only the host may connect this meeting to an external call.", ErrorCodes.Forbidden);
+                "Only the participant capturing the external call may connect it to this meeting.", ErrorCodes.Forbidden);
         }
 
-        if (room.Status is "ENDED" or "FINISHED" or "CANCELLED" or "EXPIRED")
+        if (TranslationRoomStatuses.IsEnded(room.Status))
         {
             return Result.Failure<BridgeTokenResponse>(
                 "This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
 
-        // The LiveKit room name is the translation room id everywhere in this service (see
-        // JoinMeetingAsync's ProviderRoomName when it provisions). Read the row when it exists so
-        // a room provisioned under a different name still bridges to the right place.
-        var meetingRoom = await _unitOfWork.MeetingRoomRepository
-            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
-        var providerRoomName = meetingRoom?.ProviderRoomName ?? translationRoomId.ToString();
+        // WT-916 (B20): PROVISION THE ROW HERE, NOT ONLY ON JOIN.
+        //
+        // This used to only READ the meeting_rooms row ("when it exists") and fall back to the
+        // translation room id for the LiveKit room name. But the far side enters LiveKit through
+        // this token, so whenever the capturer's web window had not joined yet — join in flight,
+        // failed, or never made — the room had live audio in LiveKit and no row behind it. Every
+        // thing keyed on that row then failed quietly: SetRecordingAsync answered 404 "Meeting
+        // room not found" to the default bridge recording, the LiveKit webhooks and egress
+        // completion (looked up by provider_room_name) found nothing to update, and the
+        // MeetingStarted context snapshot was never published. The web papered over it by waiting
+        // for its own join first; the server has to be right without that.
+        //
+        // Placed AFTER every refusal above on purpose: a non-bridge room, a caller who is not the
+        // capturer and an ended room must leave no trace — no row, no MeetingStarted. The row is
+        // created by the same helper the join path uses, under the same provisioning lock, so a
+        // join racing this call ends up on the same row instead of a second one.
+        //
+        // Its own short transaction: the provisioning lock is transaction-scoped, and a
+        // MeetingStarted publish that throws must roll the new row back exactly as it does on
+        // join — otherwise the row would survive without its snapshot, and the next caller would
+        // find the row and never publish one.
+        MeetingRoom meetingRoom;
+        await _unitOfWork.BeginTransactionAsync();
+        try
+        {
+            meetingRoom = await EnsureMeetingRoomAsync(translationRoomId, room);
+            await _unitOfWork.CommitTransactionAsync();
+        }
+        catch (Exception ex)
+        {
+            await _unitOfWork.RollbackTransactionAsync();
+            _logger.LogError(ex, "Could not provision the meeting room for bridge room {RoomId}", translationRoomId);
+            // Fails the token, the same way the same fault fails a join: a bridge whose audio
+            // reaches a room with no row is the exact state this change exists to remove.
+            return Result.Failure<BridgeTokenResponse>(
+                "Could not prepare this meeting for the external call. Please try again.",
+                ErrorCodes.InternalServerError);
+        }
+
+        // The LiveKit room name comes from the row (the translation room id for every row this
+        // service provisions), so a room provisioned under a different name still bridges to the
+        // right place.
+        var providerRoomName = meetingRoom.ProviderRoomName;
 
         var identity = ExternalBridgeConstants.ParticipantUserId.ToString();
         var tokenResult = _tokenService.GenerateToken(
@@ -486,7 +498,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         _logger.LogInformation(
-            "Issued a bridge token for room {RoomId} to host {UserId}", translationRoomId, callerUserId);
+            "Issued a bridge token for room {RoomId} to capturer {UserId}", translationRoomId, callerUserId);
 
         return Result.Success(new BridgeTokenResponse
         {
@@ -545,6 +557,96 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Success<bool>(true);
+    }
+
+    /// <summary>
+    /// WT-916 (B20). Returns the meeting_rooms row for <paramref name="translationRoomId"/>,
+    /// creating it (and publishing MeetingStarted for the context snapshot) when there is none, and
+    /// otherwise syncing its status from <paramref name="roomDetails"/> — the provisioning that used
+    /// to live inline in JoinMeetingAsync, unchanged, now shared with GenerateBridgeTokenAsync.
+    ///
+    /// THE CALLER MUST HOLD A TRANSACTION (BeginTransactionAsync) and owns its commit/rollback:
+    /// the provisioning lock below lasts exactly as long as that transaction, and a
+    /// MeetingStarted publish that throws relies on the caller's rollback to take the new row with
+    /// it, so the next caller creates it again and publishes then.
+    ///
+    /// RACE: meeting_rooms has no unique index on translation_room_id (the DbContext stays raw
+    /// scaffold, and adding one needs a migration that first dedupes production), so "read, none,
+    /// insert" from two callers at once would make two rows. Join and bridge token do arrive
+    /// together — the capturer's desktop and web window start at the same moment. So a caller that
+    /// finds no row takes a transaction-scoped advisory lock and READS AGAIN before inserting: the
+    /// second caller blocks until the first commits, then sees its row. The fast path (row already
+    /// there) takes no lock, so ordinary joins never queue behind each other.
+    ///
+    /// Residual risk, stated rather than hidden: the lock only serialises callers that go through
+    /// this helper. Rows created any other way (none today) or duplicates that already exist are
+    /// not prevented; the post-insert check below logs them so they are seen, and only a unique
+    /// index can rule them out.
+    /// </summary>
+    private async Task<MeetingRoom> EnsureMeetingRoomAsync(
+        Guid translationRoomId,
+        Shared.Protos.GetTranslationRoomResponse roomDetails)
+    {
+        var repository = _unitOfWork.MeetingRoomRepository;
+        var meetingRoom = await repository.FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+
+        if (meetingRoom == null)
+        {
+            await repository.AcquireProvisioningLockAsync(translationRoomId);
+
+            // Read committed: this statement runs after the lock was granted, so it sees a row
+            // committed by whoever held the lock before us.
+            meetingRoom = await repository.FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        }
+
+        if (meetingRoom == null)
+        {
+            meetingRoom = new MeetingRoom
+            {
+                TranslationRoomId = translationRoomId,
+                ProviderRoomName = translationRoomId.ToString(),
+                Status = roomDetails.Status
+            };
+            await repository.AddAsync(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+
+            // Re-read after the save. Under the lock this finds exactly our row; more than one
+            // means a duplicate the lock could not see (see "Residual risk" above). Logged, not
+            // repaired: picking a row to delete here could delete the one holding a live egress.
+            var rows = await repository.FindAsync(r => r.TranslationRoomId == translationRoomId);
+            if (rows.Count > 1)
+            {
+                _logger.LogError(
+                    "Translation room {RoomId} has {Count} meeting_rooms rows after provisioning; recording and webhook state may be split between them",
+                    translationRoomId,
+                    rows.Count);
+            }
+
+            // Notify WorkspaceService to capture Context Snapshot
+            await PublishMeetingStartedAsync(
+                translationRoomId,
+                roomDetails.WorkspaceId,
+                roomDetails.Title,
+                roomDetails.Description);
+        }
+        else if (meetingRoom.Status != roomDetails.Status)
+        {
+            meetingRoom.Status = roomDetails.Status;
+            repository.Update(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+
+            // If it transitions to IN_PROGRESS, might want to trigger too if not done
+            if (meetingRoom.Status == "IN_PROGRESS")
+            {
+                await PublishMeetingStartedAsync(
+                    translationRoomId,
+                    roomDetails.WorkspaceId,
+                    roomDetails.Title,
+                    roomDetails.Description);
+            }
+        }
+
+        return meetingRoom;
     }
 
     private async Task PublishMeetingStartedAsync(
@@ -1090,31 +1192,54 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Failure<RecordingStateDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        // Anyone IN the meeting may start or stop the recording — not only the host.
+        // ONLY THE HOST MAY START OR STOP THE RECORDING (owner decision, 2026-10-02).
         //
-        // The host-only rule here did not match anything else in the product. The web client has
-        // shown the record button to workspace Owners/Admins since WT-188 (isHost in
-        // persistent-meeting-session includes role === "owner" | "admin"), and the auto-start
-        // effect fires on that same flag — so a workspace Owner joining a meeting somebody else
-        // booked got an automatic, unprompted 403 and a "Could not start recording." toast on
-        // every single join. The gateway hub (RoomHostAuthority) and the translation-room service
-        // (RoomHostAccess) had both already been widened past host-only for exactly this reason;
-        // this method was the one that never was.
+        // "Host" is IsHostAsync: whoever booked the room, or this service's active host after a
+        // transfer. It was host-only originally, then widened to every participant because the
+        // web client offered the button — and fired an auto-start — on a flag that also included
+        // workspace Owners/Admins, who then got an unprompted 403 on every join. The client now
+        // offers the control to the room host alone, so the rule and the button agree again.
         //
-        // Widened to every participant rather than to Owner/Admin because recording a meeting is
-        // not a governance action over a tenant — it is a thing the people in the room do, and
-        // whoever needs the transcript to have timestamps is usually not whoever booked it.
-        // Participation is still REQUIRED: a stranger holding a room id must not be able to spin
-        // up an Egress against a room they are not in, which is a billable action.
+        // Everyone in the room is still told: SetRecordingAsync broadcasts RecordingStateChanged
+        // below and the client raises a toast for every participant on receipt.
         //
-        // Everyone in the room is told either way — SetRecordingAsync broadcasts
-        // RecordingStateChanged below, and the client raises a toast for every participant on
-        // receipt. Nobody is recorded without being told; that notice is what makes this rule
-        // acceptable rather than the permission check.
-        if (!await IsInMeetingAsync(translationRoomId, meetingRoom, callerUserId))
+        // EXCEPT IN A GOOGLE MEET BRIDGE ROOM (EXTERNAL_BRIDGE), WHERE ONLY THE HOST OR THE CURRENT
+        // CAPTURER MAY START OR STOP IT (WT-910, PO 2026-10-01).
+        //
+        // native  the host only, as above.
+        // bridge  the host (booker, effective host after a transfer, or this service's active
+        //         host) OR the current capturer — ExternalBridgeConstants.CanControlBridgeSession,
+        //         the same set that drives the bridge's other session controls (Start/Stop
+        //         translation, transcript Pause/Resume, "They speak").
+        //
+        // Why narrower there: a bridge recording is not a WarpTalk meeting recording itself — it is
+        // the host's capture of a third-party call (Google Meet), and it starts BY DEFAULT when
+        // capture starts. The bridge room is also shared by every WarpTalk user in that Meet call,
+        // most of whom never booked anything; letting any of them stop it would let a passenger
+        // switch off the host's record of the call without the host deciding to. The capturer is
+        // included because after a takeover the person whose desktop is in the call may not be the
+        // host, and the auto-start is fired from their web window.
+        //
+        // The bridge rule REPLACES the participation check rather than adding to it: the capturer
+        // is named by the translation-room service itself (bridge claim), which is stronger
+        // evidence of presence than a LiveKit participant row their web window may not have yet.
+        //
+        // WHEN THE ROOM TYPE CANNOT BE DETERMINED, THE REQUEST IS REFUSED (WT-916, PO 2026-10-02):
+        // a member must never be able to start or stop the recording of a Google Meet bridge room
+        // because a lookup failed. Cache empty AND the gRPC read failing returns
+        // ServiceUnavailable for start and stop alike. Accepted consequence: in that window native
+        // recording start/stop is refused too, until the lookup works again. A warm cache keeps
+        // native behaviour exactly as it was, with no extra gRPC call.
+        var bridgeAccess = await CheckBridgeRecordingControlAsync(translationRoomId, meetingRoom, callerUserId);
+        if (bridgeAccess is not null)
+        {
+            if (!bridgeAccess.IsSuccess)
+                return Result.Failure<RecordingStateDto>(bridgeAccess.Error!, bridgeAccess.ErrorCode);
+        }
+        else if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
         {
             return Result.Failure<RecordingStateDto>(
-                "Only someone in this meeting can control recording.",
+                "Only the host can start or stop recording.",
                 ErrorCodes.Forbidden);
         }
 
@@ -1173,50 +1298,21 @@ public class MeetingRoomService : IMeetingRoomService
             if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
                 return Result.Failure<RecordingStateDto>("No recording is currently in progress.", ErrorCodes.InvalidState);
 
-            var stopResult = await _egressService.StopEgressAsync(meetingRoom.ActiveEgressId);
-            if (!stopResult.IsSuccess)
-                return Result.Failure<RecordingStateDto>(stopResult.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
+            var stopped = await StopActiveRecordingAsync(translationRoomId, meetingRoom);
+            if (!stopped.IsSuccess)
+                return Result.Failure<RecordingStateDto>(stopped.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
 
-            // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
-            // THAT HAS NOT LANDED YET.
-            //
-            // StopEgress only asks LiveKit to stop; the file is still being finalised and uploaded
-            // for seconds to minutes afterwards, and the recording does not exist for us until the
-            // egress_ended webhook (or the sweep) turns it into an artifact. Nulling the column
-            // here threw away the only durable record that we are owed one:
-            //   - EgressCompletion can still match the room by ProviderRoomName, so a webhook that
-            //     ARRIVES is fine (that is the other half of WT-644), but
-            //   - EgressReconciliationService scans `ActiveEgressId != null`, so a webhook that is
-            //     LOST — the exact failure WT-371 #8 built the sweep for, when the LiveKit project
-            //     had no webhook configured at all — could never be recovered. The meeting simply
-            //     ended with no recording and nothing anywhere said so.
-            //
-            // So the column now means "an egress this room owns that has not been completed", and
-            // it is cleared by whoever completes it: EgressCompletion on the webhook (seconds), or
-            // the sweep on its next tick (two minutes) when the webhook never comes. A terminal
-            // FAILED/ABORTED egress clears it too — EgressCompletion clears before it checks for a
-            // file — so a failed recording cannot strand the room either.
-            //
-            // TWO KNOWN AND ACCEPTED CONSEQUENCES, both lasting only until the completion lands —
-            // seconds on the healthy path, at most one sweep tick when the webhook is lost:
-            //  1. JoinMeetingResponse.Recording is derived from this column, so somebody joining
-            //     in that window is told the meeting is being recorded when capture has in fact
-            //     ended. An over-warning in the safe direction.
-            //  2. The "start" branch above refuses while the column is set, so a host who stops
-            //     and immediately restarts is told "Recording is already in progress." — which is
-            //     nearly true (the previous file is still being finalised) and self-clears.
-            // Making either exact needs a second column to separate "still capturing" from "still
-            // owed an artifact", and that is a migration this fix deliberately avoids. The
-            // recording existing at all is worth more than the precision of a transient label.
-            //
-            // UpdatedAt is moved by hand because nothing else moves it: EgressReconciliationService
-            // measures its UnknownEgressGrace from this timestamp, and the stop is the honest
-            // origin for "we have been waiting for this completion since…".
-            meetingRoom.UpdatedAt = DateTime.UtcNow;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
-
-            await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+            if (stopped.Value == RecordingStopOutcome.AlreadyStopping)
+            {
+                // LiveKit refused because the egress is ALREADY ending or over (the bridge auto-stop,
+                // an egress limit, LiveKit closing the room got there first): what the person asked
+                // for holds, so it is not a 500. Nothing is written — whoever stopped it did that.
+                // RecordingStateChanged is sent again, best effort: whether a broadcast for this
+                // egress already went out is not known here, and a repeated "recording: false" is
+                // only a repeated state, whereas a missing one leaves every other window saying
+                // "recording".
+                await TryPublishRecordingStoppedAsync(translationRoomId, meetingRoom.ActiveEgressId!);
+            }
 
             // Reported as stopped regardless: capture HAS ended, which is what the person who
             // pressed the button asked about. The retained id is bookkeeping they have no use for
@@ -1225,6 +1321,327 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Failure<RecordingStateDto>("Action must be 'start' or 'stop'.", ErrorCodes.ValidationError);
+    }
+
+    /// <summary>What <see cref="StopActiveRecordingAsync"/> did.</summary>
+    private enum RecordingStopOutcome
+    {
+        /// <summary>This call stopped the egress, and wrote and broadcast the stop.</summary>
+        Stopped,
+
+        /// <summary>
+        /// LiveKit refused because the egress is already ENDING or over (or LiveKit itself — a Twirp
+        /// not_found — no longer knows it). This call stopped nothing and wrote/broadcast nothing.
+        /// </summary>
+        AlreadyStopping,
+    }
+
+    /// <summary>
+    /// The ONE way a running recording is stopped — the Stop button (SetRecordingAsync "stop") and
+    /// the end of a bridge session (<see cref="StopRecordingIfBridgeEndedAsync"/>) both come here,
+    /// so finalization (egress_ended → EgressCompletion → recording artifact, billing) cannot tell
+    /// them apart and cannot drift. Each caller decides what an AlreadyStopping answer means for it.
+    /// </summary>
+    private async Task<Result<RecordingStopOutcome>> StopActiveRecordingAsync(
+        Guid translationRoomId,
+        MeetingRoom meetingRoom,
+        CancellationToken ct = default)
+    {
+        var egressId = meetingRoom.ActiveEgressId!;
+        var stopResult = await _egressService.StopEgressAsync(egressId, ct);
+        if (!stopResult.IsSuccess)
+        {
+            return await IsAlreadyStoppingAsync(egressId, ct)
+                ? Result.Success(RecordingStopOutcome.AlreadyStopping)
+                : Result.Failure<RecordingStopOutcome>(stopResult.Error ?? "Failed to stop recording.", stopResult.ErrorCode);
+        }
+
+        // WT-644 — STOP NO LONGER ERASES THE EGRESS ID. IT IS THE ONLY HANDLE ON A RECORDING
+        // THAT HAS NOT LANDED YET.
+        //
+        // StopEgress only asks LiveKit to stop; the file is still being finalised and uploaded
+        // for seconds to minutes afterwards, and the recording does not exist for us until the
+        // egress_ended webhook (or the sweep) turns it into an artifact. Nulling the column
+        // here threw away the only durable record that we are owed one:
+        //   - EgressCompletion can still match the room by ProviderRoomName, so a webhook that
+        //     ARRIVES is fine (that is the other half of WT-644), but
+        //   - EgressReconciliationService scans `ActiveEgressId != null`, so a webhook that is
+        //     LOST — the exact failure WT-371 #8 built the sweep for, when the LiveKit project
+        //     had no webhook configured at all — could never be recovered. The meeting simply
+        //     ended with no recording and nothing anywhere said so.
+        //
+        // So the column now means "an egress this room owns that has not been completed", and
+        // it is cleared by whoever completes it: EgressCompletion on the webhook (seconds), or
+        // the sweep on its next tick (two minutes) when the webhook never comes. A terminal
+        // FAILED/ABORTED egress clears it too — EgressCompletion clears before it checks for a
+        // file — so a failed recording cannot strand the room either.
+        //
+        // TWO KNOWN AND ACCEPTED CONSEQUENCES, both lasting only until the completion lands —
+        // seconds on the healthy path, at most one sweep tick when the webhook is lost:
+        //  1. JoinMeetingResponse.Recording is derived from this column, so somebody joining
+        //     in that window is told the meeting is being recorded when capture has in fact
+        //     ended. An over-warning in the safe direction.
+        //  2. The "start" branch above refuses while the column is set, so a host who stops
+        //     and immediately restarts is told "Recording is already in progress." — which is
+        //     nearly true (the previous file is still being finalised) and self-clears.
+        // Making either exact needs a second column to separate "still capturing" from "still
+        // owed an artifact", and that is a migration this fix deliberately avoids. The
+        // recording existing at all is worth more than the precision of a transient label.
+        //
+        // UpdatedAt is moved by hand because nothing else moves it: EgressReconciliationService
+        // measures its UnknownEgressGrace from this timestamp, and the stop is the honest
+        // origin for "we have been waiting for this completion since…".
+        //
+        // ONLY THAT COLUMN, as one conditional UPDATE (MarkRecordingStopRequestedAsync), never
+        // Update(row): the bridge auto-stop holds a copy of the row read in a background scope, and
+        // marking the whole row modified would write its stale ActiveHostId/IsLocked/Status back.
+        //
+        // FROM HERE ON NOTHING MAY TURN INTO A FAILURE. LiveKit has stopped capturing; answering
+        // 500 (or throwing out of the worker) would tell the host the recording is still running
+        // when it is not, and they would press Stop into "no recording". A failed write costs only
+        // the sweep's grace origin; a failed broadcast only a stale indicator until the next join.
+        // A cancellation is not swallowed: it is the host shutting down, not a failed write.
+        var now = DateTime.UtcNow;
+        try
+        {
+            var written = await _unitOfWork.MeetingRoomRepository.MarkRecordingStopRequestedAsync(meetingRoom.Id, egressId, now, ct);
+            if (written > 0)
+            {
+                meetingRoom.UpdatedAt = now;
+            }
+            else
+            {
+                // The room no longer holds this egress: its completion (webhook or sweep) already
+                // landed and cleared it. Nothing is owed any more, so there is no grace origin to move.
+                _logger.LogInformation(
+                    "Recording {EgressId} of room {RoomId} was stopped, but the room no longer holds it (already completed); stop time not written.",
+                    egressId, translationRoomId);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex,
+                "Recording {EgressId} of room {RoomId} was stopped, but its stop time could not be saved.",
+                egressId, translationRoomId);
+        }
+
+        await TryPublishRecordingStoppedAsync(translationRoomId, egressId);
+
+        return Result.Success(RecordingStopOutcome.Stopped);
+    }
+
+    /// <summary>RecordingStateChanged { Recording = false }, best effort: logged, never thrown.</summary>
+    private async Task TryPublishRecordingStoppedAsync(Guid translationRoomId, string egressId)
+    {
+        try
+        {
+            var published = await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+            if (!published.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "Recording {EgressId} of room {RoomId} was stopped, but RecordingStateChanged could not be published: {Error}",
+                    egressId, translationRoomId, published.Error);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Recording {EgressId} of room {RoomId} was stopped, but RecordingStateChanged could not be published.",
+                egressId, translationRoomId);
+        }
+    }
+
+    /// <summary>
+    /// After LiveKit refused StopEgress: is the egress already ending or over? Only on LiveKit's own
+    /// word — its record says ENDING/COMPLETE/FAILED/ABORTED/LIMIT_REACHED, or a genuine Twirp
+    /// not_found (GetEgressStrictAsync; a proxy's 404 is a failure there). Everything else — a failed
+    /// lookup, a status still STARTING/ACTIVE, a status this code does not know — is "no": the
+    /// recording must never be reported stopped while LiveKit may still be capturing.
+    ///
+    /// Deliberately NOT "the auto-stop marker is held": that only means the auto-stop is trying, and
+    /// its own StopEgress can fail. And nothing here touches the marker: only the auto-stop takes it.
+    /// </summary>
+    private async Task<bool> IsAlreadyStoppingAsync(string egressId, CancellationToken ct)
+    {
+        try
+        {
+            var egress = await _egressService.GetEgressStrictAsync(egressId, ct);
+            if (!egress.IsSuccess)
+                return false;
+
+            if (egress.Value is not { } info)
+            {
+                _logger.LogInformation("StopEgress for {EgressId} was refused and LiveKit no longer knows it; treating it as already stopped.", egressId);
+                return true;
+            }
+
+            if (EgressStatuses.IsEndingOrOver(info))
+            {
+                _logger.LogInformation("StopEgress for {EgressId} was refused because it is already ending or over; treating it as already stopped.", egressId);
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not tell whether egress {EgressId} is already stopped.", egressId);
+        }
+
+        return false;
+    }
+
+    /// <summary>How long the "this egress was auto-stopped" marker is kept: well past any finalization.</summary>
+    private static readonly TimeSpan BridgeRecordingEndMarkerTtl = TimeSpan.FromMinutes(10);
+
+    public static string BridgeRecordingEndMarkerResource(string egressId) =>
+        $"meeting:recording-bridge-end:{egressId}";
+
+    /// <summary>
+    /// Stops the recording of a Google Meet bridge room once its bridge session has ended — see
+    /// <see cref="BridgeRecordingEndPolicy"/> for the bug, the signal and the grace. Called after a
+    /// participant left a room that was being recorded (MeetingWebhookService → BridgeRecordingEndWorker),
+    /// first at once and again whenever the answer is <see cref="BridgeRecordingEndOutcome.AwaitingGrace"/>.
+    ///
+    /// Every doubt resolves to "leave it running": a lookup that fails, a room type that cannot be
+    /// learned, a LiveKit that cannot list the room. Leaving it running costs exactly today's
+    /// behaviour — LiveKit closes the empty room after its departure timeout and the egress ends
+    /// with it — whereas a wrong stop loses the rest of somebody's call.
+    ///
+    /// NATIVE ROOMS ARE NEVER TOUCHED: the type is checked before anything else is asked.
+    /// </summary>
+    public async Task<BridgeRecordingEndCheck> StopRecordingIfBridgeEndedAsync(
+        BridgeRecordingEndRequest request,
+        DateTime utcNow,
+        TimeSpan grace,
+        CancellationToken ct = default)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.ProviderRoomName == request.ProviderRoomName, "", ct);
+        if (meetingRoom == null)
+            return BridgeRecordingEndCheck.Ignored("no meeting room");
+
+        // Only the egress that was running when the participant left. Stopped by hand since, or
+        // stopped and restarted: that is somebody else's decision, and this one is stale.
+        if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
+            || !string.Equals(meetingRoom.ActiveEgressId, request.EgressId, StringComparison.Ordinal))
+            return BridgeRecordingEndCheck.Ignored("not the recording that was running");
+
+        // The TYPE never changes after creation, so the 24 h projection answers it and a native room
+        // costs no gRPC call at all. The STATUS does change, so a bridge room is read fresh.
+        var cached = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(
+            $"meeting:room:v2:{meetingRoom.TranslationRoomId}");
+        if (cached?.Value is { } projection && !ExternalBridgeConstants.IsBridgeRoomType(projection.TranslationRoomType))
+            return BridgeRecordingEndCheck.Ignored("not a bridge room");
+
+        var details = await _grpcService.GetRoomDetailsAsync(meetingRoom.TranslationRoomId);
+        if (!details.IsSuccess || details.Value == null)
+        {
+            _logger.LogWarning(
+                "Could not read room {RoomId} to decide whether its bridge recording should stop: {Error}. Leaving it running.",
+                meetingRoom.TranslationRoomId, details.Error);
+            return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "room details unavailable");
+        }
+
+        if (!ExternalBridgeConstants.IsBridgeRoomType(details.Value.TranslationRoomType))
+            return BridgeRecordingEndCheck.Ignored("not a bridge room");
+
+        var roomEnded = TranslationRoomStatuses.IsEnded(details.Value.Status);
+        if (!roomEnded)
+        {
+            var listed = await _roomAdminService.ListParticipantsAsync(meetingRoom.ProviderRoomName, ct);
+            if (!listed.IsSuccess || listed.Value == null)
+            {
+                _logger.LogWarning(
+                    "Could not list LiveKit room {RoomName} to decide whether its bridge recording should stop: {Error}. Leaving it running.",
+                    meetingRoom.ProviderRoomName, listed.Error);
+                return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "participants unavailable");
+            }
+
+            if (listed.Value.Any(BridgeRecordingEndPolicy.CountsAsPresence))
+                return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Occupied, "somebody is still in the room");
+
+            // Grace from the LATEST departure in the room, not only this one: somebody who left two
+            // seconds after the person this check is about gets their own full grace to come back.
+            var lastDeparture = request.DepartedAtUtc;
+            var latestLeftAt = await _unitOfWork.RtcStreamParticipantRepository.GetLatestDepartureAsync(meetingRoom.Id, ct);
+            if (latestLeftAt is { } leftAt && leftAt > lastDeparture)
+                lastDeparture = leftAt;
+
+            var quietFor = utcNow - lastDeparture;
+            if (quietFor < grace)
+            {
+                return new BridgeRecordingEndCheck(
+                    BridgeRecordingEndOutcome.AwaitingGrace,
+                    "room is empty; waiting for a reload or rejoin",
+                    grace - quietFor);
+            }
+        }
+
+        // Already stopping (the Stop button, or LiveKit closing the room)? A second StopEgress would
+        // only be refused, and a second RecordingStateChanged would toast everyone again. A failed
+        // lookup is not a reason to keep recording an ended session: try the stop anyway.
+        var egress = await _egressService.GetEgressStrictAsync(request.EgressId, ct);
+        if (egress.IsSuccess)
+        {
+            if (egress.Value is not { } info)
+                return BridgeRecordingEndCheck.Ignored("LiveKit does not know this egress");
+            if (!EgressStatuses.IsCapturing(info))
+                return BridgeRecordingEndCheck.Ignored("egress is already ending");
+        }
+
+        // Once per egress across replicas: every departure schedules a check, and they can land on
+        // different replicas. The marker is deliberately NOT released on success — it expires on
+        // its own, long after the egress has finished — so a late check finds it and does nothing.
+        IDistributedLease? marker = null;
+        if (_locks is not null)
+        {
+            try
+            {
+                marker = await _locks.TryAcquireAsync(
+                    BridgeRecordingEndMarkerResource(request.EgressId), BridgeRecordingEndMarkerTtl, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not take the bridge-recording-end marker for egress {EgressId}. Leaving it running.", request.EgressId);
+                return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "marker unavailable");
+            }
+
+            if (marker is null)
+                return BridgeRecordingEndCheck.Ignored("already being stopped");
+        }
+
+        var stopped = await StopActiveRecordingAsync(meetingRoom.TranslationRoomId, meetingRoom, ct);
+        if (stopped.IsSuccess && stopped.Value == RecordingStopOutcome.AlreadyStopping)
+        {
+            // Somebody else stopped it between the status check above and our StopEgress (the Stop
+            // button, LiveKit closing the room). We did not stop it, so we claim nothing: no write,
+            // no second RecordingStateChanged, no "Stopped" in the log. The marker stays — there is
+            // nothing left to retry.
+            _logger.LogInformation(
+                "Recording {EgressId} of bridge room {RoomId} was already stopping when the bridge session ended.",
+                request.EgressId, meetingRoom.TranslationRoomId);
+            return BridgeRecordingEndCheck.Ignored("already stopping");
+        }
+
+        if (!stopped.IsSuccess)
+        {
+            // Give the marker back so the next departure (or the next grace check) can try again.
+            if (marker is not null)
+                await marker.DisposeAsync();
+            _logger.LogWarning(
+                "Bridge session of room {RoomId} ended but its recording {EgressId} could not be stopped: {Error}. "
+                + "LiveKit will end it when it closes the room.",
+                meetingRoom.TranslationRoomId, request.EgressId, stopped.Error);
+            return new BridgeRecordingEndCheck(BridgeRecordingEndOutcome.Failed, "stop failed");
+        }
+
+        _logger.LogInformation(
+            "Stopped recording {EgressId} of bridge room {RoomId}: {Reason}.",
+            request.EgressId,
+            meetingRoom.TranslationRoomId,
+            roomEnded ? "the room has ended" : "nobody is left in the room after the grace period");
+        return new BridgeRecordingEndCheck(
+            BridgeRecordingEndOutcome.Stopped,
+            roomEnded ? "room ended" : "room empty past grace");
     }
 
     /// <summary>
@@ -1347,34 +1764,99 @@ public class MeetingRoomService : IMeetingRoomService
         return isOriginalHost || isActiveHost;
     }
 
+    /// <summary>User-facing refusal for a bridge-room member who is neither host nor capturer.</summary>
+    public const string BridgeRecordingControlForbiddenMessage =
+        "Only the host can start or stop recording this Google Meet call.";
+
+    /// <summary>Refusal when the room could not be read, so who may control recording is unknown.</summary>
+    public const string RecordingControlUnverifiableMessage =
+        "Could not verify who may control recording for this call. Please try again.";
+
     /// <summary>
-    /// Whether this caller is actually in this meeting — the host, or a participant who has
-    /// joined and not left.
+    /// WT-910. The recording gate for an EXTERNAL_BRIDGE room, or <c>null</c> when the room is not
+    /// a bridge and the native rule (<see cref="IsHostAsync"/>) applies. See the comment in
+    /// <see cref="SetRecordingAsync"/> for why the two differ.
     ///
-    /// Deliberately weaker than <see cref="IsHostAsync"/> and used only where the action belongs
-    /// to the room rather than to whoever booked it (recording). It is still a real check: the
-    /// room id travels in a shareable link, so "authenticated" is not "present", and starting an
-    /// Egress costs money against the workspace.
+    /// The room TYPE is read through the same cache <see cref="IsHostAsync"/> uses — it never
+    /// changes after creation, so a stale projection still answers it correctly, and a native
+    /// press costs no extra round-trip. The CAPTURER is not: a takeover moves it at any moment, so
+    /// for a bridge the decision is made on a fresh gRPC read (the same reasoning as
+    /// <see cref="GenerateBridgeTokenAsync"/>). If that fresh read fails the request is refused,
+    /// never decided on a projection that may name yesterday's capturer.
     ///
-    /// The host is admitted without a participant row because a host who has opened the room but
-    /// whose LiveKit join has not landed yet is unambiguously in the meeting, and the recording
-    /// auto-start fires in exactly that window.
+    /// FAILS CLOSED WHEN THE TYPE CANNOT BE LEARNED (WT-916, PO 2026-10-02). Cache miss AND gRPC
+    /// failure used to fall back to the native rule; now the request is refused with
+    /// ServiceUnavailable, start and stop alike, host and member alike. A member must never be
+    /// able to start or stop the recording of a Google Meet bridge room because a lookup failed,
+    /// and when the type is unknown there is no telling which kind of room this is.
+    ///
+    /// Accepted consequence: while translation-room is down AND the cache is cold, recording
+    /// start/stop is refused in NATIVE rooms too, until the lookup works again. A warm cache keeps
+    /// native behaviour exactly as before, with no extra gRPC call.
     /// </summary>
-    private async Task<bool> IsInMeetingAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
+    private async Task<Result?> CheckBridgeRecordingControlAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
     {
-        if (await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
-            return true;
+        var cached = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>($"meeting:room:v2:{translationRoomId}");
+        var room = cached?.Value;
+        var isFresh = false;
 
-        var participant = await _unitOfWork.RtcStreamParticipantRepository.FirstOrDefaultAsync(
-            p => p.MeetingRoomId == meetingRoom.Id
-                 && p.UserId == callerUserId
-                 && p.DeletedAt == null);
+        if (room == null)
+        {
+            var grpcResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+            if (!grpcResult.IsSuccess || grpcResult.Value == null)
+            {
+                _logger.LogWarning(
+                    "Could not learn the type of room {RoomId} to authorize a recording change by {UserId}: {Error}",
+                    translationRoomId, callerUserId, grpcResult.Error);
+                return Result.Failure(RecordingControlUnverifiableMessage, ErrorCodes.ServiceUnavailable);
+            }
+            room = grpcResult.Value;
+            isFresh = true;
+        }
 
-        // IsActive OR LeftAt == null: the two are written by different paths (the disconnect
-        // handler flips IsActive, the leave endpoint stamps LeftAt) and a participant who is
-        // present according to either one is present. Requiring both would make a brief
-        // reconnect look like an intruder.
-        return participant != null && (participant.IsActive || participant.LeftAt == null);
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+            return null;
+
+        if (!isFresh)
+        {
+            var freshResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+            if (!freshResult.IsSuccess || freshResult.Value == null)
+            {
+                _logger.LogWarning(
+                    "Could not read bridge room {RoomId} to authorize a recording change by {UserId}: {Error}",
+                    translationRoomId, callerUserId, freshResult.Error);
+                return Result.Failure(RecordingControlUnverifiableMessage, ErrorCodes.ServiceUnavailable);
+            }
+            room = freshResult.Value;
+        }
+
+        return CanControlBridgeRecording(room, meetingRoom.ActiveHostId, callerUserId)
+            ? Result.Success()
+            : Result.Failure(BridgeRecordingControlForbiddenMessage, ErrorCodes.Forbidden);
+    }
+
+    /// <summary>
+    /// WT-910, the pure half of <see cref="CheckBridgeRecordingControlAsync"/>: the host — booker
+    /// (<c>HostId</c>), effective host after a transfer (<c>EffectiveHostId</c>) or this service's
+    /// <paramref name="activeHostId"/>, the same "host" <see cref="IsHostAsync"/> accepts — OR the
+    /// current capturer of an EXTERNAL_BRIDGE room. Workspace Owner/Admin is deliberately NOT
+    /// added: they are not in the Meet call and this is not a governance action.
+    /// </summary>
+    public static bool CanControlBridgeRecording(
+        Shared.Protos.GetTranslationRoomResponse room,
+        Guid? activeHostId,
+        Guid callerUserId)
+    {
+        if (!ExternalBridgeConstants.IsBridgeRoomType(room.TranslationRoomType))
+            return false;
+
+        return activeHostId == callerUserId
+            || ExternalBridgeConstants.CanControlBridgeSession(
+                room.TranslationRoomType,
+                room.HostId,
+                room.EffectiveHostId,
+                room.BridgeCapturerUserId,
+                callerUserId.ToString());
     }
 
     private Task<Result> PublishGatewayCommandAsync(string command, Guid translationRoomId, object extraFields)

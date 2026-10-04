@@ -100,6 +100,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
 // WT-691: language catalog writes, each recorded in the platform audit log before it is saved.
 builder.Services.AddScoped<IAdminLanguageService, AdminLanguageService>();
+// WT-880: the enabled rows of that catalog, for any signed-in user (glossary import template).
+builder.Services.AddScoped<IPublishedLanguageService, PublishedLanguageService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -107,6 +109,7 @@ builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomPa
 builder.Services.AddScoped<ITranslationRoomDirectoryService, TranslationRoomDirectoryService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
 builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
+builder.Services.AddScoped<IBridgeVoiceCloneConsentService, BridgeVoiceCloneConsentService>();
 builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
 builder.Services.AddSingleton<IMeetingMinutesDocumentWriter, MinutesDocumentWriter>();
@@ -176,6 +179,9 @@ builder.Services.AddHostedService<SummaryResultConsumerWorker>();
 // WT-67 audio-routing session_ends event — this worker ends rooms via the proper
 // EndTranslationRoomAsync service method, which does both correctly.
 builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
+// Google Meet bridge: a bridge room ends when the Google Meet conference it bridges ends (the
+// popup has no End button). Reads Meet REST through AssistantService with the host's grant.
+builder.Services.AddHostedService<MeetConferenceEndWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
 // WT-14: reminds the host/participants at T-10min and T-1min before a SCHEDULED room's start.
 builder.Services.AddHostedService<ReminderNotificationWorker>();
@@ -313,6 +319,17 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         "http://localhost:50054");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// Google Meet conference records, read by AssistantService with the host's own Google grant
+// (meet_conference.proto). Used by MeetConferenceEndWorker.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.MeetConferenceService.MeetConferenceServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:AssistantServiceUrl",
+        "http://localhost:50058");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IMeetConferenceRecordsClient, WarpTalk.TranslationRoomService.Infrastructure.Clients.MeetConferenceRecordsGrpcClient>();
 // The meeting invitation email reads its admin-edited template through this client.
 WarpTalk.Shared.Email.EmailTemplateServiceCollectionExtensions.AddWarpTalkEmailTemplates(builder.Services);
 

@@ -75,9 +75,9 @@ public sealed class CartesiaDubbingCostTests
             0.0000392m);
 
         var cost = AdminBillingInsightsCalculator.AiProviderCost(
-            new ConsumptionTotals(0, 0, 0, 0, 0, 0m), 25_000m, measured, filteredToApiKey: true);
+            new ConsumptionTotals(0, 0, 0, 0, 0, 0m), measured, filteredToApiKey: true);
 
-        cost.Value.Should().Be(490m, "500 × 0.0000392 × 25,000");
-        cost.Note.Should().Be("dubbing measured from Cartesia usage: 500 credits × $0.0000392 over 1 UTC day; USD converted at 25,000 VND/USD");
+        cost.Value.Should().Be(0.02m, "500 × 0.0000392 = 0.0196 USD, to the cent");
+        cost.Note.Should().Be("dubbing measured from Cartesia usage: 500 credits × $0.0000392 over 1 UTC day");
     }
 }

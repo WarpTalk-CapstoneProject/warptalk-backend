@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using WarpTalk.Shared.Configuration;
@@ -22,6 +23,7 @@ using WarpTalk.WorkspaceService.Infrastructure.Clients;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
 using WarpTalk.WorkspaceService.Infrastructure.Adapters;
+using WarpTalk.WorkspaceService.Infrastructure.Masking;
 using WarpTalk.WorkspaceService.Infrastructure.Storage;
 using WarpTalk.WorkspaceService.Application.Services;
 using WarpTalk.WorkspaceService.Infrastructure.Outbox;
@@ -104,6 +106,20 @@ public static class DependencyInjection
         services.AddScoped<IWorkspaceInvitationEmailComposer, WorkspaceInvitationEmailComposer>();
         services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
         services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
+
+        // The PII-masked copy members read. PDFs are re-rendered from the masked text through
+        // Gotenberg (the LibreOffice sidecar the minutes export uses); with no URL configured a
+        // PDF simply gets no masked copy, which the document page reports as such.
+        services.AddHttpClient(GotenbergMaskedPdfRenderer.HttpClientName, client =>
+        {
+            // LibreOffice cold-starts on the first document after the container comes up.
+            client.Timeout = TimeSpan.FromSeconds(60);
+        });
+        services.AddSingleton<IMaskedPdfRenderer>(provider => new GotenbergMaskedPdfRenderer(
+            provider.GetRequiredService<IHttpClientFactory>(),
+            provider.GetRequiredService<ILogger<GotenbergMaskedPdfRenderer>>(),
+            configuration["Gotenberg:Url"] ?? Environment.GetEnvironmentVariable("GOTENBERG_URL")));
+        services.AddScoped<IDocumentMaskedVersionGenerator, DocumentMaskedVersionGenerator>();
         services.AddScoped<IDocumentTextChunker, DocumentTextChunker>();
         services.AddScoped<IAiPolicyResolver, AiPolicyResolver>();
         services.AddScoped<IEmbeddingIndexPublisher, RedisEmbeddingIndexPublisher>();

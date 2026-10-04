@@ -2,9 +2,11 @@ using Grpc.Core;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Gateway.Services;
+using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using Xunit;
 
@@ -241,8 +243,8 @@ public class RoomHostAuthorityTests
     [Fact]
     public async Task ExternalMeetingLanguage_IsRefused_ForAnyoneButTheHost_IncludingAWorkspaceOwner()
     {
-        // Narrower than HasHostAuthorityAsync on purpose: the same host-only gate as the bridge
-        // token, because it acts on the identity that token mints.
+        // Narrower than HasHostAuthorityAsync on purpose: no workspace Owner/Admin widening — only
+        // the host or the current capturer, the people actually in the call.
         var workspace = WorkspaceClient(new GetWorkspaceMemberResponse { IsMember = true, IsActive = true, RoleName = "Owner" });
         var sut = Create(BridgeRoom(Guid.NewGuid()), workspace);
 
@@ -251,6 +253,100 @@ public class RoomHostAuthorityTests
             c => c.GetWorkspaceMemberDetailsAsync(
                 It.IsAny<GetWorkspaceMemberRequest>(), null, null, It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_HostOrCapturer_InASharedBridgeRoom()
+    {
+        // PO 2026-10-01: "They speak" is a bridge session control — host OR current capturer. It
+        // used to follow the capturer only, refusing a host who had handed capture to someone else.
+        var hostId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = BridgeRoom(hostId);
+        room.BridgeCapturerUserId = capturer.ToString();
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.True(await sut.CanSetExternalMeetingLanguageAsync(RoomId, capturer.ToString()));
+        Assert.True(await sut.CanSetExternalMeetingLanguageAsync(RoomId, hostId.ToString()));
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, Guid.NewGuid().ToString()));
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_IsAllowed_ForTheEffectiveHostAfterATransfer()
+    {
+        var booker = Guid.NewGuid();
+        var newHost = Guid.NewGuid();
+        var room = BridgeRoom(booker);
+        room.EffectiveHostId = newHost.ToString();
+        room.BridgeCapturerUserId = Guid.NewGuid().ToString();
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.True(await sut.CanSetExternalMeetingLanguageAsync(RoomId, newHost.ToString()));
+    }
+
+    [Fact]
+    public async Task ExternalMeetingLanguage_CapturerColumn_IsIgnored_OutsideABridgeRoom()
+    {
+        var room = RoomResponse(Guid.NewGuid());
+        var capturer = Guid.NewGuid();
+        room.TranslationRoomType = "MEETING";
+        room.BridgeCapturerUserId = capturer.ToString();
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.False(await sut.CanSetExternalMeetingLanguageAsync(RoomId, capturer.ToString()));
+    }
+
+    // ── The shared rule itself (ExternalBridgeConstants.CanControlBridgeSession) ─────────────
+
+    [Theory]
+    //          type               caller        expected
+    [InlineData("EXTERNAL_BRIDGE", "host",      true)]
+    [InlineData("EXTERNAL_BRIDGE", "effective", true)]
+    [InlineData("EXTERNAL_BRIDGE", "capturer",  true)]
+    [InlineData("EXTERNAL_BRIDGE", "member",    false)]
+    [InlineData("EXTERNAL_BRIDGE", "",          false)]
+    [InlineData("INSTANT",         "host",      true)]
+    [InlineData("INSTANT",         "effective", true)]
+    [InlineData("INSTANT",         "capturer",  false)]
+    [InlineData("",                "capturer",  false)]
+    public void CanControlBridgeSession_HostOrBridgeCapturer(string type, string caller, bool expected)
+    {
+        var ids = new Dictionary<string, string>
+        {
+            ["host"] = Guid.NewGuid().ToString(),
+            ["effective"] = Guid.NewGuid().ToString(),
+            ["capturer"] = Guid.NewGuid().ToString(),
+            ["member"] = Guid.NewGuid().ToString(),
+            [""] = "",
+        };
+
+        Assert.Equal(expected, ExternalBridgeConstants.CanControlBridgeSession(
+            type, ids["host"], ids["effective"], ids["capturer"], ids[caller]));
+    }
+
+    // ── ReportFarSpeakerHints: stays with the bridge AUDIO OWNER (capturer) only ─────────────
+
+    [Fact]
+    public async Task FarSpeakerHints_FollowTheCapturer_NotTheHost_InASharedBridgeRoom()
+    {
+        var hostId = Guid.NewGuid();
+        var capturer = Guid.NewGuid();
+        var room = BridgeRoom(hostId);
+        room.BridgeCapturerUserId = capturer.ToString();
+        var sut = Create(room, new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.True(await sut.CanReportFarSpeakerHintsAsync(RoomId, capturer.ToString()));
+        Assert.False(await sut.CanReportFarSpeakerHintsAsync(RoomId, hostId.ToString()));
+        Assert.False(await sut.CanReportFarSpeakerHintsAsync(RoomId, Guid.NewGuid().ToString()));
+    }
+
+    [Fact]
+    public async Task FarSpeakerHints_LegacyBridgeRoomWithNoCapturer_FallsBackToTheHost()
+    {
+        var hostId = Guid.NewGuid();
+        var sut = Create(BridgeRoom(hostId), new Mock<WorkspaceService.WorkspaceServiceClient>());
+
+        Assert.True(await sut.CanReportFarSpeakerHintsAsync(RoomId, hostId.ToString()));
     }
 
     [Theory]

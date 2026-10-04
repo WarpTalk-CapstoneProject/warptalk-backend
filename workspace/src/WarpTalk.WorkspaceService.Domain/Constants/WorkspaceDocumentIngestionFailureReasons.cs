@@ -33,6 +33,13 @@ public static class WorkspaceDocumentIngestionFailureReasons
     /// <summary>PII was found but no masked variant came back, so there was nothing safe to index.</summary>
     public const string PiiUnmasked = "pii_unmasked";
 
+    /// <summary>
+    /// Text came out of the file but it is not readable — PDF operators, undecoded glyph codes —
+    /// so it was neither scanned nor indexed. Says nothing about the content's sensitivity (the
+    /// document is NOT restricted for this); a scanned or font-subset PDF needs OCR.
+    /// </summary>
+    public const string ExtractionUnreadable = "extraction_unreadable";
+
     /// <summary>The embedding request could not be published. Retryable.</summary>
     public const string EmbeddingPublishFailed = "embedding_publish_failed";
 

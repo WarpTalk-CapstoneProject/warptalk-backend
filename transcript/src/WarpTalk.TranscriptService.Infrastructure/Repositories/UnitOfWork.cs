@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -88,6 +89,140 @@ public class UnitOfWork : IUnitOfWork
                 transcriptId, endTimeMs)
             .ToListAsync(cancellationToken);
         return result.Single();
+    }
+
+    public async Task<bool> StampTranscriptTimelineAnchorAsync(Guid transcriptId, DateTime anchorUtc, CancellationToken cancellationToken = default)
+    {
+        // Only this column, and only while it is unset — see the interface doc comment.
+        var rows = await _context.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE transcript.transcripts
+            SET timeline_anchor_at = {1}
+            WHERE id = {0} AND timeline_anchor_at IS NULL
+            """,
+            new object[] { transcriptId, anchorUtc },
+            cancellationToken);
+        return rows > 0;
+    }
+
+    public async Task<bool> NameStandInSegmentLateAsync(
+        Guid segmentId,
+        Guid standInId,
+        string speakerName,
+        string? farSpeakerSource,
+        float farSpeakerConfidence,
+        IReadOnlyList<string> unnamedNames,
+        IReadOnlyList<string> protectedSources,
+        CancellationToken cancellationToken = default)
+    {
+        // See the interface doc comment. Arrays bind as text[] parameters, so the guard is one
+        // statement with no string-built SQL. The explicit IS NOT NULL keeps NULL sources (live, or
+        // never attributed) eligible, which a plain NOT IN would not.
+        //
+        // An absent source is sent as '' and turned back into NULL in SQL: EF's raw-SQL builder has
+        // no store type for DBNull and throws on it (found against a real Postgres, not a mock).
+        var rows = await _context.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE transcript.transcript_segments
+            SET speaker_name = {1},
+                far_speaker_key = {1},
+                far_speaker_source = NULLIF({2}, ''),
+                far_speaker_confidence = {3},
+                updated_at = now()
+            WHERE id = {0}
+              AND speaker_participant_id = {4}
+              AND (btrim(speaker_name) = '' OR btrim(speaker_name) = ANY({5}))
+              AND NOT (far_speaker_source IS NOT NULL AND far_speaker_source = ANY({6}))
+            """,
+            new object[]
+            {
+                segmentId,
+                speakerName,
+                farSpeakerSource ?? string.Empty,
+                farSpeakerConfidence,
+                standInId,
+                unnamedNames.ToArray(),
+                protectedSources.ToArray(),
+            },
+            cancellationToken);
+        return rows > 0;
+    }
+
+    public async Task<int?> PlaceSegmentByStartTimeAsync(Guid transcriptId, Guid segmentId, CancellationToken cancellationToken = default)
+    {
+        // See the interface doc comment. Every statement below runs inside this one transaction,
+        // after the transcript row lock, so two replicas never compute a position from each
+        // other's half-finished shift.
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        await _context.Database.ExecuteSqlRawAsync(
+            "SELECT 1 FROM transcript.transcripts WHERE id = {0} FOR UPDATE",
+            new object[] { transcriptId },
+            cancellationToken);
+
+        var current = (await _context.Database
+            .SqlQueryRaw<int>(
+                """
+                SELECT sequence_order AS "Value"
+                FROM transcript.transcript_segments
+                WHERE id = {0} AND transcript_id = {1}
+                """,
+                segmentId, transcriptId)
+            .ToListAsync(cancellationToken)).SingleOrDefault();
+
+        // The first segment stored BEFORE this one that started AFTER it: that is the slot this one
+        // belongs in. 0 (none) means the segment is already in place, which is the normal case.
+        // COALESCE to a plain int rather than reading a nullable scalar: one row always comes back.
+        var target = (await _context.Database
+            .SqlQueryRaw<int>(
+                """
+                SELECT COALESCE(MIN(o.sequence_order), 0) AS "Value"
+                FROM transcript.transcript_segments s
+                JOIN transcript.transcript_segments o ON o.transcript_id = s.transcript_id
+                WHERE s.id = {0}
+                  AND s.transcript_id = {1}
+                  AND o.sequence_order < s.sequence_order
+                  AND o.start_time_ms > s.start_time_ms
+                """,
+                segmentId, transcriptId)
+            .ToListAsync(cancellationToken)).SingleOrDefault();
+
+        if (current <= 0 || target <= 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+
+        // [target, current] -> negative and distinct (the segment itself becomes -(current+1)),
+        // then [target, current-1] back up by one, then the segment into the freed `target`. Each
+        // step leaves every positive sequence_order unique, which a non-deferrable index requires.
+        await _context.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE transcript.transcript_segments
+            SET sequence_order = -(sequence_order + 1)
+            WHERE transcript_id = {0} AND sequence_order >= {1} AND sequence_order <= {2}
+            """,
+            new object[] { transcriptId, target, current },
+            cancellationToken);
+        await _context.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE transcript.transcript_segments
+            SET sequence_order = -sequence_order
+            WHERE transcript_id = {0} AND sequence_order < 0 AND id <> {1}
+            """,
+            new object[] { transcriptId, segmentId },
+            cancellationToken);
+        await _context.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE transcript.transcript_segments
+            SET sequence_order = {1}
+            WHERE id = {0}
+            """,
+            new object[] { segmentId, target },
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return target;
     }
 
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

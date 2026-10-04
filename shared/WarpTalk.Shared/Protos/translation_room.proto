@@ -8,6 +8,17 @@ service TranslationRoomService {
   rpc GetTranslationRoomById (GetTranslationRoomRequest) returns (GetTranslationRoomResponse);
   rpc GetTranslationRoomByCode (GetTranslationRoomByCodeRequest) returns (GetTranslationRoomResponse);
   rpc GetParticipantsByRoomId (GetParticipantsByRoomIdRequest) returns (GetParticipantsByRoomIdResponse);
+
+  // WT-422: the names of the people this meeting is WITH — its host, the people who joined, and
+  // the people invited who have not arrived yet — so TranscriptService can bias STT toward them.
+  // Proper nouns are exactly what the recogniser gets wrong ("Huỳnh Thái Tú", "Tanaka Haruto"),
+  // and nothing else in the system knows who is in a room.
+  //
+  // Not GetParticipantsByRoomId: an invitee has no roster row until they join (an invitation is an
+  // email address), so their name has to be looked up in Auth, and that lookup belongs with the
+  // service that owns the invitations. Read-only, names only.
+  rpc GetRoomPeopleNames (GetRoomPeopleNamesRequest) returns (GetRoomPeopleNamesResponse);
+
   rpc GetActiveRoomCountByWorkspace (GetActiveRoomCountByWorkspaceRequest) returns (GetActiveRoomCountByWorkspaceResponse);
 
   // WT-359: the ONE write on this service. MeetingService owns the Transfer Host action and
@@ -169,6 +180,19 @@ message GetTranslationRoomResponse {
   // means "no requester_email was sent, or this server predates the field" — the reader must NOT
   // treat absent as an answer either way, only as "ask the room-read predicate instead".
   optional bool is_requester_invited = 20;
+  // EXTERNAL_BRIDGE: the participant whose desktop publishes the far side's audio as the stand-in
+  // (one shared bridge room per Google Meet code, one capturer). Meeting Service mints the bridge
+  // token for this user and the Gateway lets only this user set the external meeting's language.
+  //
+  // Empty means either a room with no capturer (created before bridge claim existed) or an older
+  // server. In both cases the reader MUST fall back to `hostId` - the pre-claim rule - and never to
+  // "anyone": the failure this guards is minting a second identity into someone else's meeting.
+  // See ExternalBridgeConstants.IsBridgeAudioOwner.
+  string bridge_capturer_user_id = 21;
+  // EXTERNAL_BRIDGE: the Google Meet link the room bridges, as stored. TranscriptService's
+  // post-meeting relabel needs it to find the Meet conference whose transcript names the far-side
+  // speakers. Empty for every other room type, and from an older server.
+  string external_meeting_url = 22;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host
@@ -226,6 +250,21 @@ message GetParticipantsByRoomIdRequest {
 
 message GetParticipantsByRoomIdResponse {
   repeated Participant participants = 1;
+}
+
+message GetRoomPeopleNamesRequest {
+  string room_id = 1;
+  // At most this many names, and at most this many invitation lookups against Auth. 0 means the
+  // server default; the server also clamps it to its own ceiling.
+  int32 max_names = 2;
+}
+
+message GetRoomPeopleNamesResponse {
+  // Most relevant first: the host, then people in the room now, then people who were here and
+  // left, then invitees who have not joined. Whitespace-collapsed, de-duplicated
+  // case-insensitively, and never a placeholder ("Host", the bridge's "External Meeting").
+  // Kicked, rejected and lobby-only rows are not people this meeting is with, and are left out.
+  repeated string display_names = 1;
 }
 
 message GetActiveRoomCountByWorkspaceRequest {

@@ -48,4 +48,12 @@ public interface IAssistantChatRequestPublisher
         string? bearerToken,
         IReadOnlyList<ChatTurnDto> history,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// The user pressed Stop on the reply <paramref name="requestId"/> (3 Oct 2026). Sets the key the
+    /// chat worker polls before every model call, while streaming and before any tool runs; the
+    /// worker then publishes what it had written as the reply (or fails an empty one) through the
+    /// usual result stream, so nothing here touches the message row.
+    /// </summary>
+    Task RequestStopAsync(Guid requestId, CancellationToken ct = default);
 }

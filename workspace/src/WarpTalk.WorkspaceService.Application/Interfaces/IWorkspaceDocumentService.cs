@@ -22,6 +22,12 @@ public interface IWorkspaceDocumentService
     Task<Result<WorkspaceDocumentDto>> ReuploadDocumentAsync(Guid workspaceId, Guid documentId, ReuploadDocumentApiRequest request, Guid userId, CancellationToken ct = default);
 
     /// <summary>
+    /// WT-854 — the bytes of a corrected version awaiting review, for a reviewer (Owner/Admin) or
+    /// the uploader. NotFound when nothing is pending.
+    /// </summary>
+    Task<Result<DocumentDownloadStreamDto>> DownloadPendingRevisionAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
     /// A document's approval and feedback history, newest first. WT-633.
     /// </summary>
     Task<Result<PagedResult<DocumentHistoryEntryDto>>> GetDocumentHistoryAsync(Guid workspaceId, Guid documentId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default);
@@ -33,6 +39,19 @@ public interface IWorkspaceDocumentService
     Task<Result<PagedResult<WorkspaceDocumentAccessPolicyDto>>> GetAccessPoliciesAsync(Guid workspaceId, Guid documentId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default);
     Task<Result> ApproveDocumentAsync(Guid workspaceId, Guid documentId, ApproveDocumentRequest request, Guid userId, CancellationToken ct = default);
     Task<Result<DocumentDownloadStreamDto>> DownloadDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
+    /// <summary>
+    /// The PII-masked copy of a restricted document, in the format it was uploaded in. What a
+    /// member is given instead of the original; Owner/Admin and the uploader may read it too.
+    /// Forbidden when the caller has no version at all, NotFound when no masked copy exists.
+    /// </summary>
+    Task<Result<DocumentDownloadStreamDto>> DownloadMaskedDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Owner/Admin: run the security scan again on a restricted document so its masked copy is
+    /// produced. Goes through the same ingestion event an upload does.
+    /// </summary>
+    Task<Result<WorkspaceDocumentDto>> RescanMaskedVersionAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
+
     Task<Result<ExtractedTextDto>> GetExtractedTextAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);
     Task<Result<ExtractedTextDto>> UpdateExtractedTextAsync(Guid workspaceId, Guid documentId, string text, Guid userId, CancellationToken ct = default);
     Task<Result> DeleteDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default);

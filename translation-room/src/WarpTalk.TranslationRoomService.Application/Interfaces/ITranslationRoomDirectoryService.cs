@@ -74,6 +74,22 @@ public interface ITranslationRoomDirectoryService
         Guid translationRoomId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// WT-422: the names of the people this meeting is with, most relevant first — the host, then
+    /// people in the room now, then people who were here and left, then invitees who have not
+    /// joined (looked up in Auth, because an invitation is only an email address). TranscriptService
+    /// feeds them to STT as keywords.
+    ///
+    /// Never a placeholder label ("Host", the bridge stand-in's "External Meeting"), never a kicked,
+    /// rejected or lobby-only row, and never more than <paramref name="maxNames"/> (clamped to a
+    /// server ceiling; 0 or less means the default). Fails NotFound only for a missing room; an
+    /// unreachable Auth costs the invitees' names, not the call.
+    /// </summary>
+    Task<Result<IReadOnlyList<string>>> GetPeopleNamesAsync(
+        Guid translationRoomId,
+        int maxNames,
+        CancellationToken ct = default);
+
     Task<Result<int>> CountActiveRoomsByWorkspaceAsync(
         Guid workspaceId,
         CancellationToken ct = default);

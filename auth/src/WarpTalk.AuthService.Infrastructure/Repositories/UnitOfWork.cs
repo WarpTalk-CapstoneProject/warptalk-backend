@@ -18,6 +18,7 @@ public class UnitOfWork : IUnitOfWork
         IVoiceProfileRepository voiceProfileRepository,
         IVoiceSampleRepository voiceSampleRepository,
         IVoiceConsentRepository voiceConsentRepository,
+        IVoiceEnrollmentChallengeRepository voiceEnrollmentChallengeRepository,
         IStaffMemberRepository staffMemberRepository,
         IStaffInvitationRepository staffInvitationRepository)
     {
@@ -31,6 +32,7 @@ public class UnitOfWork : IUnitOfWork
         VoiceProfileRepository = voiceProfileRepository;
         VoiceSampleRepository = voiceSampleRepository;
         VoiceConsentRepository = voiceConsentRepository;
+        VoiceEnrollmentChallengeRepository = voiceEnrollmentChallengeRepository;
         StaffMemberRepository = staffMemberRepository;
         StaffInvitationRepository = staffInvitationRepository;
     }
@@ -43,6 +45,7 @@ public class UnitOfWork : IUnitOfWork
     public IRefreshTokenRepository RefreshTokenRepository { get; }
     public IVoiceProfileRepository VoiceProfileRepository { get; }
     public IVoiceConsentRepository VoiceConsentRepository { get; }
+    public IVoiceEnrollmentChallengeRepository VoiceEnrollmentChallengeRepository { get; }
     public IVoiceSampleRepository VoiceSampleRepository { get; }
     public IStaffMemberRepository StaffMemberRepository { get; }
     public IStaffInvitationRepository StaffInvitationRepository { get; }

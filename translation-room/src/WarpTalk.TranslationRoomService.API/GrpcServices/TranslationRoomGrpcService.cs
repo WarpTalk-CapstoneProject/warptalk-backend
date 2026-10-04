@@ -105,9 +105,16 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             ArtifactAccess = result.Value!.Settings.ArtifactAccess ?? string.Empty,
             // WT-704: the meeting's declared languages (L2). Always sent, so a consumer whose
             // opt-in could not be answered still has the room's own set to fall back to.
-            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty
+            SourceLanguage = result.Value!.SourceLanguage ?? string.Empty,
+            // Bridge claim: whose desktop owns the far side's audio. Empty = no capturer, and the
+            // consumer falls back to the host (ExternalBridgeConstants.IsBridgeAudioOwner).
+            BridgeCapturerUserId = result.Value!.BridgeCapturerUserId?.ToString() ?? string.Empty
         };
         response.TargetLanguages.AddRange(result.Value!.TargetLanguages ?? []);
+
+        // Bridge relabel: the Meet link, so TranscriptService can find the conference whose
+        // transcript names the far-side speakers. Empty for non-bridge rooms.
+        response.ExternalMeetingUrl = result.Value!.ExternalMeetingUrl ?? string.Empty;
 
         // WT-704: `resolved` is set only alongside a real answer. An empty list with resolved=true
         // means "nothing may be generated"; resolved=false means "no answer" and the consumer falls
@@ -161,6 +168,27 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             });
         }
 
+        return response;
+    }
+
+    /// <summary>
+    /// WT-422: who this meeting is with, as names, for TranscriptService's STT keywords. The
+    /// ordering, exclusions and the invitee lookup all live in the directory service.
+    /// </summary>
+    public override async Task<GetRoomPeopleNamesResponse> GetRoomPeopleNames(
+        GetRoomPeopleNamesRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var parsedRoomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        var result = await _directoryService.GetPeopleNamesAsync(
+            parsedRoomId, request.MaxNames, context.CancellationToken);
+        if (!result.IsSuccess)
+            throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+        var response = new GetRoomPeopleNamesResponse();
+        response.DisplayNames.AddRange(result.Value!);
         return response;
     }
 

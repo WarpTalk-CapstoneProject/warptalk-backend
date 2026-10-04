@@ -122,6 +122,23 @@ public class NotificationValidatorTests
         Assert.True(result.IsSuccess);
     }
 
+    // WT-708: the series-blocked notice names a SERIES, not a room — there is no room, because
+    // the whole point is that none is being created. Registered with its producer.
+    [Fact]
+    public void Validate_MeetingSeriesBlockedPayload_IsAccepted()
+    {
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            series_id = "019ff9e1-e3e2-7024-99b7-6e37c6a18394",
+            series_title = "Daily sync"
+        });
+
+        var result = NotificationValidator.Validate(
+            NotificationConstants.TypeMeetingSeriesBlocked, "Title", "Content", null, payload);
+
+        Assert.True(result.IsSuccess);
+    }
+
     // Its own test rather than another InlineData above: this type carries four fields, and the
     // lifecycle payload carries two. Registered here in the same commit as its producer — the
     // fifth type to be added, and the first not to spend a while being silently discarded.

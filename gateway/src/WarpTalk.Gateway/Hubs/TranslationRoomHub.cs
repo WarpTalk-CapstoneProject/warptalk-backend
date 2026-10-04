@@ -25,6 +25,7 @@ public class TranslationRoomHub : Hub
     private readonly IConnectionMultiplexer _redis;
     private readonly IRoomHostAuthority _hostAuthority;
     private readonly IRoomLanguagePolicy _languagePolicy;
+    private readonly FarSpeakerHintIngest _farSpeakerHints;
     private readonly ILogger<TranslationRoomHub> _logger;
 
     // Track which connection belongs to which room
@@ -32,6 +33,15 @@ public class TranslationRoomHub : Hub
 
     // Track user active connection in a room: (RoomId_UserId) -> ConnectionId
     private static readonly ConcurrentDictionary<string, string> _roomUserToConnection = new();
+
+    /// <summary>
+    /// The rooms THIS replica holds at least one connection on, for
+    /// <see cref="Presence.RoomLivenessHeartbeatService"/>. A lobby connection counts: its row is
+    /// WAITING, which never makes a room look occupied on its own, so including it only means the
+    /// CONNECTED rows beside it are still believed while somebody is knocking.
+    /// </summary>
+    public static IReadOnlyCollection<string> RoomsWithConnections() =>
+        _connectionToRoom.Values.Distinct().ToArray();
 
     /// <summary>
     /// WT-354: the live roster, per room, in Redis rather than in this process.
@@ -59,6 +69,7 @@ public class TranslationRoomHub : Hub
         IConnectionMultiplexer redis,
         IRoomHostAuthority hostAuthority,
         IRoomLanguagePolicy languagePolicy,
+        FarSpeakerHintIngest farSpeakerHints,
         ILogger<TranslationRoomHub> logger)
     {
         _connectionManager = connectionManager;
@@ -68,35 +79,46 @@ public class TranslationRoomHub : Hub
         _redis = redis;
         _hostAuthority = hostAuthority;
         _languagePolicy = languagePolicy;
+        _farSpeakerHints = farSpeakerHints;
         _logger = logger;
     }
 
     /// <summary>
-    /// Refuse a language the room's workspace does not permit.
+    /// Refuse a language the meeting does not declare (its L2, WT-709) or the room's workspace
+    /// does not permit (L1).
     ///
     /// Throws rather than returning a bool, for the same reason
     /// <see cref="EnsureHostAuthorityAsync"/> does: a caller that forgets to check a return value
     /// re-opens the hole silently, and a HubException surfaces on the client as a rejected invoke
-    /// with this text, which is the sentence the participant needs to read.
+    /// with this text, which is the sentence the participant needs to read. The two refusals say
+    /// different things because they have different exits: the host can add a language to the
+    /// meeting from inside the call; only an Owner can change the workspace's list.
     ///
     /// See <see cref="IRoomLanguagePolicy"/> for why an unreachable WorkspaceService permits here
     /// while it refuses in the host check.
     /// </summary>
     private async Task EnsureLanguageAllowedAsync(Guid translationRoomId, string language)
     {
-        if (await _languagePolicy.IsLanguageAllowedAsync(
-                translationRoomId, language, Context.ConnectionAborted))
+        var verdict = await _languagePolicy.EvaluateLanguageAsync(
+            translationRoomId, language, Context.ConnectionAborted);
+
+        if (verdict == RoomLanguageVerdict.Allowed)
         {
             return;
         }
 
         _logger.LogWarning(
-            "TranslationRoomHub: refused language {Language} in room {RoomId} for user {UserId} — "
-            + "the workspace's allowed-language policy does not include it.",
-            language, translationRoomId, GetUserId());
+            "TranslationRoomHub: refused language {Language} in room {RoomId} for user {UserId} — {Verdict}.",
+            language, translationRoomId, GetUserId(), verdict);
 
-        throw new HubException("This workspace does not allow that language in meetings.");
+        throw new HubException(verdict == RoomLanguageVerdict.NotInRoomLanguages
+            ? RoomLanguageNotInMeetingMessage
+            : "This workspace does not allow that language in meetings.");
     }
+
+    /// <summary>WT-709: the web client matches on this sentence to offer "ask the host".</summary>
+    public const string RoomLanguageNotInMeetingMessage =
+        "That language is not one of this meeting's languages. Ask the host to add it to the meeting.";
 
     /// <summary>
     /// Closes the KNOWN GAP that used to be documented (and left open) on MuteAll,
@@ -284,6 +306,13 @@ public class TranslationRoomHub : Hub
 
         // Set target language for AI Translation Worker
         var db = _redis.GetDatabase();
+
+        // Asserted now rather than on the next heartbeat, so the room's first joiner is never
+        // read as "no live socket" for up to a beat by a reaper tick that lands in between.
+        await db.StringSetAsync(
+            WarpTalk.Shared.RoomHubLiveness.RoomKey(roomIdStr),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            WarpTalk.Shared.RoomHubLiveness.Ttl);
 
         // WT-354: hand the joiner the room as it already is, before recording their own arrival.
         //
@@ -672,9 +701,10 @@ public class TranslationRoomHub : Hub
     ///      persisted value (ParticipantLanguageProcessor), so the routes follow the pick rather
     ///      than a Redis-only change the mesh never reads.
     ///
-    /// Refused unless the caller is the host of a live EXTERNAL_BRIDGE room
-    /// (<see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>), and the language must
-    /// pass the workspace policy like any other pick. Both are checked before anything is written.
+    /// Refused unless the caller is the host or the current capturer of a live EXTERNAL_BRIDGE
+    /// room (PO 2026-10-01, <see cref="IRoomHostAuthority.CanSetExternalMeetingLanguageAsync"/>),
+    /// and the language must pass the workspace policy like any other pick. Both are checked
+    /// before anything is written.
     /// </summary>
     public async Task SetExternalMeetingLanguage(Guid translationRoomId, string language)
     {
@@ -686,9 +716,9 @@ public class TranslationRoomHub : Hub
         {
             _logger.LogWarning(
                 "TranslationRoomHub: refused SetExternalMeetingLanguage on room {RoomId} for user {UserId} — "
-                + "not the host of a live external-bridge room.",
+                + "not the host or capturer of a live external-bridge room.",
                 translationRoomId, userId);
-            throw new HubException("Only the host of an external meeting can change what the other side speaks.");
+            throw new HubException("Only the host or the participant capturing the external meeting can change what the other side speaks.");
         }
 
         await EnsureLanguageAllowedAsync(translationRoomId, language);
@@ -703,7 +733,15 @@ public class TranslationRoomHub : Hub
         var groupName = TranslationRoomGroupName(translationRoomId);
 
         var db = _redis.GetDatabase();
-        await db.HashSetAsync($"translationRoom:{translationRoomId}:speak_languages", standInId, normalized);
+        // WT-909 wave 2: "auto" on the stand-in's speak language means the room names two or more
+        // languages for the Meet side (TranslationRoomService.FarSideSpeaksSeveralLanguages), so its
+        // STT runs unpinned. This pick then only moves the dub into Meet; pinning STT to it would
+        // garble everybody there who speaks the other language. A room's languages only grow, so
+        // nothing ever needs to pin it back.
+        var speakKey = $"translationRoom:{translationRoomId}:speak_languages";
+        var current = await db.HashGetAsync(speakKey, standInId);
+        if (!string.Equals(current.ToString(), "auto", StringComparison.OrdinalIgnoreCase))
+            await db.HashSetAsync(speakKey, standInId, normalized);
         await db.HashSetAsync($"translationRoom:{translationRoomId}:languages", standInId, normalized);
 
         await Clients.Group(groupName).SendAsync("ParticipantSpeakLanguageChanged", standInId, normalized);
@@ -713,8 +751,47 @@ public class TranslationRoomHub : Hub
             translationRoomId, standInId, speakLanguage: normalized, listenLanguage: normalized);
 
         _logger.LogInformation(
-            "TranslationRoomHub: host {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
+            "TranslationRoomHub: capturer {UserId} set the external meeting's language to {Language} in translationRoom {TranslationRoomId}",
             userId, normalized, translationRoomId);
+    }
+
+    /// <summary>
+    /// Live Google Meet speaker names for the far side of an EXTERNAL_BRIDGE room. The capturer's
+    /// desktop reads Meet's captions; the main window forwards each "this name was speaking from
+    /// tStartMs to tEndMs" here, and they land on the Redis stream
+    /// <c>meeting:{translationRoomId}:far_speaker_hints</c> that stt_worker reads to name the
+    /// stand-in's lines (warptalk-ai <c>shared/far_speaker.py</c>). See
+    /// <see cref="FarSpeakerHintIngest"/> for the validation, clock alignment and expansion.
+    ///
+    /// A hub method rather than REST because the main window is already connected and a caption
+    /// is only useful for a few seconds.
+    ///
+    /// Narrower than <see cref="SetExternalMeetingLanguage"/>: only the bridge audio owner of a live
+    /// EXTERNAL_BRIDGE room (<see cref="IRoomHostAuthority.CanReportFarSpeakerHintsAsync"/>) — the
+    /// captions come from the capturer's desktop, so a host who is not capturing has none to send —
+    /// cached for a few seconds because this is called several times a second. A refusal is a
+    /// HubException the client may ignore; calls over the room's budget (10/s) are dropped and
+    /// answered with 0.
+    /// </summary>
+    /// <param name="translationRoomId">The bridge room.</param>
+    /// <param name="hints">At most 20 caption observations on the client's clock.</param>
+    /// <param name="clientNowMs">The client's <c>Date.now()</c> when it sent this call.</param>
+    /// <returns>How many stream entries were written (0 when nothing new or rate-limited).</returns>
+    public async Task<int> ReportFarSpeakerHints(Guid translationRoomId, FarSpeakerHintDto[]? hints, long clientNowMs)
+    {
+        var userId = GetUserId();
+        var (outcome, written) = await _farSpeakerHints.IngestAsync(
+            translationRoomId,
+            userId,
+            hints,
+            clientNowMs,
+            ct => _hostAuthority.CanReportFarSpeakerHintsAsync(translationRoomId, userId, ct),
+            Context.ConnectionAborted);
+
+        if (outcome == FarSpeakerHintOutcome.Refused)
+            throw new HubException("Only the participant capturing the external meeting can report its speakers.");
+
+        return written;
     }
 
     /// <summary>

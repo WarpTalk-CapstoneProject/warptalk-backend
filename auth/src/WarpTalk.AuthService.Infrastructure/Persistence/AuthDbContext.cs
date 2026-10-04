@@ -33,6 +33,8 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<VoiceConsent> VoiceConsents { get; set; }
 
+    public virtual DbSet<VoiceEnrollmentChallenge> VoiceEnrollmentChallenges { get; set; }
+
     public virtual DbSet<StaffMember> StaffMembers { get; set; }
 
     public virtual DbSet<StaffInvitation> StaffInvitations { get; set; }
@@ -517,6 +519,45 @@ public partial class AuthDbContext : DbContext
             entity.HasOne(d => d.VoiceProfile).WithMany(p => p.VoiceConsents)
                 .HasForeignKey(d => d.VoiceProfileId)
                 .HasConstraintName("voice_consents_voice_profile_id_fkey");
+        });
+
+        // WT-888 — the read-aloud phrase a live recording must say before it may become a voice.
+        // Every column is mapped by hand: this context has no naming convention, and a missing
+        // HasColumnName is a 500 on every SELECT over the table.
+        modelBuilder.Entity<VoiceEnrollmentChallenge>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_enrollment_challenges_pkey");
+
+            entity.ToTable("voice_enrollment_challenges", "voice");
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt },
+                "voice_enrollment_challenges_user_id_created_at_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Language)
+                .HasMaxLength(15)
+                .HasColumnName("language");
+            entity.Property(e => e.Phrase)
+                .HasMaxLength(500)
+                .HasColumnName("phrase");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.ConsumedAt).HasColumnName("consumed_at");
+            entity.Property(e => e.Outcome)
+                .HasMaxLength(32)
+                .HasColumnName("outcome");
+            entity.Property(e => e.Transcript)
+                .HasMaxLength(1000)
+                .HasColumnName("transcript");
+            entity.Property(e => e.MatchScore)
+                .HasPrecision(4, 3)
+                .HasColumnName("match_score");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
         });
 
         modelBuilder.Entity<VoiceProfile>(entity =>

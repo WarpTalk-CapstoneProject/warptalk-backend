@@ -132,6 +132,10 @@ public sealed class RedisStreamService
     /// Read new messages from a stream using consumer groups (XREADGROUP).
     /// Returns empty array if no messages available.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="blockMs"/> is not sent: StackExchange.Redis multiplexes one connection and
+    /// does not support BLOCK, so this read returns at once and callers poll with a short delay.
+    /// </remarks>
     public async Task<StreamEntry[]> ConsumeAsync(
         string streamKey,
         string groupName,
@@ -157,6 +161,116 @@ public sealed class RedisStreamService
         var db = _redis.GetDatabase();
         await db.StreamAcknowledgeAsync(streamKey, groupName, messageId);
     }
+
+    // ── Consumer-group housekeeping ──────────────────────────
+
+    /// <summary>One row of XINFO CONSUMERS, as plain data so the selection rule is testable.</summary>
+    public sealed record StreamConsumerState(string Name, long PendingCount, long IdleMs);
+
+    // Bounds one pass, so a group that keeps refilling cannot pin the caller; the next pass
+    // carries on from the start.
+    private const int MaxStaleClaimBatches = 50;
+
+    /// <summary>
+    /// Acknowledge every entry that has been pending in <paramref name="groupName"/> for longer
+    /// than <paramref name="minIdle"/>, whichever consumer holds it, WITHOUT redelivering it.
+    /// Returns how many entries left the pending list.
+    /// </summary>
+    /// <remarks>
+    /// For groups whose entries are worthless once stale (live SignalR broadcasts). XAUTOCLAIM
+    /// JUSTID moves each one onto <paramref name="consumerName"/> — ids only, tts:results carries
+    /// base64 audio — and XACK retires it. Entries already trimmed out of the stream are dropped
+    /// from the pending list by XAUTOCLAIM itself and are counted too.
+    ///
+    /// Safe on several replicas at once: a claim resets the entry's idle time, so a concurrent
+    /// pass skips it, and XACK of an id that is no longer pending is a no-op.
+    /// </remarks>
+    public async Task<long> AcknowledgeStalePendingAsync(
+        string streamKey,
+        string groupName,
+        string consumerName,
+        TimeSpan minIdle,
+        int batchSize = 100)
+    {
+        var db = _redis.GetDatabase();
+        RedisValue cursor = "0-0";
+        long retired = 0;
+
+        for (var batch = 0; batch < MaxStaleClaimBatches; batch++)
+        {
+            var result = await db.StreamAutoClaimIdsOnlyAsync(
+                streamKey, groupName, consumerName, (long)minIdle.TotalMilliseconds, cursor, batchSize);
+            if (result.IsNull) break;
+
+            if (result.ClaimedIds.Length > 0)
+                retired += await db.StreamAcknowledgeAsync(streamKey, groupName, result.ClaimedIds);
+            retired += result.DeletedIds.Length;
+
+            cursor = result.NextStartId;
+            if (cursor.IsNullOrEmpty || cursor == "0-0") break;
+        }
+
+        return retired;
+    }
+
+    /// <summary>
+    /// Remove consumers that are provably gone from <paramref name="groupName"/> — see
+    /// <see cref="SelectDeadConsumers"/> — and return their names.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> DeleteDeadConsumersAsync(
+        string streamKey,
+        string groupName,
+        string selfConsumerName,
+        TimeSpan minIdle)
+    {
+        var db = _redis.GetDatabase();
+        var consumers = (await db.StreamConsumerInfoAsync(streamKey, groupName))
+            .Select(c => new StreamConsumerState(c.Name ?? "", c.PendingMessageCount, c.IdleTimeInMilliseconds))
+            .ToArray();
+
+        var deleted = new List<string>();
+        foreach (var name in SelectDeadConsumers(consumers, selfConsumerName, minIdle))
+        {
+            // DELCONSUMER discards whatever the consumer still has pending and returns the count.
+            // Selection required zero, so anything here was read between the two calls — which
+            // only a live consumer does, and XREADGROUP simply recreates it on its next read.
+            var dropped = await db.StreamDeleteConsumerAsync(streamKey, groupName, name);
+            if (dropped > 0)
+            {
+                _logger.LogWarning(
+                    "Deleting consumer {Consumer} from {Stream}/{Group} discarded {Dropped} pending entries it picked up after it was selected.",
+                    name, streamKey, groupName, dropped);
+            }
+            deleted.Add(name);
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Which consumers a housekeeping pass may delete: nothing pending, idle for at least
+    /// <paramref name="minIdle"/>, and never the caller itself.
+    /// </summary>
+    /// <remarks>
+    /// Idle is XINFO CONSUMERS <c>idle</c>, which Redis 7.2+ defines as time since the last
+    /// ATTEMPTED interaction — an XREADGROUP that returned nothing counts. (<c>inactive</c>, the
+    /// time since the last read that returned entries, would call a live consumer on a quiet
+    /// stream dead.) The gateway polls every stream several times a second, so a live consumer's
+    /// idle stays under a few seconds and anything idle for an hour belongs to a process that no
+    /// longer exists. Consumers that still hold entries are left alone; the stale-pending claim
+    /// runs first and moves those entries off them.
+    /// </remarks>
+    public static IReadOnlyList<string> SelectDeadConsumers(
+        IEnumerable<StreamConsumerState> consumers,
+        string selfConsumerName,
+        TimeSpan minIdle) =>
+        consumers
+            .Where(c => c.PendingCount == 0
+                && c.IdleMs >= (long)minIdle.TotalMilliseconds
+                && !string.IsNullOrEmpty(c.Name)
+                && !string.Equals(c.Name, selfConsumerName, StringComparison.Ordinal))
+            .Select(c => c.Name)
+            .ToList();
 
     /// <summary>
     /// Write a plain key with an expiry. Used to project decisions this gateway has

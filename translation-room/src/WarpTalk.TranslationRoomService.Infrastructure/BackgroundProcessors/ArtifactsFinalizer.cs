@@ -99,17 +99,21 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 _logger.LogWarning(ex, "Failed to publish target languages for room {RoomId}", roomId);
             }
 
-            // 1. Graceful Flush: Wait for final chunk processed or 30s timeout via repository pub/sub
+            // 1. Graceful flush: give speech-to-text a moment to deliver the meeting's last lines.
+            // See TranscriptSettleWindow for why this is short and why it is not a real wait.
             string channelName = $"translationRoom:{roomId}:final_processed";
-            bool completedGracefully = await _redisStateRepo.WaitForSignalAsync(channelName, TimeSpan.FromSeconds(30), ct);
+            bool completedGracefully = await _redisStateRepo.WaitForSignalAsync(channelName, TranscriptSettleWindow, ct);
 
-            if (!completedGracefully)
+            if (completedGracefully)
             {
-                _logger.LogWarning("Graceful flush timed out (30s) for room {RoomId}. Executing fallback emergency flush.", roomId);
+                _logger.LogInformation("Received event-driven final_processed completion signal for room {RoomId}", roomId);
             }
             else
             {
-                _logger.LogInformation("Received event-driven final_processed completion signal for room {RoomId}", roomId);
+                _logger.LogInformation(
+                    "Gave room {RoomId} {Seconds}s for its last transcript lines; finalizing.",
+                    roomId,
+                    TranscriptSettleWindow.TotalSeconds);
             }
 
             // 2. Transition route state to SAVING_OUTPUTS.
@@ -385,7 +389,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// Asks for the summary that never arrived, sending the transcript this finalizer just read.
     ///
     /// WHY THIS EXISTS
-    ///     `FinalizeSummaryAsync` waits 90s and, when nothing appears, writes a placeholder and
+    ///     `FinalizeSummaryAsync` waits (SummaryWaitTimeout) and, when nothing appears, writes a placeholder and
     ///     logs that it is KEEPING the Redis key "so a late result is not lost". Nothing has ever
     ///     read that key back. In production that promise has been empty 157 times — every single
     ///     insufficient summary — and ten of those meetings had a real transcript, the largest
@@ -570,8 +574,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// <summary>
     /// WT-369 — HOW LONG THE SUMMARY IS GIVEN TO SHOW UP.
     ///
-    /// The transcript half of this finalization already waits up to 30s for its `final_processed`
-    /// signal. The summary was given nothing at all: one Redis read, immediately. But the summary
+    /// The transcript half of this finalization first gives speech-to-text a short settle window
+    /// (<see cref="TranscriptSettleWindow"/>). The summary was given nothing at all: one Redis read, immediately. But the summary
     /// is produced by ai_assistant_worker, triggered independently from
     /// MeetingService.EndMeetingAsync — the comment at the top of ProcessRoomFinalizationAsync
     /// says in as many words that there is "no strict ordering guarantee" — and it is an LLM call
@@ -581,11 +585,39 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// It exits the moment <c>structured_json</c> appears, so a summary that is already there
     /// costs one read.
     ///
+    /// WT-930: 120s, up from 90s, because the settle window in front of it shrank from 30s to
+    /// <see cref="TranscriptSettleWindow"/>. The worker's summary is triggered at meeting end, not
+    /// by this finalizer, so it is the deadline measured from the END that matters: 30s + 90s
+    /// before, 8s + 120s now. A summary that used to make it in time still does; one that is
+    /// already there is saved about 22 seconds sooner.
+    ///
     /// Settable only from the tests (InternalsVisibleTo below), so the wait can be driven without
-    /// spending ninety real seconds per case.
+    /// spending two real minutes per case.
     /// </summary>
-    internal TimeSpan SummaryWaitTimeout { get; init; } = TimeSpan.FromSeconds(90);
+    internal TimeSpan SummaryWaitTimeout { get; init; } = TimeSpan.FromSeconds(120);
     internal TimeSpan SummaryPollInterval { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// WT-930 — how long finalization waits before reading the transcript.
+    ///
+    /// This used to be a 30-second wait for <c>translationRoom:{roomId}:final_processed</c>.
+    /// Nothing publishes that channel: not the speech-to-text worker, not this service, not the
+    /// infrastructure. So every meeting waited the full 30 seconds, logged "Graceful flush timed
+    /// out", and then went on to do exactly what it would have done anyway. Every summary and
+    /// transcript artifact arrived half a minute later than it had to.
+    ///
+    /// What the wait was for is still real. When a meeting ends, its last utterance can still be on
+    /// its way: the speech-to-text worker commits it after its silence hangover and a model round
+    /// trip, and the stream consumer then writes it to TranscriptService. That is seconds, not half
+    /// a minute. Eight covers it with room to spare.
+    ///
+    /// The signal is still listened for, so a publisher added later ends the wait early. A line
+    /// that lands after the window is not lost either: it is stored in TranscriptService, which is
+    /// what the record page reads. It is only missing from the transcript download.
+    ///
+    /// Settable only from the tests, like <see cref="SummaryWaitTimeout"/>.
+    /// </summary>
+    internal TimeSpan TranscriptSettleWindow { get; init; } = TimeSpan.FromSeconds(8);
 
     /// <summary>
     /// The summary artifact, and whether it is the placeholder written because nothing arrived.

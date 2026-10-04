@@ -37,6 +37,9 @@ public class VoiceProfileServiceTests
     private readonly IVoiceCloneRequestQueue _cloneQueue;
     private readonly IVoicePreviewQueue _previewQueue;
     private readonly IVoiceCatalogDirectory _catalog = Substitute.For<IVoiceCatalogDirectory>();
+    // WT-888 — passes by default, so the tests below keep testing what they were written for;
+    // the read-aloud check itself is pinned in VoiceEnrollmentChallengeTests.
+    private readonly IVoiceEnrollmentChallengeService _challenges = Substitute.For<IVoiceEnrollmentChallengeService>();
     private readonly VoiceProfileService _service;
 
     public VoiceProfileServiceTests()
@@ -57,8 +60,12 @@ public class VoiceProfileServiceTests
         // null, so a preview test that forgot to arrange one fails on the timeout branch rather
         // than passing on a substitute's default.
         _previewQueue = Substitute.For<IVoicePreviewQueue>();
+        _challenges.VerifyAsync(
+                Arg.Any<Guid>(), Arg.Any<Guid?>(), Arg.Any<string>(), Arg.Any<byte[]>(),
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Success(new VoiceEnrollmentVerification("heard", 1.0)));
         _service = new VoiceProfileService(
-            _unitOfWork, _storage, _catalog, _cloneQueue, _previewQueue,
+            _unitOfWork, _storage, _catalog, _cloneQueue, _previewQueue, _challenges,
             Substitute.For<ILogger<VoiceProfileService>>());
     }
 
@@ -280,6 +287,7 @@ public class VoiceProfileServiceTests
                 DisplayName = "My voice",
                 Language = "vi-VN",
                 Sample = sample,
+                ChallengeId = AChallenge,
                 OwnVoiceConfirmed = true,
                 AiUseConfirmed = true,
                 SyntheticVoiceAcknowledged = true,
@@ -311,6 +319,7 @@ public class VoiceProfileServiceTests
                 DisplayName = "My voice",
                 Language = "vi-VN",
                 Sample = ValidVoiceSample(),
+                ChallengeId = AChallenge,
                 OwnVoiceConfirmed = true,
                 AiUseConfirmed = true,
                 SyntheticVoiceAcknowledged = true,
@@ -352,6 +361,7 @@ public class VoiceProfileServiceTests
                 DisplayName = "My voice",
                 Language = Vi,
                 Sample = invalidFile,
+                ChallengeId = AChallenge,
                 OwnVoiceConfirmed = true,
                 AiUseConfirmed = true,
                 SyntheticVoiceAcknowledged = true,
@@ -364,6 +374,96 @@ public class VoiceProfileServiceTests
         Assert.Contains("signature", result.Error!, StringComparison.OrdinalIgnoreCase);
         _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
     }
+
+    private static readonly Guid AChallenge = Guid.NewGuid();
+
+    // ── WT-888: the read-aloud challenge is enforced by the API, not the dialog ──────────────
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRejectAnUploadWithoutAChallenge_BeforeStoringAnything()
+    {
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "Somebody else's voice",
+                Language = Vi,
+                Sample = ValidVoiceSample(),
+                ChallengeId = null,
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(VoiceEnrollmentErrorCodes.ChallengeRequired, result.ErrorCode);
+        await _challenges.DidNotReceiveWithAnyArgs().VerifyAsync(default, default, default!, default!, default!, default!, default, default);
+        await _storage.DidNotReceiveWithAnyArgs().SaveAsync(default!, default!, default);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRefuseTheSample_WhenTheRecordingDoesNotSayThePhrase()
+    {
+        _challenges.VerifyAsync(
+                Arg.Any<Guid>(), Arg.Any<Guid?>(), Arg.Any<string>(), Arg.Any<byte[]>(),
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Failure<VoiceEnrollmentVerification>(
+                "Your recording didn't match the phrase on screen.",
+                VoiceEnrollmentErrorCodes.ChallengeMismatch));
+
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = Vi,
+                Sample = ValidVoiceSample(),
+                ChallengeId = AChallenge,
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(VoiceEnrollmentErrorCodes.ChallengeMismatch, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().SaveAsync(default!, default!, default);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+        await _cloneQueue.DidNotReceiveWithAnyArgs().RequestAsync(default, default, default!, default!, default);
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRecordTheProfileItBecame_OnTheChallengeItAnswered()
+    {
+        var userId = Guid.NewGuid();
+        VoiceProfile? added = null;
+        _profiles.When(r => r.Add(Arg.Any<VoiceProfile>())).Do(c => added = c.Arg<VoiceProfile>());
+
+        var result = await _service.CreateProfileAsync(
+            userId,
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = "vi-VN",
+                Sample = ValidVoiceSample(),
+                ChallengeId = AChallenge,
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.NotNull(added);
+        await _challenges.Received(1).VerifyAsync(
+            userId, AChallenge, "vi-VN", Arg.Any<byte[]>(), "voice.wav", "audio/wav", added!.Id, Arg.Any<CancellationToken>());
+    }
+
 
     private static FormFile ValidVoiceSample() => new(
         new MemoryStream(new byte[] { 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00 }),
@@ -405,6 +505,7 @@ public class VoiceProfileServiceTests
                 DisplayName = "My voice",
                 Language = Vi,
                 Sample = Sample(contentType),
+                ChallengeId = AChallenge,
                 OwnVoiceConfirmed = true,
                 AiUseConfirmed = true,
                 SyntheticVoiceAcknowledged = true,
@@ -434,6 +535,7 @@ public class VoiceProfileServiceTests
                 DisplayName = "My voice",
                 Language = Vi,
                 Sample = Sample(contentType),
+                ChallengeId = AChallenge,
                 OwnVoiceConfirmed = true,
                 AiUseConfirmed = true,
                 SyntheticVoiceAcknowledged = true,

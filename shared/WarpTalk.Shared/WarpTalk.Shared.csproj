@@ -46,6 +46,7 @@
     <Protobuf Include="Protos\meeting.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\workspace.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\admin_audit.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\meet_conference.proto" GrpcServices="Both" />
   </ItemGroup>
 
 </Project>
